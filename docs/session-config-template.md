@@ -202,7 +202,7 @@ Read by: `hooks/on-session-start.mjs`, `scripts/lib/resource-probe.mjs`, `script
 ```yaml
 baseline-ref: null                     # git ref on baseline project (or null = legacy MR sync)
 baseline-project-id: "52"              # GitLab project ID of baseline (default: infrastructure/projects-baseline)
-plan-baseline-path: ~/Projects/projects-baseline   # local baseline clone for /plan new
+plan-baseline-path: ~/Projects/projects-baseline   # optional local baseline clone for /plan new (unset = bundled templates)
 plan-default-visibility: internal      # internal | private | public — for /plan new
 plan-prd-location: docs/prd            # PRD output directory
 plan-retro-location: docs/retro        # retro output directory

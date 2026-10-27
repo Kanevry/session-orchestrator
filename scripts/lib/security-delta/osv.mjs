@@ -12,7 +12,7 @@
 import path from 'node:path';
 
 import { BUDGET, makeCheckResult, makeFinding, normalizeOsvSeverity, severityRank } from './contract.mjs';
-import { defaultRunGit, readLockfileDelta } from './lockfiles.mjs';
+import { defaultRunGit, PIP_INDEX_UNVERIFIABLE, readLockfileDelta } from './lockfiles.mjs';
 import { filterPublicPackages, readHostNpmrcPolicy, readNpmrcPolicy } from './npmrc.mjs';
 import { httpRequest } from '../http-request.mjs';
 
@@ -78,6 +78,88 @@ function fixedFromRecord(record, pkg) {
     }
   }
   return best;
+}
+
+const RANGE_COMPARATOR_RE = /^(<=|>=|<|>|=)\s*(\d+(?:\.\d+)*)$/;
+const NUMERIC_VERSION_RE = /^\d+(?:\.\d+)*$/;
+
+/**
+ * Parse a GHSA `last_known_affected_version_range` (`< 1.0.0`, `>= 0.0.0, < 1.0.0`)
+ * into comparators, or null when any part does not parse.
+ * Ceiling (BV-004): only purely numeric dotted versions — a pre-release bound
+ * reads as unparseable, so the finding is kept. Revisit if such bounds show up.
+ */
+function parseVersionRange(text) {
+  if (typeof text !== 'string') return null;
+  const comparators = [];
+  for (const part of text.split(',')) {
+    const m = RANGE_COMPARATOR_RE.exec(part.trim());
+    if (!m) return null;
+    comparators.push({ op: m[1], version: m[2] });
+  }
+  return comparators;
+}
+
+/**
+ * Compare two purely numeric dotted versions, a missing segment counting as 0
+ * (`1.0` ≡ `1.0.0` ≡ `1.0.0.0`). compareVersions() ranks a missing segment
+ * lower, which would drop an advisory whose bound the version meets. Segments
+ * compare as BigInt: Number() rounds above 2^53 and turns very long digit runs
+ * into Infinity, which would make an affected version look outside its bound.
+ */
+function compareNumericVersions(a, b) {
+  const pa = a.split('.').map(BigInt);
+  const pb = b.split('.').map(BigInt);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const x = pa[i] ?? 0n;
+    const y = pb[i] ?? 0n;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * True when the entry carries its own bound data (an upper OSV event or an
+ * enumerated version list); the GHSA bound then competes with it and decides nothing.
+ */
+function hasOwnBound(entry) {
+  if (Array.isArray(entry?.versions) && entry.versions.length > 0) return true;
+  const ranges = Array.isArray(entry?.ranges) ? entry.ranges : [];
+  return ranges.some((r) =>
+    (Array.isArray(r?.events) ? r.events : []).some((e) => e && ('fixed' in e || 'last_affected' in e || 'limit' in e)),
+  );
+}
+
+function satisfiesComparator(version, { op, version: bound }) {
+  const c = compareNumericVersions(String(version), bound);
+  if (op === '<') return c < 0;
+  if (op === '<=') return c <= 0;
+  if (op === '>') return c > 0;
+  if (op === '>=') return c >= 0;
+  return c === 0;
+}
+
+/**
+ * True only when the record's GHSA bound proves `pkg.version` unaffected: every
+ * affected entry for the package carries a parseable
+ * `database_specific.last_known_affected_version_range` and the version lies
+ * outside each one (#1814). OSV keeps such ranges open-ended
+ * (`introduced: 0.0.0`), so its server-side match alone over-reports.
+ * Fail-closed: no matching entry, a missing or unparseable bound, an entry
+ * with its own fixed/last_affected/limit event or versions list, or a
+ * non-numeric installed version (pre-release ordering is approximate) → false.
+ */
+function outsideKnownAffectedRange(record, pkg) {
+  if (!NUMERIC_VERSION_RE.test(String(pkg.version))) return false;
+  const matching = (Array.isArray(record?.affected) ? record.affected : []).filter(
+    (a) => a?.package?.ecosystem === pkg.ecosystem && sameName(pkg.ecosystem, a?.package?.name, pkg.name),
+  );
+  if (matching.length === 0) return false;
+  return matching.every((a) => {
+    if (hasOwnBound(a)) return false;
+    const comparators = parseVersionRange(a?.database_specific?.last_known_affected_version_range);
+    return comparators !== null && !comparators.every((c) => satisfiesComparator(pkg.version, c));
+  });
 }
 
 const CVE_RE = /^CVE-\d{4}-\d{4,}$/;
@@ -158,8 +240,9 @@ async function fetchDetails(request, ids, { deadlineAt, maxDetails }) {
  * @param {typeof httpRequest} [opts.request]  injectable HTTP transport (tests)
  * @param {(args: string[]) => Promise<string>} [opts.runGit]  injectable git runner (tests)
  * @param {number} [opts.maxDetails] cap on advisory detail requests (default 25)
- * @param {NodeJS.ProcessEnv} [opts.env]  environment for the host npm policy (tests)
- * @param {string} [opts.homeDir]  home directory for `~/.npmrc` (tests)
+ * @param {NodeJS.ProcessEnv} [opts.env]  environment for the host npm policy and pip index (tests)
+ * @param {string} [opts.homeDir]  home directory for `~/.npmrc` and the user pip.conf (tests)
+ * @param {(file: string) => string|null} [opts.readConfigFile]  pip config reader; null = absent (tests)
  * @returns {Promise<ReturnType<typeof makeCheckResult>>} CheckResult with id `lockfile`
  */
 export async function runLockfileCheck({
@@ -172,6 +255,7 @@ export async function runLockfileCheck({
   maxDetails = DEFAULT_MAX_DETAILS,
   env,
   homeDir,
+  readConfigFile,
 } = {}) {
   const started = Date.now();
   const deadline = Number.isFinite(deadlineAt) ? deadlineAt : started + BUDGET.networkMs;
@@ -181,7 +265,9 @@ export async function runLockfileCheck({
   try {
     if (!base || !head) return makeCheckResult({ id: 'lockfile', status: 'skipped', reason: 'no-range', ms: ms() });
 
-    const delta = await readLockfileDelta({ repoRoot, base, head, runGit });
+    // The same host-state inputs the npm policy reads also decide pip's private
+    // index (#1772); passing them keeps an injected env from mixing with the real one.
+    const delta = await readLockfileDelta({ repoRoot, base, head, runGit, env, homeDir, readConfigFile });
     if (delta.files.length === 0) {
       return makeCheckResult({ id: 'lockfile', status: 'skipped', reason: 'no-lockfile-change', ms: ms() });
     }
@@ -210,8 +296,13 @@ export async function runLockfileCheck({
       if (pkgs.some((p) => p.ecosystem === 'npm')) for (const f of policy.unreadable) npmrcUnreadable.add(f);
       publicPackages.push(...filterPublicPackages(pkgs, policy).public);
     }
-    const npmrcGap = npmrcUnreadable.size;
-    const gapReason = preReason ?? (npmrcGap > 0 ? 'npmrc-unreadable' : null);
+    // A pin whose pip index could not be established is kept away from OSV
+    // (fail closed) and counted as not measured, never dropped into a clean ok.
+    // A pin from a KNOWN private index is excluded like an npm private scope.
+    const pipGap = delta.packages.filter((p) => p.resolved === PIP_INDEX_UNVERIFIABLE).length;
+    const sourceGap = npmrcUnreadable.size + pipGap;
+    const gapReason =
+      preReason ?? (npmrcUnreadable.size > 0 ? 'npmrc-unreadable' : pipGap > 0 ? 'pip-index-unverifiable' : null);
     // One query per (ecosystem, name, version); the first file that introduced it is reported.
     const byKey = new Map();
     for (const p of publicPackages) {
@@ -219,15 +310,15 @@ export async function runLockfileCheck({
       if (!byKey.has(key)) byKey.set(key, p);
     }
     const packages = [...byKey.values()];
-    // `pending` feeds the timeout/network/internal-error returns: it carries the npmrc gap too.
-    pending = packages.length + preUnchecked + npmrcGap;
+    // `pending` feeds the timeout/network/internal-error returns: it carries the npmrc and pip gaps too.
+    pending = packages.length + preUnchecked + sourceGap;
     if (packages.length === 0) {
       return makeCheckResult({
         id: 'lockfile',
-        status: preUnchecked + npmrcGap > 0 ? 'degraded' : 'ok',
+        status: preUnchecked + sourceGap > 0 ? 'degraded' : 'ok',
         reason: gapReason,
         checked: 0,
-        unchecked: preUnchecked + npmrcGap,
+        unchecked: preUnchecked + sourceGap,
         ms: ms(),
       });
     }
@@ -251,7 +342,7 @@ export async function runLockfileCheck({
         });
       }
     }
-    pending = preUnchecked + npmrcGap;
+    pending = preUnchecked + sourceGap;
 
     const hits = [];
     for (let i = 0; i < packages.length; i += 1) {
@@ -292,15 +383,24 @@ export async function runLockfileCheck({
         // so a KEV join on CVE ids sees a GHSA's CVE (#1769 stage 2).
         const withAliases = new Set(ids);
         let gap = false;
+        let kept = 0; // advisories not ruled out by their version bound
         for (const id of ids) {
           const record = records.get(id);
           if (!record) {
             gap = true;
+            kept += 1;
             continue;
           }
+          // The bound proves this version unaffected: the advisory is no finding (#1814).
+          if (outsideKnownAffectedRange(record, pkg)) {
+            withAliases.delete(id);
+            continue;
+          }
+          kept += 1;
           for (const cve of cveAliasesFromRecord(record)) withAliases.add(cve);
           graded.push({ severity: normalizeOsvSeverity(record?.database_specific?.severity), fixed: fixedFromRecord(record, pkg) });
         }
+        if (kept === 0) continue;
         let severity = 'unknown';
         for (const g of graded) if (severityRank(g.severity) < severityRank(severity)) severity = g.severity;
         // fixedIn comes only from advisories AT the finding's severity: a fix for a
@@ -329,7 +429,7 @@ export async function runLockfileCheck({
       }
     }
 
-    const unchecked = detailGaps + broken + preUnchecked + npmrcGap;
+    const unchecked = detailGaps + broken + preUnchecked + sourceGap;
     const detailReason = detailGaps > 0 ? DETAIL_REASONS.find((r) => [...missing.values()].includes(r)) : null;
     const reason = detailReason ?? (broken > 0 ? 'internal-error' : gapReason);
     return makeCheckResult({

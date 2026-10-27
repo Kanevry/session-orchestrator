@@ -672,7 +672,7 @@ export async function promoteHwLearnings(opts) {
   // #1516: on an inbox-role host the live store is never rewritten, and a
   // promoted twin keeps its private original's id, so the inbox rewrite would
   // drop it silently. Refuse before anything is read, locked or emitted.
-  if (isCanonicalStore(opts.input) && resolveStoreRole().role === 'inbox') {
+  if (isCanonicalStore(opts.input) && resolveStoreRole({ storePath: opts.input }).role === 'inbox') {
     throw new Error(
       'store-role inbox: --promote rewrites learnings.jsonl, which this host never does — run it on the writer host'
     );

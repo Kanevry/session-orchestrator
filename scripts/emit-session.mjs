@@ -38,13 +38,14 @@ import {
   deriveMemoryCleanupSignal,
   stampMemoryCleanup,
 } from './lib/memory-cleanup-stamp.mjs';
-import { parseStateMd, readSessionProfile } from './lib/state-md.mjs';
+import { parseStateMd, readOutcome, readSessionProfile } from './lib/state-md.mjs';
 import { resolveStateMdWriteTarget, warnForeignStateMd } from './lib/state-md/frontmatter-mutators.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 import { readSessionWorkTrees } from './lib/session-work-trees.mjs';
 import { rollupSessionTokens } from './lib/session-token-rollup.mjs';
 import { COST_BASIS, PRICING_TABLE_DATE } from './lib/telemetry/pricing.mjs';
 import { serializeSessionLineChecked } from './lib/session-schema/serializer.mjs';
+import { OUTCOME_OBSERVED_VALUES, OUTCOME_SOURCES } from './lib/session-schema/constants.mjs';
 import {
   validateSession,
   ValidationError,
@@ -74,6 +75,28 @@ export { serializeSessionLineChecked };
 // A FULL object name only (SHA-1 or SHA-256 repo). A short sha or a symbolic
 // ref (`HEAD`, a branch) would resolve to a DIFFERENT commit when read later.
 const FULL_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** @param {unknown} v @returns {boolean} true for a non-null, non-array object. */
+function isPlainRecord(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * True when `v` carries the full STATEMENT half of an outcome (#1824): non-empty
+ * `statement` and `observable` and a `source` from OUTCOME_SOURCES. `observed`
+ * is not part of the test — it is defaulted or validated separately.
+ *
+ * @param {unknown} v
+ * @returns {boolean}
+ */
+function hasOutcomeStatement(v) {
+  return (
+    isPlainRecord(v) &&
+    typeof v.statement === 'string' && v.statement.length > 0 &&
+    typeof v.observable === 'string' && v.observable.length > 0 &&
+    OUTCOME_SOURCES.includes(v.source)
+  );
+}
 
 // Rollup fields merged into the record (#1436) — the totals plus the #1244
 // cache buckets and contract marker the former prose recipe merged, and the
@@ -588,13 +611,43 @@ async function main() {
   // a directory, EACCES/EPERM, a truncated file) omits the fields and lets the
   // record through — it must never be the reason `sessions.jsonl` gains no
   // line at all.
+  //
+  // `outcome` (#1824) — STATE.md `outcome-statement` / `outcome-observable` /
+  // `outcome-source` via `readOutcome()`, same ownership gate. The coordinator
+  // knows only whether it CHECKED the observable, so it may pass a partial
+  // `outcome: { observed }`; the statement half is filled from STATE.md here.
+  // An incoming object WITHOUT a complete statement half (`hasOutcomeStatement`)
+  // counts as partial: only its `observed` is kept. `observed` defaults to
+  // `not-measured` — never to `observed`; a value outside OUTCOME_OBSERVED_VALUES
+  // is replaced with a WARN. A record whose STATE.md names no outcome carries NO
+  // `outcome` key; a partial object that cannot be completed is dropped with a
+  // WARN rather than failing the record.
   const hasOwn = (key) => Object.prototype.hasOwnProperty.call(repaired, key);
   const needsProfile = !hasOwn('session_profile');
   const needsStartRef = !hasOwn('session_start_ref');
+  const incomingOutcome = repaired.outcome;
+  let incomingObserved = isPlainRecord(incomingOutcome) ? incomingOutcome.observed : undefined;
+  if (incomingObserved !== undefined && !OUTCOME_OBSERVED_VALUES.includes(incomingObserved)) {
+    process.stderr.write(
+      `emit-session: WARN outcome.observed=${JSON.stringify(incomingObserved)} is not one of ` +
+        `${OUTCOME_OBSERVED_VALUES.join('|')}; recording not-measured\n`
+    );
+    incomingObserved = undefined;
+  }
+  const outcomeIsPartial =
+    incomingOutcome !== undefined && incomingOutcome !== null && !hasOutcomeStatement(incomingOutcome);
+  const needsOutcome = !hasOwn('outcome') || outcomeIsPartial;
+  if (hasOutcomeStatement(incomingOutcome)) {
+    const { statement, observable, source } = incomingOutcome;
+    repaired = {
+      ...repaired,
+      outcome: { statement, observable, source, observed: incomingObserved ?? 'not-measured' },
+    };
+  }
   // What STATE.md contributed to session_start_ref, for the WARN below when no
   // source supplies one (#1457 point 2): none, or a ref that was discarded.
   let stateMdStartRefNote = 'STATE.md carried none';
-  if (needsProfile || needsStartRef) {
+  if (needsProfile || needsStartRef || needsOutcome) {
     let stateMdContents = '';
     try {
       // #1622: the write side's ownership rule — another platform's STATE.md
@@ -614,12 +667,14 @@ async function main() {
       stateMdContents = '';
       stateMdStartRefNote = 'STATE.md unreadable';
     }
-    // No initialiser: both the try and the catch below assign `profile`.
+    // No initialiser: both the try and the catch below assign `profile` and `outcome`.
     let profile;
+    let outcome;
     let startRef = null;
     let owner = null;
     try {
       profile = readSessionProfile(stateMdContents);
+      outcome = readOutcome(stateMdContents);
       const fm = parseStateMd(stateMdContents)?.frontmatter;
       const rawOwner = fm?.session;
       owner = typeof rawOwner === 'string' && rawOwner.trim().length > 0 ? rawOwner.trim() : null;
@@ -639,12 +694,16 @@ async function main() {
           `derivation (${err?.message ?? err}); omitting both\n`
       );
       profile = null;
+      outcome = null;
       startRef = null;
       stateMdStartRefNote = 'STATE.md unparseable';
     }
     const derived = {};
     if (needsProfile && profile !== null) derived.session_profile = profile;
     if (needsStartRef && startRef !== null) derived.session_start_ref = startRef;
+    if (needsOutcome && outcome !== null) {
+      derived.outcome = { ...outcome, observed: incomingObserved ?? 'not-measured' };
+    }
     const derivedKeys = Object.keys(derived);
     if (derivedKeys.length > 0) {
       if (owner !== null && owner === repaired.session_id) {
@@ -657,12 +716,21 @@ async function main() {
         // carries no such field", and a foreign STATE.md in this working copy
         // is precisely what the operator wants to know about.
         process.stderr.write(
-          `emit-session: WARN STATE.md ${derivedKeys.map((k) => `${k}=${derived[k]}`).join(' ')} ` +
+          `emit-session: WARN STATE.md ${derivedKeys.map((k) => `${k}=${typeof derived[k] === 'object' ? JSON.stringify(derived[k]) : derived[k]}`).join(' ')} ` +
             `belongs to session=${owner ?? '<absent>'}, not session_id=${repaired.session_id ?? '<unknown>'}; ` +
             `omitting ${derivedKeys.join(', ')}\n`
         );
       }
     }
+  }
+
+  if (repaired.outcome !== undefined && repaired.outcome !== null && !hasOutcomeStatement(repaired.outcome)) {
+    process.stderr.write(
+      `emit-session: WARN outcome=${JSON.stringify(repaired.outcome)} names no complete statement ` +
+        `(statement, observable, source) and STATE.md supplied none for this session; omitting outcome\n`
+    );
+    const { outcome: _dropped, ...rest } = repaired;
+    repaired = rest;
   }
 
   // session_start_ref fallback (#1443): STATE.md supplied none (absent key,

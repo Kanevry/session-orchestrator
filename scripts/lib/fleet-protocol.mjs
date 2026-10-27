@@ -404,3 +404,58 @@ export async function readAuflagen(sessionId, { repoRoot = process.cwd(), env, h
   if (gitCommonDir(fileRepo) !== own) return { state: 'rejected', reason: 'repo-mismatch' };
   return { state: 'accepted', auflagen };
 }
+
+/**
+ * Characters that must never reach a terminal or transcript from a foreign
+ * file, because they hide or reorder text: C0 except TAB and LF, DEL, C1, the
+ * Arabic letter mark (U+061C), zero-width and directional marks
+ * (U+200B..U+200F), line/paragraph separators (U+2028, U+2029), bidi
+ * embedding/override (U+202A..U+202E), word joiner and invisible operators
+ * (U+2060..U+2064), bidi isolates (U+2066..U+2069), the BOM (U+FEFF) and the
+ * invisible tag characters (U+E0000..U+E007F), which can carry hidden text into
+ * a subagent prompt that adopts `grenze` verbatim.
+ * Global so `terminalSafeJson()` can replace every match; tests use
+ * `search()`, which ignores `lastIndex`.
+ */
+const UNSAFE_CONTROL_RE = /[\x00-\x08\x0B-\x1F\x7F-\x9F\u061C\u200B-\u200F\u2028\u2029\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu; // eslint-disable-line no-control-regex
+
+/**
+ * `JSON.stringify(value)` with every `UNSAFE_CONTROL_RE` character written as a
+ * `\uXXXX` escape (#1809). `JSON.stringify` escapes C0 but leaves DEL, C1, the
+ * bidi characters and U+2028/U+2029 raw, so a line printed to a terminal next
+ * to a withheld `grenze` would carry the very text the notice withholds. The
+ * matched characters only occur inside string literals, so the result is
+ * still valid JSON and `JSON.parse` returns the same value.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function terminalSafeJson(value) {
+  // A tag character is a surrogate pair: escape each UTF-16 unit, still valid JSON.
+  return JSON.stringify(value).replace(UNSAFE_CONTROL_RE, (ch) =>
+    ch.split('').map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`).join(''),
+  );
+}
+
+/**
+ * Human-readable lines for session-start Phase 7.6 (#1809): the navigator's
+ * `grenze` field (which repos are off limits and how to call the boundary gate
+ * before reading) from an ACCEPTED auflagen file, byte for byte after one
+ * header line. Nothing for `absent`/`rejected` or a missing field. A `grenze`
+ * that is not a string or carries an `UNSAFE_CONTROL_RE` character is
+ * withheld — a single notice line takes its place, the text is never printed.
+ *
+ * @param {Awaited<ReturnType<typeof readAuflagen>>} result
+ * @returns {string[]} lines to print; `grenze` may itself span several lines
+ */
+export function renderAuflagenNotice(result) {
+  if (result.state !== 'accepted' || !('grenze' in result.auflagen)) return [];
+  const grenze = result.auflagen.grenze;
+  if (typeof grenze !== 'string') {
+    return ['fleet-auflagen: grenze withheld (not a string) — ask the navigator for the boundary'];
+  }
+  if (grenze.search(UNSAFE_CONTROL_RE) !== -1) {
+    return ['fleet-auflagen: grenze withheld (contains control characters) — ask the navigator for the boundary'];
+  }
+  return ['fleet-auflagen: grenze (verbatim from the navigator, binding):', grenze];
+}

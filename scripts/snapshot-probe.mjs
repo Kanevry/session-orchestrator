@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * snapshot-probe.mjs — run validate-plugin and the test suite on the curated public
- * snapshot tree, materialized outside the repo without a remote (#1712).
+ * snapshot-probe.mjs — run what GitHub runs (the mirror smoke, or the suite and
+ * validate-plugin for a policy without an include list) on the curated public snapshot
+ * tree, materialized outside the repo without a remote (#1712, #1594).
  * Library: scripts/lib/snapshot-probe.mjs.
  */
 
@@ -17,18 +18,30 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 export const HELP = `Usage: node scripts/snapshot-probe.mjs [options]
 
-Builds the curated public GitHub snapshot of a source commit (the tree minus the paths in
-.orchestrator/policy/public-export.json — the same helper the export uses), materializes it
-under $TMPDIR as a one-commit git repo WITHOUT any remote, and runs the steps there. Catches
-tests and validators that depend on a file the public export drops.
+Builds the curated public GitHub snapshot of a source commit (the tree the policy in
+.orchestrator/policy/public-export.json publishes: its 'include' list, if any, minus its
+'exclude' paths; the same helper the export uses), materializes it under $TMPDIR as a
+one-commit git repo WITHOUT any remote, and runs the steps there. Proves that what GitHub
+runs passes on what GitHub gets.
+
+Steps:
+  test               with an 'include' list (the slim mirror, #1594): 'npm run test:mirror',
+                     the smoke GitHub's 'test' job runs (manifests, syntax, dependencies,
+                     SessionStart); without one: 'npm test', the full suite
+  validate-plugin    node scripts/validate-plugin.mjs. Not a default step under an 'include'
+                     list: it reads CLAUDE.md, AGENTS.md, .husky/ and .gitlab-ci.yml, which
+                     the slim mirror does not carry, so it is red there by construction
 
 Options:
   --source <rev>     source commit (default HEAD)
-  --steps <list>     comma-separated steps, from: ${KNOWN_STEPS.join(', ')} (default: both)
+  --steps <list>     comma-separated steps, from: ${KNOWN_STEPS.join(', ')} (default: 'test'
+                     under an 'include' list, else both)
   --host <alias>     run the 'test' step on an offload host instead: one 'remote-gate' step
                      (the pre-push router's full gate against the snapshot commit, no gate
-                     telemetry); validate-plugin still runs locally
-  --local            run the 'test' step (full suite) on this host instead
+                     telemetry); validate-plugin still runs locally. Refused (exit 2) under
+                     an 'include' list: the full gate cannot pass on a tree without tests/
+                     and eslint config; use --local, the smoke takes about a minute
+  --local            run the 'test' step on this host
                      The 'test' step needs exactly one of --host or --local.
   --keep             keep the materialized snapshot directory (printed as dir)
   --no-receipt       do not write .orchestrator/tmp/snapshot-probe/<tree>.json
@@ -40,9 +53,9 @@ Options:
 Exit codes:
   0  every step passed
   1  usage error
-  2  system error: git, tar or mkdtemp failure, or the remote gate did not run the suite
-     to completion (host unknown or not ready, fallback, gate-timeout, a timed-out check,
-     no test result) — no receipt is written
+  2  system error: git, tar or mkdtemp failure, --host under an 'include' list, or the
+     remote gate did not run the suite to completion (host unknown or not ready, fallback,
+     gate-timeout, a timed-out check, no test result) — no receipt is written
   3  the probe ran and the snapshot is red (a step failed or timed out)
 
 A receipt is written only when a suite step ran ('test' or 'remote-gate'); a
@@ -51,9 +64,9 @@ The release preflight accepts only receipts whose steps include a passing suite 
 'test' (--local) or 'remote-gate' (--host).
 
 Examples:
+  node scripts/snapshot-probe.mjs --local --json     # slim mirror: the GitHub smoke
+  node scripts/snapshot-probe.mjs --host m5 --json   # policy without 'include': full gate
   node scripts/snapshot-probe.mjs --steps validate-plugin
-  node scripts/snapshot-probe.mjs --host m5 --json
-  node scripts/snapshot-probe.mjs --local --json
 `;
 
 /**
@@ -85,19 +98,21 @@ export function parseCli(argv) {
   }
   if (values.help) return { ok: true, help: true };
   if (values.version) return { ok: true, version: true };
-  const steps = values.steps === undefined ? [...KNOWN_STEPS] : values.steps.split(',').map((s) => s.trim()).filter(Boolean);
-  if (steps.length === 0) return { ok: false, error: '--steps is empty' };
-  const unknown = steps.filter((s) => !KNOWN_STEPS.includes(s));
+  // No --steps: the library picks the default from the policy (it is unknown until the
+  // source commit is read). Every default includes 'test'.
+  const steps = values.steps === undefined ? null : values.steps.split(',').map((s) => s.trim()).filter(Boolean);
+  if (steps !== null && steps.length === 0) return { ok: false, error: '--steps is empty' };
+  const unknown = (steps ?? []).filter((s) => !KNOWN_STEPS.includes(s));
   if (unknown.length > 0) return { ok: false, error: `unknown step(s): ${unknown.join(', ')} (known: ${KNOWN_STEPS.join(', ')})` };
   if (values.local && values.host !== undefined) return { ok: false, error: '--host and --local are mutually exclusive' };
   if (values.host !== undefined && !/^[A-Za-z0-9._-]+$/.test(values.host)) return { ok: false, error: `invalid --host alias '${values.host}'` };
   // Host rule: full suites belong on a remote host; the local host only with --local.
-  if (steps.includes('test') && !values.local && values.host === undefined) {
-    return { ok: false, error: "the 'test' step runs the full suite — pass --host <alias> or --local, or use --steps validate-plugin" };
+  if ((steps === null || steps.includes('test')) && !values.local && values.host === undefined) {
+    return { ok: false, error: "the 'test' step needs --host <alias> or --local (see --help), or use --steps validate-plugin" };
   }
   return {
     ok: true,
-    opts: { source: values.source, steps, keep: values.keep, writeReceipt: !values['no-receipt'], json: values.json, ...(values.host !== undefined ? { host: values.host } : {}) },
+    opts: { source: values.source, ...(steps !== null ? { steps } : {}), keep: values.keep, writeReceipt: !values['no-receipt'], json: values.json, ...(values.host !== undefined ? { host: values.host } : {}) },
   };
 }
 

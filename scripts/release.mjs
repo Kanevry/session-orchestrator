@@ -192,11 +192,10 @@ export const SURFACES = [
   },
   {
     file: 'README.md',
-    patterns: [
-      /version-(\d+\.\d+\.\d+)-blue\.svg/,
-      /^## Recent highlights \(v(\d+\.\d+\.\d+)\)/m,
-      /Highlights of the v(\d+\.\d+\.\d+) line:/,
-    ],
+    // Only the version badge carries the version since the README rewrite
+    // (#1595, !261) dropped "Recent highlights" on purpose; its two patterns
+    // matched nothing from 6b6a1773 on and failed every preflight as pattern-dead.
+    patterns: [/version-(\d+\.\d+\.\d+)-blue\.svg/],
   },
   {
     // ONE WRITER, ONE CHECKER — and they are not the same program.
@@ -1089,7 +1088,7 @@ export function evaluateGithubMirrorPreflight(repoRoot, head) {
 
 /** Steps that run the test suite; a receipt without one proves only validate-plugin. */
 const SNAPSHOT_SUITE_STEPS = ['test', 'remote-gate'];
-const SNAPSHOT_PROBE_REMEDY = 'run: node scripts/snapshot-probe.mjs --host <alias> (or --local)';
+const SNAPSHOT_PROBE_REMEDY = 'run: node scripts/snapshot-probe.mjs --local (--host <alias> only without an include policy)';
 
 /**
  * Verdict of the `snapshot-probe` preflight row (#1712). Release 5.13.0 found
@@ -3314,7 +3313,6 @@ async function main() {
     console.log('  site/ page cells + site/_census.json + site/sitemap.xml lastmod re-stamped (scripts/site-numbers.mjs --write) — commit ALL of them');
     console.log('\nEditorial TODOs (enforced by --check):');
     console.log(`  1. CHANGELOG.md — write the "## [${target}] - YYYY-MM-DD" entry, fold [Unreleased].`);
-    console.log('  2. README.md — rewrite the "Recent highlights" section content.');
     return 0;
   }
 

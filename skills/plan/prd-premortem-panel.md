@@ -15,6 +15,17 @@ Back-test 2026-10-19: three committed PRDs replayed in history-truncated clones 
 - At most 20 predictions, P1..P20, each ≤2 sentences, concrete and checkable: what will go wrong, which assumption fails, what work will be missing, or what will be found later. No generic advice.
 - Return one Markdown report as your final message.
 
+## Judge order
+
+The one ranking of outside judges in this repo; Brief B step 4 and `/deepen` pick from it. Take the highest rung that can run:
+
+1. An executable check that returns a result: a test, a type check, a benchmark, a query on the raw data, a reconciliation of totals.
+2. A held-out check on data the work was not fitted on.
+3. A reviewer with fresh context who sees only the output and the requirement.
+4. The operator, with exact questions, only when (1) to (3) do not exist. A result judged only by the operator is reported as "accepted by the operator", never as "verified".
+
+None of these available: `UNVERIFIED: kein Außenrichter (<what would provide one>)`.
+
 ## Brief A — Refute
 
 You review the PRD at `<path>` as the engineer who will be paged when it fails. Assume it ships exactly as written. Find what breaks, using the repository rather than the text. In particular:
@@ -34,7 +45,7 @@ The operator wants a deeper version of these tasks, not bigger ones. Work the fo
 1. **Practice:** what would a top professional in this field do here that the PRD does not ask for? Name the field first.
 2. **Raw material:** what is the rawest material they would start from instead of what has already been digested (the issue text, docs, a summary)? That means the installed artifact, the platform binary or contract, live process or event data, a real run's output, the git history of the area. Open it where it is reachable and report what it shows.
 3. **Methods and tools:** name the specific methods and tools they would use, and apply them where it is cheap.
-4. **Oracle:** what, other than the author or the operator, would show the result is right? For each acceptance criterion, name that judge and say whether the PRD uses it. The author's own unit test against a fake does not count.
+4. **Oracle:** what, other than the author or the operator, would show the result is right? Pick per § Judge order. For each acceptance criterion, name that judge and say whether the PRD uses it. The author's own unit test against a fake does not count.
 
 Then rewrite the acceptance criteria to ask for exactly that: same scope, each criterion bound to its oracle. Name the criteria whose oracle cannot run inside an implementing session.
 

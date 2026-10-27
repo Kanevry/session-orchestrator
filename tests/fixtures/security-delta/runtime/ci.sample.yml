@@ -1,6 +1,0 @@
-default:
-  image:
-    name: node:latest
-    entrypoint: [""]
-test:
-  image: node:22

@@ -283,6 +283,9 @@ elif ! mirror_url=$(git remote get-url github 2>&1); then
   echo "  git said: ${mirror_url}" >&2
   exit 0
 fi
+# An allow-list policy (version 2, #1594) needs export code at or after commit 482cd32a.
+# An older plugin root refuses it ("curated export REFUSED", fail-closed, nothing published):
+# then run /close with PLUGIN_ROOT=<a checkout at or after that commit>, or update the plugin.
 so_root="${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}"
 if [ -z "$so_root" ]; then
   so_root=$(git rev-parse --show-toplevel 2>/dev/null)

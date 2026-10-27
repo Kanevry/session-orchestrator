@@ -24,9 +24,9 @@ and emit the `## ` sections you change or add for any card you wish to update.
    should behave in this project).
 2. **Be conservative**: only propose updates grounded in the supplied inputs. Do not invent
    new sections that no learning or session supports.
-3. **Preserve continuity**: omitted sections stay unchanged — the merge replaces or appends per
-   `## ` section and never deletes one. Emit ONLY the sections you change or newly ground; never
-   invent a section without evidence from the supplied learnings/sessions.
+3. **Preserve continuity**: omitted sections stay unchanged; emit only grounded sections you change
+   or add, repeating every existing point you keep verbatim. Leaving a point out does NOT delete
+   it: the merge retains and reports it, and only the operator can confirm a deletion (#1810).
 4. **Respect the model budget**: you run as Haiku. Keep your reasoning compact; emit only the
    blocks you actually want applied.
 
@@ -98,7 +98,8 @@ Rules:
 
 - Emit **at most one block per target**. Omit a target entirely when no update is warranted.
 - The block body is a set of **whole `## ` sections** — not a unified diff hunk. Omitted sections stay
-  unchanged (nothing auto-deletes), so emit only the sections you change or newly ground.
+  unchanged (nothing auto-deletes); within emitted sections, repeat every existing point you keep
+  verbatim — omissions are retained and reported until the operator confirms deletion (#1810).
 - **`## ` headings are the merge unit (#1310).** On `--apply` the orchestrator splits your body at each
   level-2 (`## `) heading and maps each one onto a sentinel-delimited managed region via
   `mergeDerivedBody()` (`scripts/lib/peer-cards/merger.mjs`). Consequences you control:

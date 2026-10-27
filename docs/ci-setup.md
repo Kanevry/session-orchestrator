@@ -2,7 +2,7 @@
 
 > **Maintainer-internal.** This document describes the maintainer's private CI mirror setup. It is not required for using the plugin.
 
-GitHub's Linux/macOS test matrix is supplemented by two non-blocking Windows jobs on `windows-latest` (#1612): `test-windows-smoke` runs lint, typecheck and `scripts/ci/windows-smoke.mjs` (the product contract for Claude Code on Windows; it moves into `gate` after 10 green main runs), and `test-windows-suite` runs the full suite for information while the test-portability backlog is open. The fresh SessionStart smoke needs npm-registry access and reports unavailable network as unmeasurable.
+GitHub carries a curated mirror without `tests/`, vitest or ESLint config (#1594). Its `test` job (Linux and macOS) runs `npm run test:mirror`: manifests, syntax, dependencies and a SessionStart run. The non-blocking `test-windows-smoke` job on `windows-latest` (#1612) runs `npm run test:mirror` and then `scripts/ci/windows-smoke.mjs` (the product contract for Claude Code on Windows; it moves into `gate` after 10 green main runs). The full suite, lint, typecheck and coverage run on GitLab only. The fresh SessionStart smoke needs npm-registry access and reports unavailable network as unmeasurable.
 
 ## schema-drift-check job
 

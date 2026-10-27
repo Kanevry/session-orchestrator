@@ -11,9 +11,19 @@ Present to the user:
 - [x] Issue #N: [description] — [evidence: tests passing, files changed]
 - [x] Issue #M: [description]
 
+### Outcome served [#1824]
+- <statement> — observed: <observed | not observable in this session (reason) | not measured>
+- never count not-measured as achieved
+- this is the session's goal behind its tasks (STATE.md `outcome-*`, one line); single `[Abnahme]` issues stay under Abnahme offen, never here as well
+- omit the section when STATE.md names no outcome
+
 ### Abnahme offen (implemented ≠ accepted — never counted as Completed) [#1678]
 - [ ] #<IID> [Abnahme] <Kriterium> — owner: <body | assignee | Owner> — not-before: <date | —>
 - scope: [linked to this session's plan/epic | all open — link not determinable]
+
+### Unverified (kein Außenrichter) [#1825]
+- <Ergebnis> — UNVERIFIED: kein Außenrichter (<was ihn liefern würde>)
+- a result listed here never counts as Completed
 
 ### Carried Over
 - [ ] Issue #P: [what's left] — new issue #Q created
@@ -64,6 +74,8 @@ Present to the user:
 - Type: [housekeeping/feature/deep recommended]
 - Notes: [any context for next session]
 ```
+
+> **Outcome-served anchor (#1824):** the statement and its observable come from STATE.md via `readOutcome()` (`scripts/lib/state-md.mjs`) — never retyped from memory; `null` means the session named no outcome and the section is omitted. `observed` is the same value the Phase 3.7 record carries (`session-metrics-write.md` § `outcome`): `observed` ONLY when the observable named in STATE.md was actually checked in this session, with the check quoted; `not-observable-in-session` with the reason when it can only be seen later (a metric after a release, a user reaction); otherwise `not measured`. A not-measured outcome is never reported as achieved.
 
 > **Test-delta anchor:** the `Δ this session` figures are aggregated from the `test_delta` field of this session's agent reports (added / removed / consolidated test cases); the `tests:src LOC ratio` is the output of `node scripts/lib/tests-src-ratio.mjs --json` — the single measurement per `.claude/rules/test-value.md` § TV-003; never re-derive it by hand. When the envelope carries `reason: "no-tests-found"` (#1451), report the ratio as not measurable, not as within the corridor. A bare `passing/total` count is not a progress signal — a growing suite reads as progress even when the growth is redundant, which is exactly why the delta and the ratio are reported alongside it. When the ratio exceeds the advisory ceiling, recommend that the NEXT session's Quality wave run as a **consolidation wave**: no new test lands without a redundant one being removed in the same change. This is advisory only — it never blocks the close.
 

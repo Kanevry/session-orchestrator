@@ -54,6 +54,8 @@
 
    **`session_profile` (#1247):** when `$METRICS_ENTRY` omits the `session_profile` key, `emit-session.mjs` fills it itself from this repo's own `<state-dir>/STATE.md` `session-profile` frontmatter (e.g. `ultradeep`) — no coordinator-side plumbing needed; an explicit value on the entry always wins and is never overwritten.
 
+   **`outcome` (#1824):** the session-level goal behind the tasks. `emit-session.mjs` fills `{ statement, observable, source }` itself from the STATE.md keys `outcome-statement` / `outcome-observable` / `outcome-source` (`readOutcome()` in `scripts/lib/state-md.mjs`), under the same ownership gate as `session_profile` (STATE.md frontmatter `session` must equal the record's `session_id`, else a WARN and no `outcome`). The coordinator adds ONLY what it measured: `"outcome": {"observed": "<observed|not-observable-in-session|not-measured>"}` in `$METRICS_ENTRY`, where `observed` is allowed only when the observable named in STATE.md was actually checked in this session. Without that key `observed` defaults to `not-measured`. A STATE.md without the three keys yields a record WITHOUT `outcome` — absent, never an empty object (absent-is-not-zero, `docs/events-schema.md`). The record's top-level `outcome` is not the wave-level `waves[].outcome` that `render-sessions.mjs` reads for a wave's Quality cell. Never in the telemetry ping: `projectUsagePing` (`scripts/lib/telemetry/schema.mjs`) projects a closed field whitelist.
+
    **`autopilot_run_id` (additive, optional, #300):** when this session was launched by `/autopilot`, the wave-executor `sessionRunner` callback passes `args.autopilotRunId` from `runLoop`. session-end MUST persist that value as a top-level field on the JSONL record:
 
    ```json

@@ -240,7 +240,7 @@ export const SKIPPED_STORE_ROLE_INBOX = 'store-role-inbox';
  * @returns {boolean}
  */
 function isInboxRoleStore(filePath) {
-  return typeof filePath === 'string' && isCanonicalStore(filePath) && resolveStoreRole().role === 'inbox';
+  return typeof filePath === 'string' && isCanonicalStore(filePath) && resolveStoreRole({ storePath: filePath }).role === 'inbox';
 }
 
 /** Reason -> the tombstone field that reason MUST carry. */

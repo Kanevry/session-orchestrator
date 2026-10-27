@@ -20,6 +20,7 @@ import { parseStateMd, serializeStateMd } from './yaml-parser.mjs';
 import { existsSync } from 'node:fs';
 import { resolveStateMdWriteTarget, updateFrontmatterFields, warnForeignStateMd, writeStateMd } from './frontmatter-mutators.mjs';
 import { parseRecommendations } from './recommendations.mjs';
+import { OUTCOME_FIELDS } from '../state-md.mjs';
 
 /** Rule 7: the drift-baseline keys that must not survive into session N+1. */
 const SCOPE_BASELINE_KEYS = [
@@ -133,7 +134,9 @@ function dropSubsection(lines, heading) {
  * `## What Not To Retry` and `## Open Questions` stay byte-for-byte. 5. Other
  * frontmatter keys are untouched. 6. The five recommendation keys STAY in the
  * frontmatter (Phase 7.5 reads them); a readable copy heads `## Previous Session`.
- * 7. The five `scope-baseline-*` keys are deleted, no other key.
+ * 7. The five `scope-baseline-*` keys are deleted. 8. The three `outcome-*`
+ * keys are deleted (#1824): the closed session's outcome is not the next one's.
+ * No other key is deleted.
  *
  * When neither a Wave History section nor a recommendation exists, an existing
  * `## Previous Session` is left as it is — there is nothing to replace it with.
@@ -192,6 +195,7 @@ export function resetStateMdToIdle(contents) {
 
   const fields = { status: 'idle', 'current-wave': 0 };
   for (const key of SCOPE_BASELINE_KEYS) fields[key] = null;
+  for (const key of Object.values(OUTCOME_FIELDS)) fields[key] = null;
   const next = updateFrontmatterFields(
     serializeStateMd({ frontmatter: parsed.frontmatter, body }),
     fields,

@@ -186,6 +186,8 @@ Also substitute README and gitignore from `_minimal` templates:
 
    If `CONFIRMED_ARCHETYPE` is `null` or unset, default to `node-minimal`.
 
+   This table is the shared public archetype catalog: `/plan new` reads its IDs on the public path (`skills/plan/mode-new.md` Phase 0) — add or remove an archetype here, not there.
+
 2. **Copy all files** from the template directory to `$REPO_ROOT`:
 
    Use `cp -rP` (no-dereference) so that symlinks inside the template directory are copied **as

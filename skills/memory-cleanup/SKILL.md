@@ -120,6 +120,11 @@ Find what's changed since the last consolidation.
 
 Apply maintenance operations to memory files.
 
+### 3·0: Find dead index links first (#1801)
+Before rewriting anything, list every `MEMORY.md` link whose target file is missing (the `BROKEN:` check from Phase 4 step 5, run now). It calls `listDeadIndexLinks()`, the same definition behind the session-start count `memory: <N> tote Index-Links`. Per dead link:
+- **Rescue** its core sentence into an existing era/history note or a Meta-Vault note that already covers it, quoting only what the index line or that note states.
+- **Otherwise delete** the index line. Never invent content for a file you cannot read.
+
 ### 3a: Merge overlapping entries
 If multiple files or entries describe the same thing, combine them into one authoritative entry. Update inbound `[[wiki-link]]`s accordingly.
 
@@ -175,10 +180,8 @@ Keep `MEMORY.md` clean and under the 200-line limit.
 5. **Final verification**:
    ```bash
    wc -l <memory-dir>/MEMORY.md  # must be < 200
-   # verify all index links resolve to existing files
-   grep -oP '\]\(([^)]+\.md)\)' <memory-dir>/MEMORY.md | sed 's/](\(.*\))/\1/' | while read f; do
-     [ -f "<memory-dir>/$f" ] || echo "BROKEN: $f"
-   done
+   # dead index links (the session-start definition) — must print nothing; throws without MEMORY.md
+   node --input-type=module -e "const { listDeadIndexLinks } = await import('$PLUGIN_ROOT/scripts/lib/auto-dream.mjs'); const d = listDeadIndexLinks(process.argv[1]); if (!d) throw new Error('no MEMORY.md'); for (const t of d) console.log('BROKEN: ' + t);" <memory-dir>
    ```
 
 ## Phase 4.5: Worktree-Stale-Sweep (#575 P3.2)

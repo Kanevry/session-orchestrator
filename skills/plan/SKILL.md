@@ -68,9 +68,9 @@ Plan-specific fields (also parse these): `plan-baseline-path`, `plan-default-vis
 
 Store all values for use in subsequent phases.
 
-**Path expansion:** Expand `~` to `$HOME` in `plan-baseline-path` (when set), `plan-prd-location`, and `plan-retro-location`. Verify expanded paths exist. `plan-baseline-path` is required only by `/plan new`, which checks it at its own start (`mode-new.md`); `feature` and `retro` run without it. If `plan-baseline-path` is set but doesn't exist, warn: "Baseline path not found at [path]. `/plan new` repo scaffolding will be unavailable."
+**Path expansion:** Expand `~` to `$HOME` in `plan-baseline-path` (when set), `plan-prd-location`, and `plan-retro-location`. Verify expanded paths exist. `plan-baseline-path` is optional for every mode: `/plan new` uses it when configured, else the plugin's bundled templates (source switch in `mode-new.md` Phase 0); `feature` and `retro` run without it. If `plan-baseline-path` is set but doesn't exist, warn: "Baseline path not found at [path]. `/plan new` falls back to the plugin's bundled templates."
 
-If no `## Session Config` section exists at all, stop and report: "Error: No Session Config section found in CLAUDE.md (or AGENTS.md on Codex CLI). The `/plan` skill requires a `## Session Config` section; `/plan new` additionally requires `plan-baseline-path`."
+If no `## Session Config` section exists at all, stop and report: "Error: No Session Config section found in CLAUDE.md (or AGENTS.md on Codex CLI). The `/plan` skill requires a `## Session Config` section."
 
 > **Platform Note:** This skill uses `AskUserQuestion` extensively. On Codex CLI where this tool is unavailable, present all choices as numbered Markdown lists with "(Recommended)" on the first option. The user responds with their choice number. See `skills/_shared/platform-tools.md`.
 
@@ -121,7 +121,7 @@ inferences remain distinct.
 Before each Q&A wave, dispatch 2-3 `Agent()` tool calls in a single message (parallel execution) with `subagent_type: "Explore"`:
 
 1. **Market/online context agent** — searches for relevant market data, best practices, competitor analysis, or technical patterns depending on the questions to be asked. Tools: WebSearch, WebFetch.
-2. **Baseline analysis agent** — reads projects-baseline templates, rules, and scripts at `$BASELINE_PATH` to discover available options (archetypes, styles, configurations). Tools: Read, Glob, Grep. Skip it when `plan-baseline-path` is unset (only `/plan new` requires it): print "No `plan-baseline-path` configured — baseline analysis agent skipped." and dispatch the remaining agents.
+2. **Baseline analysis agent** — reads projects-baseline templates, rules, and scripts at `$BASELINE_PATH` to discover available options (archetypes, styles, configurations). Tools: Read, Glob, Grep. Skip it when `plan-baseline-path` is unset (on `/plan new` the public path reads the bundled templates instead, `mode-new.md` Phase 0): print "No `plan-baseline-path` configured — baseline analysis agent skipped." and dispatch the remaining agents.
 3. **Repo context agent** (skip for `/plan new` wave 1) — analyzes the current repository for existing patterns, file structure, dependencies, and conventions. Tools: Read, Glob, Grep.
 
 **Raw material before digest.** Brief the repo and baseline agents to start from the rawest reachable material, not from what has already been summarised: the code path that actually runs (caller census), the installed artifact or platform contract, live event or process data, a real run's output, the git history of the area. Issue text and docs come second. Two asks are mandatory in Wave 1:
@@ -509,7 +509,7 @@ Skip this step if issue creation was cancelled at § 6.3 ("Cancel") — there is
 ## Critical Rules
 
 - **NEVER skip the Q&A phase** — even if the user provides a detailed brief, validate through structured questions. The Q&A surfaces blind spots.
-- **NEVER assume projects-baseline templates** — always read from the configured `plan-baseline-path`. Templates change; hardcoded assumptions break.
+- **NEVER assume baseline templates** — read them from the configured `plan-baseline-path` when it is set, else from the plugin's bundled templates (`mode-new.md` Phase 0). Templates change; hardcoded assumptions break.
 - **ALWAYS research before asking** — dispatch Explore agents before every Q&A wave. Questions without research backing are guesses.
 - **ALWAYS mark Option 1 as recommended** — with `(Recommended)` in the label. Every question must have a clear recommendation.
 - **ALWAYS use AskUserQuestion** — never present options as plain text. The structured UI is mandatory.

@@ -43,6 +43,7 @@
 .cmd-name:hover { text-decoration: underline; }
 .cmd-name code { font-size: 1em; }
 .start-badge { font-family: var(--font-body); font-size: .75rem; font-weight: 600; letter-spacing: 0; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--accent-fg); }
+.start-badge--maint { font-weight: 500; background: transparent; color: var(--fg-2); border: 1px solid var(--line); }
 
 .cmd-facts { display: grid; grid-template-columns: 6.5em minmax(0, 1fr); gap: 6px 12px; margin: 0; font-size: .9375rem; line-height: 1.55; }
 .cmd-facts > dt { color: var(--fg-2); font-size: var(--text-meta); padding-top: 2px; }

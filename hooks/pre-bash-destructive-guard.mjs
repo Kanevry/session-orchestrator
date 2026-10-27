@@ -62,6 +62,15 @@ import { pathToFileURL } from 'node:url';
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
+// #1826 — stdout ceiling for every git read in this hook. Node's default 1 MiB
+// made a CLEAN worktree with node_modules "not measurable": its
+// `git status --ignored=traditional -uall` emits 1.3–6.1 MB (13,200 / 16,004 /
+// 50,621 ignored entries, measured 2026-10-26), ENOBUFS → catch → deny.
+// 64 MiB matches hooks/post-tool-batch-wave-signal.mjs. NAMED CEILING (BV-004):
+// a status above 64 MiB still throws and stays fail-closed (denied as not
+// measurable); revisit if an approved removal is denied for that reason.
+const GIT_MAX_BUFFER = 64 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // #992 — late-bound repo dependencies
 //
@@ -794,6 +803,7 @@ function gitRead(dir, args) {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 3000,
+      maxBuffer: GIT_MAX_BUFFER,
     }).trim();
     return out.length > 0 ? out : null;
   } catch {
@@ -899,7 +909,7 @@ function isValuableIgnored(p) {
 function judgeWorktreeRemoval(target) {
   if (!fs.existsSync(target)) return null;
   try {
-    const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 };
+    const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, maxBuffer: GIT_MAX_BUFFER };
     const top = execFileSync('git', ['-C', target, 'rev-parse', '--show-toplevel'], opts).trim();
     if (fs.realpathSync(top) !== fs.realpathSync(target)) return { unmeasurable: true };
     const out = execFileSync('git', ['-C', target, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=traditional'], opts);
@@ -942,6 +952,7 @@ function findWorktreeLikeGit(dir, suffix, resolved) {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 3000,
+      maxBuffer: GIT_MAX_BUFFER,
     });
   } catch {
     return { unmeasurable: true };

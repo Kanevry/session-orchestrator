@@ -263,17 +263,40 @@ untouched):
    `refs/heads/github-export` is only the output slot — overwritten each run,
    never read as a parent — so no older, forged or stale export commit can sit
    between the public main and the new snapshot.
-3. `read-tree <source>^{tree}`, drop every path the policy excludes (exact
-   file, or directory prefix ending in `/` — `docs/audits/` never drops a
-   sibling file whose name merely starts with `docs/audits`), `write-tree`.
+3. `read-tree <source>^{tree}`, drop every path the policy does not export,
+   `write-tree`. The policy (`.orchestrator/policy/public-export.json`, read
+   from the SOURCE commit) is an allow-list plus a deny-list: a path is
+   exported only when it falls under an `include` entry AND under no `exclude`
+   entry. Both lists use the same entries — an exact file, or a directory
+   prefix ending in `/` (`docs/audits/` never matches a sibling file whose name
+   merely starts with `docs/audits`); no globs. The policy `version` names its
+   shape: version 1 is deny-only (no `include`; everything not excluded is
+   exported), version 2 is the allow-list (`include` required and non-empty).
+   Version 1 with `include`, version 2 without it, any other version and any
+   unknown top-level key are refused. The allow-list needs its own version
+   because exporters older than this change accept version 1 and ignore keys
+   they do not know: they would read an allow-list as deny-only and publish the
+   whole tree. They refuse any version other than 1, so a version-2 policy stops
+   them (fail-closed) — the curated export must therefore run with code at or
+   after this change, also when `/close` takes the code from `$PLUGIN_ROOT` and
+   the policy from origin's main. With the allow-list a NEW top-level path
+   stays private until someone adds it to `include` — the safe default. The
+   same predicate decides in every consumer: the temp-index removal, the
+   post-check of the written tree, the PX check of
+   `check-owner-leakage.mjs --public-export`, the citation guard, the push-time
+   `--verify`, and the snapshot probe.
 4. `commit-tree <tree> -p <verified github main>` with the trailer
    `Source-Commit: <full source sha>`.
 5. Strict leakage scan of the snapshot (`check-owner-leakage.mjs
    --public-export` in a temporary detached worktree, removed afterwards),
    then the citation guard on the same worktree: validate-plugin's path-check
    and relative-link modules run on the snapshot, and any finding that points
-   into an excluded path refuses the export — the GitHub CI runs the same
-   checks, so a public doc citing a private path would otherwise turn it red.
+   into a path the export removed refuses the export — the GitHub CI runs the
+   same checks, so a public doc citing a private path would otherwise turn it
+   red. "Removed" means: not exported AND present in the source commit (a
+   tracked file, or a directory holding tracked files). A citation of a path
+   that exists nowhere in the source — git-ignored runtime files such as
+   `.orchestrator/STATE.md` — was not created by the export and does not count.
 6. `update-ref refs/heads/github-export <new> <old-or-zero>` — compare-and-swap.
 
 The anchor in step 2 is read through the FETCH URL, but `git push github` goes
@@ -291,8 +314,8 @@ before the first curated push.
 Exit codes: `0` created (prints the sha), `3` nothing to publish (the curated
 tree equals github main's; the export ref is not touched), `1` refused with a
 one-line reason (graph integrity, remote anchor, the published snapshot's
-`Source-Commit` not an ancestor of the source, an excluded path surviving in
-the written tree, the leakage scan, an excluded-path citation, or a lost
+`Source-Commit` not an ancestor of the source, a non-exported path surviving in
+the written tree, the leakage scan, a citation into a removed path, or a lost
 compare-and-swap). `--dry-run` prints the counts and scans without moving the
 ref.
 
@@ -310,8 +333,8 @@ final check:
   push URL to equal the fetch URL, and runs
   `github-export.mjs --verify <sha> --source <origin main>` right before the
   push — graph integrity, github main re-verified via `ls-remote`, exactly one
-  commit on it with `Source-Commit: <origin main>`, and no excluded path in
-  `git ls-tree -r <sha>`. It then pushes that sha, never the export ref name,
+  commit on it with `Source-Commit: <origin main>`, and no non-exported path
+  (excluded, or outside `include`) in `git ls-tree -r <sha>`. It then pushes that sha, never the export ref name,
   so moving the ref after the scan changes nothing.
 - The push is a plain `git push github <sha>:refs/heads/main`.
   No lease and no force flag: the new commit's parent IS the verified sha, and
@@ -325,6 +348,32 @@ the one new commit's tree omits it and its parent is already public. The
 harness-audit check `github-mirror-sync` counts "ahead" from the
 `Source-Commit` trailer of `github/main` in this mode, not from `github/main`
 itself.
+
+### What GitHub carries (slim mirror, #1594)
+
+With the `include` allow-list the public tree carries what installers, the npm
+package, the site and the GitHub CI read: the plugin manifests
+(`.claude-plugin/`, `.codex-plugin/`, `.cursor-plugin/`, `.agents/`,
+`.cursor/`), the plugin content (`agents/`, `commands/`, `skills/`, `hooks/`,
+`scripts/`, `rules/`, `templates/`, `.claude/rules/`, …), `docs/`, `site/`
+with `vercel.json`, `.github/`, the shipped `.orchestrator/policy/` and
+`.orchestrator/steering/`, and the top-level files `package.json`,
+`package-lock.json`, `README.md`, `LICENSE`, `NOTICE`, `CHANGELOG.md`,
+`CONTRIBUTING.md`, `SECURITY.md`, `.gitattributes`, `.gitignore`,
+`.gitleaks.toml`, `.mailmap`, `.mcp.json`, `.npmrc`. The root shrinks from 57
+to about 38 entries; `tests/`, `server/`, `marketing/`, the GitLab CI and the
+local tool configuration stay on GitLab only. Each `include` entry names its
+reader in its `reason`.
+
+Because `tests/` is not exported, the GitHub CI no longer runs the full suite.
+The required status checks keep their job names — `security`,
+`test (ubuntu-latest)` and `test (macos-latest)` — so branch protection stays
+unchanged, but the `test` jobs run a plugin smoke (`npm run test:mirror`)
+against the public tree. Its SessionStart check does not trust the banner
+alone — the hook catches its own failures and still prints one with exit 0 —
+so it also requires the session lock, `current-session.json`, the registry
+entry and the `orchestrator.session.started` event in its sandbox. The full suite runs on GitLab, which is the reviewed
+source of every snapshot.
 
 ### Releases under `mirror: curated` (#1645)
 

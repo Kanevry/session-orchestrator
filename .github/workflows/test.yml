@@ -1,3 +1,7 @@
+# GitHub carries a curated mirror of the private GitLab repository (#1594):
+# no tests/, no vitest or eslint config. The full suite, lint and coverage run
+# on GitLab; here run the security gates and a smoke of what a user's install
+# needs (scripts/ci/plugin-smoke.mjs, `npm run test:mirror`).
 name: Tests
 
 on:
@@ -43,6 +47,9 @@ jobs:
         # carry advisories without affecting shipped runtime.
         run: npm audit --audit-level=high --omit=dev
 
+  # Mirror smoke (#1594): this tree has no tests/, vitest or eslint config, so
+  # the job checks what a user's install needs. Job id and matrix stay: branch
+  # protection requires `test (ubuntu-latest)` and `test (macos-latest)`.
   test:
     needs: security
     strategy:
@@ -50,9 +57,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # 15 min held until the suite grew past ~21k tests: on 2026-10-21 macOS
-    # vitest alone took 13:22 and the Linux job hit 15 min inside coverage.
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
         with:
@@ -64,22 +69,7 @@ jobs:
           node-version: '24'
           cache: npm
 
-      - name: Install jq (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y jq
-
-      - name: Install jq (macOS)
-        if: runner.os == 'macOS'
-        run: brew install jq
-
-      - name: Verify environment (Unix)
-        shell: bash
-        run: |
-          bash --version | head -1
-          git --version
-          jq --version
-
-      - name: Configure git identity (all platforms)
+      - name: Configure git identity
         shell: bash
         run: |
           git config --global user.name "CI"
@@ -92,76 +82,14 @@ jobs:
         shell: bash
         run: node scripts/lib/validate/check-owner-leakage.mjs "$GITHUB_WORKSPACE"
 
-      - name: Plugin manifest schema validation (#475)
-        shell: bash
-        run: node scripts/validate-plugin-manifests.mjs "$GITHUB_WORKSPACE"
+      - name: Mirror smoke (manifests, syntax, dependencies, SessionStart)
+        run: npm run test:mirror
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Typecheck (.mjs files — Wave 3+)
-        shell: bash
-        run: |
-          if ls hooks/*.mjs scripts/lib/*.mjs 2>/dev/null | grep -q .; then
-            npm run typecheck
-          else
-            echo "No .mjs files yet (Wave 3 adds them) — skipping typecheck"
-          fi
-
-      # On Linux the tinypool exit-hang (#268, upstream vitest issue #3077)
-      # still occurs occasionally with vitest 4 + pool=forks: the runner
-      # hangs at worker teardown AFTER all tests have passed. Without a
-      # wrapper the job hits its workflow timeout. Mirrors the
-      # GitLab CI remediation in .gitlab-ci.yml. macOS does not exhibit the
-      # hang — keep the plain `npm test` path for it.
-      - name: Vitest (Linux — wrapped)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          rm -f /tmp/vitest-result.json   # stale-file guard (defensive; runners are ephemeral)
-          timeout --preserve-status 1200s npm test -- --reporter=verbose --reporter=json --outputFile=/tmp/vitest-result.json --no-color 2>&1 | tee /tmp/vitest.raw.log || true
-          sed -r 's/\x1b\[[0-9;]*[mK]//g' /tmp/vitest.raw.log > /tmp/vitest.log || cp /tmp/vitest.raw.log /tmp/vitest.log
-          tail -80 /tmp/vitest.log
-          # Fail-closed JSON verifier is the SINGLE authority on pass/fail. It replaces the
-          # brittle grep-the-stdout heuristic that reported a killed-mid-run suite as GREEN
-          # (the 8-pipeline silent regression — see CLAUDE.md Critical Gotchas and the
-          # rationale block in scripts/ci/assert-vitest-green.mjs). GitHub runs the full
-          # UNSHARDED suite (~10,000+ tests), so --min-tests=6000 is a safe floor below the
-          # real count that still catches a truncated/partial run. The `|| true` above lets
-          # the pipeline REACH this line; the exit code of THIS line is the job result.
-          node scripts/ci/assert-vitest-green.mjs /tmp/vitest-result.json --min-tests=6000 --log=/tmp/vitest.log
-
-      - name: Vitest (macOS — plain)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: npm test
-
-      - name: Coverage (Linux only, gated at 70% lines/funcs/stmts, 60% branches)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          rm -f /tmp/cov-result.json   # stale-file guard (defensive; runners are ephemeral)
-          timeout --preserve-status 1200s npm run test:coverage -- --reporter=verbose --reporter=json --outputFile=/tmp/cov-result.json --no-color 2>&1 | tee /tmp/cov.raw.log || true
-          sed -r 's/\x1b\[[0-9;]*[mK]//g' /tmp/cov.raw.log > /tmp/cov.log || cp /tmp/cov.raw.log /tmp/cov.log
-          tail -100 /tmp/cov.log
-          # Fail-closed JSON verifier is the SINGLE authority on test pass/fail (replaces the
-          # brittle grep heuristic). The cobertura-artifact and threshold-breach grep below
-          # are SEPARATE gates from test-green: the JSON `success` field reflects pass/fail,
-          # NOT the coverage threshold. --min-tests=6000 floor matches the full unsharded run.
-          node scripts/ci/assert-vitest-green.mjs /tmp/cov-result.json --min-tests=6000
-          test -f coverage/cobertura-coverage.xml && echo "[ci] coverage artifact present"
-          ! grep -q "Coverage for .* .* below" /tmp/cov.log
-
-  # #1612: native Windows evidence, split in two so a red dev suite cannot
-  # hide a red product check.
-  #  - test-windows-smoke: lint, typecheck and scripts/ci/windows-smoke.mjs
-  #    (gate processes, hooks through Git Bash, first SessionStart). This is
-  #    the product contract for "Claude Code on Windows". Non-blocking at
-  #    first; revisit: nach 10 gruenen main-Laeufen in gate aufnehmen.
-  #  - test-windows-suite: the full vitest suite, informational only. Native
-  #    measurement 2026-10-14 @ da365a5e: 19,651 passed / 881 failed, almost
-  #    all POSIX assumptions inside tests (sh, '/' separators, symlinks);
-  #    backlog #1613.
+  # #1612: native Windows evidence for "Claude Code on Windows": the mirror
+  # smoke plus scripts/ci/windows-smoke.mjs (gate processes, hooks through Git
+  # Bash, first SessionStart). Informational; revisit: nach 10 gruenen
+  # main-Laeufen in gate aufnehmen. The full Windows suite needs tests/ and
+  # no longer runs on GitHub (#1594, backlog #1613).
   test-windows-smoke:
     runs-on: windows-latest
     needs: security
@@ -192,15 +120,10 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Lint
-        id: lint
+      - name: Mirror smoke
+        id: mirror
         continue-on-error: true
-        run: npm run lint
-
-      - name: Typecheck
-        id: typecheck
-        continue-on-error: true
-        run: npm run typecheck
+        run: npm run test:mirror
 
       - name: Native Windows smoke
         id: smoke
@@ -208,57 +131,8 @@ jobs:
         run: node scripts/ci/windows-smoke.mjs
 
       - name: Report Windows smoke failures
-        if: always() && (steps.lint.outcome == 'failure' || steps.typecheck.outcome == 'failure' || steps.smoke.outcome == 'failure')
-        run: 'echo "::warning title=Windows smoke::Informational Windows checks failed: lint=${{ steps.lint.outcome }}, typecheck=${{ steps.typecheck.outcome }}, smoke=${{ steps.smoke.outcome }}. See step logs (#1712)."'
-
-  test-windows-suite:
-    runs-on: windows-latest
-    needs: security
-    timeout-minutes: 30
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
-        with:
-          fetch-depth: 1
-
-      - name: Setup Node 24
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
-        with:
-          node-version: '24'
-          cache: npm
-
-      - name: Configure git identity
-        run: |
-          git config --global user.name "CI"
-          git config --global user.email "ci@test.com"
-
-      # common.requireJq and validate-plugin tests require jq on PATH.
-      - name: Install jq
-        run: choco install jq -y --no-progress
-
-      - name: Verify jq
-        run: jq --version
-
-      - name: Install Node dependencies
-        run: npm ci
-
-      # Informational: a red suite must not turn this job's check run red.
-      # Job-level continue-on-error keeps only the RUN green; the check run
-      # still concludes "failure", and release.mjs (ci-green-on-head-github)
-      # reads every failed check run as red. Revisit with #1613.
-      - name: Vitest (Windows — fail-closed JSON verifier)
-        continue-on-error: true
-        run: |
-          $result = Join-Path $env:RUNNER_TEMP 'vitest-result.json'
-          if (Test-Path -LiteralPath $result) { Remove-Item -LiteralPath $result -Force }
-          # Like Linux, the JSON verifier is the authority even when npm exits
-          # nonzero. Missing, partial or failed results cannot report green.
-          $PSNativeCommandUseErrorActionPreference = $false
-          npm test -- --reporter=default --reporter=json "--outputFile=$result"
-          node scripts/ci/assert-vitest-green.mjs "$result" --min-tests=6000
-          exit $LASTEXITCODE
+        if: always() && (steps.mirror.outcome == 'failure' || steps.smoke.outcome == 'failure')
+        run: 'echo "::warning title=Windows smoke::Informational Windows checks failed: mirror=${{ steps.mirror.outcome }}, smoke=${{ steps.smoke.outcome }}. See step logs (#1712)."'
 
   # Fan-in — mirror of the `pipeline-gate` job in .gitlab-ci.yml (#933 Loch 3).
   #
@@ -271,8 +145,7 @@ jobs:
   #
   # There is deliberately NO schema-drift counterpart: that gate needs a token
   # for a private GitLab project (see the header of .gitlab-ci.yml), so it
-  # cannot exist here. Coverage needs none either — it runs as a step inside the
-  # Linux `test` job above, not as a separate conditional job.
+  # cannot exist here. Coverage needs none either — it runs on GitLab only (#1594).
   gate:
     needs: [security, test]
     if: always()

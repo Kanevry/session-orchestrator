@@ -8,24 +8,26 @@ ROOT="${1:-$(pwd)}"
 CANONICAL="$ROOT/.orchestrator/metrics/learnings.jsonl"
 TODAY="$(date +%Y-%m-%d)"
 
-# #1516: a host whose learnings-store role is `inbox` never rewrites the
-# canonical store. The role resolver is the JS one (env SO_LEARNINGS_STORE_ROLE
-# > owner.yaml learnings.store-role > writer), imported relative to this script.
-# Fail-closed: if node fails, or the role is `invalid` (set but unusable) or
-# anything other than writer/inbox, nothing is written and the script exits 4.
+# #1516: a canonical store whose learnings-store role is `inbox` is never
+# rewritten. The role resolver is the JS one, imported relative to this script
+# and asked for THIS store ($CANONICAL, #1754): env SO_LEARNINGS_STORE_ROLE >
+# store inside an owner.yaml learnings.inbox-repos root > learnings.store-role
+# > writer. Inbox exits 3. Fail-closed: if node fails, or the role is `invalid`
+# (set but unusable) or anything other than writer/inbox, nothing is written
+# and the script exits 4.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STORE_ROLE="$(node --input-type=module -e '
 const { pathToFileURL } = await import("node:url");
 const m = await import(pathToFileURL(process.argv[1]).href);
-process.stdout.write(m.resolveStoreRole().role);
-' "$SCRIPT_DIR/lib/learnings/store-role.mjs" 2>/dev/null)" || STORE_ROLE="unresolved"
+process.stdout.write(m.resolveStoreRole({ storePath: process.argv[2] }).role);
+' "$SCRIPT_DIR/lib/learnings/store-role.mjs" "$CANONICAL" 2>/dev/null)" || STORE_ROLE="unresolved"
 if [ "$STORE_ROLE" = "inbox" ]; then
   echo "migrate-legacy-learnings: learnings store role is inbox on this host (#1516) — nothing written; run it on the writer host" >&2
   printf '{"status":"refused_store_role"}\n'
   exit 3
 fi
 if [ "$STORE_ROLE" != "writer" ]; then
-  echo "migrate-legacy-learnings: learnings store role is ${STORE_ROLE} on this host (#1516) — nothing written; fix owner.yaml learnings.store-role or SO_LEARNINGS_STORE_ROLE" >&2
+  echo "migrate-legacy-learnings: learnings store role is ${STORE_ROLE} on this host (#1516) — nothing written; fix owner.yaml learnings.store-role / learnings.inbox-repos or SO_LEARNINGS_STORE_ROLE" >&2
   printf '{"status":"refused_store_role_invalid"}\n'
   exit 4
 fi

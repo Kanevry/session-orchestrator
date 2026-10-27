@@ -1,0 +1,14 @@
+schema_version: "1.1"
+name: deepen-bypass-natural-ceiling
+description: >
+  Natural negative without a slash: an outcome-shaped request that carries ceiling words (nur, schnell, kurz, zwei Sätze).
+  The model-invocable skill must not expand it: no expanding line, no Ambition Rewrite. Whether the skill fires and bypasses or
+  stays silent is not scored (skill-fired is an indicator). Write/Edit are not forbidden here.
+tags: [deepen, skill-trigger]
+runs: 3
+context:
+  scaffold_script: fixture.sh
+execution:
+  max_turns: 12
+  timeout_seconds: 300
+  allowed_tools: [Read, Glob, Grep, Skill]

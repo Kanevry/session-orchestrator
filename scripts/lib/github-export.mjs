@@ -2,8 +2,9 @@
  * github-export.mjs — curated public GitHub mirror as ONE snapshot commit (#1631, #1594).
  *
  * GitLab keeps the full private repository. The public GitHub mirror (`mirror: curated`)
- * receives, per export, a single SQUASH commit whose tree is the source tree minus the
- * paths in `.orchestrator/policy/public-export.json`, and whose parent is ALWAYS the
+ * receives, per export, a single SQUASH commit whose tree is the source tree reduced by
+ * `.orchestrator/policy/public-export.json` — only paths under its `include` allow-list
+ * (when present), minus every `exclude` path — and whose parent is ALWAYS the
  * public GitHub main — verified against the remote itself (`git ls-remote`), never
  * trusted from the local tracking ref alone. Nothing but that one new commit sits
  * between the public main and the export, so nothing private can ride along: no older
@@ -13,7 +14,7 @@
  * Plumbing only, on a temp index — the real index, working tree and HEAD are untouched:
  *   GIT_INDEX_FILE=<tmp> read-tree <source>^{tree}
  *   → update-index --force-remove (paths matched by the SAME matcher the leakage
- *     checker uses, so the two can never disagree on what "excluded" means)
+ *     checker uses, so the two can never disagree on what "not exported" means)
  *   → write-tree → commit-tree -p <verified github main> (trailer `Source-Commit: <sha>`)
  *   → update-ref refs/heads/github-export <new> <old-or-zero>   (compare-and-swap)
  *
@@ -25,7 +26,7 @@
  * The git runner is injectable so tests and callers can wrap it; the snapshot check is
  * injectable so plumbing tests do not depend on a host owner-pattern policy. The default
  * snapshot check runs the strict leakage scan and refuses when a public file still cites
- * an excluded path, so the curated tree cannot turn GitHub's validate-plugin red.
+ * a path the export removed, so the curated tree cannot turn GitHub's validate-plugin red.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -106,18 +107,32 @@ function listTree(git, treeish) {
 }
 
 /**
- * Public files that still cite an excluded path, judged by the SAME two validate-plugin
- * modules the GitHub CI runs (`check-skill-script-paths` for inline-code citations,
- * `check-skill-links` for relative links), executed on the snapshot tree. Only findings
- * that point INTO an excluded path count: those are the ones the export itself creates,
- * so a source tree that passes validate-plugin cannot produce a snapshot that fails it.
+ * Public files that still cite a path the export removed, judged by the SAME two
+ * validate-plugin modules the GitHub CI runs (`check-skill-script-paths` for inline-code
+ * citations, `check-skill-links` for relative links), executed on the snapshot tree.
+ *
+ * A citation counts only when the export itself created the dangling reference: its
+ * target is not exported (excluded, or outside the `include` allow-list) AND it EXISTS
+ * in the source commit — as a tracked file, or as a directory containing tracked files.
+ * A cited path that exists nowhere in the source (e.g. git-ignored runtime files such as
+ * `.orchestrator/STATE.md`) was not removed by the export, so it is not counted; a source
+ * tree that passes validate-plugin therefore cannot produce a snapshot that fails it.
+ * Without `sourceFiles` every non-exported target counts (the stricter pre-#1594 rule).
  * A tool error in the path scan counts as a finding (fail closed).
  * @param {string} root snapshot work tree
  * @param {string[]} excludes
+ * @param {string[]|null} includes allow-list; null = deny-only. Required: undefined throws.
+ * @param {string[]|null} [sourceFiles=null] `git ls-tree -r --name-only <source>` list
  * @returns {string[]} `file:line → cited` entries
  */
-export function findExcludedCitations(root, excludes) {
-  const hit = (rel) => isPublicExportExcluded(rel, excludes) || isPublicExportExcluded(`${rel}/`, excludes);
+export function findExcludedCitations(root, excludes, includes, sourceFiles = null) {
+  requireIncludes('findExcludedCitations', includes);
+  const inSource = sourceFiles ? sourceExistence(sourceFiles) : () => true;
+  const removedByExport = (rel) => isPublicExportExcluded(rel, excludes, includes) || isPublicExportExcluded(`${rel}/`, excludes, includes);
+  const hit = (rel) => {
+    const norm = rel.replace(/\/+$/, '');
+    return removedByExport(norm) && inSource(norm);
+  };
   const out = [];
   const paths = scanSkillScriptPaths({ pluginRoot: root });
   if (paths.toolError) out.push('path-check tool error — citations not measurable');
@@ -132,15 +147,32 @@ export function findExcludedCitations(root, excludes) {
 }
 
 /**
+ * Existence predicate over a source file list: true for a tracked file, or for a
+ * directory that contains at least one tracked file.
+ * @param {string[]} files
+ * @returns {(rel: string) => boolean}
+ */
+function sourceExistence(files) {
+  const fileSet = new Set(files);
+  const dirSet = new Set();
+  for (const f of files) {
+    for (let i = f.indexOf('/'); i !== -1; i = f.indexOf('/', i + 1)) dirSet.add(f.slice(0, i));
+  }
+  return (rel) => fileSet.has(rel) || dirSet.has(rel);
+}
+
+/**
  * Default snapshot check: materialise the snapshot commit in a temporary detached
  * worktree, run `check-owner-leakage.mjs --public-export` over it, then
- * {@link findExcludedCitations}. The worktree is always removed. Only the leakage
- * checker's own (already redacted) FAIL lines are surfaced; citation findings name
- * public files and excluded paths, which the public policy file already lists.
- * @param {{ git: GitRunner, commit: string, excludes: string[] }} ctx
+ * {@link findExcludedCitations} against the source commit's file list (`sourceSha`, or
+ * the snapshot's `Source-Commit` trailer). The worktree is always removed. Only the
+ * leakage checker's own (already redacted) FAIL lines are surfaced; citation findings
+ * name public files and the removed paths they cite.
+ * @param {{ git: GitRunner, commit: string, excludes: string[], includes: string[]|null, sourceSha?: string }} ctx `includes` required (null = deny-only)
  * @returns {{ ok: boolean, reason?: string, findings?: string[] }}
  */
-export function defaultSnapshotCheck({ git, commit, excludes }) {
+export function defaultSnapshotCheck({ git, commit, excludes, includes, sourceSha }) {
+  requireIncludes('defaultSnapshotCheck', includes);
   const dir = mkdtempSync(join(tmpdir(), 'so-github-export-'));
   const wt = join(dir, 'tree');
   let added = false;
@@ -151,7 +183,17 @@ export function defaultSnapshotCheck({ git, commit, excludes }) {
     const res = spawnSync(process.execPath, [LEAKAGE_SCRIPT, wt, '--public-export'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     const findings = (res.stdout ?? '').split('\n').filter((l) => l.startsWith('  FAIL:'));
     if (res.status !== 0) return { ok: false, reason: `leakage scan failed (${findings.length} finding(s))`, findings };
-    const citations = findExcludedCitations(wt, excludes);
+    // Source file list read once; an unreadable source fails closed.
+    const body = sourceSha ? null : git(['cat-file', 'commit', commit]);
+    const source = sourceSha ?? (body.status === 0 ? parseSourceCommitTrailer(body.stdout) : null);
+    if (!source) return { ok: false, reason: `snapshot commit carries no ${SOURCE_COMMIT_TRAILER} — citations not measurable` };
+    let sourceFiles;
+    try {
+      sourceFiles = listTree(git, source);
+    } catch {
+      return { ok: false, reason: 'source tree unreadable — citations not measurable' };
+    }
+    const citations = findExcludedCitations(wt, excludes, includes, sourceFiles);
     if (citations.length > 0) {
       return { ok: false, reason: `${citations.length} public file citation(s) point into excluded paths (validate-plugin would fail on GitHub)`, findings: citations };
     }
@@ -172,9 +214,19 @@ function graphIntegrityProblem(git) {
 }
 
 /**
- * Exclude list from the SOURCE commit's policy file.
+ * `includes` decides between allow-list and deny-only, so it has no default: a caller
+ * that forgets it would otherwise get deny-only (the wider tree) without noticing.
+ * @param {string} fn caller name for the message
+ * @param {unknown} includes
+ */
+function requireIncludes(fn, includes) {
+  if (includes === undefined) throw new TypeError(`${fn}: includes must be passed: an array or null`);
+}
+
+/**
+ * Exclude list and optional include allow-list from the SOURCE commit's policy file.
  * @param {GitRunner} git @param {string} sourceSha
- * @returns {{ ok: true, excludes: string[] } | { ok: false, reason: string }}
+ * @returns {{ ok: true, excludes: string[], includes: string[]|null } | { ok: false, reason: string }}
  */
 export function readSourcePolicy(git, sourceSha) {
   const res = git(['show', `${sourceSha}:${PUBLIC_EXPORT_POLICY_FILE}`]);
@@ -188,15 +240,16 @@ export function readSourcePolicy(git, sourceSha) {
 
 /**
  * Write the curated snapshot TREE of a source commit: the source tree minus every path
- * the policy excludes, via a temp index (`read-tree` → `update-index --force-remove` →
+ * the policy does not export (excluded, or outside the `include` allow-list), via a temp index (`read-tree` → `update-index --force-remove` →
  * `write-tree`). Writes loose tree objects only — no commit, no ref; the real index is
  * untouched. The written tree is post-checked independently of the removal step.
  * Shared by `buildGithubExport` and the snapshot probe (#1712), so the tree the probe
  * tests is by construction the tree the export publishes.
- * @param {{ git: GitRunner, sourceSha: string, excludes: string[] }} opts
+ * @param {{ git: GitRunner, sourceSha: string, excludes: string[], includes: string[]|null }} opts `includes` required (null = deny-only)
  * @returns {{ ok: true, tree: string, sourceFiles: number, removed: string[] } | { ok: false, reason: string }}
  */
-export function writeSnapshotTree({ git, sourceSha, excludes }) {
+export function writeSnapshotTree({ git, sourceSha, excludes, includes }) {
+  requireIncludes('writeSnapshotTree', includes);
   const fail = (reason) => ({ ok: /** @type {const} */ (false), reason });
   const tmp = mkdtempSync(join(tmpdir(), 'so-github-export-idx-'));
   const env = { GIT_INDEX_FILE: join(tmp, 'index') };
@@ -209,7 +262,7 @@ export function writeSnapshotTree({ git, sourceSha, excludes }) {
     if (ls.status !== 0) return fail('listing the temp index failed');
     const all = ls.stdout.split('\0').filter(Boolean);
     sourceFiles = all.length;
-    removed = all.filter((p) => isPublicExportExcluded(p, excludes));
+    removed = all.filter((p) => isPublicExportExcluded(p, excludes, includes));
     if (removed.length > 0) {
       const rm = git(['update-index', '--force-remove', '-z', '--stdin'], { env, input: removed.join('\0') + '\0' });
       if (rm.status !== 0) return fail('removing excluded paths from the temp index failed');
@@ -222,8 +275,8 @@ export function writeSnapshotTree({ git, sourceSha, excludes }) {
   }
 
   // Post-check on the written tree itself, independent of the removal step above.
-  const survivors = listTree(git, tree).filter((p) => isPublicExportExcluded(p, excludes));
-  if (survivors.length > 0) return fail(`${survivors.length} excluded path(s) survived in the snapshot tree`);
+  const survivors = listTree(git, tree).filter((p) => isPublicExportExcluded(p, excludes, includes));
+  if (survivors.length > 0) return fail(`${survivors.length} non-exported path(s) survived in the snapshot tree`);
   return { ok: true, tree, sourceFiles, removed };
 }
 
@@ -287,8 +340,8 @@ export function verifyExportCommit({ git, sha, source, remote = MIRROR_REMOTE, m
   if (body.status !== 0 || parseSourceCommitTrailer(body.stdout) !== sourceSha) return bad(`the export commit's ${SOURCE_COMMIT_TRAILER} is not the source`);
   const policy = readSourcePolicy(git, sourceSha);
   if (!policy.ok) return bad(policy.reason);
-  const survivors = listTree(git, commit).filter((p) => isPublicExportExcluded(p, policy.excludes));
-  if (survivors.length > 0) return bad(`${survivors.length} excluded path(s) in the export commit`);
+  const survivors = listTree(git, commit).filter((p) => isPublicExportExcluded(p, policy.excludes, policy.includes));
+  if (survivors.length > 0) return bad(`${survivors.length} non-exported path(s) in the export commit`);
   return { ok: true };
 }
 
@@ -302,7 +355,7 @@ export function verifyExportCommit({ git, sha, source, remote = MIRROR_REMOTE, m
  * @param {string} [opts.remote=MIRROR_REMOTE] remote whose `refs/heads/main` is the public main
  * @param {string} [opts.mirrorRef=MIRROR_REF] local tracking ref that must equal the remote main
  * @param {boolean} [opts.dryRun=false]
- * @param {(ctx: { git: GitRunner, commit: string, excludes: string[] }) => { ok: boolean, reason?: string, findings?: string[] }} [opts.snapshotCheck]
+ * @param {(ctx: { git: GitRunner, commit: string, excludes: string[], includes: string[]|null, sourceSha: string }) => { ok: boolean, reason?: string, findings?: string[] }} [opts.snapshotCheck]
  * @returns {{ status: 'created'|'unchanged'|'dry-run'|'refused', sha?: string, reason?: string, findings?: string[], stats?: object, warnings?: string[] }}
  */
 export function buildGithubExport({
@@ -325,7 +378,7 @@ export function buildGithubExport({
   // The policy is read from the SOURCE commit, so what is excluded matches what is exported.
   const policy = readSourcePolicy(git, sourceSha);
   if (!policy.ok) return refuse(policy.reason);
-  const { excludes } = policy;
+  const { excludes, includes } = policy;
 
   // A push URL that differs from the fetch URL makes the anchor below meaningless for
   // the push. Publishing refuses; a dry-run publishes nothing, so it only reports it.
@@ -350,7 +403,7 @@ export function buildGithubExport({
 
   // One selection path for export and snapshot probe (#1712); the helper post-checks
   // the written tree for surviving excluded paths.
-  const snap = writeSnapshotTree({ git, sourceSha, excludes });
+  const snap = writeSnapshotTree({ git, sourceSha, excludes, includes });
   if (!snap.ok) return refuse(snap.reason);
   const { tree: newTree, sourceFiles: sourceCount, removed } = snap;
 
@@ -375,7 +428,7 @@ export function buildGithubExport({
   if (ct.status !== 0) return refuse('commit-tree failed');
   const newCommit = ct.stdout.trim();
 
-  const check = snapshotCheck({ git, commit: newCommit, excludes });
+  const check = snapshotCheck({ git, commit: newCommit, excludes, includes, sourceSha });
   if (!check.ok) return refuse(check.reason ?? 'snapshot check failed', { findings: check.findings, stats });
 
   if (dryRun) return { status: 'dry-run', sha: newCommit, stats, warnings };

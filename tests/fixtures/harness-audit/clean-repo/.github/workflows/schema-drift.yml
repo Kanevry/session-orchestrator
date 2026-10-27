@@ -1,7 +1,0 @@
-name: schema-drift
-on: [push]
-jobs:
-  schema-drift-check:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo fixture

@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Commands: which one to type, and what happens next</title>
-<meta name="description" content="All 30 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
+<meta name="description" content="All 31 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
 <link rel="canonical" href="https://session-orchestrator.com/commands">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Session Orchestrator">
 <meta property="og:url" content="https://session-orchestrator.com/commands">
 <meta property="og:title" content="Commands: which one to type, and what happens next">
-<meta property="og:description" content="All 30 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
+<meta property="og:description" content="All 31 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -18,7 +18,7 @@
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Commands: which one to type, and what happens next">
-<meta name="twitter:description" content="All 30 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
+<meta name="twitter:description" content="All 31 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
 <meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close with a robotics illustration.">
 <link rel="icon" href="/favicon.svg">
@@ -80,15 +80,15 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261023b">
-<link rel="stylesheet" href="/assets/commands.css?v=20261023">
+<link rel="stylesheet" href="/assets/site.css?v=20261026a">
+<link rel="stylesheet" href="/assets/commands.css?v=20261026a">
 </head>
 <body class="guide-page commands-page">
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.13.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.14.0</span></span></a>
     <nav class="nav" aria-label="Main">
       <a href="/#how">How it works</a>
       <a href="/commands" aria-current="page">Commands</a>
@@ -111,13 +111,13 @@
 <main id="main">
   <section class="sec" id="top">
     <div class="wrap">
-      <p class="eyebrow">30 commands &middot; Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
+      <p class="eyebrow">31 commands &middot; Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
       <h1 class="h-display">Which command helps me right now?</h1>
       <p class="lede">Pick what you want to do. Each command below says when to use it, what you get, how to type it and what happens next.</p>
 
       <h2 class="small" id="want-h">I want to &hellip;</h2>
       <ul class="tiles" aria-labelledby="want-h">
-        <li><a class="tile" href="#clarify"><span class="tile-title">Clarify an idea</span><span class="tile-hint">/brainstorm, /grill</span></a></li>
+        <li><a class="tile" href="#clarify"><span class="tile-title">Clarify an idea</span><span class="tile-hint">/brainstorm, /grill, /deepen</span></a></li>
         <li><a class="tile" href="#start-project"><span class="tile-title">Start a project</span><span class="tile-hint">/bootstrap, /plan new</span></a></li>
         <li><a class="tile" href="#plan-feature"><span class="tile-title">Plan a feature</span><span class="tile-hint">/plan feature</span></a></li>
         <li><a class="tile" href="#build"><span class="tile-title">Build</span><span class="tile-hint">/session, /go, /close</span></a></li>
@@ -159,8 +159,8 @@
   <div class="cmd-filter" id="cmd-filter-box" hidden>
     <label for="cmd-filter">Filter commands</label>
     <input type="search" id="cmd-filter" autocomplete="off" spellcheck="false" placeholder="for example: test, issues, commit" aria-describedby="cmd-count">
-    <p class="cmd-count" id="cmd-count" role="status" aria-live="polite">30 of 30 commands</p>
-    <p class="cmd-empty" id="cmd-empty" hidden>No command matches. Clear the field to see all 30.</p>
+    <p class="cmd-count" id="cmd-count" role="status" aria-live="polite">31 of 31 commands</p>
+    <p class="cmd-empty" id="cmd-empty" hidden>No command matches. Clear the field to see all 31.</p>
   </div>
 
   <section class="cmd-group" id="start-here" aria-labelledby="start-here-h">
@@ -224,7 +224,8 @@
       <dt>Modes</dt><dd><ul class="modes"><li><code>new</code> a new project: also creates the repo and commits</li><li><code>feature</code> one feature: PRD and issues</li><li><code>retro</code> look back at a finished phase</li></ul></dd>
       <dt>Type it</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/plan [new|feature|retro]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:plan feature</code></dd><dt>Cursor</dt><dd><code>/plan feature</code></dd><dt>Pi</dt><dd><code>/plan</code></dd></dl></dd>
       <dt>Touches</dt><dd><span class="touch touch-issues">Opens issues</span> <span class="asks">asks you first</span> <span class="touch-note">writes the PRD or retro; <code>new</code> also creates a repo and commits</span></dd>
-      <dt>Needs</dt><dd>/bootstrap done. <code>/plan new</code> also needs <code>plan-baseline-path</code> in your Session Config; <code>feature</code> and <code>retro</code> run without it.</dd>
+      <dt>Needs</dt><dd>/bootstrap done. <code>/plan new</code> uses <code>plan-baseline-path</code> when configured, else the bundled templates; <code>feature</code> and <code>retro</code> never need it.</dd>
+      <dt>Which</dt><dd>Only an idea: <code>/brainstorm</code>. Scope known: <code>/plan feature</code>. Exactly clear: <code>/session feature</code>. The PRD lands in <code>docs/prd/</code> by default (<code>plan-prd-location</code>).</dd>
       <dt>Then</dt><dd>Optionally <code>/grill</code> the PRD, then <code>/session feature</code> to build it.</dd>
       </dl>
       <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/plan/SKILL.md">Source: skills/plan/SKILL.md</a></p>
@@ -272,6 +273,18 @@
       <dt>Then</dt><dd><code>/plan feature</code> to write down the hardened plan.</dd>
       </dl>
       <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/grill/SKILL.md">Source: skills/grill/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="deepen" data-command="deepen">
+      <h3><a class="cmd-name" href="#deepen"><code>/deepen</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>When</dt><dd>A report, analysis, plan or audit should be done the way a professional would do it, without growing.</dd>
+      <dt>You get</dt><dd>The same task rewritten with rawer inputs, sharper methods and an outside judge, and a stop before anything runs. Small edits and requests with &ldquo;only&rdquo; or &ldquo;quick&rdquo; pass through unchanged.</dd>
+      <dt>Type it</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/deepen [task]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:deepen &lt;task&gt;</code></dd><dt>Cursor</dt><dd><code>/deepen</code></dd><dt>Pi</dt><dd><code>/deepen</code></dd></dl></dd>
+      <dt>Touches</dt><dd><span class="touch touch-read">Reads only</span> <span class="asks">asks you first</span> <span class="touch-note">reads until you confirm the rewrite; then it does the task you chose</span></dd>
+      <dt>Needs</dt><dd>A task in the conversation or as argument.</dd>
+      <dt>Then</dt><dd>Pick the rewrite, the original, or a narrower version.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/deepen/SKILL.md">Source: skills/deepen/SKILL.md</a></p>
     </article>
     </div>
   </section>
@@ -523,7 +536,7 @@
     <p class="group-lede">See all your repos at once and pick the next one.</p>
     <div class="cmd-grid">
     <article class="cmd-card" id="portfolio" data-command="portfolio">
-      <h3><a class="cmd-name" href="#portfolio"><code>/portfolio</code></a></h3>
+      <h3><a class="cmd-name" href="#portfolio"><code>/portfolio</code></a> <span class="start-badge start-badge--maint">For maintainers</span></h3>
       <dl class="cmd-facts">
       <dt>When</dt><dd>You run many repos and want one overview of their issues, MRs and staleness.</dd>
       <dt>You get</dt><dd>One dashboard file in your vault: 01-projects/_PORTFOLIO.md.</dd>
@@ -578,11 +591,11 @@
       <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/eli5/SKILL.md">Source: skills/eli5/SKILL.md</a></p>
     </article>
     <article class="cmd-card" id="release" data-command="release">
-      <h3><a class="cmd-name" href="#release"><code>/release</code></a></h3>
+      <h3><a class="cmd-name" href="#release"><code>/release</code></a> <span class="start-badge start-badge--maint">For maintainers</span></h3>
       <dl class="cmd-facts">
       <dt>When</dt><dd>You maintain this package and want to cut a new version.</dd>
       <dt>You get</dt><dd>The release steps in their required order, with the conditions that stop a release.</dd>
-      <dt>Type it</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/release [X.Y.Z]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:release 5.14.0</code></dd><dt>Cursor</dt><dd><code>/release</code></dd><dt>Pi</dt><dd><code>/release</code></dd></dl></dd>
+      <dt>Type it</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/release [X.Y.Z]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:release X.Y.Z</code></dd><dt>Cursor</dt><dd><code>/release</code></dd><dt>Pi</dt><dd><code>/release</code></dd></dl></dd>
       <dt>Touches</dt><dd><span class="touch touch-publishes">Publishes</span> <span class="touch-note">publishes to npm; that cannot be undone</span></dd>
       <dt>Needs</dt><dd>A clean main branch level with origin, a current GitHub mirror, a CHANGELOG entry, and all checks of <code>release.mjs --check</code> green.</dd>
       <dt>Then</dt><dd>Verify with <code>npm view session-orchestrator versions</code>.</dd>

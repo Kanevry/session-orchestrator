@@ -4,7 +4,7 @@ The current hero is an original AI-generated illustration of a miniature agent p
 
 Generated on 2026-09-10 with the built-in Codex image tool. The tool did not expose a model selector, so no specific model version is claimed. Art direction: a cutaway production facility, a human at the control desk above small ceramic and metal agents at distinct stations, graphite architecture, warm white materials, one restrained lime accent. No text, logos, neon gradients or generic interface collage. The owner chose the production-facility direction after reviewing a robot-arm concept.
 
-`agent-production-1536.webp`, `agent-production-800.webp` and `agent-production-480.webp` derive from the same 1536 × 1024 source. The earlier `robotics-studio-*` assets are retained as unused comparison material.
+`agent-production-1536.webp`, `agent-production-800.webp` and `agent-production-480.webp` derive from the same 1536 × 1024 source. The earlier `robotics-studio-*` comparison assets were removed on 2026-10-26 (#1765); no page used them.
 
 Editable desktop, mobile and social layouts live together in the canonical `session-orchestrator.pen` in the main project checkout. That native source is a local handoff and is not versioned in this repository; the exported artwork and layout specifications are versioned here. The social frame is exported at 1200 × 630 to `site/og.png`. Regenerate exports after editing the design; do not edit the .pen file outside Pen.
 
@@ -24,4 +24,4 @@ The social preview `site/og-lead.png` (1200 x 630) derives from `lead-control-ro
 
 `learning-shelf-*` and `next-morning-*` illustrate two steps that had no picture: a person reviews a lesson from past work and only the approved one goes onto the rule shelf (`learning-shelf`), and the next session starts from what the last one left on the handover shelf (`next-morning`). Both are original AI-generated illustrations in the same series, visual metaphors and not product screenshots. Generated on 2026-10-23 with the built-in Codex image tool (`image_gen`, Codex CLI 0.160.0, one call per image), with `agent-production-1536.webp` as style reference and the same art direction: miniature cutaway facility, graphite architecture, warm white materials, one restrained lime accent, no text, logos or readable screens. No specific model version is claimed. Each set derives from one 1536 x 1024 PNG source (not tracked), exported with `cwebp -q 80 -resize <w> 0` at 1536, 800 and 480 px.
 
-The cardstock series from 2026-09-07 (`hero-stations`, `reads-first`, `agree-scope`, `five-passes`, `the-gate`, `what-survives`) belongs to the earlier light design and is not used on the current dark pages.
+The cardstock series from 2026-09-07 (`hero-stations`, `reads-first`, `agree-scope`, `five-passes`, `the-gate`, `what-survives`) belonged to the earlier light design. No page used it, and it was removed on 2026-10-26 (#1765).

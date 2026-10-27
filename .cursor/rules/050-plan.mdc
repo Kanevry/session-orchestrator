@@ -10,9 +10,7 @@ Three planning modes with a shared research-driven Q&A engine. Pattern across al
 
 ## Phase 0: Read Session Config
 
-Read Session Config from CLAUDE.md. `plan-baseline-path` is required only by `/plan new`; `feature` and `retro` run without it. If `/plan new` finds it missing or absent, stop with error:
-
-> "Error: `plan-baseline-path` is not configured in Session Config. Add it to your CLAUDE.md under `## Session Config`. Example: `plan-baseline-path: ~/Projects/projects-baseline`"
+Read Session Config from CLAUDE.md. `plan-baseline-path` is optional: `/plan new` uses it when configured, else the plugin's bundled templates (`skills/plan/mode-new.md` Phase 0 — same decision as `/bootstrap`, via `node "$PLUGIN_ROOT/scripts/baseline-archetypes.mjs" --repo "$REPO_ROOT"`). Without a baseline, print "No baseline configured — using the plugin's bundled archetypes." and continue; a configured but broken baseline (reader exit 2) aborts with its sanitized reason. `feature` and `retro` run without it.
 
 Additional fields: `plan-default-visibility`, `plan-prd-location`, `plan-retro-location`, `vcs`. Expand `~` in paths.
 
@@ -43,7 +41,7 @@ Every question wave follows the same pattern. This is the core mechanic across a
 Before each Q&A wave, perform research **sequentially** — Cursor has no parallel agents:
 
 1. **Market/online context** — Search for relevant market data, best practices, competitor analysis, or technical patterns for the upcoming questions
-2. **Baseline analysis** — Read projects-baseline templates, rules, and scripts at `$BASELINE_PATH` (Glob, Grep, Read). Skip it when `plan-baseline-path` is unset (only `/plan new` requires it).
+2. **Baseline analysis** — Read projects-baseline templates, rules, and scripts at `$BASELINE_PATH` (Glob, Grep, Read). Skip it when `plan-baseline-path` is unset (`/plan new` then reads the bundled templates in `$PLUGIN_ROOT/templates/`).
 3. **Repo context** — Analyze current repository for patterns, file structure, dependencies, conventions (skip for `/plan new` wave 1)
 
 ### 2.2 Question Presentation
@@ -225,7 +223,7 @@ Total: [N] issues.
 ## Critical Rules
 
 - **NEVER skip the Q&A phase** — even with a detailed brief, validate through structured questions
-- **NEVER assume baseline templates** — always read from the configured `plan-baseline-path`
+- **NEVER assume baseline templates** — read from the configured `plan-baseline-path` when set, else from the plugin's bundled templates
 - **ALWAYS research before asking** — sequential research before every Q&A wave
 - **ALWAYS mark Option 1 as recommended** — with `(Recommended)` on every question
 - **ALWAYS use numbered Markdown lists** — Cursor has no AskUserQuestion

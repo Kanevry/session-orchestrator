@@ -7,7 +7,9 @@
  * `tests/lib/vault-mirror/namespace.test.mjs` needed `.vault.yaml`). This probe builds the
  * snapshot tree through the SAME helper the export uses (`writeSnapshotTree`),
  * materializes it OUTSIDE the repo as its own one-commit git repo without any remote,
- * and runs validate-plugin and the test command there.
+ * and runs validate-plugin and the test command there. Under a policy with an `include` list
+ * (the slim mirror, #1594) the `test` step is `npm run test:mirror`, the same command GitHub's
+ * `test` job runs: what GitHub runs passes on what GitHub gets.
  *
  * Only runs with a suite step write a receipt. Receipts are keyed by the snapshot TREE: a source commit that changes only excluded
  * files maps to the same tree and reuses the receipt; any change to a public file or to
@@ -42,6 +44,12 @@ const STEP_SPECS = {
   // The repo's Session Config test-command (`npm test`).
   test: { cmd: 'npm', args: ['test'], timeoutMs: 1_800_000 },
 };
+/**
+ * The `test` step under a policy with an `include` list (#1594): that mirror carries no
+ * tests/, vitest or eslint config, and GitHub's `test` job runs this smoke instead. Same step
+ * NAME, so the release preflight's receipt check reads it unchanged.
+ */
+const MIRROR_TEST_SPEC = { cmd: 'npm', args: ['run', 'test:mirror'], timeoutMs: 600_000 };
 const PROBE_IDENTITY = ['-c', 'user.name=snapshot-probe', '-c', 'user.email=snapshot-probe@example.invalid'];
 const PROBE_GIT_CONFIG = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', '-c', 'commit.gpgsign=false'];
 // Git location variables would point every git call in the snapshot back at the source repo.
@@ -111,9 +119,11 @@ function snapshotTreeOf(git, source) {
   const sourceSha = rev.stdout.trim();
   const policy = readSourcePolicy(git, sourceSha);
   if (!policy.ok) return { ok: false, reason: policy.reason, sourceSha };
-  const snap = writeSnapshotTree({ git, sourceSha, excludes: policy.excludes });
+  // `includes` must reach the tree writer: without it the probe tests a wider tree than the export publishes.
+  const includes = policy.includes ?? null;
+  const snap = writeSnapshotTree({ git, sourceSha, excludes: policy.excludes, includes });
   if (!snap.ok) return { ok: false, reason: snap.reason, sourceSha };
-  return { ok: true, sourceSha, excludes: policy.excludes, ...snap };
+  return { ok: true, sourceSha, excludes: policy.excludes, includes, ...snap };
 }
 
 /**
@@ -171,12 +181,16 @@ function countFiles(dir) {
   return n;
 }
 
-/** Excluded paths grouped by the policy entry that matched them. */
-function groupByPrefix(removed, excludes) {
+/** Key for removed paths that no exclude entry names but the include list leaves out. */
+export const NOT_INCLUDED_KEY = '(not in include)';
+
+/** Removed paths grouped by the policy entry that matched them. */
+function groupByPrefix(removed, excludes, includes) {
   /** @type {Record<string, number>} */
   const out = {};
   for (const p of removed) {
-    const key = excludes.find((e) => isPublicExportExcluded(p, [e])) ?? p;
+    const key = excludes.find((e) => isPublicExportExcluded(p, [e], null))
+      ?? (isPublicExportExcluded(p, [], includes) ? NOT_INCLUDED_KEY : p);
     out[key] = (out[key] ?? 0) + 1;
   }
   return out;
@@ -298,7 +312,10 @@ function removeTreeOnExit(dir) {
  * @param {string} [opts.source='HEAD']
  * @param {boolean} [opts.keep=false] keep the materialized directory (returned as `dir`)
  * @param {string} [opts.tmpRoot]
- * @param {string[]} [opts.steps]
+ * @param {string[]|null} [opts.steps] default (null): `test` alone when the policy has an
+ *   `include` list (validate-plugin reads CLAUDE.md, AGENTS.md, .husky/ and .gitlab-ci.yml,
+ *   which that mirror does not carry), else `validate-plugin` and `test`. Under an `include`
+ *   list the `test` step runs `npm run test:mirror`, what GitHub's `test` job runs.
  * @param {import('./github-export.mjs').GitRunner} [opts.git]
  * @param {typeof defaultRunner} [opts.runner]
  * @param {string} [opts.nodeModules]
@@ -306,7 +323,9 @@ function removeTreeOnExit(dir) {
  *   step (`test` or `remote-gate`) ran; a validate-plugin-only run leaves any receipt untouched
  * @param {() => Date} [opts.now]
  * @param {string|null} [opts.host=null] offload host alias: the `test` step then runs as one
- *   `remote-gate` step there (validate-plugin stays local)
+ *   `remote-gate` step there (validate-plugin stays local). Refused with a system error for a
+ *   policy with an `include` list: the remote gate runs the full quality gate, which cannot
+ *   pass on a tree without tests/ and eslint config.
  * @param {typeof runRemoteGate} [opts.remoteGate]
  * @returns {Promise<object>} probe result; throws SnapshotProbeSystemError on git/tar/fs failure
  */
@@ -315,7 +334,7 @@ export async function runSnapshotProbe({
   source = 'HEAD',
   keep = false,
   tmpRoot = tmpdir(),
-  steps = ['validate-plugin', 'test'],
+  steps = null,
   git = createGitRunner(repoRoot),
   runner = defaultRunner,
   nodeModules = join(repoRoot, 'node_modules'),
@@ -324,7 +343,7 @@ export async function runSnapshotProbe({
   host = null,
   remoteGate = runRemoteGate,
 }) {
-  for (const s of steps) if (!KNOWN_STEPS.includes(s)) throw new TypeError(`unknown step '${s}' (known: ${KNOWN_STEPS.join(', ')})`);
+  if (steps !== null) for (const s of steps) if (!KNOWN_STEPS.includes(s)) throw new TypeError(`unknown step '${s}' (known: ${KNOWN_STEPS.join(', ')})`);
   if (host !== null && (typeof host !== 'string' || !HOST_ALIAS_SHAPE.test(host) || host === '.' || host === '..')) {
     throw new TypeError(`invalid host alias '${host}'`);
   }
@@ -332,6 +351,11 @@ export async function runSnapshotProbe({
   const startedAt = now().toISOString();
   const snap = snapshotTreeOf(git, source);
   if (!snap.ok) throw new SnapshotProbeSystemError(snap.reason);
+  const mirror = snap.includes !== null;
+  const runSteps = steps ?? (mirror ? ['test'] : [...KNOWN_STEPS]);
+  if (mirror && host !== null && runSteps.includes('test')) {
+    throw new SnapshotProbeSystemError('--host runs the full quality gate, which cannot pass on the curated mirror (the policy has an include list: no tests/, no eslint config); run the mirror smoke with --local instead');
+  }
 
   let dir;
   try {
@@ -352,12 +376,12 @@ export async function runSnapshotProbe({
     }
 
     const stepResults = [];
-    for (const name of steps) {
+    for (const name of runSteps) {
       if (name === 'test' && host !== null) {
         stepResults.push(await runRemoteStep({ remoteGate, root, commit, repoRoot, host }));
         continue;
       }
-      const spec = STEP_SPECS[name];
+      const spec = name === 'test' && mirror ? MIRROR_TEST_SPEC : STEP_SPECS[name];
       const res = await runner(spec.cmd, spec.args, { cwd: root, env, timeoutMs: spec.timeoutMs });
       const status = res.timedOut ? 'timeout' : res.status === 0 ? 'pass' : 'fail';
       /** @type {Record<string, unknown>} */
@@ -382,7 +406,7 @@ export async function runSnapshotProbe({
       snapshotCommit: commit,
       route,
       counts: { source: snap.sourceFiles, excluded: snap.removed.length, exported },
-      excludedByPrefix: groupByPrefix(snap.removed, snap.excludes),
+      excludedByPrefix: groupByPrefix(snap.removed, snap.excludes, snap.includes),
       hasOrigin: false,
       ...(keep ? { dir: root } : {}),
       steps: stepResults,

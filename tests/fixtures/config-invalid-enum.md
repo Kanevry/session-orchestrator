@@ -1,3 +1,0 @@
-## Session Config
-
-enforcement: loose

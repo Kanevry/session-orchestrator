@@ -491,5 +491,6 @@ ssh <SSH_USER>@<SERVICE_HOST> \
 
 - [`docs/telemetry.md`](../telemetry.md) — public transparency page: what is
   collected, what never is, consent mechanics, kill switches, retention.
-- [`server/ingest/README.md`](../../server/ingest/README.md) — module map,
-  HTTP API contract, full env-var configuration table.
+- `server/ingest/README.md` — module map, HTTP API contract, full env-var
+  configuration table; lives in the full GitLab repository, not in the public
+  GitHub mirror.

@@ -1,0 +1,12 @@
+schema_version: "1.1"
+name: deepen-bypass-rename
+description: >
+  Explicit /deepen on a single-step edit must bypass: one bypass line, no Ambition Rewrite, the rename done or shown as asked and nothing more (issue #1825 AC1). Edit is not granted, so the action is graded on the reply.
+tags: [deepen, skill-trigger]
+runs: 3
+context:
+  scaffold_script: fixture.sh
+execution:
+  max_turns: 10
+  timeout_seconds: 240
+  allowed_tools: [Read, Glob, Grep, Skill]

@@ -622,8 +622,8 @@ timeout masks real perf regressions.
 - [`skills/_shared/config-reading.md`](../skills/_shared/config-reading.md) § "Glob-Scoped Rule Injection (#336)" — wave-boundary injection flow + match algorithm
 - [`scripts/lib/rule-loader.mjs`](../scripts/lib/rule-loader.mjs) — `loadApplicableRules()` implementation (the contract this doc specifies)
 - `scripts/lib/validate/check-rules.mjs` — FA4 hard-fail CI gate (auto-generated invariants, #697) + FA5 warn-mode symmetric check (handwritten rules, #880)
-- [`tests/lib/validate/check-rules.test.mjs`](../tests/lib/validate/check-rules.test.mjs) — auto-generated invariant coverage (FA4 #697)
-- [`tests/rules/check-rules-handwritten.test.mjs`](../tests/rules/check-rules-handwritten.test.mjs) — handwritten warn-mode coverage (#880 FA5)
+- `tests/lib/validate/check-rules.test.mjs` — auto-generated invariant coverage (FA4 #697); lives in the full GitLab repository, not in the public GitHub mirror
+- `tests/rules/check-rules-handwritten.test.mjs` — handwritten warn-mode coverage (#880 FA5); lives in the full GitLab repository, not in the public GitHub mirror
 - [`scripts/print-applicable-rules.mjs`](../scripts/print-applicable-rules.mjs) — `--context wave|coordinator` flag exercises the tier gate (#692)
 - [`scripts/lib/validate-vendored-rules.mjs`](../scripts/lib/validate-vendored-rules.mjs) — pre-write vendoring validator (issue #722 Epic A Wave 2)
 - [`scripts/lib/rules-sync.mjs`](../scripts/lib/rules-sync.mjs) — `syncRules()` implementation, archetype resolution (issue #722 Epic A)

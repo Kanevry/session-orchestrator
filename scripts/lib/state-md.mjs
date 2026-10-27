@@ -10,16 +10,18 @@
  * @see scripts/lib/state-md/mission-status.mjs      parseMissionStatus, parseMissionStatusStrict, MISSION_STATUS_VALUES, writeMissionStatus, setMissionStatus, setMissionStatusDetailed, readMissionStatus, recoverFrontmatterMissionStatusDetailed, writeMissionStatusOnDisk, setMissionStatusOnDisk
  * @see scripts/lib/state-md/recommendations.mjs     parseRecommendations
  *
- * Plus TWO small non-re-export surfaces at the bottom of this file (each with
+ * Plus THREE small non-re-export surfaces at the bottom of this file (each with
  * its own docblock explaining why it is composed here rather than added as a
- * fourth mutator module): the `session-profile` frontmatter accessors, and the
- * `started_at` / `session-id` frontmatter SOURCES (#1368).
+ * fourth mutator module): the `session-profile` frontmatter accessors, the
+ * `outcome-*` frontmatter accessors (#1824), and the `started_at` /
+ * `session-id` frontmatter SOURCES (#1368).
  */
 
 import { parseStateMd as _parseStateMd } from './state-md/yaml-parser.mjs';
 import { updateFrontmatterFields as _updateFrontmatterFields } from './state-md/frontmatter-mutators.mjs';
 import { readLock as _readLock } from './session-lock.mjs';
 import { readProcessLocalSessionIds as _readProcessLocalSessionIds } from './session-identity/own-session.mjs';
+import { OUTCOME_SOURCES as _OUTCOME_SOURCES } from './session-schema/constants.mjs';
 
 export { parseStateMd, serializeStateMd } from './state-md/yaml-parser.mjs';
 
@@ -141,6 +143,101 @@ export function setSessionProfile(contents, profile) {
   }
   return _updateFrontmatterFields(contents, {
     [SESSION_PROFILE_FIELD]: profile === null ? null : profile.trim(),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Session outcome (#1824) — the goal behind the session's tasks.
+// ---------------------------------------------------------------------------
+//
+// Three OPTIONAL flat frontmatter scalars, written once at STATE.md init from
+// the session-start Phase 8 "Outcome" question:
+//
+//   outcome-statement:  what the session's tasks serve
+//   outcome-observable: how one would see it happened (a Messweg)
+//   outcome-source:     where the statement came from (OUTCOME_SOURCES)
+//
+// FLAT scalars rather than one nested map: the session-profile pattern above
+// is the precedent, and a scalar per key keeps every reader of the frontmatter
+// (`print-applicable-rules`, peer-guard, idle-reset) on the shape it already
+// handles. The three keys are ONE fact: a reader gets all three or `null`,
+// never a half object — a statement without its observable cannot be reported
+// against, and session-end must not pretend it can. Same composition as the
+// profile accessors: `parseStateMd` to read, `updateFrontmatterFields` to write.
+
+/** Frontmatter keys holding the optional session outcome, in write order. */
+export const OUTCOME_FIELDS = Object.freeze({
+  statement: 'outcome-statement',
+  observable: 'outcome-observable',
+  source: 'outcome-source',
+});
+
+/**
+ * Read the session outcome from STATE.md contents.
+ *
+ * Returns `null` when the document has no frontmatter, or when ANY of the three
+ * keys is absent, empty after trimming, not a scalar, or (for `source`)
+ * outside OUTCOME_SOURCES. Partial keys are absence, never a half object.
+ *
+ * @param {string} contents  Full STATE.md text.
+ * @returns {{statement: string, observable: string, source: string}|null}
+ */
+export function readOutcome(contents) {
+  if (typeof contents !== 'string') return null;
+  const parsed = _parseStateMd(contents);
+  if (parsed === null) return null;
+  const out = {};
+  for (const [prop, key] of Object.entries(OUTCOME_FIELDS)) {
+    const value = parsed.frontmatter[key];
+    // The parser coerces a bare `42` or `true` to a number/boolean; such a
+    // scalar is still text the operator wrote, so it is read back as a string.
+    // Anything else (absent, null, a list, a map) is absence.
+    if (!['string', 'number', 'boolean'].includes(typeof value)) return null;
+    const text = String(value).trim();
+    if (text.length === 0) return null;
+    out[prop] = text;
+  }
+  if (!_OUTCOME_SOURCES.includes(out.source)) return null;
+  return out;
+}
+
+/**
+ * Set or clear the session outcome in STATE.md contents.
+ *
+ * Passing `null` DELETES all three keys. Every other frontmatter key is
+ * preserved verbatim. No-ops (returns the input unchanged) when `contents` has
+ * no frontmatter. Idempotent: setting the outcome a document already carries
+ * returns identical text.
+ *
+ * @param {string} contents  Full STATE.md text.
+ * @param {{statement: string, observable: string, source: string}|null} outcome
+ * @returns {string} The new STATE.md text.
+ * @throws {TypeError} when `outcome` is not null and lacks a non-empty
+ *   `statement`/`observable` or carries a `source` outside OUTCOME_SOURCES.
+ */
+export function setOutcome(contents, outcome) {
+  if (outcome === null) {
+    return _updateFrontmatterFields(
+      contents,
+      Object.fromEntries(Object.values(OUTCOME_FIELDS).map((key) => [key, null]))
+    );
+  }
+  const valid =
+    typeof outcome === 'object' &&
+    ['statement', 'observable', 'source'].every(
+      (prop) => typeof outcome[prop] === 'string' && outcome[prop].trim().length > 0
+    ) &&
+    _OUTCOME_SOURCES.includes(outcome.source.trim());
+  if (!valid) {
+    throw new TypeError(
+      `setOutcome: outcome must be null or {statement, observable, source} with non-empty ` +
+        `strings and source in [${_OUTCOME_SOURCES.join(', ')}], got: ${JSON.stringify(outcome)}`
+    );
+  }
+  return _updateFrontmatterFields(contents, {
+    [OUTCOME_FIELDS.statement]: outcome.statement.trim(),
+    [OUTCOME_FIELDS.observable]: outcome.observable.trim(),
+    [OUTCOME_FIELDS.source]: outcome.source.trim(),
   });
 }
 

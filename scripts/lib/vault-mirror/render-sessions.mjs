@@ -389,6 +389,20 @@ export function normalizeSessionEntry(entry) {
   return e;
 }
 
+/**
+ * One `- **Outcome:** …` bullet (with its leading newline) for a record's
+ * session-level `outcome` (#1824), or `''` when the record names none.
+ * Whitespace runs collapse so free text cannot break the bullet list.
+ *
+ * @param {unknown} outcome
+ * @returns {string}
+ */
+function sessionOutcomeBullet(outcome) {
+  if (outcome === null || typeof outcome !== 'object' || typeof outcome.statement !== 'string') return '';
+  const oneLine = (v) => String(v ?? MISSING_VALUE).replace(/\s+/g, ' ').trim();
+  return `\n- **Outcome:** ${oneLine(outcome.statement)}, observable via ${oneLine(outcome.observable)} (${oneLine(outcome.observed ?? 'not-measured')})`;
+}
+
 export function generateSessionNote(entry, options = {}) {
   for (const field of RENDERABLE_SESSION_FIELDS_V1) {
     if (entry[field] === null || entry[field] === undefined) {
@@ -536,6 +550,12 @@ export function generateSessionNote(entry, options = {}) {
   // legacy raw `repo` field — mirrors render-learnings.mjs's source-repo line.
   const { repoNs } = options;
 
+  // #1824: the session-level `outcome` (top-level record key) — NOT the
+  // wave-level `w.outcome` the wave table falls back to for its Quality cell.
+  // Optional: absent renders no line, never a placeholder. Only the canonical
+  // (v1) writer can produce it, so the legacy v2/v3 generators do not read it.
+  const outcomeBullet = sessionOutcomeBullet(entry.outcome);
+
   return `---
 id: ${yamlNoteId(noteId)}
 type: session
@@ -552,7 +572,7 @@ ${sessionHostLine(entry)}${fmLine('source-repo', repoNs)}${sourceRecordLine(sess
 - **Type:** ${session_type}${platformBullet}
 - **Duration:** ${durationLabel} (${started_at} → ${completed_at})
 - **Waves:** ${total_waves} · **Agents:** ${total_agents} · **Files changed:** ${total_files_changed}
-- **Effectiveness:** planned=${planned_issues ?? MISSING_VALUE}, completed=${completed}, carryover=${carryover ?? MISSING_VALUE}, emergent=${emergent}, rate=${ratePercent}
+- **Effectiveness:** planned=${planned_issues ?? MISSING_VALUE}, completed=${completed}, carryover=${carryover ?? MISSING_VALUE}, emergent=${emergent}, rate=${ratePercent}${outcomeBullet}
 
 ## Wave breakdown
 

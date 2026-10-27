@@ -12,10 +12,10 @@ link without changing that page too.
 
 Both files are required and must stay side by side: `three.module.min.js` contains
 `from"./three.core.min.js"`, a relative import the browser resolves against this
-directory. Copying only the module file yields a 404 and a dead hero.
+directory. Copying only the module file yields a 404 and a blank how-it-works figure.
 
-No addons, no loaders, no workers are vendored. `site/assets/hero.js` is the only
-importer. Verified 2026-09-07 with
+No addons, no loaders, no workers are vendored. `site/assets/how.js` is the only
+importer (`import('/vendor/three.module.min.js')`). Verified 2026-09-07 with
 `grep -c "eval(\|new Function(\|new Worker(\|importScripts" site/vendor/*.min.js`:
 0 matches in both files, which is what lets the site keep a CSP without
 `unsafe-eval` and without blob workers.

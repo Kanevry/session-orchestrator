@@ -136,6 +136,30 @@
         },
         {
           "@type": "Question",
+          "name": "Can a team use it?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Each person installs the plugin in their own coding tool. The Session Config in CLAUDE.md and the session records under .orchestrator/ live in the repository and are committed, so the next person's session reads what the last one left. Commits land on the branch you are on; /close pushes that branch. It creates a new branch only when you accept a worktree offer or run /autopilot."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What happens to my existing CLAUDE.md?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "/bootstrap never overwrites it. It only adds the sections it needs (## Session Config, ## Dispatcher Autonomy and a short rules section) when they are missing."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does it work with Jira or Linear?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. Issues are read and written on GitHub or GitLab only."
+          }
+        },
+        {
+          "@type": "Question",
           "name": "What is different from just using Claude Code?",
           "acceptedAnswer": {
             "@type": "Answer",
@@ -192,13 +216,13 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261023b">
+<link rel="stylesheet" href="/assets/site.css?v=20261026a">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.13.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.14.0</span></span></a>
     <nav class="nav" aria-label="Main"><a href="#how">How it works</a><a href="/commands">Commands</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="/lead">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
     <p class="lang"><a href="/" aria-current="page" lang="en">EN</a><a href="/de"  lang="de">DE</a></p>
     <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="#how">How it works</a><a href="/commands">Commands</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="/lead">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
@@ -324,13 +348,13 @@
         <li class="choose-card"><p class="choose-when">I want a feature, but it is not clear yet.</p><p class="choose-cmd"><code>/plan feature</code></p><p class="choose-get">A short plan with clear acceptance criteria, filed as issues. No code yet.</p></li>
         <li class="choose-card"><p class="choose-when">It is big, or I do not know where to start.</p><p class="choose-cmd"><code>/session deep</code></p><p class="choose-get">It looks around first, then builds, in more rounds.</p></li>
         <li class="choose-card"><p class="choose-when">I just want to tidy up.</p><p class="choose-cmd"><code>/session housekeeping</code></p><p class="choose-get">A short maintenance pass, done directly.</p></li>
-        <li class="choose-card"><p class="choose-when">I have a new project idea.</p><p class="choose-cmd"><code>/plan new</code></p><p class="choose-get">Research, decisions, a written plan and the first issues.</p><p class="choose-note">Needs <code>plan-baseline-path</code> in your Session Config.</p></li>
+        <li class="choose-card"><p class="choose-when">I have a new project idea.</p><p class="choose-cmd"><code>/plan new</code></p><p class="choose-get">Research, decisions, a written plan and the first issues.</p><p class="choose-note">Does not need <code>plan-baseline-path</code>; uses it when you have one.</p></li>
         <li class="choose-card"><p class="choose-when">The same mistakes keep coming back.</p><p class="choose-cmd"><code>/evolve</code><span aria-hidden="true">→</span><code>/reconcile</code></p><p class="choose-get">Lessons you approve become rules. <a href="#learn">How that works</a></p></li>
       </ul>
       <div class="rule-box">
         <p><b>Not sure how big it is?</b> Start with <code>/session feature</code>. If the plan it proposes looks bigger than you thought, start again with <code>/session deep</code>. On Codex you pick the same commands as skills, for example <code>$session-orchestrator:session feature</code>.</p>
         <p class="rule-more">Running several sessions at once? The optional <a href="/lead">lead session</a> keeps them in line.</p>
-        <a class="rule-link" href="/commands">All <span class="num" data-metric="commands">30</span> commands, by situation<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a>
+        <a class="rule-link" href="/commands">All <span class="num" data-metric="commands">31</span> commands, by situation<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a>
       </div>
     </div>
   </section>
@@ -532,24 +556,27 @@ expires-at: 2027-01-12</code></pre></li>
     </div></details><details class="technical-detail" id="measured"><summary>Repository numbers and their receipt</summary><div class="detail-body">
 
       <div class="cards">
-        <div class="card"><p class="n">v<span class="num" data-metric="version">5.13.0</span></p><p class="l">current release</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="skills">51</span></p><p class="l">skills</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="commands">30</span></p><p class="l">slash commands</p></div>
+        <div class="card"><p class="n">v<span class="num" data-metric="version">5.14.0</span></p><p class="l">current release</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="skills">52</span></p><p class="l">skills</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="commands">31</span></p><p class="l">slash commands</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typed sub-agents</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="hooks">29</span></p><p class="l">hook files</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="tests">775</span></p><p class="l">test files</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="sessions">253</span></p><p class="l">session records in this repo</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="learnings">77</span></p><p class="l">learnings in this repo</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3342</span></p><p class="l">npm downloads, last 30 days</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="github-stars">53</span></p><p class="l">GitHub stars</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="hooks">30</span></p><p class="l">hook files</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="tests">814</span></p><p class="l">test files</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="sessions">285</span></p><p class="l">session records in this repo</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="learnings">40</span></p><p class="l">learnings in this repo</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3135</span></p><p class="l">npm downloads, last 30 days</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="github-stars">52</span></p><p class="l">GitHub stars</p></div>
       </div>
 
-      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-10-20</span> at commit <span class="num" data-metric="counted-sha">95136cb8</span>. Repository records describe development activity, not active users. The session count includes only sessions that actually ran, not every line in the session log, so it is lower than on older versions of this page. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
+      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-10-26</span> at commit <span class="num" data-metric="counted-sha">b59b12d6</span>. Repository records describe development activity, not active users. The session count includes only sessions that actually ran, not every line in the session log, so it is lower than on older versions of this page. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
+      <div class="faq-layout">
+      <div class="faq-intro">
       <p class="eyebrow">A few practical questions</p>
       <h2>Questions people ask</h2>
-
+      <p>Setup steps for each tool are in the <a href="/guide">guide</a>.</p>
+      </div>
       <div class="faq">
         <details class="faq-item">
           <summary>Is this itself an AI that writes code?</summary>
@@ -558,6 +585,18 @@ expires-at: 2027-01-12</code></pre></li>
         <details class="faq-item">
           <summary>Which tools does it work with?</summary>
           <p>Claude Code runs the guard hooks directly. Cursor and Pi use bridges with documented limits. Codex CLI offers selectable workflow skills and runs the destructive-command guard as a Bash hook that blocks; its file-scope rules are instructions only, because Codex edits files through apply_patch, which the scope guard does not read. Parallel agents are available on Claude Code and Codex; Cursor and Pi run tasks sequentially.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Can a team use it?</summary>
+          <p>Yes. Each person installs the plugin in their own coding tool. The Session Config in CLAUDE.md and the session records under <code>.orchestrator/</code> live in the repository and are committed, so the next person's session reads what the last one left. Commits land on the branch you are on; <code>/close</code> pushes that branch. It creates a new branch only when you accept a worktree offer or run <code>/autopilot</code>.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What happens to my existing CLAUDE.md?</summary>
+          <p><code>/bootstrap</code> never overwrites it. It only adds the sections it needs (<code>## Session Config</code>, <code>## Dispatcher Autonomy</code> and a short rules section) when they are missing.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Does it work with Jira or Linear?</summary>
+          <p>No. Issues are read and written on GitHub or GitLab only.</p>
         </details>
         <details class="faq-item">
           <summary>What is different from just using Claude Code?</summary>
@@ -583,6 +622,7 @@ expires-at: 2027-01-12</code></pre></li>
           <summary>Who maintains it?</summary>
           <p>Me, Bernhard G&#246;tzendorfer. I answer questions <a href="https://github.com/Kanevry/session-orchestrator/issues">on GitHub</a> myself. It is shipped as-is, with best-effort maintenance and no service level agreement.</p>
         </details>
+      </div>
       </div>
     </div>
   </section>  <section class="sec end" id="start"><div class="wrap end-grid"><div><p class="eyebrow">For your next project</p><h2>Start with<br>a clear session.</h2><p>Install the plugin and let it read your repository. Then decide what comes next.</p></div><a class="btn btn-primary" href="#install">Choose your install<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div></section>

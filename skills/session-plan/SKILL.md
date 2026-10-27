@@ -44,6 +44,7 @@ This skill receives the agreed session scope from session-start. The scope inclu
 - **Session type**: housekeeping, feature, or deep
 - **Task context and execution request**: preserve the user's request for parallel agents or waves, if present; it is considered before either housekeeping shortcut below.
 - **Recommended focus**: the option the user selected in session-start Phase 7
+- **Outcome** (optional, #1824): `{ statement, observable, source }` of the selected Focus option, absent when it named none. Carried verbatim into the plan's `### Execution Config` as the `Outcome:` line; never invented here
 - **Session Config**: parsed JSON from `parse-config.mjs`
 - **Express-path signal** (optional): session-start Phase 8.5 may set `EXPRESS_PATH=true` in the handoff context when the activation conditions are met.
 
@@ -100,6 +101,7 @@ Emit this 1-wave plan and exit the skill immediately (do not continue to Step 1 
 ### Execution Config
 - Waves: 1 | Agents-per-wave: 0 (coordinator-direct) | Isolation: none
 - Express path: active (housekeeping + scope ≤ 3 + no parallel agents needed)
+- Outcome: [<statement> — observable: <observable> — source: <source> | none]
 - Total agents planned: 0
 
 Express path — no inter-wave checks. Use /go to begin.
@@ -430,6 +432,7 @@ Present the plan in this format:
 - Enforcement: [strict|warn|off] | Max turns: [N per session type]
 - Persistence: [true|false] | Pencil: [path|none]
 - Bite-sized plan: [path if exists, e.g. `docs/plans/YYYY-MM-DD-<feature>.md` | none]
+- Outcome: [<statement> — observable: <observable> — source: <source> | none]
 - Parallel dispatch: agents execute in small batches of 3–4 per message (up to the wave cap)
 - Total agents planned: [sum across all waves]
 

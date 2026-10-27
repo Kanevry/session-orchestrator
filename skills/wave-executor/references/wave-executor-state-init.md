@@ -1,6 +1,6 @@
 # Wave Executor — STATE.md Initialization (Pre-Wave 1b)
 
-> Reference of the wave-executor skill, split out of `SKILL.md` (#1246). Body moved **byte-identical**; since then only the `<state-dir>` resolution at the top of § Pre-Wave 1b, in the YAML template and at the `mkdir` line was added (#1790).
+> Reference of the wave-executor skill, split out of `SKILL.md` (#1246). Body moved **byte-identical**; since then only the `<state-dir>` resolution at the top of § Pre-Wave 1b, in the YAML template and at the `mkdir` line was added (#1790), plus the Outcome slot paragraph (#1824).
 > **Sibling-file paths inside this body are relative to the parent directory, not to `references/`**: `SKILL.md` → `../SKILL.md`, `wave-loop.md` → `../wave-loop.md`, `circuit-breaker.md` → `../circuit-breaker.md`. They were deliberately NOT rewritten, so the moved bytes stay verifiable against the pre-split file.
 > Read at Pre-Wave 1b, before dispatching Wave 1 — see `../SKILL.md` § Pre-Wave 1b for the pointer.
 
@@ -42,6 +42,8 @@ Wave 0 — Initializing
 
 (none yet)
 ```
+
+**Outcome slot (#1824).** When the plan's `### Execution Config` carries an `Outcome:` line other than `none`, the same init write adds the three optional keys `outcome-statement`, `outcome-observable`, `outcome-source` — through `setOutcome(contents, { statement, observable, source })` from `${PLUGIN_ROOT}/scripts/lib/state-md.mjs`, never typed as prose frontmatter (it validates `source` against the closed set and refuses blank values). `Outcome: none` or no line → write nothing; absence is the contract. session-end reads the keys back with `readOutcome` for the summary and `scripts/emit-session.mjs` for the record.
 
 **`started_at` and `session-id` are SOURCED, not typed (#1368).** Read both from the live session-lock before writing — never from the clock, and never from memory:
 

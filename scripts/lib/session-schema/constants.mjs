@@ -6,7 +6,8 @@
  *
  * Exports: CURRENT_SESSION_SCHEMA_VERSION, SESSION_KEY_ALIASES,
  *          WAVE_KEY_ALIASES, VALID_SESSION_TYPES, VALID_SESSION_PROFILES,
- *          REQUIRED_FIELDS, AGENT_SUMMARY_FIELDS, OPTIONAL_FIELDS
+ *          REQUIRED_FIELDS, AGENT_SUMMARY_FIELDS, OPTIONAL_FIELDS,
+ *          OUTCOME_SOURCES, OUTCOME_OBSERVED_VALUES
  */
 
 // ---------------------------------------------------------------------------
@@ -134,6 +135,30 @@ export const VALID_SESSION_TYPES = Object.freeze(['feature', 'deep', 'housekeepi
  * edit HERE and in the server mirror.
  */
 export const VALID_SESSION_PROFILES = Object.freeze(['ultradeep']);
+
+/**
+ * CLOSED set of `outcome.source` values (#1824) — where the session's outcome
+ * statement came from. Read by `readOutcome` / `setOutcome`
+ * (scripts/lib/state-md.mjs) and by the record validator.
+ *   issue    — the chosen issues' text
+ *   mvp      — MVP.md Success Metrics
+ *   vault    — the repo's vault `context.md`
+ *   operator — named by the operator in the Phase 8 Focus answer
+ *   contract — an operations contract (`references/operations-contract.md`
+ *              of session-start), which carries its own outcome
+ */
+export const OUTCOME_SOURCES = Object.freeze(['issue', 'mvp', 'vault', 'operator', 'contract']);
+
+/**
+ * CLOSED set of `outcome.observed` values on a session record (#1824).
+ * `not-measured` is the default and NEVER means achieved; `observed` only when
+ * the observable named in STATE.md was actually checked in this session.
+ */
+export const OUTCOME_OBSERVED_VALUES = Object.freeze([
+  'observed',
+  'not-observable-in-session',
+  'not-measured',
+]);
 
 /**
  * Required fields for a schema_version=1 record. Validated by validateSession
@@ -287,4 +312,10 @@ export const OPTIONAL_FIELDS = Object.freeze([
   // its forensic sidecar `_express_path_detail` written by `normalizeSession`.
   'express_path',
   '_express_path_detail',
+  // #1824 — `{ statement, observable, source, observed }`: the goal behind the
+  // session's tasks, derived by scripts/emit-session.mjs from the STATE.md
+  // `outcome-*` frontmatter keys. Absent = the session named no outcome (every
+  // record before #1824: 0 of 658 carried one, measured 2026-10-26 @ 6b6a1773).
+  // Never coerced to an empty object; `observed` defaults to `not-measured`.
+  'outcome',
 ]);

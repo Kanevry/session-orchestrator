@@ -26,7 +26,8 @@
 
 <!-- Self-contained documentation graph: shared site/product identities are
      defined here so a crawler does not need the homepage to resolve them.
-     No author/publisher node or author-domain string (leakage rule CP7).
+     Author and publisher only reference the canonical Person @id of the
+     homepage; no Person node is copied here.
      The source-review date stays historical; metadata edits are not a new
      review of the installation guidance. -->
 <script type="application/ld+json">
@@ -83,6 +84,8 @@
       "mainEntityOfPage": "https://session-orchestrator.com/guide",
       "isPartOf": { "@id": "https://session-orchestrator.com/#website" },
       "about": { "@id": "https://session-orchestrator.com/#software" },
+      "author": { "@id": "https://www.gotzendorfer.at/#person" },
+      "publisher": { "@id": "https://www.gotzendorfer.at/#person" },
       "dateModified": "2026-10-23"
     }
   ]
@@ -92,15 +95,15 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261023b">
-<link rel="stylesheet" href="/assets/guide.css?v=20261023">
+<link rel="stylesheet" href="/assets/site.css?v=20261026a">
+<link rel="stylesheet" href="/assets/guide.css?v=20261026a">
 </head>
 <body class="guide-page">
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.13.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.14.0</span></span></a>
     <nav class="nav" aria-label="Main">
       <a href="/#how">How it works</a>
       <a href="/commands">Commands</a>
@@ -142,6 +145,20 @@
     </div>
   </section>
 
+  <div class="wrap guide-layout">
+  <nav class="guide-toc" aria-label="On this page">
+    <p class="guide-toc-title" aria-hidden="true">On this page</p>
+    <ol>
+      <li><a href="#claude-code">Claude Code</a></li>
+      <li><a href="#codex">Codex CLI</a></li>
+      <li><a href="#cursor">Cursor IDE</a></li>
+      <li><a href="#pi">Pi</a></li>
+      <li><a href="#which-command">Which command when?</a></li>
+      <li><a href="#more">When you need more</a></li>
+    </ol>
+  </nav>
+  <div class="guide-body">
+
   <section class="sec tool-sec" id="claude-code" aria-labelledby="claude-code-h">
     <div class="wrap">
       <h2 id="claude-code-h">Claude Code</h2>
@@ -181,7 +198,7 @@
           <p>After <code>/close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
         </li>
       </ol>
-      <p class="run-record">Last documented install run: 2026-09-13 with plugin 5.0.0. No run of the current version is documented yet.</p>
+      <p class="run-record">Last documented install run: 2026-10-26, plugin 5.13.0, Claude Code 2.1.310 on macOS, from the curated GitHub snapshot in an empty profile. <code>marketplace add</code> and <code>install</code> exit 0, all runtime dependencies present, SessionStart hook exit 0. A session with model calls was not part of the run, because the empty profile had no login.</p> <!-- site-numbers:historical -->
     </div>
   </section>
 
@@ -216,7 +233,7 @@
           <p>After <code>$session-orchestrator:close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
         </li>
       </ol>
-      <p class="run-record">Last documented install run: the short marketplace form on Codex CLI 0.144.4, 2026-09-04. No run of the clone installer above or of the current version is documented yet.</p>
+      <p class="run-record">Last documented install run: 2026-10-26, plugin 5.13.0, Codex CLI 0.160.1 on macOS, from the curated GitHub snapshot in an empty profile. The short marketplace form and the clone installer above both exit 0, the plugin is installed and enabled. A session with model calls was not part of the run, because the empty profile had no login.</p> <!-- site-numbers:historical -->
     </div>
   </section>
 
@@ -251,7 +268,7 @@
           <p>After <code>/close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
         </li>
       </ol>
-      <p class="run-record">No documented install run for this version yet.</p>
+      <p class="run-record">Last documented install run: 2026-10-26, cursor-agent 2026.10.22 on macOS. The project install wrote the rules, commands, skills and hooks. A session was not part of the run, because the empty profile had no login.</p>
     </div>
   </section>
 
@@ -284,7 +301,7 @@
           <p>After <code>/close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
         </li>
       </ol>
-      <p class="run-record">No documented install run for this version yet.</p>
+      <p class="run-record">No documented install run for this version yet: Pi was not installed on the test host (checked 2026-10-26).</p>
     </div>
   </section>
 
@@ -305,7 +322,7 @@
           <tr><td>Tidy up and maintain</td><td><code>/session housekeeping</code></td></tr>
         </tbody>
       </table>
-      <p class="small"><code>/plan new</code> needs <code>plan-baseline-path</code> in your Session Config before it runs. On Codex, put <code>$session-orchestrator:</code> in front of the command name. Every command, by situation: <a href="/commands">/commands</a>.</p>
+      <p class="small"><code>/plan new</code> runs without extra setup; with <code>plan-baseline-path</code> set it uses your baseline's templates. On Codex, put <code>$session-orchestrator:</code> in front of the command name. Every command, by situation: <a href="/commands">/commands</a>.</p>
     </div>
   </section>
 
@@ -407,6 +424,8 @@ enforcement: warn</pre>
       </details>
     </div>
   </section>
+  </div>
+  </div>
 </main>
 
 <footer class="foot">
@@ -445,5 +464,6 @@ enforcement: warn</pre>
 <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
 <script src="/_vercel/insights/script.js" defer></script>
 <script src="/assets/ui.js?v=20260910" defer></script>
+<script src="/assets/guide-toc.js?v=20261026a" defer></script>
 </body>
 </html>

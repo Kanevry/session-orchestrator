@@ -34,6 +34,8 @@ A marketplace on the working checkout copies all of it into the Codex plugin cac
 
 It operates only through public Codex plugin commands; hook trust remains untouched.
 
+**Verified 2026-10-26 (codex-cli 0.160.1, macOS on Apple M4, plugin 5.13.0).** Both paths were run against the slim snapshot the GitHub mirror publishes, each with an empty `HOME`, `CODEX_HOME` and `XDG_CACHE_HOME`. The clone path (`npm ci --ignore-scripts`, then `node scripts/codex-install.mjs --json`) exited 0 and reported `installed: true, enabled: true`, version `5.13.0+codex.20261020173803`. `codex plugin marketplace add <snapshot>` and `codex plugin add session-orchestrator@kanevry` also exited 0, and `codex plugin list --available --json --marketplace kanevry` showed the plugin installed and enabled. Not run: a Codex task with model calls, because the empty profile has no Codex login.
+
 ### Short-Form Marketplace Add (Verified 2026-09-04, codex-cli 0.144.4; dependencies measured 2026-10-21, codex-cli 0.160.1)
 
 `codex plugin marketplace add --help` documents a short remote form:

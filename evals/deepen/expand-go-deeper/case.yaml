@@ -1,0 +1,12 @@
+schema_version: "1.1"
+name: deepen-expand-go-deeper
+description: >
+  Natural 'go deeper' request: the skill should fire on its own, print the expanding line, read the real logs, end with an Ambition Rewrite and stop before any file is written. Write/Edit use fails the action.
+tags: [deepen, skill-trigger]
+runs: 3
+context:
+  scaffold_script: fixture.sh
+execution:
+  max_turns: 20
+  timeout_seconds: 420
+  allowed_tools: [Read, Glob, Grep, Skill]

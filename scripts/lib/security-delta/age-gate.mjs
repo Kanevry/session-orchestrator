@@ -90,17 +90,75 @@ async function readConfig(repoRoot, head, dir, name) {
   return showFile(repoRoot, head, dir ? posix.join(dir, name) : name);
 }
 
+/** Every directory from the lockfile's own up to the repo root (`''`), nearest first. */
+function ancestorDirs(lockfile) {
+  const dirs = [];
+  for (let dir = dirname(lockfile); dir !== '.'; dir = dirname(dir)) dirs.push(dir);
+  return [...dirs, ''];
+}
+
+/**
+ * Major version named by a `packageManager` value, or null when it names another manager
+ * (or is not a string). Only an EXACT pin yields a major: `pnpm@X.Y.Z`, optionally with a
+ * `-prerelease` and a `+build`/hash suffix (`pnpm@12.15.0+sha512.…`).
+ * CEILING (BV-004): every other value starting with `pnpm@` — a range (`^12`, `>=10 <11`,
+ * `10.34.5 || >=12`), a partial version (`pnpm@12`), a `v` prefix, a garbage suffix, or an
+ * upper-case `PNPM@` — reads as Infinity ("may be pnpm >= 11") on purpose: the .npmrc key then
+ * does not count, which costs an `age-gate-missing` finding, never a false green. Revisit
+ * trigger: a fleet repo whose valid Corepack pin is reported because of this rule.
+ */
+function pnpmMajorOf(packageManager) {
+  if (typeof packageManager !== 'string') return null;
+  const pm = packageManager.trim();
+  const exact = /^pnpm@(\d+)\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(pm);
+  if (exact) return Number(exact[1]);
+  return /^pnpm@/i.test(pm) ? Number.POSITIVE_INFINITY : null;
+}
+
+/**
+ * Pinned pnpm major for a lockfile: walking from the lockfile's directory up to the repo
+ * root, the first package.json that has a `packageManager` field decides (Corepack's lookup).
+ * Null when none has the field, it names another manager, or it carries no version number.
+ */
+async function pinnedPnpmMajor(repoRoot, head, lockfile) {
+  for (const dir of ancestorDirs(lockfile)) {
+    let pm;
+    try {
+      pm = JSON.parse((await readConfig(repoRoot, head, dir, 'package.json')) ?? 'null')?.packageManager;
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) throw err; // git read failures stay unchecked upstream
+      continue; // an unparseable package.json pins nothing; look upward
+    }
+    if (pm === undefined) continue;
+    return pnpmMajorOf(pm);
+  }
+  return null;
+}
+
 /**
  * Whether an age gate is configured for one lockfile.
  * @returns {Promise<'gated'|'missing'|{notMeasurable:string}>}
  */
 async function gateFor(repoRoot, head, lockfile, kind) {
+  // pnpm >= 11 reads only auth/registry settings from .npmrc and silently ignores
+  // `minimum-release-age` there (#1822: pnpm 12.15.0 installed a 19 h old package,
+  // 10.34.5 refused). Only pnpm-workspace.yaml `minimumReleaseAge` gates there.
+  // CEILING (BV-004): with no `packageManager` field, or one naming another manager, the
+  // effective pnpm version is unknown, so the .npmrc key still counts as before (a non-exact
+  // `pnpm@…` value is treated as possibly >= 11, see pnpmMajorOf). Revisit trigger: the
+  // first fleet repo on pnpm >= 11 without a packageManager pin.
+  // CEILING (BV-004): the declared pin is trusted, not the pnpm that actually runs. A host
+  // running another pnpm (e.g. a global pnpm 12 without Corepack while the repo pins
+  // pnpm@10) ignores the .npmrc key and is not detected. Revisit trigger: the first measured
+  // fleet case where the running pnpm major differs from the pinned one.
+  const pnpmMajor = kind === 'pnpm' ? await pinnedPnpmMajor(repoRoot, head, lockfile) : null;
+  const npmrcCountsForPnpm = pnpmMajor === null || pnpmMajor < 11;
   for (const dir of configDirs(lockfile)) {
     const npmrc = await readConfig(repoRoot, head, dir, '.npmrc');
     if (kind === 'npm') {
       if (isEnabled(npmrcValue(npmrc, 'min-release-age')) || isEnabled(npmrcValue(npmrc, 'before'))) return 'gated';
     } else if (kind === 'pnpm') {
-      if (isEnabled(npmrcValue(npmrc, 'minimum-release-age'))) return 'gated';
+      if (npmrcCountsForPnpm && isEnabled(npmrcValue(npmrc, 'minimum-release-age'))) return 'gated';
       const ws = await readConfig(repoRoot, head, dir, 'pnpm-workspace.yaml');
       const m = /^minimumReleaseAge\s*:\s*(.+?)\s*(?:#.*)?$/m.exec(ws ?? '');
       if (m && isEnabled(m[1])) return 'gated';

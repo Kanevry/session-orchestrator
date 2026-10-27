@@ -43,13 +43,15 @@ PowerShell 5.1, Git for Windows 2.55 and Claude Code 2.1.296:
 
 The contributor test suite does not pass on Windows yet: 19,651 passed and 881
 failed natively (2026-10-14), almost all of them POSIX assumptions inside the
-tests (`sh`, `/` separators, symlinks); tracked in #1613. GitHub Actions runs it
-in the informational `test-windows-suite` job and the product checks above in
-`test-windows-smoke` (`windows-latest`, both non-blocking for now).
+tests (`sh`, `/` separators, symlinks); tracked in #1613. The full suite runs on
+GitLab only: the GitHub mirror carries no `tests/` directory. GitHub Actions runs
+the product checks above in the informational `test-windows-smoke` job
+(`windows-latest`, non-blocking for now): `npm run test:mirror`, then
+`scripts/ci/windows-smoke.mjs`.
 
 Not yet measured: a complete Claude Code run with model calls, and Codex CLI /
 Cursor / Pi on native Windows. WSL counts as Linux.
-<!-- sources: .github/workflows/test.yml:153-164,198-214; scripts/ci/windows-smoke.mjs:2-3 -->
+<!-- sources: .github/workflows/test.yml:88-133; scripts/ci/windows-smoke.mjs:2-3 -->
 
 ### Core and installation
 
@@ -150,9 +152,16 @@ interactive sessions are unaffected.
 ### Claude Code: check the Node dependencies
 
 Current Claude Code installs the plugin's Node dependencies itself during
-`/plugin install` (measured 2026-09-13: a clean install of plugin 5.0.0 left a
-populated `node_modules/` in the install path). Older versions did not, so
-check once. First locate the installed plugin:
+`/plugin install`. Measured 2026-10-26 on macOS (Apple M4) with Claude Code
+2.1.310 in an empty profile (`CLAUDE_CONFIG_DIR` pointed at a new directory),
+against the slim snapshot the GitHub mirror publishes for plugin 5.13.0:
+`claude plugin marketplace add` and `claude plugin install
+session-orchestrator@kanevry` both exited 0, the install path held all 11
+runtime packages in `node_modules/` and no `tests/`, `.env*` or `CLAUDE.md`,
+and the SessionStart hook ran from it with exit 0. A session with model calls
+was not run there: the empty profile has no login (`Not logged in`). Older
+Claude Code versions did not install the dependencies, so check once. First
+locate the installed plugin:
 
 ```bash
 claude plugin list --json

@@ -222,7 +222,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
 .faq-item > summary::-webkit-details-marker { display: none; }
 .faq-item > summary::after { content: '+'; flex-shrink: 0; color: var(--accent); font-size: 1.5rem; font-weight: 400; margin-right: 8px; }
 .faq-item[open] > summary::after { content: '−'; }
-.faq-item > p { max-width: 88ch; font-size: .9rem; color: var(--fg-2); padding-bottom: 14px; }
+.faq-item > p { max-width: var(--measure); font-size: .9rem; color: var(--fg-2); padding-bottom: 14px; }
 .end { background: var(--surface); }
 .end-grid { display: flex; gap: 40px; justify-content: space-between; align-items: center; }
 .end p:not(.eyebrow) { color: var(--fg-2); max-width: 48ch; margin-bottom: 0; }
@@ -237,15 +237,12 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
 .footer-links .support-link { color: var(--fg-2); text-decoration-color: #697078; }
 .foot .cols { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 28px; margin-bottom: 24px; }
 .foot .cols ul { padding: 0; list-style: none; }.foot .cols a { color: var(--fg-2); }
-.guide-page .wrap { max-width: 1120px; }
 .guide-page .sec { padding-block: 62px; }
 .guide-page #top { padding-top: 80px; }
 .guide-page .h-display { font-size: clamp(2.5rem,5vw,4.25rem); max-width: 21ch; }
 .guide-page p,.guide-page ul { color: var(--fg-2); }
 .guide-page h3 { margin-top: 30px; }
 .guide-page .card h3 { margin-top: 0; }
-.toc { margin-top: 32px; padding: 24px 0; border-block: 1px solid var(--line); }
-.toc ol { padding-left: 22px; columns: 2; margin-bottom: 0; }.toc li { margin-bottom: 8px; }
 .steps { list-style: none; margin: 28px 0 0; padding: 0; }
 .step { padding: 24px 0; border-top: 1px solid var(--line); }
 .step h3 { margin-top: 0; }
@@ -311,7 +308,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
   .faq-item > summary { font-size: .9rem; }.faq-item > p { font-size: .85rem; }
   .end-grid { align-items: flex-start; flex-direction: column; gap: 28px; }.end p:not(.eyebrow) { font-size: .9rem; }
   .footer-main { flex-direction: column; align-items: flex-start; gap: 16px; }.footer-main .brand { font-size: 1rem; }.footer-links nav { gap: 8px 20px; }.footer-links { font-size: .7rem; }
-  .foot .cols,.cards { grid-template-columns: 1fr; }.toc ol { columns: 1; }
+  .foot .cols,.cards { grid-template-columns: 1fr; }
   .guide-page .sec { padding-block: 48px; }.guide-page .h-display { font-size: 2.5rem; }.guide-page h3 { font-size: 1.25rem; }
 }
 @media (max-width: 359px) {
@@ -476,8 +473,6 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
   .how-svg .how-token, .how-step { transition: none; }
 }
 .how-label-gate { color: var(--accent); background: rgba(16,17,19,.6); }
-.toc ol { list-style: none; padding-left: 0; }
-.toc li .num { display: inline-block; min-width: 2.6ch; margin-right: .8em; color: var(--fg-2); font-family: var(--font-mono); font-size: .85em; }
 h1, h2, h3, h4 { overflow-wrap: break-word; hyphens: auto; }
 .how-once { display: block; margin: -8px 0 28px; padding: 14px 18px; border: 1px dashed var(--line); border-radius: var(--radius); max-width: none; color: var(--fg-2); }
 .how-once-label { display: block; margin-bottom: 6px; font-size: var(--text-meta); text-transform: uppercase; letter-spacing: .08em; color: var(--accent); }
@@ -485,3 +480,14 @@ h1, h2, h3, h4 { overflow-wrap: break-word; hyphens: auto; }
 .tools-note { margin: 16px 0 0; max-width: 90ch; font-size: .92rem; color: var(--fg-2); }
 .tools-note code { color: var(--fg); }
 .rule-box .rule-more { flex-basis: 100%; margin: 0; color: var(--fg-2); }
+/* FAQ: intro left (sticky), questions right from 960px (#1767). */
+@media (min-width: 960px) {
+  .faq-layout { display: grid; grid-template-columns: repeat(12,minmax(0,1fr)); gap: var(--gap); align-items: start; }
+  .faq-intro { grid-column: 1 / 6; position: sticky; top: 96px; }
+  .faq-layout .faq { grid-column: 6 / 13; margin-top: 0; }
+}
+/* Footer links: 44px+ hit area on small screens, visible spacing unchanged (#1767). */
+@media (max-width: 600px) {
+  .footer-links a { min-height: 44px; margin-block: -6px; }
+  .foot .cols a { display: inline-block; padding-block: 9px; margin-block: -9px; }
+}

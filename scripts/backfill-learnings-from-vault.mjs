@@ -663,7 +663,7 @@ function presentInboxIds(storeAbs) {
   // Receipt lines are `{id, ingested_at}` — idsInStore reads their ids.
   const hiddenAny = new Set([...idsInStore(receiptsPathFor(storeAbs)), ...idsInStore(archivePathFor(storeAbs))]);
   const hidden = new Set([...inboxIds].filter((id) => hiddenAny.has(id)));
-  if (resolveStoreRole().role === 'inbox') return { present: inboxIds, hidden };
+  if (resolveStoreRole({ storePath: storeAbs }).role === 'inbox') return { present: inboxIds, hidden };
   return { present: new Set([...inboxIds].filter((id) => !hidden.has(id))), hidden: new Set() };
 }
 

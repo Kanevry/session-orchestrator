@@ -20,13 +20,14 @@
  *      refs/heads/github-export is not touched)
  *   1  refused, one-line reason on stderr (replace refs or grafts present, github main
  *      not verifiable or tracking ref stale, source not descended from the published
- *      snapshot's source, excluded path survived, leakage scan failed, a public file
- *      still cites an excluded path, push URL differs from fetch URL, compare-and-swap
+ *      snapshot's source, non-exported path survived (excluded, or outside the policy's
+ *      `include` allow-list), leakage scan failed, a public file still cites a path the
+ *      export removed, push URL differs from fetch URL, compare-and-swap
  *      lost) — or a usage error
  *
  * --verify re-checks an already built snapshot BY SHA right before session-end pushes
  * that sha: graph integrity, push URL == fetch URL, github main verified via ls-remote,
- * exactly one commit on it with `Source-Commit: <source>`, no excluded path in its tree.
+ * exactly one commit on it with `Source-Commit: <source>`, no non-exported path in its tree.
  * Exit 0 ok, 1 refused. stdout stays empty in every mode except the sha lines above.
  *
  * --plain-guard answers whether a PLAIN push of source history (`git push github HEAD`)

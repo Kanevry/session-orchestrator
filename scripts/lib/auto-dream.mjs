@@ -22,7 +22,7 @@
  */
 
 import { readFile, unlink, mkdir } from 'node:fs/promises';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { atomicWriteText, envelopeToError } from './io.mjs';
 
@@ -53,13 +53,16 @@ const CLOCK_SKEW_TOLERANCE_MS = 5;
  *   - sessionsSinceCleanup: count of sessions.jsonl entries with `started_at >
  *     lastCleanupAt` (or total entries when lastCleanupAt is null).
  *   - sessionsFilePath: resolved path to sessions.jsonl (for diagnostics).
+ *   - deadIndexLinks: count of the MEMORY.md links {@link listDeadIndexLinks}
+ *     reports (#1801); null when MEMORY.md is absent — not measured is not
+ *     "zero dead links". Advisory only: it never feeds the trigger.
  *
  * Schema-additive: `memory_cleanup_at` is read but never assumed present.
  *
  * @param {object} args
  * @param {string} args.repoRoot   Absolute path to the repo root.
  * @param {string} args.memoryDir  Absolute path to the memory dir (use resolveMemoryDir() from './memory-paths.mjs').
- * @returns {Promise<{memoryLines:number, lastCleanupAt:string|null, sessionsSinceCleanup:number, sessionsFilePath:string}>}
+ * @returns {Promise<{memoryLines:number, lastCleanupAt:string|null, sessionsSinceCleanup:number, sessionsFilePath:string, deadIndexLinks:number|null}>}
  */
 export async function readDreamSignals({ repoRoot, memoryDir }) {
   const memoryPath = path.join(memoryDir, 'MEMORY.md');
@@ -67,9 +70,11 @@ export async function readDreamSignals({ repoRoot, memoryDir }) {
 
   // 1. Line count of MEMORY.md (missing → 0)
   let memoryLines = 0;
+  let deadIndexLinks = null;
   if (existsSync(memoryPath)) {
     const raw = await readFile(memoryPath, 'utf8');
     memoryLines = raw.length === 0 ? 0 : raw.split('\n').length;
+    deadIndexLinks = findDeadIndexLinks(raw, memoryDir).length;
   }
 
   // 2. Read sessions.jsonl entries to compute lastCleanupAt + sessionsSinceCleanup
@@ -118,7 +123,86 @@ export async function readDreamSignals({ repoRoot, memoryDir }) {
     }
   }
 
-  return { memoryLines, lastCleanupAt, sessionsSinceCleanup, sessionsFilePath };
+  return { memoryLines, lastCleanupAt, sessionsSinceCleanup, sessionsFilePath, deadIndexLinks };
+}
+
+/**
+ * Longest MEMORY.md line the dead-link scan reads (#1801). Ceiling (BV-004): a
+ * longer line is skipped whole, so a dead link on it goes uncounted — an
+ * under-count, never a false alarm. An index entry is one short
+ * `- [Title](file.md) — hook` line; revisit if a real index carries longer ones.
+ */
+const MAX_INDEX_LINE_CHARS = 4096;
+
+/**
+ * One inline link `[text](target "title")` (#1801): group 1 = `<angle target>`,
+ * group 2 = bare target; the optional title is `"…"`, `'…'` or `(…)`. No
+ * sub-pattern can cross `[`, `]` or a line break, so the scan stays linear in
+ * the line length — it runs synchronously in every SessionStart hook.
+ */
+const INDEX_LINK_RE =
+  /\[[^[\]\n]*\]\(\s*(?:<([^<>\n]+)>|([^\s()<>[\]]+))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)/g;
+
+/**
+ * Targets of the `[text](target)` links in a MEMORY.md body that point inside
+ * `memoryDir` but not at an existing regular file (#1801), as written and in
+ * document order. Skipped: links with a scheme (`https:`, `mailto:` …), pure
+ * `#anchor` links, wiki links `[[name]]` (they carry no `(target)`), links in
+ * an inline code span, and targets resolving outside `memoryDir` — those are
+ * never stat-ed, so the scan is no existence oracle for arbitrary paths and
+ * cannot hang the hook on a network mount. Each link counts on its own — two
+ * index lines pointing at the same missing file are two lines to repair.
+ *
+ * Ceiling (BV-004): a code span is one backtick pair; a ``double-backtick``
+ * span holding a link is still scanned. Revisit if an index quotes links so.
+ *
+ * @param {string} raw        MEMORY.md content.
+ * @param {string} memoryDir  Directory the link targets resolve against.
+ * @returns {string[]}
+ */
+function findDeadIndexLinks(raw, memoryDir) {
+  const dead = [];
+  for (const line of raw.split('\n')) {
+    if (line.length > MAX_INDEX_LINE_CHARS) continue;
+    // A space, not '': removing a span must not join `[x]` and `(y)` into a link.
+    const prose = line.replace(/`[^`]*`/g, ' ');
+    for (const m of prose.matchAll(INDEX_LINK_RE)) {
+      const target = m[1] ?? m[2];
+      if (target.startsWith('#') || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+      let rel = target.split('#')[0];
+      try {
+        rel = decodeURIComponent(rel);
+      } catch {
+        /* malformed escape — judge the literal path */
+      }
+      const abs = path.resolve(memoryDir, rel);
+      const fromDir = path.relative(memoryDir, abs);
+      if (fromDir === '..' || fromDir.startsWith(`..${path.sep}`) || path.isAbsolute(fromDir)) continue;
+      let isFile = false;
+      try {
+        isFile = statSync(abs).isFile();
+      } catch {
+        /* missing or unreadable target → dead */
+      }
+      if (!isFile) dead.push(target);
+    }
+  }
+  return dead;
+}
+
+/**
+ * Dead MEMORY.md index links in `memoryDir` (#1801) — the one definition behind
+ * both the session-start count (`readDreamSignals().deadIndexLinks`) and the
+ * /memory-cleanup repair list, so the banner and the repair never disagree.
+ *
+ * @param {string} memoryDir  Absolute path to the memory dir (use resolveMemoryDir() from './memory-paths.mjs').
+ * @returns {string[]|null} Dead link targets as written, in document order;
+ *   null when MEMORY.md is absent — not measured is not "no dead links".
+ */
+export function listDeadIndexLinks(memoryDir) {
+  const memoryPath = path.join(memoryDir, 'MEMORY.md');
+  if (!existsSync(memoryPath)) return null;
+  return findDeadIndexLinks(readFileSync(memoryPath, 'utf8'), memoryDir);
 }
 
 // ---------------------------------------------------------------------------

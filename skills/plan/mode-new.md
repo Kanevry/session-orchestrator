@@ -6,11 +6,25 @@
 
 ---
 
-## Phase 0: Baseline Gate
+## Phase 0: Template Source Switch
 
-`/plan new` is the only mode that needs the baseline. Verify that `plan-baseline-path` is not null: `echo "$CONFIG" | jq -e '."plan-baseline-path"'`. If null, stop with: "Error: `plan-baseline-path` is not configured in Session Config. Add it to your CLAUDE.md (or AGENTS.md on Codex CLI) under `## Session Config`. Example: `plan-baseline-path: ~/Projects/projects-baseline`"
+`/plan new` uses `plan-baseline-path` when one is configured, else the plugin's bundled templates. Decide the source with the same offline reader `/bootstrap` uses ([`public-fallback.md`](../bootstrap/public-fallback.md) § Step 1), so both skills reach the same verdict on the same host:
 
-Use the expanded value from SKILL.md Phase 1 as `$BASELINE_PATH` in every step below.
+```bash
+PLAN_SOURCE=$(node "$PLUGIN_ROOT/scripts/baseline-archetypes.mjs" --repo "$REPO_ROOT") || exit 2
+PATH_TYPE=$(printf '%s' "$PLAN_SOURCE" | node --input-type=module -e '
+let input = ""; for await (const chunk of process.stdin) input += chunk;
+process.stdout.write(JSON.parse(input).status);
+')
+```
+
+| Reader outcome | `/plan new` behavior |
+|----------------|----------------------|
+| `status: private` | **Private path.** Use the expanded value from SKILL.md Phase 1 as `$BASELINE_PATH` in every step marked *private path* below. Everything runs as before. |
+| `status: public` (no baseline configured, empty value, or missing directory) | **Public path.** Print once: "No baseline configured — using the plugin's bundled archetypes." and continue. Every step marked *public path* below applies; no step reads `$BASELINE_PATH`. |
+| Exit 2 (`producer-missing`, invalid export, unsafe source, producer failure) | Abort with the sanitized `reason` (and `message` when present), exactly as `/bootstrap` does. Never silently downgrade a broken configured baseline to the public path — the user decides whether to repair the baseline or unset it. |
+
+Public archetype catalog: the IDs of [`public-fallback.md`](../bootstrap/public-fallback.md) § Public Path — Standard Tier table, described as in the `/bootstrap` archetype question ([`bootstrap/SKILL.md`](../bootstrap/SKILL.md) § Optional Second Question). Read both from there; never keep a second list here.
 
 ---
 
@@ -24,8 +38,10 @@ Wave 1 has 6 questions (incl. the User-Story toggle); Waves 2-3 have 5 each. Bef
 
 ```
 Agent({ subagent_type: "Explore", description: "List available project archetypes",
-  prompt: "Run: ls $BASELINE_PATH/templates/
-  For each directory found, read any README or config file to get a one-line description.
+  prompt: "Private path: run ls $BASELINE_PATH/templates/.
+  Public path: list the archetype IDs of the Standard Tier table in
+  $PLUGIN_ROOT/skills/bootstrap/public-fallback.md; each lives in $PLUGIN_ROOT/templates/<id>/.
+  For each archetype, read any README or config file to get a one-line description.
   Report as a numbered list: directory name — description." })
 
 Agent({ subagent_type: "Explore", description: "Research market context",
@@ -41,12 +57,12 @@ Agent({ subagent_type: "Explore", description: "Check ecosystem for conflicts",
 
 **Questions:**
 
-1. **Project archetype** — Options from `$BASELINE_PATH/templates/` directory. Present agent findings. Choices: Dynamically list directories in $BASELINE_PATH/templates/. Present each as an option via AskUserQuestion.
+1. **Project archetype** — Present agent findings via AskUserQuestion. *Private path:* dynamically list the directories in `$BASELINE_PATH/templates/`, one option each. *Public path:* the IDs of the public archetype catalog (Phase 0), with the one-line descriptions of the `/bootstrap` archetype question; `node-minimal` is the default and goes first as `(Recommended)` unless research points elsewhere.
 2. **Visibility** — internal (GitLab private), private (+ optional GitHub mirror), public/OSS (+ GitHub public + license).
 3. **Target audience** — Options informed by market research agent. User selects or provides custom.
 4. **User-Story-Schicht** — "User-Story-Schicht für dieses Feature erzeugen?" Immer fragen (kein Audience-Heuristik-Gate). Drei Antwortoptionen: **Ja (Als/möchte/damit)** — klassische Persona-Story-Form; **Ja (job-story)** — job-story-Form ("When [situation], I want [motivation], so I can [outcome]"); **Nein** — byte-identisches Status-quo-Verhalten. Bei einer der beiden "Ja"-Optionen emittiert die PRD eine optionale ## User Stories Sektion (je Story ein ↳ AC-Pointer) in der gewählten Form; bei "Nein" wird die Sektion vollständig weggelassen.
 5. **Core problem being solved** — Open-ended. Claude suggests structure if answer is vague.
-6. **GitLab group** — Select the GitLab host explicitly, then discover available groups dynamically. Run `ls $BASELINE_PATH/templates/` for project types, and check for a groups config in `$BASELINE_PATH/config/` or run `glab api --hostname "$GITLAB_HOST" "groups?per_page=100&min_access_level=10"` to discover GitLab groups — read each entry's `full_path` field. (`glab` has no `group` subcommand at all — invoking one exits 1 with `Unknown command "group"`.) Present findings via AskUserQuestion.
+6. **GitLab group** — Select the GitLab host explicitly, then discover available groups dynamically. *Private path:* run `ls $BASELINE_PATH/templates/` for project types, and check for a groups config in `$BASELINE_PATH/config/` or run `glab api --hostname "$GITLAB_HOST" "groups?per_page=100&min_access_level=10"` to discover GitLab groups — read each entry's `full_path` field. (`glab` has no `group` subcommand at all — invoking one exits 1 with `Unknown command "group"`.) *Public path:* skip the `$BASELINE_PATH` lookups. With `vcs: gitlab`, keep the GitLab group discovery above; otherwise offer a GitHub owner (`gh api user/orgs --jq '.[].login'` plus the user's own login) or **No remote yet** (the plan finishes locally; Phase 4 prints the issue table instead of creating issues). Present findings via AskUserQuestion.
 
 ### Optional private capability context — after Wave 1
 
@@ -63,7 +79,8 @@ public/unknown audience, skip this optional step without a prompt or a lookup.
 
 ```
 Agent({ subagent_type: "Explore", description: "Read archetype config",
-  prompt: "Read $BASELINE_PATH/templates/{archetype}/ — list all files, read key configs.
+  prompt: "Read $BASELINE_PATH/templates/{archetype}/ (private path) or
+  $PLUGIN_ROOT/templates/{archetype}/ (public path) — list all files, read key configs.
   Report: default tech stack, available options, required decisions." })
 
 Agent({ subagent_type: "Explore", description: "Research tech stack best practices",
@@ -78,7 +95,7 @@ Agent({ subagent_type: "Explore", description: "Check ecosystem for shared patte
 **Questions:**
 
 1. **Tech stack decisions** — e.g., Supabase vs alternative DB for nextjs-saas. Options informed by archetype config agent.
-2. **Design style** — For frontend archetypes: read `$BASELINE_PATH/templates/{archetype}/styles/` to discover available design variants. Dispatch agent to read baseline style configs. Skip for non-frontend archetypes (those without a `styles/` directory).
+2. **Design style** — For frontend archetypes: read `$BASELINE_PATH/templates/{archetype}/styles/` to discover available design variants. Dispatch agent to read baseline style configs. Skip for non-frontend archetypes (those without a `styles/` directory) and on the public path (bundled templates carry no `styles/`).
 3. **External integrations** — APIs, services, payment providers. Agent research informs common choices.
 4. **Performance requirements** — Latency targets, concurrent users, throughput expectations.
 5. **Security requirements** — Beyond baseline. Auth strategy, encryption, compliance needs (GDPR, SOC2).
@@ -135,7 +152,9 @@ Agent({ subagent_type: "Explore", description: "Research success benchmarks",
 
 After PRD is approved by user:
 
-### Step 1: Invoke setup-project.sh
+**Public path — Steps 1-4 replaced.** Print "No baseline configured — skipping baseline project setup; scaffolding from the bundled `<archetype>` template." Then create the project directory, `git init` it, and scaffold it with the `/bootstrap` public fallback: run [`public-fallback.md`](../bootstrap/public-fallback.md) § Public Path — Standard Tier with `CONFIRMED_ARCHETYPE` = the Wave 1 archetype and `REPO_ROOT` = the new directory. That copies `$PLUGIN_ROOT/templates/<archetype>/` and writes the project-instruction file; nothing reads a path outside the plugin. If Wave 1 Q6 chose a remote, create it with the matching CLI (`glab repo create` / `gh repo create`) at the chosen visibility, then continue with Step 5. With **No remote yet**, skip remote creation, visibility and branch protection with the notice "No remote chosen — remote creation, visibility and branch protection skipped." and continue with Step 5.
+
+### Step 1: Invoke setup-project.sh (private path)
 
 Map gathered answers to script input choices:
 
@@ -167,7 +186,7 @@ ENCODED_PROJECT_PATH="$(node -e 'process.stdout.write(encodeURIComponent(process
 ) | bash "$BASELINE_PATH/scripts/setup-project.sh"
 ```
 
-### Step 2: Verify success
+### Step 2: Verify success (private path)
 
 Check the setup script exit code. Confirm the selected path exists without fetching a full REST project object:
 
@@ -177,7 +196,7 @@ glab api --hostname "$GITLAB_HOST" graphql \
   -f fullPath="$PROJECT_PATH" | jq -er '.data.project.fullPath'
 ```
 
-### Step 3: Adjust visibility
+### Step 3: Adjust visibility (private path)
 
 If visibility is not `internal` (the default):
 
@@ -201,7 +220,7 @@ glab api --hostname "$GITLAB_HOST" graphql \
 
 For public/OSS, also configure GitHub mirror if applicable.
 
-### Step 4: Set branch protection
+### Step 4: Set branch protection (private path)
 
 ```bash
 glab api --silent --hostname "$GITLAB_HOST" -X POST \
@@ -215,7 +234,7 @@ glab api --silent --hostname "$GITLAB_HOST" -X POST \
 
 Choose the project-instruction file appropriate to the platform that will operate the repo: `CLAUDE.md` for Claude Code / Cursor IDE, `AGENTS.md` for Codex CLI. Pick exactly one — never both. Add `## Session Config` section with fields derived from the planning session. Include at minimum:
 
-- `plan-baseline-path`
+- `plan-baseline-path` (private path only — omit it on the public path, as `/bootstrap` does)
 - `plan-default-visibility`
 - `plan-prd-location`
 - Any project-specific config from gathered requirements
@@ -253,7 +272,7 @@ mkdir -p .orchestrator/steering
 
 **`structure.md`** — directory map + inventory from the scaffolded repo:
 - Top-level directory map: run `ls -1` and annotate each directory with its purpose
-- Inventory counts: fill in after `setup-project.sh` completes (skills/commands/agents as applicable)
+- Inventory counts: fill in after scaffolding completes (skills/commands/agents as applicable)
 - Key files: entry points, SSOT files, main config files
 
 Write each file with real content from planning answers — never leave all three as pure stubs.
@@ -281,7 +300,7 @@ Score each issue per `SKILL.md` § 6.2 Auto-Prioritize (technical dependencies, 
 
 ### Step 3: Apply labels
 
-Use taxonomy from `setup-gitlab-groups.sh`:
+Use the label taxonomy from the gitlab-ops skill (`skills/gitlab-ops/SKILL.md` § Label Taxonomy):
 
 **Priority mapping for VCS labels:**
 | Categorization | VCS Label |
@@ -308,6 +327,8 @@ Use the AskUserQuestion payload in `SKILL.md` § 6.3 verbatim — the issue tabl
 - User confirms, adjusts priority, removes issues, or adds missing ones
 
 ### Step 5: Create via glab
+
+Public path: with a GitHub remote, create the same issues with `gh issue create` (syntax per the gitlab-ops skill). With **No remote yet**, print the confirmed issue table, skip Steps 5-6 with the notice "No remote chosen — issues not created; the table above is the backlog.", and finish.
 
 ```bash
 # Create epic

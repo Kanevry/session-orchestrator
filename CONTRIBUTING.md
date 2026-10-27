@@ -31,6 +31,14 @@ How it works:
 - Skill, command, and agent surfaces are **Markdown or JSON files** the harness reads directly. Scripts, hooks, installers, and tests are **Node ESM (`.mjs`)** and run on Node.js 24+.
 - You extend the plugin by editing or adding files. Changes take effect the next time the harness loads the plugin.
 
+### Where this repository lives
+
+The GitHub repository is a curated mirror of a private GitLab repository. It carries the plugin itself, its documentation and the website, but not the test suite or the development tooling (`tests/`, the vitest, ESLint and commitlint configs, the git hooks, the GitLab pipeline). What that means for you:
+
+- **Issues on GitHub are welcome.** Bug reports, setup problems and questions all belong there.
+- **The test suite and CI run on GitLab.** GitHub runs only a security scan and a smoke of what an install needs (`npm run test:mirror`).
+- **Pull requests are read.** If one is accepted, the change is applied again on GitLab and comes back to GitHub with the next mirror update, so the PR itself is closed rather than merged.
+
 The user workflow is:
 
 ```
@@ -54,6 +62,14 @@ The user workflow is:
    This repo is **npm-canonical** (`package-lock.json` is the committed lockfile) — always use `npm`, never `pnpm` or `yarn`. The runtime dependencies (`zx`, `ajv`, `remark`, …) are required by the hooks and scripts.
 
 3. **Validate your environment:**
+
+   On a clone of the GitHub mirror, run the smoke GitHub runs:
+
+   ```bash
+   npm run test:mirror                # manifests, syntax, dependencies, SessionStart hook
+   ```
+
+   On the GitLab repository, the full set:
 
    ```bash
    npm test                           # full vitest suite
@@ -88,7 +104,7 @@ There is no build or compilation step — edit the files, reload the harness, an
 
 ### Git Hooks: one manual step after cloning
 
-`.npmrc` ships with `ignore-scripts=true` (supply-chain defence), so Husky git hooks do **not** auto-wire on install. Run `npx husky` once after cloning. `git commit` then runs gitleaks → owner-privacy scan → lint-staged → commitlint. CI re-runs everything, plus more.
+`.npmrc` ships with `ignore-scripts=true` (supply-chain defence), so Husky git hooks do **not** auto-wire on install. Run `npx husky` once after cloning. `git commit` then runs gitleaks → owner-privacy scan → lint-staged → commitlint. CI re-runs everything, plus more. The hooks live in the GitLab repository; a clone of the GitHub mirror has none.
 
 ### Two directories named *rules*
 
@@ -590,7 +606,7 @@ Do not confuse `getPlatform()` with the `SO_PLATFORM` environment override used 
 
 ## Pull Request Guidelines
 
-> **Note on process:** active planning happens on a private GitLab tracker; the public GitHub repository shows a mirrored subset of that work. Small, self-contained PRs that cite concrete observed drift (a stale path, a wrong count, a broken example) are the best entry point for external contributions.
+> **Note on process:** active planning happens on a private GitLab tracker; the public GitHub repository is a curated mirror of that repository (see [Where this repository lives](#where-this-repository-lives)). Pull requests on GitHub are read, and an accepted one is applied again on GitLab rather than merged on GitHub. Small, self-contained PRs that cite concrete observed drift (a stale path, a wrong count, a broken example) are the best entry point for external contributions.
 
 - **One logical change per PR.** Do not bundle unrelated skill changes.
 

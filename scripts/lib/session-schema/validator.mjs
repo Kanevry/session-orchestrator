@@ -17,6 +17,8 @@ import {
   VALID_SESSION_TYPES,
   REQUIRED_FIELDS,
   AGENT_SUMMARY_FIELDS,
+  OUTCOME_SOURCES,
+  OUTCOME_OBSERVED_VALUES,
 } from './constants.mjs';
 
 // ---------------------------------------------------------------------------
@@ -613,6 +615,25 @@ function _validateOptionalFields(entry) {
   if (entry.session_profile !== undefined && entry.session_profile !== null) {
     if (typeof entry.session_profile !== 'string' || entry.session_profile.length === 0) {
       throw new ValidationError('session_profile must be a non-empty string or null');
+    }
+  }
+
+  // `outcome` (#1824) — the goal behind the session's tasks. Optional; absent
+  // or null = no outcome named, never coerced. When present it is all four
+  // keys or rejected: a half object cannot be reported against.
+  if (entry.outcome !== undefined && entry.outcome !== null) {
+    const o = entry.outcome;
+    if (
+      !isPlainObject(o) ||
+      typeof o.statement !== 'string' || o.statement.length === 0 ||
+      typeof o.observable !== 'string' || o.observable.length === 0 ||
+      !OUTCOME_SOURCES.includes(o.source) ||
+      !OUTCOME_OBSERVED_VALUES.includes(o.observed)
+    ) {
+      throw new ValidationError(
+        `outcome must be null or {statement, observable, source: ${OUTCOME_SOURCES.join('|')}, ` +
+          `observed: ${OUTCOME_OBSERVED_VALUES.join('|')}}`
+      );
     }
   }
 

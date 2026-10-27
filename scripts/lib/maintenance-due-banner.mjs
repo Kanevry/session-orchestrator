@@ -403,6 +403,8 @@ export async function computeMaintenanceDue(opts = {}) {
 
   // --- memory-cleanup (S5) -------------------------------------------------
   const threshold = config?.['memory-cleanup-threshold'] ?? 5;
+  /** @type {number|null} null = not measured (no MEMORY.md, skipped, or unreadable). */
+  let deadIndexLinks = null;
   if (threshold === 0 || !isClaudePlatform(opts.platform)) {
     skipped.push('memory-cleanup');
   } else {
@@ -413,6 +415,9 @@ export async function computeMaintenanceDue(opts = {}) {
         threshold,
         softLimit: config?.['memory-cleanup-soft-limit'] ?? 180,
       });
+      // #1801: dead index links ride along as an advisory count — they never
+      // make memory-cleanup due (the trigger is computed without them).
+      if (Number.isInteger(dec?.signals?.deadIndexLinks)) deadIndexLinks = dec.signals.deadIndexLinks;
       if (dec?.trigger === true) {
         const s = dec.signals ?? {};
         markDue(
@@ -497,6 +502,7 @@ export async function computeMaintenanceDue(opts = {}) {
     skipped,
     undeterminable,
     lastHousekeeping: readLastHousekeeping(repoRoot),
+    deadIndexLinks,
   };
 }
 
@@ -507,7 +513,8 @@ export async function computeMaintenanceDue(opts = {}) {
  * when a housekeeping session completed within {@link HOUSEKEEPING_COOLDOWN_DAYS}
  * days — the cooldown is what keeps this instrument rare (HR-101). The
  * computation still runs and is still available via {@link computeMaintenanceDue};
- * only the banner is suppressed.
+ * only the banner is suppressed. Dead MEMORY.md index links (#1801) add their
+ * own line whenever their count is above 0, cooldown or not.
  *
  * @param {{repoRoot?: string, config?: object, now?: Date|number, platform?: string}} [opts]
  * @returns {Promise<null | {severity: 'warn', message: string}>}
@@ -515,14 +522,21 @@ export async function computeMaintenanceDue(opts = {}) {
 export async function checkMaintenanceDue(opts = {}) {
   try {
     const computed = await computeMaintenanceDue(opts);
-    if (computed.due.length === 0 && computed.undeterminable.length === 0) return null;
+    // #1801: its own line, independent of due/cooldown — housekeeping does not
+    // repair the index, only /memory-cleanup does, and at 0 the line is absent.
+    const deadLine =
+      computed.deadIndexLinks > 0
+        ? `memory: ${computed.deadIndexLinks} tote Index-Links — /memory-cleanup`
+        : null;
+    const deadOnly = deadLine ? { severity: 'warn', message: deadLine } : null;
+    if (computed.due.length === 0 && computed.undeterminable.length === 0) return deadOnly;
 
     // Cooldown — no new config key: the housekeeping session's own record IS
     // the "last maintenance run" stamp.
     if (computed.lastHousekeeping !== null) {
       const ageMs = nowMs(opts.now) - Date.parse(computed.lastHousekeeping);
       if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < HOUSEKEEPING_COOLDOWN_DAYS * MS_PER_DAY) {
-        return null;
+        return deadOnly;
       }
     }
 
@@ -537,7 +551,8 @@ export async function checkMaintenanceDue(opts = {}) {
       `⚠ maintenance due: ${computed.due.length} of ${computed.total}` +
       (detail ? ` (${detail})` : '') +
       unknown +
-      ' — run /session housekeeping.';
+      ' — run /session housekeeping.' +
+      (deadLine ? `\n${deadLine}` : '');
 
     return { severity: 'warn', message };
   } catch {

@@ -41,32 +41,58 @@ if (isMain && !pluginRoot) {
 // because vendored copies carry this file alone; the export CLI imports it from here.
 export const PUBLIC_EXPORT_POLICY_FILE = '.orchestrator/policy/public-export.json';
 
+const PUBLIC_EXPORT_POLICY_KEYS = ['version', 'rationale', 'include', 'exclude'];
+
+/** Exact repo-relative file, or dir prefix ending in `/`; no globs, no absolute paths, no `.`/`..` segments. */
+function isValidPolicyPath(p) {
+  return typeof p === 'string' && p !== '' && !p.startsWith('/') && !/[*?[\]{}\\]/.test(p) && ![...p].some((c) => c.charCodeAt(0) < 32)
+    && !p.replace(/\/$/, '').split('/').some((part) => !part || part === '.' || part === '..');
+}
+
 /**
  * Validate a public-export policy document.
- * Each `exclude[].path` is an exact repo-relative file, or a directory prefix ending in
- * `/` — no globs, no absolute paths, no `.`/`..` segments.
+ * Each `exclude[].path` and `include[].path` is an exact repo-relative file, or a
+ * directory prefix ending in `/` — no globs, no absolute paths, no `.`/`..` segments.
+ * `exclude` is required and non-empty. The version names the shape (#1594):
+ * - version 1 = deny-only: no `include`; every path not excluded is public.
+ * - version 2 = allow-list: `include` required and non-empty; only included paths are
+ *   public, minus the excludes.
+ * The allow-list needs its own version because validators before #1594 accept
+ * `version: 1` and ignore unknown keys: an older exporter would read an allow-list
+ * policy as deny-only and publish everything. They refuse `version !== 1`, so a
+ * version-2 policy stops them (fail-closed). Unknown top-level keys are refused for the
+ * same reason — a key this validator does not understand must not be silently dropped.
  * @param {unknown} policy parsed JSON
- * @returns {{ ok: true, excludes: string[] } | { ok: false, reason: string }}
+ * @returns {{ ok: true, excludes: string[], includes: string[]|null } | { ok: false, reason: string }}
  */
 export function validatePublicExportPolicy(policy) {
-  if (!policy || typeof policy !== 'object' || Array.isArray(policy) || policy.version !== 1) return { ok: false, reason: 'policy must be an object with version 1' };
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy) || (policy.version !== 1 && policy.version !== 2)) return { ok: false, reason: 'policy must be an object with version 1 (deny-only) or 2 (allow-list)' };
+  const unknownKey = Object.keys(policy).find((key) => !PUBLIC_EXPORT_POLICY_KEYS.includes(key));
+  if (unknownKey !== undefined) return { ok: false, reason: 'unknown top-level key in policy (allowed: version, rationale, include, exclude)' };
+  if (policy.version === 1 && policy.include !== undefined) return { ok: false, reason: 'include requires version 2 (an exporter that knows only version 1 would ignore it)' };
+  if (policy.version === 2 && policy.include === undefined) return { ok: false, reason: 'version 2 requires an include allow-list' };
   if (!Array.isArray(policy.exclude) || policy.exclude.length === 0) return { ok: false, reason: 'exclude must be a non-empty array' };
   const excludes = [];
   for (const entry of policy.exclude) {
-    const p = entry?.path;
-    if (typeof p !== 'string' || !p || p.startsWith('/') || /[*?[\]{}\\]/.test(p) || [...p].some((c) => c.charCodeAt(0) < 32)
-      || p.replace(/\/$/, '').split('/').some((part) => !part || part === '.' || part === '..')) {
-      return { ok: false, reason: 'invalid exclude path (exact file or dir prefix ending in "/", no globs)' };
-    }
-    excludes.push(p);
+    if (!isValidPolicyPath(entry?.path)) return { ok: false, reason: 'invalid exclude path (exact file or dir prefix ending in "/", no globs)' };
+    excludes.push(entry.path);
   }
-  return { ok: true, excludes };
+  let includes = null;
+  if (policy.include !== undefined) {
+    if (!Array.isArray(policy.include) || policy.include.length === 0) return { ok: false, reason: 'include, when present, must be a non-empty array' };
+    includes = [];
+    for (const entry of policy.include) {
+      if (!isValidPolicyPath(entry?.path)) return { ok: false, reason: 'invalid include path (exact file or dir prefix ending in "/", no globs)' };
+      includes.push(entry.path);
+    }
+  }
+  return { ok: true, excludes, includes };
 }
 
 /**
  * Read and validate `<root>/.orchestrator/policy/public-export.json`.
  * @param {string} root
- * @returns {{ ok: true, excludes: string[] } | { ok: false, reason: string }}
+ * @returns {{ ok: true, excludes: string[], includes: string[]|null } | { ok: false, reason: string }}
  */
 export function loadPublicExportPolicy(root) {
   let parsed;
@@ -79,16 +105,24 @@ export function loadPublicExportPolicy(root) {
 }
 
 /**
- * True when a repo-relative path falls under a public-export exclude. A directory
- * prefix matches only at a path boundary: `docs/audits/` excludes `docs/audits/x.md`
- * but never the sibling `docs/auditsX.md`.
+ * True when a repo-relative path is kept out of the public export: it falls under an
+ * exclude entry, OR an allow-list is given (`includes` non-null) and the path falls
+ * under none of its entries. A directory prefix matches only at a path boundary:
+ * `docs/audits/` matches `docs/audits/x.md` but never the sibling `docs/auditsX.md`.
  * @param {string} relPath forward-slash repo-relative path
  * @param {string[]} excludes
+ * @param {string[]|null} includes allow-list, or null for deny-only. Required: a caller
+ *   that forgets it would silently export every non-excluded path, so `undefined` throws
+ *   (the single-entry matcher in `scripts/lib/snapshot-probe.mjs` passes `null`).
  * @returns {boolean}
+ * @throws {TypeError} when `includes` is undefined
  */
-export function isPublicExportExcluded(relPath, excludes) {
+export function isPublicExportExcluded(relPath, excludes, includes) {
+  if (includes === undefined) throw new TypeError('isPublicExportExcluded: includes must be passed: an array or null');
   const norm = relPath.replace(/\\/g, '/');
-  return excludes.some((p) => (p.endsWith('/') ? norm.startsWith(p) : norm === p));
+  const matches = (p) => (p.endsWith('/') ? norm.startsWith(p) : norm === p);
+  if (excludes.some(matches)) return true;
+  return Array.isArray(includes) && !includes.some(matches);
 }
 export const VAULT_CLEAR_SLUGS = new Set();
 
@@ -609,6 +643,15 @@ function isAllowlisted(relPath, line) {
       if (line === contract) return true;
     }
   }
+  // The guide credits the homepage Person by @id (#1815): exactly these two lines, nothing else.
+  if (norm === 'site/guide/index.html') {
+    const trimmed = line.trim();
+    for (const url of policy.publicUrls) {
+      for (const key of ['author', 'publisher']) {
+        if (trimmed === '"' + key + '": { "@id": "' + url + '/#person" },') return true;
+      }
+    }
+  }
   return countMatches(CP7_G, line) > 0 && countMatches(CP7_G, residue) === 0;
 }
 
@@ -690,7 +733,7 @@ if (publicExport) {
   if (!exportPolicy.ok) {
     fail(`<scan-wide> — PX (public-export policy unavailable): ${exportPolicy.reason}`);
   } else {
-    const leakedPaths = allFiles.map((f) => relative(pluginRoot, f).replace(/\\/g, '/')).filter((rel) => isPublicExportExcluded(rel, exportPolicy.excludes));
+    const leakedPaths = allFiles.map((f) => relative(pluginRoot, f).replace(/\\/g, '/')).filter((rel) => isPublicExportExcluded(rel, exportPolicy.excludes, exportPolicy.includes));
     for (const rel of leakedPaths) fail(`${safeDiagnosticPath(rel, cp11Patterns)} — PX (path excluded from public export)`);
     if (leakedPaths.length === 0) pass(`no public-export excluded path among ${allFiles.length} files`);
   }

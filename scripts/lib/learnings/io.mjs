@@ -553,7 +553,7 @@ export async function appendLearning(filePath, entry, { lockTimeoutMs } = {}) {
   // Inbox role (#1516): the canonical store is never written on this host —
   // the record goes to the sibling inbox file under that file's own lock.
   const target =
-    isCanonicalStore(filePath) && resolveStoreRole().role === 'inbox'
+    isCanonicalStore(filePath) && resolveStoreRole({ storePath: filePath }).role === 'inbox'
       ? inboxPathFor(filePath)
       : filePath;
   // The lock path resolution creates the parent directory. The torn-tail check
@@ -765,7 +765,7 @@ export async function rewriteLearnings(
   // Fail-closed (#1516): an invalid store role refuses before any lock or write.
   assertStoreRoleUsable(filePath);
   const canonical = isCanonicalStore(filePath);
-  if (canonical && resolveStoreRole().role === 'inbox') {
+  if (canonical && resolveStoreRole({ storePath: filePath }).role === 'inbox') {
     await rewriteAsInbox(filePath, validated, lines);
     return validated;
   }

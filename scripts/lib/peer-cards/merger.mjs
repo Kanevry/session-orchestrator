@@ -16,7 +16,8 @@
  *    sentinels is AI-replaceable.
  *  • Pure functions — no fs imports, no IO, deterministic. Same input → same output.
  *  • Conflict-surfacing — duplicate section names and orphan BEGIN sentinels become
- *    `conflicts[]` entries. The caller decides UX (warn vs prompt vs reject).
+ *    `conflicts[]` entries. Derived-body merges also report `unmapped-preamble`,
+ *    `multi-heading-region`, `omitted-items-retained`, and `unterminated-fence` for caller review.
  *  • Idempotent — `mergePeerCard(body, {})` returns body byte-equivalent (modulo the
  *    serialize round-trip; the sentinel comments are re-emitted in the same form).
  *
@@ -49,7 +50,7 @@ const SENTINEL_BEGIN_RE = new RegExp(`<!--\\s*BEGIN\\s+MANAGED:\\s*(${SECTION_NA
 
 /**
  * @typedef {Object} Conflict
- * @property {'duplicate-section' | 'orphan-begin' | 'unmapped-preamble' | 'multi-heading-region'} type
+ * @property {'duplicate-section' | 'orphan-begin' | 'unmapped-preamble' | 'multi-heading-region' | 'omitted-items-retained' | 'unterminated-fence'} type
  * @property {string} [name] — section name (for duplicate-section and orphan-begin)
  */
 
@@ -299,11 +300,18 @@ export function mergePeerCard(existingBody, managedUpdates) {
  * Normalise managed content so the serialised form always reads:
  *   <!-- BEGIN MANAGED: x -->\n<content>\n<!-- END MANAGED: x -->
  * Trimming + adding newlines keeps managed regions visually distinct from sentinels.
+ * Only leading BLANK lines are removed: the first line's indentation is meaning
+ * (an indented list item sets its children's content offset, #1816).
  * @param {string} raw
  * @returns {string}
  */
 function wrapManagedContent(raw) {
-  return '\n' + raw.trim() + '\n';
+  return '\n' + trimBlockEdges(raw) + '\n';
+}
+
+/** Drop leading blank lines and trailing whitespace, keeping the first line's indentation. */
+function trimBlockEdges(raw) {
+  return raw.replace(/^(?:[ \t]*\r?\n)+/, '').trimEnd();
 }
 
 /**
@@ -472,6 +480,138 @@ export function deriveManagedUpdates(proposedBody, existingBody = '') {
   return { managedUpdates, mapping, preamble, skippedRegions };
 }
 
+// These units implement the retention contract, not a full Markdown parser.
+// Revisit if peer cards require Markdown constructs beyond lists, paragraphs,
+// ATX headings and backtick/tilde fences (e.g. setext headings or HTML blocks).
+const LIST_ITEM_RE = /^( {0,3})(?:[-*+]|\d+[.)])[ \t]+/;
+const HEADING_RE = /^ {0,3}#{1,6}[ \t]+/;
+const FENCE_RE = /^[ \t]*(`{3,}|~{3,})/;
+// Written to end a retained list before an indented unit (#1813 F2); structure, never a point.
+const LIST_BREAK = '<!-- -->';
+
+/** Split section content into comparison units, excluding its leading H2. */
+function sectionUnits(content) {
+  const lines = content.replace(/\r\n?/g, '\n').split('\n');
+  const units = [];
+  // Return the first line after a fence and whether a closing line was found.
+  const consumeFence = (start, fence) => {
+    const close = new RegExp(`^[ \\t]*${fence[1][0]}{${fence[1].length},}[ \\t]*$`);
+    let end = start + 1;
+    while (end < lines.length && !close.test(lines[end])) end++;
+    return { end: end < lines.length ? end + 1 : end, closed: end < lines.length };
+  };
+  const indentation = line => [...line.match(/^[ \t]*/)[0]]
+    .reduce((column, char) => column + (char === '\t' ? 4 - column % 4 : 1), 0);
+  const dedent = (line, columns) => {
+    let end = 0;
+    let column = 0;
+    while (column < columns && (line[end] === ' ' || line[end] === '\t')) {
+      column += line[end++] === '\t' ? 4 - column % 4 : 1;
+    }
+    return ' '.repeat(Math.max(0, column - columns)) + line.slice(end);
+  };
+  let i = 0;
+  while (i < lines.length && !lines[i].trim()) i++;
+  if (/^##[ \t]+/.test(lines[i] ?? '')) i++;
+  while (i < lines.length) {
+    if (!lines[i].trim()) { i++; continue; }
+    const start = i;
+    const fence = lines[i].match(FENCE_RE);
+    const marker = lines[i].match(LIST_ITEM_RE);
+    const list = marker !== null;
+    let unterminatedFence = false;
+    i++;
+    if (fence) {
+      const consumed = consumeFence(start, fence);
+      i = consumed.end;
+      unterminatedFence = !consumed.closed;
+    } else if (!HEADING_RE.test(lines[start])) {
+      while (i < lines.length) {
+        const line = lines[i];
+        if (!line.trim()) {
+          let next = i + 1;
+          while (next < lines.length && !lines[next].trim()) next++;
+          if (!list || next === lines.length || indentation(lines[next]) <= marker[1].length) break;
+          i = next;
+          continue;
+        }
+        const child = list && indentation(line) > marker[1].length;
+        const nestedFence = line.match(FENCE_RE);
+        if (child && nestedFence) {
+          const consumed = consumeFence(i, nestedFence);
+          i = consumed.end;
+          unterminatedFence ||= !consumed.closed;
+          continue;
+        }
+        if (!child && (LIST_ITEM_RE.test(line) || HEADING_RE.test(line) || nestedFence)) break;
+        i++;
+      }
+    }
+    // Keep source indentation; only trailing blank lines are outside a unit.
+    let end = i;
+    while (end > start && !lines[end - 1].trim()) end--;
+    const text = lines.slice(start, end).join('\n');
+    let appendText = text;
+    if (list && marker[1].length > 0) {
+      let fenceIndent = null;
+      let closeFence;
+      appendText = text.split('\n').map(line => {
+        if (fenceIndent !== null) {
+          // Move the fence's container prefix, preserving tabs in its code payload.
+          const shifted = ' '.repeat(Math.max(0, fenceIndent - marker[1].length)) + dedent(line, fenceIndent);
+          if (closeFence.test(line)) fenceIndent = null;
+          return shifted;
+        }
+        const fence = line.match(FENCE_RE);
+        if (fence) {
+          fenceIndent = indentation(line);
+          closeFence = new RegExp(`^[ \\t]*${fence[1][0]}{${fence[1].length},}[ \\t]*$`);
+          return ' '.repeat(Math.max(0, fenceIndent - marker[1].length)) + line.trimStart();
+        }
+        // Outside a fence, re-expand all leading whitespace: a partial dedent would
+        // leave a second tab that jumps to another tab stop and turns code into prose.
+        return ' '.repeat(Math.max(0, indentation(line) - marker[1].length)) + line.replace(/^[ \t]*/, '');
+      }).join('\n');
+    }
+    const key = unitKey(appendText);
+    units.push({ text, appendText, key, list, unterminatedFence });
+  }
+  return units;
+}
+
+/** Collapse prose whitespace while preserving every fenced span, including list children. */
+function unitKey(text) {
+  const parts = [];
+  let prose = [];
+  let code = null;
+  let close;
+  for (const line of text.split('\n')) {
+    if (code !== null) {
+      code.push(line.trimEnd());
+      if (close.test(line)) {
+        parts.push(['fence', code.join('\n')]);
+        code = null;
+      }
+      continue;
+    }
+    const fence = line.match(FENCE_RE);
+    if (fence) {
+      parts.push(['prose', prose.join('\n').replace(/\s+/g, ' ').trim()]);
+      prose = [];
+      code = [line.trimEnd()];
+      close = new RegExp(`^[ \t]*${fence[1][0]}{${fence[1].length},}[ \t]*$`);
+    } else {
+      prose.push(line);
+    }
+  }
+  if (code !== null) parts.push(['fence', code.join('\n')]);
+  parts.push(['prose', prose.join('\n').replace(/\s+/g, ' ').trim()]);
+  // BV-004: lightweight units do not implement full CommonMark container rules
+  // (e.g. blockquotes, marker-width continuation or inline list-opening fences).
+  // Revisit with a Markdown parser when peer cards require those constructs.
+  return JSON.stringify(parts);
+}
+
 /**
  * Merge a deriver-shaped FULL BODY STRING into an existing peer-card body.
  * This is the function `/evolve dialectic --apply` calls; `mergePeerCard` stays
@@ -480,14 +620,72 @@ export function deriveManagedUpdates(proposedBody, existingBody = '') {
  * A managed region wrapping several `## ` headings is left byte-unchanged; each
  * skipped proposed heading surfaces as a
  * `{ type: 'multi-heading-region', region, headings, skipped }` conflict (#1380).
+ * Omitted units in an existing region are retained, with new units appended and
+ * an `omitted-items-retained` conflict listing the omissions. Explicitly naming
+ * the region in `confirmDrops` permits replacement with fewer units (#1810).
  *
  * @param {string} existingBody
  * @param {string} proposedBody
+ * @param {{ confirmDrops?: string[] }} [options] — section names permitting omitted units
  * @returns {MergeResult & { mapping: Array<{heading: string, section: string, origin: 'existing'|'new'}>, preamble: string }}
  */
-export function mergeDerivedBody(existingBody, proposedBody) {
+export function mergeDerivedBody(existingBody, proposedBody, { confirmDrops = [] } = {}) {
+  if (!Array.isArray(confirmDrops)) {
+    throw new Error('mergeDerivedBody: confirmDrops must be an array of section names.');
+  }
+  for (const name of confirmDrops) {
+    if (typeof name !== 'string' || !/^[A-Za-z0-9_-]+$/.test(name)) {
+      throw new Error('mergeDerivedBody: invalid section name in confirmDrops (allowed: [A-Za-z0-9_-]+).');
+    }
+  }
   const { managedUpdates, mapping, preamble, skippedRegions } = deriveManagedUpdates(proposedBody, existingBody);
+  const existingSections = parseSections(existingBody).sections.filter(s => s.type === 'managed');
+  const retainedConflicts = [];
+  for (const { section, heading, origin } of mapping) {
+    if (origin === 'new' || confirmDrops.includes(section)) continue;
+    const occurrences = existingSections.filter(s => s.name === section);
+    if (occurrences.length === 0) continue;
+    const existingUnits = occurrences.flatMap(s => sectionUnits(s.content));
+    const proposedUnits = sectionUnits(managedUpdates[section]);
+    const proposedKeys = new Set(proposedUnits.map(u => u.key));
+    const dropped = [];
+    const droppedKeys = new Set();
+    for (const unit of existingUnits) {
+      if (proposedKeys.has(unit.key) || droppedKeys.has(unit.key)) continue;
+      if (unit.text.trim() === LIST_BREAK) continue;
+      dropped.push(unit);
+      droppedKeys.add(unit.key);
+    }
+    if (dropped.length === 0) continue;
+    if (existingUnits.some(unit => unit.unterminatedFence)) {
+      delete managedUpdates[section];
+      retainedConflicts.push({ type: 'unterminated-fence', region: section, heading });
+      continue;
+    }
+
+    let content = trimBlockEdges(occurrences[0].content);
+    const firstUnits = sectionUnits(occurrences[0].content);
+    const writtenKeys = new Set(firstUnits.map(u => u.key));
+    let previous = firstUnits.at(-1);
+    // Retain invariant: every existing unit key appears in the written section.
+    const laterUnits = occurrences.slice(1).flatMap(s => sectionUnits(s.content));
+    for (const unit of [...laterUnits, ...proposedUnits]) {
+      if (writtenKeys.has(unit.key)) continue;
+      let separator = '\n\n';
+      if (previous?.list && unit.list) separator = '\n';
+      // An indented standalone unit after a list would re-parse as the item's
+      // child on the next run; a blank HTML comment ends the list first (the
+      // separator CommonMark itself names for a list before an indented block).
+      else if (previous?.list && /^[ \t]/.test(unit.appendText)) separator = `\n\n${LIST_BREAK}\n\n`;
+      content += separator + unit.appendText;
+      writtenKeys.add(unit.key);
+      previous = unit;
+    }
+    managedUpdates[section] = content;
+    retainedConflicts.push({ type: 'omitted-items-retained', region: section, heading, items: dropped.map(u => u.text) });
+  }
   const result = mergePeerCard(existingBody, managedUpdates);
+  result.conflicts.push(...retainedConflicts);
   for (const { region, headings, skipped } of skippedRegions) {
     result.conflicts.push({ type: 'multi-heading-region', region, headings, skipped });
   }

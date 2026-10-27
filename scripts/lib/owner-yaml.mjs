@@ -54,6 +54,12 @@
  *                            other key drops ONLY this section, see loadOwnerConfig;
  *                            the store-role resolver then reads the role as invalid and
  *                            canonical-store writes refuse — it never falls back to writer)
+ *     inbox-repos: string[]  (optional; #1754 — repo roots, each absolute or `~/`-prefixed,
+ *                            whose stores are inbox on this host while every other repo
+ *                            keeps store-role. precedence env SO_LEARNINGS_STORE_ROLE >
+ *                            store inside a listed root > store-role > writer. A non-list,
+ *                            or an entry that is empty, relative, non-string or carries
+ *                            NUL/CR/LF, drops the section like an invalid store-role)
  *   drift-check:            (optional; host-local path exceptions — #937)
  *     foreign-host-prefixes: string[] (narrow absolute directory prefixes;
  *                            missing matching paths warn, unmatched paths error)
@@ -94,7 +100,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
 import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
 
@@ -522,7 +528,7 @@ export function validateOwnerSections(obj) {
   // ── learnings (optional; host-local store role — #1516) ─────────────────────
   // STRICT enum like vault-integration: an invalid `learnings` section (typo
   // `store-role: inbx`) is dropped here like any optional section. The store-
-  // role resolver (learnings/store-role.mjs) sees the key in the raw file and
+  // role resolver (learnings/store-role.mjs) checks droppedSections and
   // treats present-but-dropped as `invalid`, so canonical-store writes refuse
   // instead of the host silently staying a writer that rewrites a synced store.
   {
@@ -536,8 +542,34 @@ export function validateOwnerSections(obj) {
         // absent" and fall back to writer (#1686): any key but `store-role`
         // invalidates the section, so the resolver reports the role invalid.
         for (const key of Object.keys(lr)) {
-          if (key !== 'store-role') {
-            errors.push(`learnings has unknown key ${JSON.stringify(key)} (only store-role is allowed)`);
+          if (key !== 'store-role' && key !== 'inbox-repos') {
+            errors.push(
+              `learnings has unknown key ${JSON.stringify(key)} (only store-role and inbox-repos are allowed)`,
+            );
+          }
+        }
+        // inbox-repos (#1754): repo roots whose stores are inbox on this host.
+        // Every entry must be absolute or `~/`-prefixed — a relative entry
+        // would resolve against whatever cwd the writer runs in. A bad entry
+        // invalidates the whole section (fail-closed), never just that entry.
+        const repos = lr['inbox-repos'];
+        if (repos !== undefined && repos !== null) {
+          if (!Array.isArray(repos)) {
+            errors.push('learnings.inbox-repos must be a list of repo-root paths');
+          } else {
+            repos.forEach((entry, i) => {
+              if (typeof entry !== 'string' || entry.trim() === '') {
+                errors.push(`learnings.inbox-repos[${i}] must be a non-empty string`);
+              } else if (/[\0\r\n]/.test(entry)) {
+                errors.push(`learnings.inbox-repos[${i}] must not contain NUL, CR or LF`);
+              } else if (entry !== entry.trim()) {
+                errors.push(`learnings.inbox-repos[${i}] must not contain leading or trailing whitespace`);
+              } else if (!isAbsolute(entry) && !entry.startsWith('~/')) {
+                errors.push(
+                  `learnings.inbox-repos[${i}] must be absolute or start with ~/, got: ${JSON.stringify(entry)}`,
+                );
+              }
+            });
           }
         }
         if (

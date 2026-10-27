@@ -311,7 +311,7 @@ Structured requirement gathering, PRD generation, and issue creation. Accepts on
 
 `/plan` runs outside of sessions. Its output (PRD + issues) feeds into the next `/session`, which picks from those issues and executes them. You can skip `/plan` entirely and create issues manually — sessions work with any existing issues.
 
-**For `/plan new` only:** `plan-baseline-path` in Session Config (or resolved host-locally, see below). `/plan new` stops without it; `/plan feature` and `/plan retro` run without it. When absent, `/bootstrap` falls back to plugin-bundled minimal templates.
+**Optional, used by `/plan new`:** `plan-baseline-path` in Session Config (or resolved host-locally, see below). `/plan new` uses it when configured, else the plugin-bundled templates (`static-html`, `node-minimal`, `nextjs-minimal`, `python-uv`) — the same fallback `/bootstrap` uses. `/plan feature` and `/plan retro` run without it.
 
 **Optional private capability context:** For new-project or session planning, you can
 supply a small catalog excerpt or authorize a particular offline, read-only local
@@ -460,7 +460,7 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `issue-budget.mode` | string | `strict` | `strict` blocks over-cap creations and parks them; `warn` allows with a stderr notice; `off` disables the gate. |
 | `issue-budget.overflow` | string | `collect-issue` | Where parked creations are drained at session-end: `collect-issue` (one `[Backlog-Sammel]` issue) or `vault-note` (one file under `vault/00-inbox/`). |
 | `persistence` | boolean | `true` | Enable session resumption via STATE.md and session memory files. |
-| `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Required by `/plan new`, which stops without it; `/plan feature` and `/plan retro` run without it. When absent, `/bootstrap` falls back to plugin-bundled minimal templates. |
+| `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Optional. When absent, `/plan new` and `/bootstrap` fall back to plugin-bundled minimal templates; `/plan feature` and `/plan retro` never need it. |
 | `plan-default-visibility` | string | `internal` | Default repo visibility for `/plan new`: `internal`, `private`, or `public`. |
 | `plan-prd-location` | string | `docs/prd/` | Directory where PRD documents are saved (relative to project root). |
 | `plan-retro-location` | string | `docs/retro/` | Directory where retrospective documents are saved (relative to project root). |
