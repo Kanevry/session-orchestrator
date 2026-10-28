@@ -220,6 +220,62 @@ function normalizeShellWhitespaceExpansions(command, options = {}) {
   return out;
 }
 
+/** Single-character ANSI-C escapes (bash `$'…'`). */
+const ANSI_C_SIMPLE = new Map([
+  ['a', '\x07'], ['b', '\b'], ['e', '\x1b'], ['E', '\x1b'], ['f', '\f'], ['n', '\n'],
+  ['r', '\r'], ['t', '\t'], ['v', '\v'], ['\\', '\\'], ["'", "'"], ['"', '"'], ['?', '?'],
+]);
+
+/**
+ * Decode ONE backslash escape inside a bash ANSI-C quote `$'…'` (#1832),
+ * `command[i] === '\\'`. Grammar measured with bash 5 (2026-10-27,
+ * `printf '[%s]'` probes): `\a \b \e \E \f \n \r \t \v \\ \' \" \?`; octal
+ * `\nnn` (1–3 digits); `\xHH` (1–2 hex); `\uHHHH` (1–4 hex) and
+ * `\UHHHHHHHH` (1–8 hex); `\cX` = `X & 0x1f` (`\c?` = 0x7f). An escape bash
+ * does not know — `\q`, `\8`, `\x`/`\u` without a digit, a trailing `\c` —
+ * keeps its backslash (`$'\q'` → `\q`). A decoded NUL ends the word's text in
+ * bash (C strings: `$'a\0b'` → `a`); it is returned as `nul` and the caller
+ * drops the rest of the quote.
+ * Ceiling (BV-004): text of the SAME word after the closing quote
+ * (`$'re\0'set`) is kept although bash drops it — over-match only, it can
+ * add a pattern word, never hide one. Revisit trigger: a false DENY report.
+ *
+ * @param {string} command
+ * @param {number} i - index of the backslash
+ * @returns {{ text: string, end: number, nul?: true }} `end` is the index after the escape
+ */
+function decodeAnsiCEscape(command, i) {
+  const next = command[i + 1];
+  const simple = ANSI_C_SIMPLE.get(next);
+  if (simple !== undefined) return { text: simple, end: i + 2 };
+  const codeAt = (re, from, radix) => {
+    const digits = command.slice(from).match(re)?.[0];
+    return digits ? { code: Number.parseInt(digits, radix), end: from + digits.length } : null;
+  };
+  let hit = null;
+  if (/[0-7]/.test(next)) hit = codeAt(/^[0-7]{1,3}/, i + 1, 8);
+  else if (next === 'x') hit = codeAt(/^[0-9A-Fa-f]{1,2}/, i + 2, 16);
+  else if (next === 'u') hit = codeAt(/^[0-9A-Fa-f]{1,4}/, i + 2, 16);
+  else if (next === 'U') hit = codeAt(/^[0-9A-Fa-f]{1,8}/, i + 2, 16);
+  else if (next === 'c' && i + 2 < command.length && command[i + 2] !== "'") {
+    const x = command[i + 2];
+    hit = { code: x === '?' ? 0x7f : x.toUpperCase().charCodeAt(0) & 0x1f, end: i + 3 };
+  }
+  if (hit === null) return { text: `\\${next}`, end: i + 2 };
+  // Octal is ONE byte (value & 0xFF): `\400` is NUL, `\501` is `A` (bash 5.3,
+  // measured 2026-10-27 — `$'reset\400'` is `reset`). `\x` has at most two
+  // digits, so it cannot exceed a byte.
+  const code = /[0-7]/.test(next) ? hit.code & 0xff : hit.code;
+  if (code === 0) return { text: '', end: hit.end, nul: true };
+  // `\U` at or above 0x80000000 encodes to NOTHING in bash (`$'r\UFFFFFFFF s'`
+  // → `rs`); every other value at or above 0x80 encodes to non-ASCII bytes,
+  // which no pattern word contains — U+FFFD stands in for the ones JS cannot
+  // represent (surrogates, above U+10FFFF).
+  if (code >= 0x80000000) return { text: '', end: hit.end };
+  if (code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return { text: '\ufffd', end: hit.end };
+  return { text: String.fromCodePoint(code), end: hit.end };
+}
+
 /** Unquoted characters that terminate a here-doc delimiter word. */
 const WORD_END_CHARS = new Set([';', '|', '&', '<', '>', '(', ')', '\n']);
 
@@ -322,7 +378,11 @@ function readHeredocBody(command, from, delim, stripTabs) {
  *     'dup'|'heredoc'|'herestring' }`. Recognised (longest-match-first, BEFORE
  *     the chain-operator branch so `&>` wins over `&`): `&>>`, `&>`, `>|`,
  *     `>>`, `>`, `<<<`, `<<`, `<`, and the fd-prefixed forms `N>`, `N>>`,
- *     `N>&M` (fd digits are consumed from the in-progress token, so
+ *     `N>&M`; fd close/move `>&-`, `N>&-`, `N>&M-` and input dup/close
+ *     `<&N`, `<&-`, `N<&M`, `N<&-` lex as ONE `dup` token with no operand
+ *     word (#1830); `>&`/`<&`/`>>&` with a quoted, blank-separated or file
+ *     operand are resolved by resolveFdOperandRedirects (#1832); a glued
+ *     `{name}` before an operator is a named fd (`redirect.fdName`, #1832) (fd digits are consumed from the in-progress token, so
  *     `2>/dev/null` lexes as fd-2 redirect + `/dev/null` operand instead of
  *     one glued token). The `redirect` field appears ONLY on redirect tokens —
  *     ordinary tokens keep the exact `{ text, quoted }` shape.
@@ -461,6 +521,111 @@ const COMMAND_POSITION_OPENERS = new Set([
  */
 const isClobberSuffix = (c) => c === '|' || c === '!';
 
+/**
+ * Does `c` end the word of an fd-close / fd-move redirect (`>&-`, `<&-`,
+ * `2>&1-`)? (#1830) Only then is the `-` part of the operator. A glued rest
+ * (`>&-x`, `3>&1-x`) keeps the HEAD lexing — see the ceiling at the `>&-`
+ * close branch for why (bash, sh and zsh disagree on that form).
+ */
+const endsFdWord = (c) => c === undefined || /[\s;|&()<>]/.test(c);
+
+/**
+ * A named-fd prefix `{name}` (bash ≥4.1, zsh), unquoted and glued to the operator (#1832).
+ * Ceiling (BV-004): /bin/bash 3.2 has no named fds — there `{fd}` stays an argv
+ * word and the redirect is a plain one; this lexer always reads the bash 4.1+
+ * form. Revisit trigger: a guard decision that depends on the 3.2 reading.
+ */
+const FD_NAME_RE = /^\{[A-Za-z_][A-Za-z0-9_]*\}$/;
+
+/**
+ * Placeholder for `[N|{name}]>&`, `>>&` and `<&` whose operand is not glued
+ * digits / a bounded `-` (#1832). `fdOperand` is non-enumerable and the
+ * placeholder never leaves tokenizeCommand: resolveFdOperandRedirects replaces
+ * it. Its `redirect` is the write/read redirect it becomes for a file operand.
+ */
+function fdOperandPlaceholder(text, redirect, direction) {
+  const tok = { text, quoted: false, redirect };
+  Object.defineProperty(tok, 'fdOperand', { value: direction, enumerable: false });
+  return tok;
+}
+
+/** Unquoted chain-operator texts (the lexer emits them without an `operator` field). */
+const CHAIN_OP_TEXTS = new Set([';', '|', '||', '&', '&&']);
+
+/**
+ * Resolve every fdOperandPlaceholder against the word that follows it (#1832).
+ * `>&` / `<&` are ONE operator with their own operand word, glued or after
+ * blanks, quoted or not; the DEQUOTED operand decides (bash expands the word
+ * first: `2>&"1"` duplicates, measured 2026-10-27):
+ *   - digits, `-` (close) or `N-` (move) → one `dup` token `<op>&<operand>`
+ *     owning no word — the token scope-gate's foldFdDupFilenameRedirects built;
+ *   - anything else after `>&` / `>>&` → the plain write redirect (`>`, `N>`,
+ *     `>>`; truncate/append) FOLLOWED BY the operand as its operand word, the
+ *     exact pair the fold produced, so redirectSpanEnd owns the word and
+ *     extractBashWriteTargets reports it;
+ *   - anything else after `<&` → a read redirect owning the operand (bash:
+ *     "ambiguous redirect").
+ * No operand word (end of input, an operator next): the plain redirect alone —
+ * downstream reports it unresolved. The chain `&` never appears for these forms.
+ *
+ * Two readings of `-WORD` (C of #1832, measured 2026-10-27): for an operand
+ * whose FIRST character is an unquoted `-` followed by more text — glued
+ * (`3>&-reset`) or after blanks (`3>& -reset`) — bash 5.3, /bin/bash 3.2 and sh
+ * close the fd and pass WORD as the next argv word (`printf '[%s]' a 3>&-reset
+ * b` → `[a][reset][b]`), while zsh writes a FILE `-WORD`. The token stream keeps
+ * the zsh reading byte-identical to HEAD (redirect + operand `-WORD`, the write
+ * target scope-gate's allowlist must see); the bash reading rides on the
+ * redirect token as the NON-ENUMERABLE `bashArgvWord` (`{ text, quoted }`),
+ * which unquotedSegmentMatch and collectDeleteTargets re-insert into argv where
+ * they drop the redirect span. A quoted dash (`3>&"-"reset`) is no close in
+ * bash ("ambiguous redirect") and gets no marker. `N>&M-WORD` stays as the
+ * digit branch lexes it (bash: "ambiguous redirect", command not run).
+ * resolveSegmentVerb reads `bashArgvWord` as the verb when it leads the
+ * segment (`3>&-rm P` → verb `rm`), and dashCPayloads reads it as an argv
+ * word, so verb-keyed rules see the bash reading too (#1832, wave 6).
+ * extractRedirectTargets now reports the concrete target of these forms
+ * (`-a.ts`, `out.ts`) where the pre-#1832 split left an `unresolved` entry —
+ * stricter and correct (coordinator decision 2026-10-27).
+ *
+ * @param {Array<object>} tokens
+ * @returns {Array<object>} the same array, placeholders resolved in place
+ */
+function resolveFdOperandRedirects(tokens) {
+  let found = false;
+  for (const t of tokens) if (t.fdOperand !== undefined) { found = true; break; }
+  if (!found) return tokens;
+  const out = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (tok.fdOperand === undefined) { out.push(tok); continue; }
+    const next = tokens[i + 1];
+    const isWord = next !== undefined && !next.redirect && next.operator === undefined &&
+      !(next.quoted === false && CHAIN_OP_TEXTS.has(next.text));
+    const opText = tok.text.slice(0, -1); // `N>`, `>>`, `N<` — without the `&`
+    if (isWord && /^(?:\d+-?|-)$/.test(next.text)) {
+      out.push({ text: `${tok.text}${next.text}`, quoted: false, redirect: { ...tok.redirect, mode: 'dup' } });
+      i += 1;
+      continue;
+    }
+    const plain = { text: opText, quoted: false, redirect: tok.redirect };
+    if (isWord) {
+      const first = next.parts?.[0];
+      const dashUnquoted = next.parts ? first?.quote === 'none' && first.text.startsWith('-') : !next.quoted && next.text.startsWith('-');
+      if (dashUnquoted && next.text.length > 1) {
+        const rest = next.parts ? [{ ...first, text: first.text.slice(1) }, ...next.parts.slice(1)] : [];
+        Object.defineProperty(plain, 'bashArgvWord', {
+          value: { text: next.text.slice(1), quoted: rest.some((p) => p.text !== '' && p.quote !== 'none') },
+          enumerable: false,
+        });
+      }
+    }
+    out.push(plain);
+  }
+  tokens.length = 0;
+  for (const t of out) tokens.push(t); // no spread — see closeSubstitution
+  return tokens;
+}
+
 /** A function-definition head `name()` — its body is a compound command. */
 const FUNCTION_HEAD_RE = /^[^\s()$`'"]+\(\)$/;
 
@@ -563,6 +728,7 @@ export function tokenizeCommand(command) {
   // `\(` or a quoted one never sets it, so `$(echo \()` still closes there.
   let bareParenAt = -1;
   let state = 'normal';    // 'normal' | 'single' | 'double' | 'ansi'
+  let ansiNul = false;     // inside `$'…'` after a decoded NUL (see decodeAnsiCEscape)
   let arithDepth = 0;      // open `$((` / `((` levels — inside them `<<` is a shift
   // One entry per open `case … esac` level, innermost last. Each names what the
   // NEXT word at that level is: 'subject' (`case WORD`), 'in' (the `in`),
@@ -657,18 +823,29 @@ export function tokenizeCommand(command) {
   };
 
   // A leading all-digit word is the fd of a redirect (`2> log`), not an argument.
-  // Returns the digits to prefix onto the operator token; flushes otherwise.
+  // A word `{name}` glued to the operator is a NAMED fd (bash ≥4.1, zsh —
+  // `{fd}>/dev/null`): the shell allocates the fd and stores it in `name`, the
+  // word never reaches argv (#1832 — `git {fd}>/dev/null reset --hard` ran the
+  // hard reset while `{fd}` was judged as an argv word). Returns `digits` to
+  // prefix onto the operator token, the numeric `fd` and the `name` (or null);
+  // flushes otherwise. A named fd keeps NO text prefix on the operator, so every
+  // text-keyed consumer (scope-gate's WRITE_REDIRECT_OP_RE) reads `>` as before.
   const takeFdPrefix = () => {
-    if (started && !sawQuote && /^\d+$/.test(text)) {
-      const digits = text;
+    if (started && !sawQuote && (/^\d+$/.test(text) || FD_NAME_RE.test(text))) {
+      const named = text.startsWith('{');
+      const digits = named ? '' : text;
+      const name = named ? text.slice(1, -1) : null;
       text = '';
       parts = [];
       started = false;
-      return digits;
+      braceLead = 0;
+      return { digits, fd: named ? null : Number.parseInt(digits, 10), name };
     }
     flush();
-    return '';
+    return { digits: '', fd: null, name: null };
   };
+  // The `redirect` field of an operator token: `fdName` only when the fd is named.
+  const redirectField = (prefix, mode) => (prefix.name === null ? { fd: prefix.fd, mode } : { fd: null, mode, fdName: prefix.name });
 
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
@@ -680,7 +857,20 @@ export function tokenizeCommand(command) {
     }
 
     if (state === 'double' || state === 'ansi') {
-      if (ch === (state === 'double' ? '"' : "'")) { state = 'normal'; continue; }
+      if (ch === (state === 'double' ? '"' : "'")) { state = 'normal'; ansiNul = false; continue; }
+      if (state === 'ansi' && ch === '\\' && i + 1 < command.length) {
+        // bash decodes `$'…'` escapes BEFORE the program sees the word (#1832):
+        // `git $'\x72eset' --hard` runs `git reset --hard`. The token stays
+        // quoted, so decoded whitespace still keeps it out of the skeleton.
+        // After a decoded NUL bash drops the text but STILL reads escapes to
+        // find the closing quote: `$'reset\0\'junk'` is `reset` (Codex review).
+        const esc = decodeAnsiCEscape(command, i);
+        if (esc.nul) ansiNul = true;
+        else if (!ansiNul) addText(esc.text, 'ansi-c');
+        started = true; sawQuote = true; i = esc.end - 1;
+        continue;
+      }
+      if (state === 'ansi' && ansiNul) continue; // bash ends the word's text at a decoded NUL
       if (ch === '\\' && i + 1 < command.length) {
         const next = command[i + 1];
         // In double / ANSI-C quotes, backslash escapes the next char; keep it
@@ -930,10 +1120,9 @@ export function tokenizeCommand(command) {
         let k = j;
         while (command[k] === ' ' || command[k] === '\t') k++;
         const { value, end } = readDelimiterWord(command, k);
-        const fdDigits = takeFdPrefix();
-        const fdNum = fdDigits === '' ? null : Number.parseInt(fdDigits, 10);
-        const opText = `${fdDigits}<<${stripTabs ? '-' : ''}`;
-        sink.push({ text: opText, quoted: false, redirect: { fd: fdNum, mode: 'heredoc' } });
+        const prefix = takeFdPrefix();
+        const opText = `${prefix.digits}<<${stripTabs ? '-' : ''}`;
+        sink.push({ text: opText, quoted: false, redirect: redirectField(prefix, 'heredoc') });
         if (value && command[end] !== ')') {
           pendingHeredocs.push({ delim: value, stripTabs });
           i = end - 1;
@@ -942,9 +1131,29 @@ export function tokenizeCommand(command) {
         }
         continue;
       }
-      const fdDigits = takeFdPrefix();
-      const fdNum = fdDigits === '' ? null : Number.parseInt(fdDigits, 10);
-      sink.push({ text: `${fdDigits}<`, quoted: false, redirect: { fd: fdNum, mode: 'read' } });
+      // `<&N` / `<&-` / `N<&M` / `N<&M-` — input fd duplication / close
+      // (#1830). Lexed as `<` read + chain `&` + word before, the `&` split
+      // the statement: `git 3<&- reset --hard` lost its verb surface (ALLOW).
+      if (command[i + 1] === '&' && (/[0-9]/.test(command[i + 2] ?? '') || (command[i + 2] === '-' && endsFdWord(command[i + 3])))) {
+        const prefix = takeFdPrefix();
+        let j = i + 2;
+        let dupTarget = '';
+        while (j < command.length && /[0-9]/.test(command[j])) { dupTarget += command[j]; j++; }
+        if (command[j] === '-' && endsFdWord(command[j + 1])) { dupTarget += '-'; j++; }
+        sink.push({ text: `${prefix.digits}<&${dupTarget}`, quoted: false, redirect: redirectField(prefix, 'dup') });
+        i = j - 1;
+        continue;
+      }
+      const prefix = takeFdPrefix();
+      if (command[i + 1] === '&') {
+        // `<&` with its operand anywhere else — after blanks, quoted, or a
+        // glued `-WORD` (#1832). Placeholder; resolveFdOperandRedirects reads
+        // the operand word once the stream is complete.
+        sink.push(fdOperandPlaceholder(`${prefix.digits}<&`, redirectField(prefix, 'read'), '<'));
+        i += 1;
+        continue;
+      }
+      sink.push({ text: `${prefix.digits}<`, quoted: false, redirect: redirectField(prefix, 'read') });
       continue;
     }
     if (ch === '>') {
@@ -952,44 +1161,71 @@ export function tokenizeCommand(command) {
       // in-progress token is the IO_NUMBER — consume it as the fd instead of
       // flushing it as an ordinary word (matches bash IO_NUMBER lexing; a
       // quoted "2" stays a word, exactly as bash treats it).
-      let fd = null;
-      if (started && !sawQuote && /^[0-9]+$/.test(text)) {
-        fd = Number.parseInt(text, 10);
-        text = '';
-        parts = [];
-        started = false;
-      } else {
-        flush();
-      }
-      const fdText = fd === null ? '' : String(fd);
+      const prefix = takeFdPrefix();
+      const fdText = prefix.digits;
+      const field = (mode) => redirectField(prefix, mode);
       // zsh clobber forms (#1795) arrive in CANONICAL spelling, because every
       // text-keyed consumer (scope-gate's WRITE_REDIRECT_OP_RE) already knows it:
       // `>&|` / `>&!` (stdout+stderr) → `&>`, `>>&|` / `>>&!` → `&>>`, `>>|` /
       // `>>!` → `>>`, `>!` → `>|` — fd prefix kept where bash/zsh keep one. A
-      // bare `>&` / `>>&` before a WORD is untouched: scope-gate folds that
-      // filename form itself (foldFdDupFilenameRedirects).
+      // bare `>&` / `>>&` before a WORD becomes the plain write redirect + its
+      // operand word (resolveFdOperandRedirects, #1832) — the pair scope-gate's
+      // foldFdDupFilenameRedirects used to build from `>` `&` `WORD`.
       if (command[i + 1] === '>' && command[i + 2] === '&' && isClobberSuffix(command[i + 3])) {
         sink.push({ text: '&>>', quoted: false, redirect: { fd: null, mode: 'append' } });
         i += 3;
       } else if (command[i + 1] === '&' && isClobberSuffix(command[i + 2])) {
         sink.push({ text: '&>', quoted: false, redirect: { fd: null, mode: 'truncate' } });
         i += 2;
+      } else if (command[i + 1] === '>' && command[i + 2] === '&') {
+        // zsh `>>& WORD` appends stdout+stderr (#1832: the chain `&` split the
+        // statement). Same operand grammar as `>&` below.
+        sink.push(fdOperandPlaceholder(`${fdText}>>&`, field('append'), '>'));
+        i += 2;
       } else if (command[i + 1] === '>') {
-        sink.push({ text: `${fdText}>>`, quoted: false, redirect: { fd, mode: 'append' } });
+        sink.push({ text: `${fdText}>>`, quoted: false, redirect: field('append') });
         i += 1;
         if (isClobberSuffix(command[i + 1])) i += 1;
-      } else if (command[i + 1] === '&' && /[0-9]/.test(command[i + 2] ?? '')) {
+      } else if (command[i + 1] === '&' && /[0-9]/.test(command[i + 2] ?? '')
+        && !((fdText === '' || fdText === '1') && /^[0-9]+-[^\s;|&()<>]/.test(command.slice(i + 2)))) {
         // N>&M / >&M — fd duplication; the target fd is inline, no operand word.
+        // Not for stdout + `M-WORD` (`>&2-x`, `1>&2-x`): bash writes stdout and
+        // stderr to the FILE `2-x` (measured 2026-10-27, Opus review F4) — that
+        // form takes the operand placeholder below. `2>&1-x` (fd ≠ 1) stays
+        // here: bash reports "ambiguous redirect" and runs nothing.
         let j = i + 2;
         let dupTarget = '';
         while (j < command.length && /[0-9]/.test(command[j])) { dupTarget += command[j]; j++; }
-        sink.push({ text: `${fdText}>&${dupTarget}`, quoted: false, redirect: { fd, mode: 'dup' } });
+        // `N>&M-` moves the fd (dup + close M) — same token (#1830).
+        if (command[j] === '-' && endsFdWord(command[j + 1])) { dupTarget += '-'; j++; }
+        sink.push({ text: `${fdText}>&${dupTarget}`, quoted: false, redirect: field('dup') });
         i = j - 1;
+      } else if (command[i + 1] === '&' && command[i + 2] === '-' && endsFdWord(command[i + 3])) {
+        // `>&-` / `N>&-` closes the fd (#1830). Lexed as `>` truncate + chain
+        // `&` + word `-` before, the `&` split the statement, so
+        // `git 3>&- reset --hard` was ALLOWED. One dup token, no operand word —
+        // the exact token scope-gate's foldFdDupFilenameRedirects built from the
+        // old three-token form, so its input for `>& WORD` is unchanged.
+        // ONLY at a word boundary: the glued form `N>&-WORD` has two readings
+        // (bash: close + argv word WORD; zsh: write to FILE `-WORD`) and goes
+        // through the operand placeholder below, which judges both (#1832, see
+        // resolveFdOperandRedirects).
+        sink.push({ text: `${fdText}>&-`, quoted: false, redirect: field('dup') });
+        i += 2;
+      } else if (command[i + 1] === '&') {
+        // `>&` / `N>&` with its operand anywhere else — after blanks, quoted,
+        // a file name, or a glued `-WORD` (#1832). Lexed as `>` + chain `&`,
+        // the `&` split the statement: `git >& out reset --hard` and
+        // `git 2>&"1" reset --hard` lost their verb surface. Placeholder;
+        // resolveFdOperandRedirects reads the operand word once the stream is
+        // complete (the word is lexed by the ordinary quote machinery).
+        sink.push(fdOperandPlaceholder(`${fdText}>&`, field('truncate'), '>'));
+        i += 1;
       } else if (isClobberSuffix(command[i + 1])) {
-        sink.push({ text: `${fdText}>|`, quoted: false, redirect: { fd, mode: 'truncate' } });
+        sink.push({ text: `${fdText}>|`, quoted: false, redirect: field('truncate') });
         i += 1;
       } else {
-        sink.push({ text: `${fdText}>`, quoted: false, redirect: { fd, mode: 'truncate' } });
+        sink.push({ text: `${fdText}>`, quoted: false, redirect: field('truncate') });
       }
       continue;
     }
@@ -1036,7 +1272,7 @@ export function tokenizeCommand(command) {
   }
   for (const t of hoisted) tokens.push(t); // no spread — see closeSubstitution
 
-  return tokens;
+  return resolveFdOperandRedirects(tokens);
 }
 
 /**
@@ -1657,16 +1893,40 @@ export const WRAPPER_UNWRAP = new Map([
  *   primary `verb`/`index` only — `alt.index` addresses a DIFFERENT reading of
  *   the token stream and must never be fed to a positional walk.
  */
-function resolveCore(segment, unknownFlagsTakeValue) {
+function resolveCore(segment, unknownFlagsTakeValue, readMarker = true) {
   const payloads = [];
   const wrapperArgs = [];
   let sawUnknownFlag = false;
   let i = 0;
-  // Skip leading FOO=bar env assignments (unquoted).
-  while (i < segment.length && !segment[i].quoted && ENV_ASSIGN_RE.test(segment[i].text)) {
-    i++;
+  // The command word is the first argv word after redirect spans are removed
+  // (#1832): the shell allows redirects before it, so `>out rm P` and
+  // `2>/dev/null rm P` run `rm P` — the verb used to resolve to `>` and every
+  // verb-keyed rule (delete targets, payloads, the worktree walker) missed it.
+  // For a glued close (`3>&-rm P`: bash closes fd 3 and runs `rm P`) the
+  // `bashArgvWord` IS the verb; its index is the operand token that carries
+  // the zsh write reading, so `index + 1` is still the first argument.
+  // `segment` is the argvVerbView: the operand of a glued close already holds
+  // its bash argv word, so a wrapper there (`3>&-env rm P`) is unwrapped like
+  // any other (#1832 review: Opus F3 / Codex 5). With `readMarker` false the
+  // zsh reading is resolved instead: the glued close is a write to the FILE
+  // `-WORD` and its whole span leaves argv (see verbReadings).
+  const argvVerbAt = (j) => {
+    while (j < segment.length && segment[j].redirect) {
+      const end = redirectSpanEnd(segment, j);
+      if (readMarker && segment[j].bashArgvWord !== undefined) return end;
+      j = end + 1;
+    }
+    return j;
+  };
+  // Skip leading FOO=bar env assignments (unquoted) and redirects, interleaved.
+  for (;;) {
+    i = argvVerbAt(i);
+    if (i < segment.length && !segment[i].quoted && ENV_ASSIGN_RE.test(segment[i].text)) { i++; continue; }
+    break;
   }
   while (i < segment.length) {
+    i = argvVerbAt(i);
+    if (i >= segment.length) break;
     const wrapper = segment[i].text.replace(/^.*\//, ''); // basename
     const spec = WRAPPER_UNWRAP.get(wrapper);
     if (!spec) break;
@@ -1752,6 +2012,7 @@ function resolveCore(segment, unknownFlagsTakeValue) {
     for (let p = spec.positionals ?? 0; p > 0 && i < segment.length; p--) i++;
     if (sawShellFlag) return { verb: 'sh', index: i, payloads, wrapperArgs, sawUnknownFlag };
   }
+  i = argvVerbAt(i);
   if (i >= segment.length) return { verb: null, index: -1, payloads, wrapperArgs, sawUnknownFlag };
   return {
     verb: segment[i].text.replace(/^.*\//, ''),
@@ -1775,12 +2036,75 @@ function stripCore(r) {
   return { verb: r.verb, index: r.index, payloads: r.payloads, wrapperArgs: r.wrapperArgs };
 }
 
+/**
+ * The segment as resolveCore reads it: the operand token of every glued close
+ * (`3>&-WORD`) is replaced by its bash argv word, so verb resolution and
+ * WRAPPER_UNWRAP see WORD (#1832). Same length as `segment`, so every index
+ * stays valid for callers that read the original segment.
+ *
+ * @param {Array<object>} segment
+ * @returns {Array<object>}
+ */
+function argvVerbView(segment) {
+  let view = null;
+  for (let j = 0; j < segment.length; j++) {
+    const argv = segment[j].bashArgvWord;
+    if (argv === undefined) continue;
+    const end = redirectSpanEnd(segment, j);
+    if (end === j) continue;
+    view ??= segment.slice();
+    view[end] = { text: argv.text, quoted: argv.quoted };
+  }
+  return view ?? segment;
+}
+
+/**
+ * Parse A and (for an unknown flag) parse B of one view (#1000).
+ *
+ * @param {Array<object>} segment
+ * @param {boolean} readMarker
+ * @returns {Array<object>} 1 or 2 stripped readings
+ */
+function flagReadings(segment, readMarker) {
+  const a = resolveCore(segment, false, readMarker); // parse A — byte-identical to pre-#1000
+  if (!a.sawUnknownFlag) return [stripCore(a)];
+  const b = resolveCore(segment, true, readMarker); // parse B — unknown flags take a value
+  if (b.verb === a.verb && b.index === a.index) return [stripCore(a)];
+  return [stripCore(a), stripCore(b)];
+}
+
+/**
+ * Every verb reading of a segment, de-duplicated by verb + index (#1832 G1).
+ * A glued close `N>&-WORD` has two shell readings and both are judged: bash
+ * closes fd N and passes WORD as argv (the argvVerbView), zsh writes to the
+ * FILE `-WORD` and WORD is NOT argv (the span is dropped). `3>&-echo rm P`
+ * runs `echo` in bash and `rm P` in zsh. Each view contributes its parse A
+ * and, for an unknown wrapper flag, parse B (#1000).
+ *
+ * @param {Array<object>} segment
+ * @returns {Array<{ verb: string|null, index: number, payloads: string[], wrapperArgs: object[] }>}
+ */
+function verbReadings(segment) {
+  const readings = flagReadings(argvVerbView(segment), true);
+  if (!segment.some((t) => t.bashArgvWord !== undefined)) return readings;
+  for (const r of flagReadings(segment, false)) {
+    if (!readings.some((o) => o.verb === r.verb && o.index === r.index)) readings.push(r);
+  }
+  return readings;
+}
+
+/**
+ * Resolve the command verb of a segment. Public shape unchanged: the first
+ * reading plus `alt` for the second when there is one. EVERY reading (both
+ * flag parses × both shell readings of a glued close, #1832 G1) rides along as
+ * the non-enumerable `readings` array — consumers that union readings iterate
+ * it, so a third reading is never dropped; `toEqual`/JSON see the old shape.
+ */
 export function resolveSegmentVerb(segment) {
-  const a = resolveCore(segment, false); // parse A — byte-identical to pre-#1000
-  if (!a.sawUnknownFlag) return stripCore(a); // unambiguous → no `alt` key at all
-  const b = resolveCore(segment, true); // parse B — unknown flags take a value
-  if (b.verb === a.verb && b.index === a.index) return stripCore(a);
-  return { ...stripCore(a), alt: stripCore(b) };
+  const readings = verbReadings(segment);
+  const out = readings.length === 1 ? { ...readings[0] } : { ...readings[0], alt: readings[1] };
+  Object.defineProperty(out, 'readings', { value: readings, enumerable: false });
+  return out;
 }
 
 /**
@@ -1792,16 +2116,69 @@ export function resolveSegmentVerb(segment) {
 const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'su']);
 
 /**
+ * Shell options that take the NEXT word as their value (`-o pipefail`,
+ * `+O extglob`, `--rcfile f`, `--init-file f`). bash's only value-taking long
+ * options are these two (#1797 7b: `bash --rcfile /dev/null -c '…'` read
+ * `/dev/null` as the command string and allowed the payload).
+ */
+const SHELL_OPTIONS_WITH_VALUE = new Set(['-o', '+o', '-O', '+O', '--rcfile', '--init-file']);
+
+/**
+ * The command string of a `bash|sh|zsh|dash|ksh` call, or null when it runs
+ * no `-c` string (Codex review C2; moved here from the destructive guard as
+ * the one SSOT, #1832 point 5). With `c` anywhere in an option group (`-c`,
+ * `-ce`, `-ec`, `-xc`, and the `+` forms `+c`, `+ec` — bash, zsh and sh all
+ * run `+c '…'` as a command string, #1797 7c), the FIRST operand after ALL
+ * options is the command string — options may follow `-c` (`bash -c -e '…'`);
+ * `-o`/`+o`/`-O`/`+O`/`--rcfile`/`--init-file` consume the next word; `--` and
+ * a lone `-` end the options.
+ *
+ * @param {Array<{ text: string }>} words - argv after the shell verb (redirect spans removed)
+ * @returns {string|null}
+ */
+export function shellCommandString(words) {
+  let hasC = false;
+  for (let i = 0; i < words.length; i++) {
+    const text = words[i].text;
+    if (text === '--' || text === '-') return hasC ? (words[i + 1]?.text ?? null) : null;
+    if (SHELL_OPTIONS_WITH_VALUE.has(text)) { i++; continue; }
+    if (text.startsWith('--')) continue; // other long options (`--norc`, `--login`) take no value
+    if (/^[-+][A-Za-z]+$/.test(text)) {
+      if (text.includes('c')) hasC = true;
+      continue;
+    }
+    return hasC ? text : null;
+  }
+  return null;
+}
+
+/**
  * Collect `-c`-style payload strings after the verb within a segment.
+ *
+ * UNION of two readings (#1832 point 5): the loose scan (any `-…c` group, the
+ * next token) and, for every verb except `su` (whose `su USER -c '…'` the loose
+ * scan already covers), the shell grammar of {@link shellCommandString} over the
+ * redirect-free argv — `bash +c '…'`, `bash -ce '…'`, `bash -c -e '…'` and
+ * `bash -c -- '…'` gave the loose scan the wrong word or none. Additive: never
+ * fewer payloads than before.
  *
  * @param {Array<{ text: string, quoted: boolean }>} segment
  * @param {number} verbIndex
+ * @param {string} verb
  * @returns {string[]}
  */
-function dashCPayloads(segment, verbIndex) {
+function dashCPayloads(segment, verbIndex, verb) {
   const payloads = [];
   for (let i = verbIndex + 1; i < segment.length - 1; i++) {
     if (/^-[A-Za-z]*c$/.test(segment[i].text)) payloads.push(segment[i + 1].text);
+  }
+  if (verb !== 'su') {
+    // Both shell readings of a glued close (#1832 G1): `bash -c 3>&-x 'P'` runs
+    // `x` in bash and `P` in zsh.
+    for (const bash of [true, false]) {
+      const payload = shellCommandString(argvWordsWithoutRedirects(segment, verbIndex + 1, { bash }));
+      if (payload !== null && !payloads.includes(payload)) payloads.push(payload);
+    }
   }
   return payloads;
 }
@@ -1877,37 +2254,87 @@ export function redirectSpanEnd(segment, i) {
 }
 
 /**
+ * The argv words a program receives from `segment[from..]` (#1832): redirect
+ * spans are dropped (redirectSpanEnd's rule) and the bash argv word of a glued
+ * close (`3>&-WORD`, `bashArgvWord`) is put back where the shell passes it.
+ * THE helper for every consumer that walks a verb's arguments — a consumer
+ * that skips redirects by hand forgets the bash reading (Opus review census:
+ * 4 of 11 `redirectSpanEnd` sites read the marker). The zsh reading (a write
+ * to the FILE `-WORD`) is the redirect surface's: extractRedirectTargets.
+ *
+ * @param {Array<{ text: string, quoted: boolean, redirect?: object }>} segment
+ * @param {number} [from]
+ * @param {{ bash?: boolean }} [view] — `{ bash: false }` reads the zsh view
+ * @returns {Array<{ text: string, quoted: boolean }>}
+ */
+export function argvWordsWithoutRedirects(segment, from = 0, { bash = true } = {}) {
+  const words = [];
+  for (let i = from; i < segment.length; i++) {
+    const tok = segment[i];
+    if (tok.redirect) {
+      // `bash: false` is the zsh view (#1832 G1): the glued close's whole span
+      // is a write to the FILE `-WORD`, no argv word comes back.
+      const argv = bash ? tok.bashArgvWord : undefined;
+      i = redirectSpanEnd(segment, i);
+      if (argv !== undefined) words.push(argv);
+      continue;
+    }
+    words.push(tok);
+  }
+  return words;
+}
+
+/**
+ * A quoted token whose text holds one of these characters can never equal a
+ * single pattern word (pattern words contain none of the boundary characters).
+ */
+const QUOTED_NON_WORD_RE = /[\s;|&(){}`'"]/;
+
+/**
  * Test whether a blocked pattern occurs OUTSIDE quoted tokens within a segment.
- * Reconstructs the unquoted skeleton (quoted tokens replaced by a single space
- * placeholder so they cannot bridge an adjacent-token match) and applies the
+ * Reconstructs the skeleton of the argv the program receives and applies the
  * boundary regex.
  *
- * Redirect tokens (#983) and their operand word are ALSO replaced by space
- * placeholders (same no-bridging treatment as quoted tokens): a redirect
- * target is a filename argument to the shell, not part of the command verb
- * surface — `rm -rf /tmp/ok > out.log` must not feed `>` / `out.log` into
- * the pattern skeleton. `dup`-mode redirects (`2>&1`) carry their target
- * inline and consume no operand.
+ * Quoted tokens: a quoted token is ONE argv word. When its text is a single
+ * plain word (`"reset"`, `re"set"`, `"-rf"`) the program receives exactly
+ * what an unquoted word gives it, so the text enters the skeleton (#1830 —
+ * `git "reset" --hard` was ALLOWED). A quoted token holding whitespace or a
+ * boundary character stays a space placeholder: one argv word can never equal
+ * a multi-word pattern, and the placeholder keeps it from bridging an
+ * adjacent-token match — that is what keeps `git commit -m "git reset --hard
+ * is bad"` and `echo "rm -rf x"` inert here (their quoted payloads are judged
+ * by quotedTokensMatch, interpreter verbs only).
+ *
+ * Redirect tokens (#983) and their operand word are DROPPED entirely: the
+ * shell removes them before the program starts, so `git >/dev/null reset
+ * --hard` runs `git reset --hard` (#1830 — the old space placeholders left
+ * `git   reset --hard` and the single-space pattern missed). The redirect
+ * target still never enters the skeleton: `rm -rf /tmp/ok > out.log` feeds
+ * neither `>` nor `out.log`. The operand span is redirectSpanEnd's rule
+ * (`dup`/`heredoc` own no word).
  *
  * @param {Array<{ text: string, quoted: boolean, redirect?: object }>} segment
  * @param {RegExp} re
  * @returns {boolean}
  */
 function unquotedSegmentMatch(segment, re) {
-  const parts = [];
-  for (let i = 0; i < segment.length; i++) {
-    const tok = segment[i];
-    if (tok.redirect) {
-      parts.push(' ');
-      // Operand-span rule lives in redirectSpanEnd (#1002) — one grammar, one
-      // place. `end > i` is exactly the old inline predicate.
-      const end = redirectSpanEnd(segment, i);
-      if (end > i) { parts.push(' '); i = end; } // operand word belongs to the redirect
-      continue;
+  // Redirects and their operand leave no trace (#1830); the bash argv word of
+  // a glued close comes back (#1832) — argvWordsWithoutRedirects owns both.
+  // Both shell readings are judged (#1832 G1): `git 3>&-x reset --hard` is
+  // `git x reset --hard` in bash but `git reset --hard` in zsh.
+  const views = segment.some((t) => t.bashArgvWord !== undefined) ? [true, false] : [true];
+  for (const bash of views) {
+    const parts = [];
+    for (const tok of argvWordsWithoutRedirects(segment, 0, { bash })) {
+      if (tok.quoted) {
+        parts.push(tok.text !== '' && !QUOTED_NON_WORD_RE.test(tok.text) ? tok.text : ' ');
+        continue;
+      }
+      parts.push(tok.text);
     }
-    parts.push(tok.quoted ? ' ' : tok.text);
+    if (re.test(parts.join(' '))) return true;
   }
-  return re.test(parts.join(' '));
+  return false;
 }
 
 /**
@@ -1941,18 +2368,18 @@ const MAX_PAYLOAD_EVALUATIONS = 32;
  *           alt?: { verb: string|null, index: number, payloads: string[] } }} resolved
  * @returns {string[]} distinct payload strings (insertion-ordered)
  */
+/** All readings of a resolveSegmentVerb result (`readings`, else primary + alt). */
+const readingsOf = (resolved) => resolved.readings ?? (resolved.alt ? [resolved, resolved.alt] : [resolved]);
+
 function dedupedSegmentPayloads(segment, resolved) {
-  const payloadSet = new Set(resolved.payloads);
-  if (resolved.verb && DASH_C_SHELLS.has(resolved.verb)) {
-    for (const p of dashCPayloads(segment, resolved.index)) payloadSet.add(p);
-  }
-  addArgJoinedPayload(segment, resolved.verb, resolved.index, payloadSet);
-  if (resolved.alt) {
-    for (const p of resolved.alt.payloads) payloadSet.add(p);
-    if (resolved.alt.verb && DASH_C_SHELLS.has(resolved.alt.verb)) {
-      for (const p of dashCPayloads(segment, resolved.alt.index)) payloadSet.add(p);
+  const payloadSet = new Set();
+  // Every reading (both flag parses × both shell readings, #1832 G1).
+  for (const reading of readingsOf(resolved)) {
+    for (const p of reading.payloads) payloadSet.add(p);
+    if (reading.verb && DASH_C_SHELLS.has(reading.verb)) {
+      for (const p of dashCPayloads(segment, reading.index, reading.verb)) payloadSet.add(p);
     }
-    addArgJoinedPayload(segment, resolved.alt.verb, resolved.alt.index, payloadSet);
+    addArgJoinedPayload(segment, reading.verb, reading.index, payloadSet);
   }
   return [...payloadSet];
 }
@@ -1989,20 +2416,191 @@ const ARG_JOINING_INTERPRETERS = new Set(['eval']);
  */
 function addArgJoinedPayload(segment, verb, index, payloadSet) {
   if (!verb || index < 0 || !ARG_JOINING_INTERPRETERS.has(verb)) return;
-  const words = [];
-  for (let i = index + 1; i < segment.length; i++) {
-    if (segment[i].redirect) {
-      // A redirect belongs to the SEGMENT (`eval 'x' > f` redirects eval's own
-      // stdout), never to the joined argv — the segment scan already reported
-      // it, and re-reporting it through the payload would duplicate the entry.
-      const end = redirectSpanEnd(segment, i);
-      if (end > i) i = end;
+  // A redirect belongs to the SEGMENT (`eval 'x' > f` redirects eval's own
+  // stdout), never to the joined argv — the segment scan already reported it.
+  // The bash argv word of a glued close IS argv (`eval 3>&-rm P`, #1832).
+  // Both shell readings (#1832 G1): `eval >&-z 'rm P'` evaluates `z rm P` in
+  // bash and `rm P` in zsh.
+  for (const bash of [true, false]) {
+    const joined = argvWordsWithoutRedirects(segment, index + 1, { bash }).map((t) => t.text).join(' ').trim();
+    if (joined.length > 0) payloadSet.add(joined);
+  }
+}
+
+/**
+ * git global options that take their value as the NEXT word (#1831). Mirrors
+ * GIT_OPTIONS_WITH_VALUE + `-C` + the bare `--git-dir`/`--work-tree` forms of
+ * gitGlobals in hooks/pre-bash-destructive-guard.mjs (the SSOT) — duplicated,
+ * not imported, so this module needs nothing from the hook. Every other
+ * leading `-…` word is a value-less global (`--no-pager`, `--bare`, `-p`,
+ * `--exec-path`, `--config-env=…`, `--git-dir=…`).
+ */
+const GIT_GLOBALS_WITH_VALUE = new Set(['-C', '-c', '--namespace', '--config-env', '--attr-source', '--git-dir', '--work-tree']);
+
+/**
+ * Long spellings of a short flag, per subcommand (#1831): `git clean --force`
+ * is `-f`, `git push --force` is `-f`. `-d`/`-x` of clean have no long form.
+ */
+const GIT_SHORT_LONG_ALIASES = { clean: { f: '--force' }, push: { f: '--force' } };
+
+/**
+ * Parse a `git <sub> <flag…>` pattern into its argv-match spec (#1831), or
+ * null for every other pattern (`rm -rf` has its own delete logic, `DROP
+ * TABLE` stays literal).
+ *
+ * @param {string[]} words — the pattern split on spaces
+ * @returns {{ sub: string, flags: string[] } | null}
+ */
+function gitPatternSpec(words) {
+  if (words.length < 2 || words[0] !== 'git' || words[1].startsWith('-')) return null;
+  const flags = words.slice(2);
+  if (!flags.every((f) => f.startsWith('-'))) return null;
+  return { sub: words[1], flags };
+}
+
+/**
+ * Does the argument `arg` spell the long option `name` the way git's option
+ * parser accepts it (#1831)? Full name, or ANY prefix with at least one
+ * character after `--`: git takes every unique prefix (Opus review against
+ * real git, 2026-10-27: `git reset --h`, `git clean --f -d`, `git checkout
+ * --q -- a` all exit 0 and act). A `=value` suffix is cut first, so
+ * `--force-with-lease=main` spells `--force-with-lease` and never `--force`.
+ * NAMED CEILING (BV-004): an ambiguous prefix (`git push --fo`, exit 129)
+ * matches every name it prefixes — git rejects it, so the over-match is a
+ * harmless deny. REVISIT TRIGGER: an fp-measure replay showing a real command
+ * denied by that rule.
+ */
+function spellsLongOption(arg, name) {
+  if (!arg.startsWith('--') || arg === '--') return false;
+  const given = arg.split('=')[0];
+  if (given === name) return true;
+  return given.length >= 3 && name.startsWith(given);
+}
+
+/**
+ * May `word` stand between `checkout` and `--` in the form PSA-003 names,
+ * `git checkout -- <file>` (#1831 coordinator decision, HR-101)? Only the
+ * quiet/force options: `-q`, `-f`, a group of those letters, `--quiet`,
+ * `--force` and their abbreviations, and `--end-of-options` (review H2:
+ * `git checkout --end-of-options -- a` exits 0 and discards). NAMED CEILING (BV-004): `git checkout
+ * <ref> -- <path>`, `--ours`/`--theirs`/`-m`/`--merge`/`-p` before `--`, and
+ * `git restore` (same effect) are NOT judged by the argv match — the replay
+ * counted 175 + 6 such real commands per 30 days, and blocking `checkout <ref>
+ * --` without `restore --source` would be incoherent. REVISIT TRIGGER: the
+ * #1831 follow-up policy issue on ref-sourced discards.
+ *
+ * @param {string} word
+ * @returns {boolean}
+ */
+function isPlainCheckoutOption(word) {
+  if (/^-[qf]+$/.test(word) || word === '--end-of-options') return true;
+  return spellsLongOption(word, '--quiet') || spellsLongOption(word, '--force');
+}
+
+/**
+ * Is a `git clean` call a dry run (#1831 review M1)? `-n` in any short group
+ * or a `--dry-run` spelling turns it on, a `--no-dry-run` spelling off; the
+ * last one wins, as in git's option parser. The value of `-e`/`--exclude` is
+ * skipped — in `-enode` or `-e -n` the `n` is an exclude pattern, not a dry
+ * run, and reading it as one would open a hole.
+ *
+ * @param {string[]} flagWords — the words after `clean` up to a bare `--`
+ * @returns {boolean}
+ */
+function isCleanDryRun(flagWords) {
+  let dry = false;
+  for (let i = 0; i < flagWords.length; i++) {
+    const w = flagWords[i];
+    if (/^-[^-]/.test(w)) {
+      const group = w.slice(1);
+      const e = group.indexOf('e');
+      if (group.slice(0, e === -1 ? undefined : e).includes('n')) dry = true;
+      if (e === group.length - 1) i++; // `-e PATTERN`: the next word is the value
       continue;
     }
-    words.push(segment[i].text);
+    if (spellsLongOption(w, '--exclude')) {
+      if (!w.includes('=')) i++;
+      continue;
+    }
+    if (spellsLongOption(w, '--dry-run')) dry = true;
+    else if (spellsLongOption(w, '--no-dry-run')) dry = false;
   }
-  const joined = words.join(' ').trim();
-  if (joined.length > 0) payloadSet.add(joined);
+  return dry;
+}
+
+/**
+ * Do the words after `git` carry the pattern's subcommand and every pattern
+ * flag in an equivalent spelling (#1831)? Short flags are judged as the UNION
+ * of letters over all short groups (`-fdx`, `-xfd`, `-f -d`); a long flag
+ * anywhere after the subcommand counts (`git reset HEAD~1 --hard`); a `+`
+ * refspec of `git push` is a force push. Flag scanning stops at a bare `--`
+ * (after it every word is a pathspec/refspec) except for the `checkout --`
+ * pattern itself and for `+` refspecs, which stay refspecs behind `--`.
+ * A `git clean` dry run (`-n`, `--dry-run`, last spelling wins against
+ * `--no-dry-run`) only prints "Would remove" and never matches (review M1).
+ * NAMED CEILINGS (BV-004), all over-matches (a deny, the safe side) unless
+ * noted: values of per-subcommand value options are not skipped (`git clean
+ * -e -f`, `git push -o -f…`); `--no-force` after `--force` is not undone;
+ * `git push --end-of-options --force` still counts `--force`; and git
+ * aliases are NOT judged — neither `git config alias.x 'clean -fdx'` nor one
+ * defined in the command itself (`git -c alias.zz='reset --hard' zz`, an
+ * under-match). REVISIT TRIGGER: a transcript census hit of `-c alias.` or
+ * of an alias-run destructive command.
+ *
+ * @param {string[]} words — argv texts after the `git` verb
+ * @param {{ sub: string, flags: string[] }} spec
+ * @returns {boolean}
+ */
+function gitWordsMatch(words, spec) {
+  let i = 0;
+  for (; i < words.length && words[i].startsWith('-'); i++) {
+    if (GIT_GLOBALS_WITH_VALUE.has(words[i])) i++;
+  }
+  if (words[i] !== spec.sub) return false;
+  const after = words.slice(i + 1);
+  const end = after.indexOf('--');
+  const flagWords = end === -1 ? after : after.slice(0, end);
+  const longs = flagWords.filter((w) => w.startsWith('--'));
+  const letters = new Set(
+    flagWords.filter((w) => /^-[^-]/.test(w)).flatMap((w) => [...w.slice(1)]),
+  );
+  if (spec.sub === 'clean' && isCleanDryRun(flagWords)) return false;
+  const plusRefspec = spec.sub === 'push' && after.some((w) => w.length > 1 && w.startsWith('+'));
+  const aliases = GIT_SHORT_LONG_ALIASES[spec.sub] ?? {};
+  return spec.flags.every((flag) => {
+    if (flag === '--') return end !== -1 && after.slice(0, end).every(isPlainCheckoutOption);
+    if (flag.startsWith('--')) {
+      if (plusRefspec && flag === '--force') return true;
+      return longs.some((w) => spellsLongOption(w, flag));
+    }
+    return [...flag.slice(1)].every((l) => {
+      if (letters.has(l)) return true;
+      if (plusRefspec && l === 'f') return true;
+      return aliases[l] !== undefined && longs.some((w) => spellsLongOption(w, aliases[l]));
+    });
+  });
+}
+
+/**
+ * The argv match of a `git` pattern on one segment (#1831): every reading
+ * whose verb is `git` (readingsOf — both flag parses × both shell readings of
+ * a glued close, #1832 G1), its words in BOTH views of argvWordsWithoutRedirects.
+ * Purely additive to unquotedSegmentMatch: it can only add matches.
+ *
+ * @param {Array<object>} segment
+ * @param {object} resolved — resolveSegmentVerb(segment)
+ * @param {{ sub: string, flags: string[] }} spec
+ * @returns {boolean}
+ */
+function gitArgvMatch(segment, resolved, spec) {
+  for (const reading of readingsOf(resolved)) {
+    if (reading.verb !== 'git' || reading.index < 0) continue;
+    for (const bash of [true, false]) {
+      const words = argvWordsWithoutRedirects(segment, reading.index + 1, { bash }).map((t) => t.text);
+      if (gitWordsMatch(words, spec)) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -2022,14 +2620,21 @@ function addArgJoinedPayload(segment, verb, index, payloadSet) {
  * @param {RegExp} re
  * @param {number} depth — current payload-nesting depth (entry check < MAX)
  * @param {{ remaining: number }} budget — shared across the whole recursion
+ * @param {{ sub: string, flags: string[] } | null} [git] — gitPatternSpec of the
+ *   pattern; null for a non-git pattern (#1831)
  * @returns {boolean}
  */
-function matchSegments(segments, re, depth, budget) {
+function matchSegments(segments, re, depth, budget, git = null) {
   for (const segment of segments) {
     // 1) Unquoted occurrence anywhere in the segment → always a match.
     if (unquotedSegmentMatch(segment, re)) return true;
 
     const resolved = resolveSegmentVerb(segment);
+
+    // 1b) The argv match of a git pattern (#1831): equivalent flag spellings
+    //     (`-fdx`, `--force`, `--forc`, `+main`, flags after operands)
+    //     the literal word sequence misses. Union only — never fewer matches.
+    if (git && gitArgvMatch(segment, resolved, git)) return true;
 
     // 2) Quoted occurrence → only a match when the segment verb is an interpreter
     //    that executes its quoted payload. EITHER reading of an ambiguous
@@ -2037,7 +2642,7 @@ function matchSegments(segments, re, depth, budget) {
     //    to the non-interpreter `x` in parse A and to `bash` in parse B.
     if (quotedTokensMatch(segment, re)) {
       const isInterp = (v) => Boolean(v) && SHELL_EXEC_INTERPRETERS.has(v);
-      if (isInterp(resolved.verb) || isInterp(resolved.alt?.verb)) return true;
+      if (readingsOf(resolved).some((r) => isInterp(r.verb))) return true;
       // else: inert literal inside quotes for a non-interpreter verb → no match
       // for THIS segment; keep scanning other segments.
     }
@@ -2065,7 +2670,7 @@ function matchSegments(segments, re, depth, budget) {
         const subTokens = tokenizeCommand(
           normalizeShellWhitespaceExpansions(payload, { expandSingleQuoted: true }),
         );
-        if (matchSegments(splitSegments(subTokens), re, depth + 1, budget)) return true;
+        if (matchSegments(splitSegments(subTokens), re, depth + 1, budget, git)) return true;
       }
     }
   }
@@ -2138,8 +2743,7 @@ function collectRedirectTargets(segments, out, depth, budget) {
     // mirror case — parse B swallows `/usr/bin/time` as `-n`'s operand and
     // reports nothing. Replacement would lose one of the two.
     const seenWrapperTargets = new Set();
-    const altWrapperArgs = resolved.alt ? resolved.alt.wrapperArgs : [];
-    for (const wa of [...resolved.wrapperArgs, ...altWrapperArgs]) {
+    for (const wa of readingsOf(resolved).flatMap((r) => r.wrapperArgs)) {
       if (wa.writesFile !== true) continue;
       if (typeof wa.value !== 'string') continue;
       // De-dup key is the OPERAND plus the mode, which for a resolved entry is
@@ -2164,7 +2768,7 @@ function collectRedirectTargets(segments, out, depth, budget) {
     // policy). Keyed on the RESOLVED verb, so `sudo dd of=X` is reached through
     // the existing wrapper unwrap; both readings contribute, as above.
     const seenVerbOperands = new Set();
-    for (const reading of resolved.alt ? [resolved, resolved.alt] : [resolved]) {
+    for (const reading of readingsOf(resolved)) {
       const spec = reading.verb ? VERB_FILE_OPERANDS.get(reading.verb) : null;
       if (!spec || reading.index < 0) continue;
       let operand = null;
@@ -2679,7 +3283,7 @@ function collectDeleteTargets(segments, out, depth, budget) {
     // resolves to the non-destructive verb `x` in parse A and to `rm` in parse B,
     // while `sudo -n rm <file>` is the mirror case (parse B swallows `rm` as
     // `-n`'s operand). Picking either reading alone drops one of the two.
-    const readings = resolved.alt ? [resolved, resolved.alt] : [resolved];
+    const readings = readingsOf(resolved);
     const seen = new Set();
 
     for (const reading of readings) {
@@ -2696,12 +3300,12 @@ function collectDeleteTargets(segments, out, depth, budget) {
       if (segment[reading.index].quoted && /\s/.test(segment[reading.index].text)) continue;
 
       let seenDashDash = false;
-      for (let i = reading.index + 1; i < segment.length; i++) {
-        const tok = segment[i];
-        // A redirect operand is a filename the SHELL consumes, not an operand of
-        // the verb — `rm -f x > out.log` deletes `x`, it does not delete
-        // `out.log` (the redirect surface judges that one).
-        if (tok.redirect) { i = redirectSpanEnd(segment, i); continue; }
+      // A redirect operand is a filename the SHELL consumes, not an operand of
+      // the verb — `rm -f x > out.log` deletes `x`, it does not delete
+      // `out.log` (the redirect surface judges that one). The bash reading of
+      // a glued close (`rm 3>&--rf P`: close fd 3, argv `-rf`) is an argv
+      // word again (#1832, argvWordsWithoutRedirects).
+      for (const tok of argvWordsWithoutRedirects(segment, reading.index + 1)) {
         if (!seenDashDash && tok.text === '--') { seenDashDash = true; continue; }
         // FLAG SKIPPING, and why this is the UNION of both flag readings rather
         // than a pick (#1000 applied to the VERB's own options): an option table
@@ -2880,13 +3484,37 @@ export function commandMatchesBlocked(command, pattern) {
     expandSingleQuoted: true,
   });
 
-  // Fast path: if the boundary regex does not match the raw string at all, no
-  // tokenization can produce a match. Shell whitespace expansions can create
-  // matches, so test the normalized forms rather than the original command.
-  if (!re.test(normalizedCommand) && !re.test(payloadNormalizedCommand)) return false;
+  // Fast path — a SUPERSET prefilter (#1830). The old one asked the boundary
+  // regex of the raw text, claiming "no tokenization can produce a match"; that
+  // was false: quote removal (`git "reset" --hard`), redirect removal
+  // (`git >/dev/null reset --hard`) and tab separators produce the pattern from
+  // text that does not contain it, and all 13 pattern rules were bypassed that
+  // way. Every token the lexer emits is command text with characters REMOVED
+  // (quotes, `$` of `$'…'`, escaping backslashes, `\<newline>`), never
+  // added, and no pattern word contains one of those characters — so a command
+  // whose stripped text lacks any pattern word cannot match, and every other
+  // command goes to the tokenizer.
+  // ANSI-C quotes `$'…'` are DECODED by the lexer (#1832: `$'\x72eset'` →
+  // `reset`), i.e. characters are ADDED that the text does not contain, so the
+  // stripped-text argument above does not hold for them. A command holding
+  // `$'` skips the prefilter and always goes to the tokenizer — the smaller
+  // correct change than a second `$'…'` decoder here (one grammar, in the
+  // lexer); the cost is a tokenizer run for the rare commands that use it.
+  const words = pattern.split(' ').filter(Boolean);
+  // A git pattern's flags may be spelled differently (#1831: `-xfd` holds no
+  // `-f`), so its prefilter asks only for `git` and the subcommand — the
+  // argv match needs both words verbatim (git does not abbreviate
+  // subcommands), so the superset property above still holds.
+  const git = gitPatternSpec(words);
+  const required = git ? ['git', git.sub] : words;
+  const mayMatch = (text) => {
+    const stripped = text.replace(/\\\n/g, '').replace(/[\\'"$`]/g, '');
+    return required.every((w) => stripped.includes(w));
+  };
+  if (!command.includes("$'") && !mayMatch(normalizedCommand) && !mayMatch(payloadNormalizedCommand)) return false;
 
   const segments = splitSegments(tokenizeCommand(normalizedCommand));
-  return matchSegments(segments, re, 0, { remaining: MAX_PAYLOAD_EVALUATIONS });
+  return matchSegments(segments, re, 0, { remaining: MAX_PAYLOAD_EVALUATIONS }, git);
 }
 
 /**

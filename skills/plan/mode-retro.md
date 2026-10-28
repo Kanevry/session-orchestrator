@@ -29,7 +29,7 @@ Read `.orchestrator/metrics/sessions.jsonl` and keep only REAL sessions: drop ev
 
 Compute aggregates:
 - Total sessions (real only), average duration, session type distribution (deep/feature/housekeeping)
-- `N abandoned stubs excluded` — its own dashboard line, never folded into Total sessions
+- `N abandoned stubs excluded` — its own dashboard line, never folded into Total sessions. Split it by what the stubs measurably did (#1835): `node scripts/session-ledger-census.mjs --json` reports `empty / conversation / dispatched / unmeasured`. Only `empty` is a measured restart without recorded work (no turn, agent, wave, tool event or Skill call); `unmeasured` is not zero work. Never derive the split from a stub's `total_waves` / `total_agents` — those are placeholders listed in `_backfill_incomplete_fields`
 - Average completion rate, total carryover rate (carryover / planned across all sessions)
 - Agent success rate (complete / total dispatched), spiral rate (spiral / total)
 - Most common wave roles, average files changed per wave — `waves[].files_changed` is not one shape across the ledger: a number (use it), an array (use its length), or null/absent (MISSING — exclude the wave from the average, never count it as 0). Report the n behind the average: `avg files/wave X (n=<waves with a value> of <all waves>)`

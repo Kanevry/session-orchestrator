@@ -18,7 +18,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { parse as parseYaml } from 'yaml';
+import { parseAllDocuments } from 'yaml';
 
 import { gitEnv, isGitExecError, PATH_ABSENT } from './floating-tags.mjs';
 
@@ -728,13 +728,44 @@ function parseWith(parser, text) {
   }
 }
 
+/**
+ * Every YAML document of a pnpm-lock.yaml (#5725). pnpm 12 with a
+ * `packageManager` field writes the package manager's own dependencies (pnpm,
+ * `@pnpm/exe.*`) as a FIRST document ahead of the project lockfile — measured on
+ * a pnpm 12.3.4 lockfile: `yaml.parse` refuses it with `MULTIPLE_DOCS`, so the
+ * whole file counted `unparsed` and none of its new packages reached OSV. Both
+ * documents are installs from the registry, so both are read. `parseAllDocuments`
+ * does not throw; a document carrying errors is a parse failure like before.
+ *
+ * @param {string} text
+ * @returns {object[]} one plain object per document
+ */
+function parsePnpmDocuments(text) {
+  const docs = parseAllDocuments(text);
+  const list = Array.isArray(docs) ? docs : [];
+  for (const doc of list) if (doc.errors.length > 0) throw doc.errors[0];
+  return list.map((doc) => doc.toJS());
+}
+
+/** Packages of every pnpm document, in document order (the delta dedupes). */
+function parsePnpmLocks(docs) {
+  const packages = [];
+  const invalid = [];
+  for (const doc of docs) {
+    const one = parsePnpmLock(doc);
+    packages.push(...one.packages);
+    invalid.push(...one.invalid);
+  }
+  return { packages, invalid };
+}
+
 function parseLockfile(kind, text) {
   if (text === null) return { packages: [], invalid: [], unpinnedLines: [] };
   switch (kind) {
     case 'package-lock':
       return { ...parsePackageLock(parseWith(JSON.parse, text)), unpinnedLines: [] };
     case 'pnpm':
-      return { ...parsePnpmLock(parseWith(parseYaml, text)), unpinnedLines: [] };
+      return { ...parsePnpmLocks(parseWith(parsePnpmDocuments, text)), unpinnedLines: [] };
     case 'uv':
       return { ...parseUvLock(text), unpinnedLines: [] };
     default:

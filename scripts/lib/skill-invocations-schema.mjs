@@ -20,7 +20,7 @@
  */
 
 import { readFile, appendFile, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync as fsReadFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveLedgerPath } from './ledger-path.mjs';
 
@@ -224,4 +224,43 @@ export async function readSkillInvocations(filePath) {
     }
   }
   return entries;
+}
+
+/**
+ * Count the `selected` rows per `session_id` (#1835). A Skill call is a tool
+ * call (`hooks/skill-invocation-telemetry.mjs`, PreToolUse `Skill`), so a
+ * session that has a row was doing something even when no turn completed —
+ * measured 2026-10-27: a session cleared before its first Stop left only
+ * lifecycle events in events.jsonl but two rows here.
+ *
+ * Sync and never throws: it runs inside the SessionStart/SessionEnd backfill.
+ * A missing file is a readable zero (the hook creates it on the first Skill
+ * call); a file that exists but cannot be read is `readable: false`, and the
+ * caller must then treat the session's activity as not measured.
+ *
+ * @param {string} filePath — absolute path, e.g. {@link defaultSkillInvocationsPath}
+ * @param {(p: string, enc: string) => string} [readFileSync] — test seam
+ * @returns {{counts: Map<string, number>, readable: boolean}}
+ */
+export function countSkillInvocationsBySession(filePath, readFileSync = fsReadFileSync) {
+  const counts = new Map();
+  let raw;
+  try {
+    raw = readFileSync(filePath, 'utf8');
+  } catch (err) {
+    return { counts, readable: err?.code === 'ENOENT' };
+  }
+  for (const line of String(raw).split('\n')) {
+    if (line.trim() === '') continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (row === null || typeof row !== 'object' || row.event !== 'selected') continue;
+    if (typeof row.session_id !== 'string' || row.session_id === '') continue;
+    counts.set(row.session_id, (counts.get(row.session_id) ?? 0) + 1);
+  }
+  return { counts, readable: true };
 }

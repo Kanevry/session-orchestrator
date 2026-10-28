@@ -24,9 +24,36 @@ const SCRIPT_DIR = path.dirname(__filename);
 const SO_ROOT = path.dirname(SCRIPT_DIR);
 
 const args = process.argv.slice(2);
+
+if (args.includes('-h') || args.includes('--help')) {
+  process.stdout.write(
+    [
+      'Usage: node scripts/pi-install.mjs [TARGET] [--global] [--settings-only]',
+      '',
+      'Register Session Orchestrator as a Pi package.',
+      '',
+      '  TARGET            project to install into (default: the current directory)',
+      '  --global          register for the whole host instead of one project',
+      '  --settings-only   write settings without calling the `pi` binary',
+      '  -h, --help        show this help',
+      '',
+    ].join('\n')
+  );
+  process.exit(0);
+}
+
+// Unknown flags used to be dropped silently by the `positional` filter below,
+// so `--help` fell through to a FULL INSTALL into the current directory and
+// reported "Done." — measured 2026-09-13.
+const KNOWN_FLAGS = new Set(['--global', '--settings-only']);
+const unknownFlag = args.find((arg) => arg.startsWith('-') && !KNOWN_FLAGS.has(arg));
+if (unknownFlag) {
+  die(`unknown option: ${unknownFlag}. Run with --help for usage.`);
+}
+
 const globalMode = args.includes('--global');
 const settingsOnly = args.includes('--settings-only');
-const positional = args.filter((arg) => !arg.startsWith('--'));
+const positional = args.filter((arg) => !arg.startsWith('-'));
 const target = positional[0] ? path.resolve(positional[0]) : process.cwd();
 const piAgentHome = process.env.PI_AGENT_HOME
   ? path.resolve(process.env.PI_AGENT_HOME)

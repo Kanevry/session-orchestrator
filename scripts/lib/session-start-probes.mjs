@@ -728,6 +728,16 @@ export const PROBES = [
     render: (r) => {
       if (!r || typeof r !== 'object') return null;
       if (r.degraded) return typeof r.message === 'string' && r.message ? r.message : null;
+      // #856: a running or canceled HEAD pipeline is "no verdict", neither
+      // "could not be determined" nor `🚨 CI RED`. A red PUSHED commit keeps
+      // the escalated line below.
+      if ((r.phase === 'running' || r.phase === 'canceled') && r.pushed?.verdict?.status !== 'red') {
+        const pid = r.details?.currentPipelineId;
+        const ref = pid !== null && pid !== undefined ? ` (#${pid})` : '';
+        return r.phase === 'running'
+          ? `⚠ ci-status: CI running on HEAD${ref} — no verdict yet`
+          : `⚠ ci-status: last CI run on HEAD was canceled${ref} — no verdict`;
+      }
       // `status: 'unknown'` is the SAME collapse one level over: HEAD carries
       // no pipeline (the normal state of a working session with local commits),
       // so the probe cannot say anything about CI — while the last PUSHED
@@ -769,6 +779,9 @@ export const PROBES = [
       // instrument that cannot report the thing it exists to report).
       if (!r || typeof r !== 'object') return 'ok';
       if (r.degraded) return 'warn';
+      // #1337 escalation stays first; then #856 no-verdict phases are `warn`.
+      if (r.pushed?.verdict?.status === 'red') return 'alert';
+      if (r.phase === 'running' || r.phase === 'canceled') return 'warn';
       if (r.status === 'red') return 'alert';
       // A set-aside failed run (#1390 P5) is `warn`, never `alert`: the reading
       // itself is green, and `alert` is what a red pipeline scores.

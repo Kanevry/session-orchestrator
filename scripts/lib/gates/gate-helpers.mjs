@@ -208,6 +208,16 @@ const KILL_FIELD_COMMANDS = ['typecheck', 'test', 'lint'];
  *   `leftover_groups` (#1708); the key is absent when no command had one.
  *   The joined `survivors` count stays the kill-ladder count and does NOT
  *   include `leftover_groups[].survivors` (#1704 keeps the two apart).
+ *   The serial re-run's own ladder (`test.rerun`, #1673) joins as one more
+ *   command right after `test` (execution order in gate-full.mjs: typecheck,
+ *   test, re-run, lint), its reaped group as `command: 'test-rerun'` (#1708
+ *   N3). A re-run object without a boolean `timed_out` (a `rerun-error`)
+ *   adds nothing and never decides whether the inner side is measured.
+ * - outer `leftover_groups` (the sub-script's own group, reaped after a normal
+ *   exit): carried FIRST in BOTH branches — a reaped leftover is a
+ *   measurement — after dropping malformed entries; they never change
+ *   `timed_out`, `survivors` or `kill_signals`. The key is absent when the
+ *   final list is empty.
  * - inner NOT measured (a variant whose envelope does not publish it, an
  *   unparseable envelope, or the outer ceiling killed the sub-script before it
  *   wrote one): the outer ladder alone when it fired — a kill is a kill — and
@@ -217,7 +227,8 @@ const KILL_FIELD_COMMANDS = ['typecheck', 'test', 'lint'];
  * Never throws.
  *
  * @param {object} args
- * @param {{timed_out: boolean, survivors: number|null, error?: string, kill_signals: string[]}} args.outer
+ * @param {{timed_out: boolean, survivors: number|null, error?: string, kill_signals: string[],
+ *   leftover_groups?: Array<{command: string, pgid: number, signals: string[], survivors: number[]}>}} args.outer
  *   `gateKillFields()` of the sub-script's `spawnInGroup` result.
  * @param {string} args.gateStdout  The sub-script's stdout envelope (`''` on an outer kill).
  * @returns {{timed_out: boolean, survivors: number|null, error?: string, kill_signals: string[],
@@ -239,30 +250,55 @@ export function joinGateKillFields({ outer, gateStdout }) {
   // stub) — nothing killed is then a measurement too. Any OTHER command (a
   // variant that ran it but does not publish the ladder) makes the inner side
   // unknown as a whole.
-  const inner = names.map((name) => parsed[name]).filter((c) => typeof c.timed_out === 'boolean');
   const innerKnown = names.length > 0 && names.every((name) => typeof parsed[name].timed_out === 'boolean'
     || parsed[name].status === 'skip'
     || Boolean(stubbed[name]));
 
-  if (!innerKnown) return outer?.timed_out === true || outer?.survivors === null ? { ...outer } : {};
+  // The outer contract is checked here, not trusted: a malformed entry would
+  // publish a pgid nobody can look up.
+  const outerGroups = (Array.isArray(outer?.leftover_groups) ? outer.leftover_groups : [])
+    .filter((g) => isObj(g) && typeof g.command === 'string' && Number.isFinite(g.pgid)
+      && Array.isArray(g.signals) && Array.isArray(g.survivors))
+    .map((g) => ({ command: g.command, pgid: g.pgid, signals: [...g.signals], survivors: [...g.survivors] }));
 
-  const unmeasurable = [outer, ...inner].filter((c) => c?.survivors === null);
+  if (!innerKnown) {
+    const { leftover_groups: _raw, ...outerLadder } = outer ?? {};
+    const fired = outer?.timed_out === true || outer?.survivors === null;
+    return {
+      ...(fired ? outerLadder : {}),
+      ...(outerGroups.length > 0 ? { leftover_groups: outerGroups } : {}),
+    };
+  }
+
+  // #1708 N3: the serial re-run ran right after `test`; only a ladder it
+  // actually published (boolean `timed_out`) joins.
+  const rerun = isObj(parsed.test?.rerun) && typeof parsed.test.rerun.timed_out === 'boolean' ? parsed.test.rerun : null;
+  const ladders = names.flatMap((name) => {
+    const own = { command: name, fields: parsed[name] };
+    return name === 'test' && rerun ? [own, { command: 'test-rerun', fields: rerun }] : [own];
+  });
+  const measured = ladders.map((l) => l.fields).filter((c) => typeof c.timed_out === 'boolean');
+
+  const unmeasurable = [outer, ...measured].filter((c) => c?.survivors === null);
   // #1708 point 1: a group reaped after a NORMAL exit (#1704) reached the
   // envelope via commandKillFields but was dropped here, so the event could
   // not show how often it happens before one turns a gate red (HR-105).
-  const leftoverGroups = names
-    .filter((name) => isObj(parsed[name].leftover_group))
-    .map((name) => ({ command: name, ...parsed[name].leftover_group }));
+  const leftoverGroups = [
+    ...outerGroups,
+    ...ladders
+      .filter((l) => isObj(l.fields.leftover_group))
+      .map((l) => ({ command: l.command, ...l.fields.leftover_group })),
+  ];
 
   return {
     ...(leftoverGroups.length > 0 ? { leftover_groups: leftoverGroups } : {}),
-    timed_out: outer?.timed_out === true || inner.some((c) => c.timed_out),
+    timed_out: outer?.timed_out === true || measured.some((c) => c.timed_out),
     survivors: unmeasurable.length > 0 ? null : (outer?.survivors ?? 0)
-      + inner.reduce((n, c) => n + (Array.isArray(c.survivors) ? c.survivors.length : 0), 0),
+      + measured.reduce((n, c) => n + (Array.isArray(c.survivors) ? c.survivors.length : 0), 0),
     ...(unmeasurable.length > 0 ? { error: unmeasurable.map((c) => c.error).join('; '), ok: false } : {}),
     kill_signals: [
       ...(outer?.kill_signals ?? []),
-      ...inner.flatMap((c) => (Array.isArray(c.kill_signals) ? c.kill_signals : [])),
+      ...measured.flatMap((c) => (Array.isArray(c.kill_signals) ? c.kill_signals : [])),
     ],
   };
 }
@@ -751,6 +787,15 @@ export function extractFailedTestFiles(output, cwd = process.cwd()) {
  */
 const TIMEOUT_ERROR_LINE = /^(?:Error:\s+)?(?:Test|Hook) timed out in \d+ms\.?$/;
 /**
+ * Node's wording for a child process that ran past its `timeout` option, as it
+ * reaches vitest thrown (#1673, measured vitest 4.1.12, 2026-10-28): both
+ * `spawnSync(…, {timeout})` + `throw result.error` and `execFileSync(…, {timeout})`
+ * print `Error: spawnSync <cmd> ETIMEDOUT`. Anchored at both ends with a
+ * non-blank command: other errnos (`ENOENT`), `Command failed: …` and any
+ * trailing text are not a plain timeout.
+ */
+const CHILD_TIMEOUT_ERROR_LINE = /^(?:Error:\s+)?spawnSync \S(?:.*\S)? ETIMEDOUT$/;
+/**
  * `⎯⎯⎯[k/N]⎯` — closes every numbered error block. N is the run's error total
  * counted BEFORE vitest merges identical errors (`printErrorsSummary`, vitest
  * 4.1.11), so it equals the number of FAIL headers, not of blocks.
@@ -793,10 +838,17 @@ const UNCOUNTED_ERRORS_LINE = /^(?:⎯+\s*Unhandled\b|\s*Errors\s+\d+\s+errors?\
  *
  * Under host load the parallel suite loses tests to their timeout while the
  * code is fine; four pre-push runs on m5 blocked with four different red sets
- * (11, 11, 2, 7 tests), none touching the pushed diff. A timeout is the one
- * failure that load alone produces. An assertion failure is NOT eligible, even
- * one that load provoked: re-running it would let a genuine flake through the
- * gate (Lead 32, 2026-10-20).
+ * (11, 11, 2, 7 tests), none touching the pushed diff. A timeout is the
+ * failure that load alone produces, in two shapes: vitest's own `Test|Hook
+ * timed out in Nms.` ({@link TIMEOUT_ERROR_LINE}) and a child-process timeout
+ * thrown into the test, `Error: spawnSync <cmd> ETIMEDOUT`
+ * ({@link CHILD_TIMEOUT_ERROR_LINE}; measured vitest 4.1.12, 2026-10-28:
+ * `spawnSync` and `execFileSync` both print that line, and the !283 push was
+ * blocked by exactly one of each). An assertion failure is NOT eligible, even
+ * one that load provoked or whose message mentions `ETIMEDOUT`: assertions are
+ * never re-run-eligible, because re-running one would let a genuine flake
+ * through the gate (Lead 32, 2026-10-20). Only the error LINE set is wider; a
+ * genuine hang still has to pass the serial re-run.
  *
  * Shape (measured, vitest 4.1.11): every error block starts with one or more
  * `FAIL <file> …` headers, then the error line, and ends in `⎯[k/N]⎯`.
@@ -857,7 +909,8 @@ export function extractTimeoutOnlyFailedFiles(output, cwd = process.cwd()) {
     }
     blocks += 1;
     errors += pending.length;
-    if (!TIMEOUT_ERROR_LINE.test(line.trim())) allTimeouts = false;
+    const errorLine = line.trim();
+    if (!TIMEOUT_ERROR_LINE.test(errorLine) && !CHILD_TIMEOUT_ERROR_LINE.test(errorLine)) allTimeouts = false;
     for (const file of pending) files.add(file);
     pending = [];
     inBlock = true;

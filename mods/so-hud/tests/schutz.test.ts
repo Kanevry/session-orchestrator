@@ -51,6 +51,8 @@ type Options = {
   peers?: Peer[]
   git?: Git | 'throws'
   /** The owner's answer per question; null dismisses the dialog. */
+  /** Answers the question with a permission deny (the host's Esc), instead of {@link answer}. */
+  askDeny?: string
   answer?: (question: string, labels: string[]) => Promise<string | null> | string | null
   output?: { result: unknown; text?: string; isError?: true }
   /** What `$.session.surfaces()` returns; empty is a plain -p run. */
@@ -121,6 +123,7 @@ function world(on: On, o: Options = {}) {
   // Core beneath the plugin: answers the owner's dialog, counts every real tool run.
   on('tool.call', async (_$, e) => {
     if (e.tool === 'AskUserQuestion') {
+      if (o.askDeny !== undefined) return { deny: o.askDeny } as never
       const q = (e as unknown as { questions: { question: string; options: { label: string }[] }[] }).questions[0]
       asks.push(q?.question ?? '')
       const label = o.answer ? await o.answer(q?.question ?? '', q?.options.map(x => x.label) ?? []) : null
@@ -188,6 +191,41 @@ test('push declined at step one never runs', opts(), async ($, on) => {
   expect(answer).toContain('nicht erneut versuchen')
   expect(w.runs).toEqual([])
   expect(w.receipts[0]).toMatchObject({ ergebnis: 'abgelehnt', exit: null })
+})
+// Catches: a question that could not be shown being reported to the model as the owner's refusal (#1856).
+test('a failed question at step one is not the owner declining; nothing runs', opts(), async ($, on) => {
+  const w = world(on, { answer: () => { throw new Error('dialog not available') } })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const answer = JSON.stringify(await $.tool.call(bash('git push origin main')))
+  expect(answer).toContain('nicht entschieden')
+  expect(answer).not.toContain('abgelehnt')
+  expect(w.runs).toEqual([])
+  expect(w.receipts[0]).toMatchObject({ ergebnis: 'fehler', exit: null })
+})
+// Catches: the owner's Esc (a permission deny with text) being booked as a failed question instead of a refusal (#1856).
+test('Esc on the outward-action dialog stays the owner declining', opts(), async ($, on) => {
+  const w = world(on, { askDeny: "The user doesn't want to proceed with this tool use. The tool use was rejected." })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const answer = JSON.stringify(await $.tool.call(bash('git push origin main')))
+  expect(answer).toContain('Der Owner hat')
+  expect(w.runs).toEqual([])
+  expect(w.receipts[0]).toMatchObject({ ergebnis: 'abgelehnt', exit: null })
+})
+// Catches: the same misreport when only the second confirmation fails to show (#1856).
+test('a failed question at step two is not the owner declining; nothing runs', opts(), async ($, on) => {
+  const w = world(on, {
+    answer: (_q, labels) => {
+      if (labels.includes(CONFIRM[1] ?? '')) throw new Error('dialog not available')
+      return labels.find(l => CONFIRM.includes(l)) ?? null
+    },
+  })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const answer = JSON.stringify(await $.tool.call(bash('git push origin main')))
+  expect(answer).toContain('nicht entschieden')
+  expect(answer).not.toContain('abgelehnt')
+  expect(w.asks).toHaveLength(2)
+  expect(w.runs).toEqual([])
+  expect(w.receipts[0]).toMatchObject({ ergebnis: 'fehler', exit: null })
 })
 // Catches: step two confirming a push whose outgoing commits changed after step one was answered.
 test('push facts that change between the steps are not confirmed; nothing runs', opts(), async ($, on) => {
@@ -456,6 +494,24 @@ test('collision is refused on streng with a worktree hint', opts('streng'), asyn
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   expect(JSON.stringify(await $.tool.call(edit))).toContain('git worktree add')
   expect(w.runs).toEqual([])
+})
+// Catches: a dismissed collision dialog being booked as a failed question instead of a refusal (#1856).
+test('collision: a dismissed dialog stays the owner declining', opts(), async ($, on) => {
+  const w = world(on, { peers: collide, answer: () => null })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  expect(JSON.stringify(await $.tool.call(edit))).toContain('Abgebrochen')
+  expect(w.runs).toEqual([])
+  expect(w.receipts[0]).toMatchObject({ aktion: 'kollision', ergebnis: 'abgelehnt' })
+})
+// Catches: a collision question that could not be shown being booked as the owner's "Abbrechen" (#1856).
+test('collision: a failed question is not the owner declining; nothing is written', opts(), async ($, on) => {
+  const w = world(on, { peers: collide, answer: () => { throw new Error('dialog not available') } })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const answer = JSON.stringify(await $.tool.call(edit))
+  expect(answer).toContain('nicht entschieden')
+  expect(answer).not.toContain('Abgebrochen')
+  expect(w.runs).toEqual([])
+  expect(w.receipts[0]).toMatchObject({ aktion: 'kollision', art: 'edit', ergebnis: 'fehler' })
 })
 for (const [choice, runs, says] of [['Trotzdem', ['Edit'], ''], ['Worktree vorschlagen', [], 'git -C /repo worktree add'], ['Abbrechen', [], 'Abgebrochen']] as const) {
   // Catches: the owner's collision answer not deciding whether the write happens (or the worktree hint lost).

@@ -11,8 +11,10 @@ A free, MIT-licensed workflow plugin for people running Claude Code, Codex CLI, 
 
 **[Website](https://session-orchestrator.com)** ([Deutsch](https://session-orchestrator.com/de)) · **[Commands](https://session-orchestrator.com/commands)** · **[User guide](docs/USER-GUIDE.md)** · [Changelog](CHANGELOG.md)
 
+> **Beta:** 15 free seats in the agenticbuilders Pass for Session Orchestrator users. You learn to get real work done with Claude Code and agents. In return you tell me for 14 days what helped. Want a seat? [agenticbuilders.at/so](https://agenticbuilders.at/so#beta)
+
 [![Tests](https://github.com/Kanevry/session-orchestrator/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/Kanevry/session-orchestrator/actions/workflows/test.yml)
-[![Version](https://img.shields.io/badge/version-5.14.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.15.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/website-session--orchestrator.com-blue)](https://session-orchestrator.com)
 

@@ -36,6 +36,7 @@ import {
   redactUrlCredentials,
   detectVcsFamily,
   isQueryFailure,
+  readConfiguredVcs,
 } from './vcs-repo-spec.mjs';
 
 const execFileAsync = promisify(_execFile);
@@ -468,7 +469,10 @@ async function detectVcs(repoRoot, deps = {}) {
       ? { ok: true, stdout, stderr: '', status: 0 }
       : { ok: false, stdout: '', stderr: `unsupported git query in ci-status probe: ${String(args)}`, status: 1 };
 
-  const family = detectVcsFamily({ repoRoot, gitRun: replayGitRun });
+  // The repo's Session Config `vcs:` breaks an AMBIGUOUS remote tie (#1846);
+  // a forced `vcs` never reaches this function.
+  const preferVcs = await readConfiguredVcs(repoRoot);
+  const family = detectVcsFamily({ repoRoot, gitRun: replayGitRun, preferVcs });
   if (!family.ok) return { ok: false, reason: family.reason, stderr: family.stderr };
   return { ok: true, vcs: family.vcs };
 }
@@ -1130,6 +1134,8 @@ async function checkGitlab(repoRoot, now, deps = {}) {
     return {
       status: 'unknown',
       ok: false,
+      // #856: additive — "verdict pending", distinct from "unreadable".
+      phase: 'running',
       details: {
         currentPipelineId: currentPipeline.id,
         cliUsed: 'glab',
@@ -1200,9 +1206,19 @@ async function checkGitlab(repoRoot, now, deps = {}) {
       // Non-fatal — we still report red status without job name.
     }
 
+    // #856: additive "no verdict" marker, only when nothing in the reading is a
+    // real failure: no `failed` row in the red run back to the last green, and
+    // no same-sha `failed` set aside by the ref preference (#1390
+    // `droppedStatuses`, which `worstPipeline` never ranks).
+    const canceledWithoutFailure =
+      pipelineStatus === 'canceled' &&
+      !redRun.some((p) => p.status === 'failed') &&
+      !(evidence.droppedStatuses ?? []).includes('failed');
+
     return {
       status: 'red',
       ok: false,
+      ...(canceledWithoutFailure ? { phase: 'canceled' } : {}),
       ...(lastGreen ? { lastGreen } : {}),
       redCount,
       ...(failingJobName !== undefined ? { failingJobName } : {}),
@@ -1428,9 +1444,13 @@ async function checkGithub(repoRoot, now, deps = {}) {
   ].filter(([key]) => checkRunCounts[key] > 0);
   // Successes may accompany one unknown state; counts expose the whole mix.
   const reason = states.length === 1 ? states[0][1] : 'check-runs-mixed';
+  // #856: `phase: 'running'` only when every non-success run is in progress or
+  // queued — the two states this function already recognises as in flight.
+  const inFlight = states.every(([key]) => key === 'inProgress' || key === 'queued');
   return {
     status: 'unknown',
     ok: false,
+    ...(inFlight ? { phase: 'running' } : {}),
     details: {
       cliUsed: 'gh',
       reason,
@@ -1495,6 +1515,7 @@ async function checkGithub(repoRoot, now, deps = {}) {
  * } | {
  *   status: 'green'|'red'|'unknown',
  *   ok: boolean,
+ *   phase?: 'running'|'canceled',
  *   lastGreen?: {
  *     sha: string,
  *     pipelineId?: number,
@@ -1531,6 +1552,13 @@ async function checkGithub(repoRoot, now, deps = {}) {
  * check-runs-unrecognised, or check-runs-mixed (multiple non-success kinds),
  * never as a new status value — consumers fail open on an unknown status string
  * and the session-start renderer prints nothing for one.
+ *
+ * `phase` (#856, additive) marks a reading that carries NO verdict yet:
+ * `'running'` beside `status: 'unknown'` (GitLab HEAD pipeline running/pending;
+ * GitHub check runs only in progress/queued), `'canceled'` beside
+ * `status: 'red'` (GitLab HEAD pipeline canceled, with no `failed` row in the
+ * red run back to the last green and no same-sha `failed` set aside by the ref
+ * preference). The key is ABSENT in every other case — never null/empty.
  *
  * GitHub-specific (#1727/#856): `lastGreen.pipelineId` and
  * `lastGreen.agePipelines` are GitLab-only — GitHub has no pipelines, so its

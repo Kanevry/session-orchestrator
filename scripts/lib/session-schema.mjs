@@ -75,4 +75,5 @@ export {
   filterRealSessions,
   tailRealSessions,
   isCoordinatorDirectHousekeeping,
+  classifyStubWork,
 } from './session-schema/filters.mjs';

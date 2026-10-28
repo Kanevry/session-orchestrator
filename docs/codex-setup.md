@@ -147,6 +147,8 @@ The plugin bundle includes the Codex role definitions under `.codex-plugin/agent
 
 The Codex hook command uses Codex's native `${PLUGIN_ROOT}` expansion. The wrapper also exports `CODEX_PLUGIN_ROOT="${PLUGIN_ROOT}"` for shared compatibility code and sets `SO_PLATFORM=codex` so Codex wins when multiple harness variables are present.
 
+On native Windows Codex runs `commandWindows` instead (#1849), through `%COMSPEC% /C`, i.e. cmd.exe (codex-rs `hooks/src/engine/command_runner.rs`, read 2026-10-28). That POSIX hull cannot start there: cmd.exe has no env prefix (PowerShell reads `SO_PLATFORM=codex` as a command name). Each handler's `commandWindows` is `set NoDefaultCurrentDirectoryInExePath=1&& node -e "require(require('path').join(require('path').isAbsolute(process.env.PLUGIN_ROOT||'')?process.env.PLUGIN_ROOT:process.exit(1),'hooks','codex-win.cjs'))" <handler>.mjs`: the `set` keeps cmd.exe from running a `node` from the session directory, and only an absolute `PLUGIN_ROOT` is used; `hooks/codex-win.cjs` sets the same two variables and runs the handler. Measured 2026-10-28 on Windows 11 with PowerShell 5.1.26100 and cmd.exe (Node 24.14.0, plugin root with spaces): the destructive guard denies and allows as on macOS. Not yet measured: a full Codex session on Windows after trusting the hooks. `node` must be on `PATH`; unlike `run-node.sh`, the Windows entry has no fallback search.
+
 ### What Codex actually exposes (measured 2026-09-06, codex-cli 0.144.4)
 
 The Codex runtime knows **ten** hook events. This is read out of the shipped binary, which embeds one JSON-Schema pair per event, not quoted from release notes:

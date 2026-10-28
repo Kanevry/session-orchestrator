@@ -64,6 +64,12 @@
 
 import { execFileSync } from 'node:child_process';
 
+// Three dependency-free config leaves (no import back into this module), so
+// reading the Session Config `vcs:` key here forms no cycle (#1846).
+import { _coerceString } from './config/coercers.mjs';
+import { readConfigFile } from './config/io.mjs';
+import { _extractConfigSection, _parseKV } from './config/section-extractor.mjs';
+
 /**
  * argv-boundary guard (#872 follow-up, Q3-LOW centralization). A well-formed
  * git remote URL or bare hostname never legitimately contains whitespace or a
@@ -879,13 +885,22 @@ function classifyRemoteFamily(remote) {
  * preference-ordered answer, and `alternatives` names the remotes that would
  * have said otherwise.
  *
- * @param {{ repoRoot?: string, gitRun?: GitRun }} [opts]
+ * `preferVcs` (#1846) — the repo's configured Session Config `vcs:` value, raw
+ * or normalized — breaks an AMBIGUOUS tie only: when a remote of the preferred
+ * family exists, that family wins with its own representative remote and
+ * `via:'config-preference'` (still `ambiguous:true`, `alternatives` naming the
+ * remotes of the other family). Unambiguous results, a preference matching
+ * the remote-derived answer, and an absent/invalid preference return exactly
+ * what the call without `preferVcs` returns — the remotes still outrank a
+ * config value that contradicts every remote.
+ *
+ * @param {{ repoRoot?: string, gitRun?: GitRun, preferVcs?: string|null }} [opts]
  * @returns {{ ok: true, vcs: 'gitlab'|'github', name: string, url: string,
- *             via: 'host-match'|'remote-name'|'default', ambiguous: boolean,
+ *             via: 'host-match'|'remote-name'|'default'|'config-preference', ambiguous: boolean,
  *             alternatives: string[] }
  *   | { ok: false, reason: RemoteResolutionReason, remotes?: GitRemote[], stderr?: string }}
  */
-export function detectVcsFamily({ repoRoot, gitRun = defaultGitRun } = {}) {
+export function detectVcsFamily({ repoRoot, gitRun = defaultGitRun, preferVcs } = {}) {
   const listed = listRemotes({ repoRoot, gitRun });
   if (!listed.ok) return { ok: false, reason: listed.reason, stderr: listed.stderr };
 
@@ -913,14 +928,32 @@ export function detectVcsFamily({ repoRoot, gitRun = defaultGitRun } = {}) {
     };
   }
 
-  const chosen =
-    VCS_LESS_PREFERENCE.map((name) => classified.find((entry) => entry.remote.name === name)).find(
+  const pickRepresentative = (entries) =>
+    VCS_LESS_PREFERENCE.map((name) => entries.find((entry) => entry.remote.name === name)).find(
       (entry) => entry !== undefined,
-    ) ?? classified[0];
+    ) ?? entries[0];
+  const othersThan = (family) =>
+    classified.filter((entry) => entry.verdict.family !== family).map((entry) => entry.remote.name);
 
-  const alternatives = classified
-    .filter((entry) => entry.verdict.family !== chosen.verdict.family)
-    .map((entry) => entry.remote.name);
+  const chosen = pickRepresentative(classified);
+  const alternatives = othersThan(chosen.verdict.family);
+
+  const preferred = normalizeVcsPreference(preferVcs);
+  if (alternatives.length > 0 && preferred !== null && preferred !== chosen.verdict.family) {
+    const ofPreferred = classified.filter((entry) => entry.verdict.family === preferred);
+    if (ofPreferred.length > 0) {
+      const pick = pickRepresentative(ofPreferred);
+      return {
+        ok: true,
+        vcs: preferred,
+        name: pick.remote.name,
+        url: pick.remote.url,
+        via: 'config-preference',
+        ambiguous: true,
+        alternatives: othersThan(preferred),
+      };
+    }
+  }
 
   return {
     ok: true,
@@ -931,6 +964,39 @@ export function detectVcsFamily({ repoRoot, gitRun = defaultGitRun } = {}) {
     ambiguous: alternatives.length > 0,
     alternatives,
   };
+}
+
+/**
+ * Normalize a Session Config `vcs:` value to a family (#1846). Real configs
+ * carry prose after the value (`vcs: gitlab — Issues/MRs auf …`), so only the
+ * LEADING token counts, case-insensitively. Anything else — empty, `none`,
+ * an unknown family, a non-string — is "no preference".
+ *
+ * @param {unknown} raw
+ * @returns {'github'|'gitlab'|null}
+ */
+export function normalizeVcsPreference(raw) {
+  if (typeof raw !== 'string') return null;
+  const match = /^\s*(github|gitlab)(?![\w.-])/i.exec(raw);
+  return match ? /** @type {'github'|'gitlab'} */ (match[1].toLowerCase()) : null;
+}
+
+/**
+ * Read the repo's configured `vcs:` (CLAUDE.md / AGENTS.md `## Session Config`,
+ * via the shared `readConfigFile` + section parser) and normalize it (#1846).
+ * Never throws: a missing or unreadable instruction file degrades to `null`
+ * (no preference), which leaves {@link detectVcsFamily} exactly as before.
+ *
+ * @param {string} [repoRoot] — defaults to `process.cwd()`
+ * @returns {Promise<'github'|'gitlab'|null>}
+ */
+export async function readConfiguredVcs(repoRoot = process.cwd()) {
+  try {
+    const kv = _parseKV(_extractConfigSection(await readConfigFile(repoRoot)));
+    return normalizeVcsPreference(_coerceString(kv, 'vcs', undefined));
+  } catch {
+    return null;
+  }
 }
 
 /**

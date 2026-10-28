@@ -10,11 +10,11 @@
 
 | Path | Purpose |
 |------|---------|
-| `skills/` | 51 user-facing skills (+ `_shared/` internal) |
-| `commands/` | Two command files (`/session`, `/templates-ack`). The other 28 slash commands are skills with explicit `user-invocable: true` — one definition per name (a command + same-named skill lists twice in the `/` picker); measured 2026-10-03 (census below) |
+| `skills/` | 52 user-facing skills (+ `_shared/` internal) |
+| `commands/` | Two command files (`/session`, `/templates-ack`). The other 29 slash commands are skills with explicit `user-invocable: true` — one definition per name (a command + same-named skill lists twice in the `/` picker); measured 2026-10-27 (census below) |
 | `agents/` | 14 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory). The authoring spec is NOT here — it lives in `docs/agent-authoring.md`, because Claude Code registers every `agents/*.md` as a dispatchable agent by directory convention |
 | `hooks/` | Hook event matchers + handlers (18 matcher entries / 28 plugin-wired handler files [29 on-disk; the extra one is Husky-wired — see Inventory below], 10 distinct events) |
-| `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (16 rules — 12 `severity: block`, 4 `severity: warn`); measured 2026-09-22 (census below) |
+| `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (18 rules — 14 `severity: block`, 4 `severity: warn`); measured 2026-10-27 @ c47d0fd7 (census below) |
 | `.orchestrator/steering/` | This directory — persistent stable context docs |
 | `.orchestrator/metrics/` | Runtime JSONL telemetry: sessions, learnings, autopilot, events, subagents |
 | `.claude/rules/` | 25 always-on rule files loaded by Claude Code |
@@ -30,15 +30,15 @@
 | `.codex-plugin/` | Codex CLI plugin manifest |
 | `.cursor-plugin/plugin.json` | Portable plugin manifest; kept outside root so Codex resolves its native manifest |
 | `AGENTS.md` (root) | Byte-identical GENERATED copy of `CLAUDE.md` for the 7 of 8 harnesses that read `AGENTS.md` |
-| `.agents/skills/` | Portable GENERATED mirror of all 51 skills — spec-legal frontmatter + pointer body, never duplicated instructions |
+| `.agents/skills/` | Portable GENERATED mirror of all 52 skills and both command files (54 entries) — spec-legal frontmatter + pointer body, never duplicated instructions |
 | `skills/*/references/` | Progressive-disclosure detail split out of oversized SKILL.md bodies: `skills/session-start/references`, `skills/wave-executor/references`, `skills/session-end/references`, `skills/architecture/references` |
 | `site/` | The public website (`index.html`, `llms.txt`, `llms-full.txt`, `_census.json`) |
 | `assets/` | Repo assets (`icon.svg`, the Codex composer icon). Logo files live in `site/brand/a3-terminalmodule/`, the social image is `site/og.png` |
 
 ## Inventory (canonical)
 
-- **Skills:** 51 user-facing — measured 2026-10-03 (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
-- **Slash commands:** 30 — measured 2026-10-03 @ af58a173 (`{ ls commands/*.md | sed 's|commands/||; s|\.md$||'; grep -l '^user-invocable: true' skills/*/SKILL.md | sed 's|skills/||; s|/SKILL.md$||'; } | sort -u | wc -l`): two command files (`/session`, `/templates-ack`) + 28 user-invocable skills (`/architecture`, `/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/test-audit`, `/tmux-layout`, `/ux-grill`, `/write-executable-plan`). Claude Code lists a skill with NO `user-invocable` key as well, so every skill states it (`grep -L '^user-invocable:' skills/*/SKILL.md` → none; 23 say `false`, #1515)
+- **Skills:** 52 user-facing — measured 2026-10-27 @ c47d0fd7 (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
+- **Slash commands:** 31 — measured 2026-10-27 @ c47d0fd7 (`{ ls commands/*.md | sed 's|commands/||; s|\.md$||'; grep -l '^user-invocable: true' skills/*/SKILL.md | sed 's|skills/||; s|/SKILL.md$||'; } | sort -u | wc -l`): two command files (`/session`, `/templates-ack`) + 29 user-invocable skills (`/architecture`, `/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/deepen`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/test-audit`, `/tmux-layout`, `/ux-grill`, `/write-executable-plan`). Claude Code lists a skill with NO `user-invocable` key as well, so every skill states it (`grep -L '^user-invocable:' skills/*/SKILL.md` → none; 23 say `false`, #1515)
 - **Agents:** 14 — measured 2026-09-06 (`ls agents/*.md | wc -l`): `analyst`, `architect-reviewer`, `code-implementer`, `db-specialist`, `dialectic-deriver`, `docs-writer`, `eval-judge`, `qa-strategist`, `security-reviewer`, `session-reviewer`, `skill-applied-judge`, `test-writer`, `ui-developer`, `ux-evaluator`
 - **Hook event matchers / handlers:** 18 matcher entries / 28 plugin-wired handler files (29 on-disk) — measured 2026-10-05 @ 1386a98e (`grep -c '"matcher"' hooks/hooks.json`; `grep -o '[a-z0-9-]*\.mjs' hooks/hooks.json | sort -u | wc -l`; `ls hooks/*.mjs | wc -l`). `hooks/wave-scope-commit-guard.mjs` is on-disk but intentionally NOT a plugin hook — it is the repository's Git pre-commit guard via Husky (`.husky/pre-commit`), because it guards git index/commit state rather than a plugin lifecycle event. Counting basis: "plugin-wired" = distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "Husky-wired" = referenced inside `.husky/pre-commit`; "on-disk" = `ls hooks/*.mjs`.
 - **Rules:** 25 always-on files — measured 2026-09-16 (`ls .claude/rules/*.md | wc -l`). This number moves whenever the reconcile engine materialises or consolidates generated rules — re-measure, never quote from memory.

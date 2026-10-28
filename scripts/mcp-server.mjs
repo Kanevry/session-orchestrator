@@ -9,7 +9,16 @@ import { isMainModule } from './lib/is-main-module.mjs';
 import { canonicalizeSessions, isMeasuredSession } from './lib/sessions-canonical.mjs';
 import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 
-const SERVER_INFO = { name: 'session-orchestrator', version: '2.0.0' };
+// The version is READ from package.json, never written here: a hand-kept
+// literal sat at "2.0.0" through v3, v4 and v5 (same fix in mcp-server.sh).
+function packageVersion() {
+  try {
+    return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+const SERVER_INFO = { name: 'session-orchestrator', version: packageVersion() };
 const TOOLS = [
   {
     name: 'session_config',

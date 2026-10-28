@@ -50,6 +50,51 @@ and renderer-only failures rather than expecting all totals to be identical.
 Dry-run writes nothing and is the CLI default. The CLI can diagnose a metrics
 directory outside a Git repository; the new guard allowance for apply cannot.
 
+## Abandoned stubs: what they did
+
+A backfilled `abandoned` stub carries `total_waves`, `total_agents` and
+`total_files_changed` as placeholder zeros, listed in
+`_backfill_incomplete_fields`. Counting `status: "abandoned"` therefore mixes
+empty restarts with sessions that ran agents and then ended without `/close`
+(#1835). Count with the read-only census instead:
+
+```sh
+node /opt/plugin/scripts/session-ledger-census.mjs --repo-root /work/repo --json
+```
+
+It sorts every stub into `empty`, `conversation`, `dispatched` or
+`unmeasured`:
+- `empty` is measured: no turn stop, no agent stop, no wave completion, no
+  event beyond start/end bookkeeping, and no Skill call in
+  `skill-invocations.jsonl`.
+- `conversation` means turn stops or other activity, such as tool-call events
+  or Skill calls.
+- `dispatched` means an agent or wave event.
+
+It prints the close and abort rates over all records next to the same rates
+without the `empty` stubs. The close rate counts `isMeasuredSession` records.
+
+A stub written since #1835 carries the measurement in its optional
+`work_evidence` field: `{ platform, turn_stops, agent_stops, wave_completions,
+activity_events }`. These are event counts, not wave or agent counts. Turn
+stops are the larger of `orchestrator.turn.stopped` and the pre-2026-09-06 name
+`orchestrator.session.stopped`. An older stub is classified by joining the
+events ledger.
+
+A stub stays `unmeasured`, which is not zero work, when any of these holds:
+- its history is cut;
+- its first `session.started` is not a fresh start (`native_source`
+  `startup` or `clear`; a `compact` or `resume` start reuses the raw id);
+- one label maps to several raw ids;
+- its platform writes no turn stops (only `claude` and `codex` do so far).
+
+A turn cut off before its Stop hook leaves no trace in either ledger when
+its tool calls fired no hook event, and its stub still reads `empty`. Only the
+transcript would show those calls.
+
+The census writes nothing. `--stubs` lists every stub with its class and the
+reason it stayed `unmeasured`.
+
 ## Apply and recovery
 
 The repair CLI retains its existing contract: before replacing the file it

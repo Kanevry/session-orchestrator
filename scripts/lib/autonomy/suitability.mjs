@@ -155,9 +155,17 @@ export function computeSuitabilityVerdict(deps = {}) {
   const ciAbsent = ci === null || ci === undefined;
   const ciStatus = !ciAbsent && typeof ci === 'object' && typeof ci.status === 'string' ? ci.status : null;
   const ciMalformed = !ciAbsent && ciStatus === null; // present but unusable
-  const ciNotRed = ciStatus !== 'red'; // null status (absent/malformed) passes
+  // #856: an additive `phase` marks a reading with NO verdict yet — a running
+  // pipeline (status 'unknown') or a canceled one (status stays 'red'). Both
+  // pass G3 as "no signal", each with its own warning, never silently. A green
+  // reading IS a verdict, so a phase beside it is ignored.
+  const ciPhase =
+    ciStatus !== null && ciStatus !== 'green' && (ci.phase === 'running' || ci.phase === 'canceled') ? ci.phase : null;
+  const ciNotRed = ciStatus !== 'red' || ciPhase !== null; // null status (absent/malformed) passes
   if (ciAbsent) warnings.push('CI signal absent');
   else if (ciMalformed) warnings.push('CI signal malformed — treated as absent');
+  else if (ciPhase === 'running') warnings.push('CI running — no verdict yet');
+  else if (ciPhase === 'canceled') warnings.push('CI canceled — no verdict');
   // `{status:'unknown'}` is a WELL-FORMED reading that establishes nothing —
   // since #1031 it is what a degraded probe produces, and it hits neither
   // branch above. Without this line it passed G3 with NO warning at all, i.e.

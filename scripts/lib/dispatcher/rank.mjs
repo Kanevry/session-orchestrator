@@ -64,8 +64,9 @@ const DEFAULT_RESOURCE_THRESHOLDS = { ...CANONICAL_RESOURCE_THRESHOLDS };
  *                       : 1                         // null ⇒ neutral fallback
  *   stalenessScore  = 1 + min(staleDays, 90) / 30  // older = higher, capped
  *   readinessScore  = ciFactor · resourceFactor
- *       ciFactor       = ciStatus === 'red' ? 0.25 : 1
- *                        // null / 'unknown' / 'green' are all non-blocking (1)
+ *       ciFactor       = ciStatus === 'red' && !ciPhase ? 0.25 : 1
+ *                        // null / 'unknown' / 'green' are all non-blocking (1);
+ *                        // ciPhase 'running'/'canceled' = no verdict (1, #856)
  *       resourceFactor = critical ? 0.25 : degraded ? 0.6 : 1
  *                        // 'green' / 'warn' ⇒ 1
  *
@@ -105,7 +106,10 @@ export function scoreCandidate(signals) {
   const ciStatus = readiness?.ciStatus ?? null;
   const resourceVerdict = readiness?.resourceVerdict ?? 'green';
 
-  const ciFactor = ciStatus === 'red' ? 0.25 : 1;
+  // #856: a running or canceled HEAD pipeline carries no verdict — not red.
+  const ciPhase = readiness?.ciPhase;
+  const noVerdict = ciPhase === 'running' || ciPhase === 'canceled';
+  const ciFactor = ciStatus === 'red' && !noVerdict ? 0.25 : 1;
   const resourceFactor =
     resourceVerdict === 'critical'
       ? 0.25
@@ -266,13 +270,16 @@ async function defaultCheckCiStatus({ repoRoot }) {
  * readable, so existing strict `toEqual` pins on `signals.readiness` hold.
  *
  * @param {unknown} raw
- * @returns {{ ciStatus: 'green'|'red'|'unknown'|null, ciDegraded: string|null }}
+ * @returns {{ ciStatus: 'green'|'red'|'unknown'|null, ciDegraded: string|null, ciPhase?: 'running'|'canceled' }}
  */
 export function normalizeCiSignal(raw) {
   if (typeof raw === 'string' && raw) return { ciStatus: raw, ciDegraded: null };
   if (!raw || typeof raw !== 'object') return { ciStatus: null, ciDegraded: null };
   if (typeof raw.status === 'string' && raw.status) {
-    return { ciStatus: raw.status, ciDegraded: null };
+    // #856: `ciPhase` only when the probe published one, so strict `toEqual`
+    // pins on phase-less readings hold.
+    const phase = raw.phase === 'running' || raw.phase === 'canceled' ? raw.phase : null;
+    return { ciStatus: raw.status, ciDegraded: null, ...(phase ? { ciPhase: phase } : {}) };
   }
   if (typeof raw.degraded === 'string' && raw.degraded) {
     return { ciStatus: 'unknown', ciDegraded: raw.degraded };
@@ -404,8 +411,9 @@ export async function rankCandidates(freeCandidates, opts = {}) {
     // a `= null` seed would quietly re-create a fall-through "absent" default.
     let ciStatus;
     let ciDegraded;
+    let ciPhase;
     try {
-      ({ ciStatus, ciDegraded } = normalizeCiSignal(await deps.checkCiStatus({ repoRoot })));
+      ({ ciStatus, ciDegraded, ciPhase } = normalizeCiSignal(await deps.checkCiStatus({ repoRoot })));
     } catch {
       // A THROWING dep is not measured ABSENCE. Leaving `ciDegraded` at null
       // here re-created the exact collapse `normalizeCiSignal` exists to
@@ -431,6 +439,7 @@ export async function rankCandidates(freeCandidates, opts = {}) {
         // `signals.readiness` must not have to know about a field that only
         // exists on the failure path.
         ...(ciDegraded ? { ciDegraded } : {}),
+        ...(ciPhase ? { ciPhase } : {}),
       },
     };
     const score = scoreCandidate(signals);

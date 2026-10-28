@@ -195,25 +195,38 @@ function judgeRerunReport(reportPath, files, cwd) {
 
 let rerun = null;
 let rerunResult = null;
+// Why a red test step got NO re-run (#1673 telemetry, HR-105): the FIRST gate
+// below that failed, as a stable kebab-case token. `null` while the step is
+// green, while a re-run ran (then `rerun` says how it ended), and when no test
+// ran — the envelope then omits `rerun_skipped`, never `null` / `""`.
+let rerunSkipped = null;
 // Only a run that ENDED with exit 1 — not by a signal (`exitSignal`, which
 // `exitCode` alone reports as 1), not by the gate's own kill — and printed
 // vitest's closing `Test Files` summary (`testCounts.files`). A signal that hits
 // vitest under `npm test` surfaces as npm exit 143 (measured, npm 11.19.1), so
 // both routes of an externally ended run stay out (Codex review rounds 2+3, M3).
-if (
-  testResult.status === 'fail' &&
-  testResult.timedOut !== true &&
-  testResult.exitCode === 1 &&
-  !testResult.exitSignal &&
-  (testResult.killSignals ?? []).length === 0 &&
-  testCounts.files
-) {
+// The checks are one conjunction; their order only decides which token a run
+// with several failing gates reports — the cause (timeout, signal, kill) before
+// the exit code it produces.
+if (testResult.status === 'fail') {
+  rerunSkipped =
+    testResult.timedOut === true ? 'gate-timeout'
+      : testResult.exitSignal ? 'exit-signal'
+        : (testResult.killSignals ?? []).length > 0 ? 'killed'
+          : testResult.exitCode !== 1 ? 'exit-code'
+            : !testCounts.files ? 'no-file-summary'
+              : null;
+}
+if (testResult.status === 'fail' && rerunSkipped === null) {
   const timeouts = extractTimeoutOnlyFailedFiles(testResult.fullOutput ?? testResult.output ?? '');
-  if (
-    timeouts.eligible &&
-    timeouts.files.length <= RERUN_MAX_FILES &&
-    timeouts.files.every((f) => RERUN_FILE_NAME.test(f))
-  ) {
+  // The classifier's own `reason` is already kebab-case (`non-timeout-failure`,
+  // `parsed-3-of-5`, …) and is published verbatim.
+  rerunSkipped =
+    !timeouts.eligible ? (timeouts.reason || 'not-eligible')
+      : timeouts.files.length > RERUN_MAX_FILES ? 'too-many-files'
+        : !timeouts.files.every((f) => RERUN_FILE_NAME.test(f)) ? 'unsafe-file-name'
+          : null;
+  if (rerunSkipped === null) {
     let reportDir = null;
     try {
       reportDir = mkdtempSync(path.join(tmpdir(), 'gate-rerun-'));
@@ -225,7 +238,11 @@ if (
             `--no-file-parallelism --reporter=default --reporter=json --outputFile.json="${reportPath}" ${timeouts.files.join(' ')}`,
           )
         : null;
-      if (command !== null) {
+      if (command === null) {
+        // Two routes to `null`: a report path the shell quoting cannot carry, or
+        // a test command whose appended arguments may not reach vitest.
+        rerunSkipped = QUOTABLE_PATH.test(reportPath) ? 'test-command-not-rerunnable' : 'report-path-unquotable';
+      } else {
         rerunResult = await runCheck(command, CHECK_OPTS);
         const judged = judgeRerunReport(reportPath, timeouts.files, process.cwd());
         const verdict = rerunResult.status === 'pass' ? judged : { ...judged, reason: 'exit-non-zero' };
@@ -316,6 +333,7 @@ const output = {
     ...fileFields,
     ...commandKillFields(testResult),
     ...(rerun ? { rerun } : {}),
+    ...(rerunSkipped ? { rerun_skipped: rerunSkipped } : {}),
   },
   lint: { status: lintResult.status, warnings: lintWarnings, ...commandKillFields(lintResult) },
   debug_artifacts: debugArtifacts,

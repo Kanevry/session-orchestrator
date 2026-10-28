@@ -14,7 +14,7 @@ Extract learnings from session history.
 
 - Read the entries of `.orchestrator/metrics/sessions.jsonl` (or `<state-dir>/metrics/sessions.jsonl` if the v2 path does not exist — see Phase 1.4 fallback)
 - Parse each JSONL line as JSON (skip unparseable lines)
-- Keep only REAL sessions: drop every `status: "abandoned"` record (the #834 close-backfill stubs). The predicate is `isRealSession` / `filterRealSessions` in `scripts/lib/session-schema/filters.mjs:54` / `:65`. Do NOT key on `_backfill_source` — real, repaired records carry it too (#1296).
+- Keep only REAL sessions: drop every `status: "abandoned"` record (the #834 close-backfill stubs). The predicate is `isRealSession` / `filterRealSessions` in `scripts/lib/session-schema/filters.mjs:54` / `:65`. Do NOT key on `_backfill_source` — real, repaired records carry it too (#1296). The number of dropped stubs is not an abort count: a learning about abandoned work cites `node scripts/session-ledger-census.mjs --json`, which separates measured empty restarts from stubs with work (#1835).
 - Sort by `completed_at` descending (most recent first)
 - If no real sessions remain, abort: "No session data available. Complete at least one session before running evolve." **Telemetry on abort (#1200, #1206):** before stopping, emit — same minimal `emit-event.mjs` call as Phase 1.2's abort, and for the same reason: this gate fires before the Step 3.5(5) `sweep-expired-learnings.mjs --prune` call exists to fold the emit into:
 

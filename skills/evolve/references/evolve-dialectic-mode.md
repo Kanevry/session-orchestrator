@@ -19,7 +19,7 @@ Parse `$ARGUMENTS` for trailing flags after the `dialectic` keyword:
 | `--apply` | `false` | Write diff to USER.md/AGENT.md via merger.mjs; without it = dry-run |
 | `--dry-run` | `true` | Explicit dry-run (default); mutually exclusive with --apply |
 | `--model <name>` | from Session Config `dialectic.model` (default `haiku`) | Override LLM |
-| `--budget-tokens <N>` | from Session Config `dialectic.budget-tokens` (default 32000) | Input-token ceiling (the pre-dispatch estimate aborts above it; not a spend) |
+| `--budget-tokens <N>` | from Session Config `dialectic.budget-tokens` (default 32000) | Input-token ceiling (not a spend). Above it the lowest-ranked learnings are dropped as whole records until the prompt fits (`learnings_used` / `learnings_dropped` in the result); abort only when the fixed load alone exceeds it |
 
 Mutex check: `--apply` + `--dry-run` together = error "flags mutually exclusive".
 
@@ -150,8 +150,9 @@ await recordDialecticRun({
 
 ### Step 6.5: Error Handling
 - `status: 'unknown-model'` → fail with clear error (already thrown by validateModel)
-- `status: 'budget-exceeded'` → emit `{status:'budget-exceeded', used:N, budget:M}`, do NOT truncate.
-  The budget is an input CEILING, not a spend. The former 8000 default aborted real runs — a consumer repo estimated 11 158 input tokens (S119, 2026-09-10) and later 30 262, this repo ~12 268 for card bodies + steering alone — so the default is 32000 since #1380. If a repo still exceeds it, raise `--budget-tokens` or `dialectic.budget-tokens` in Session Config rather than trimming inputs.
+- Budget fit (#1840): when the full input exceeds the budget, `runDialecticDeriver()` drops the lowest-ranked learnings as whole records until the prompt fits, tells the model the actual `top_n_learnings`, and returns `learnings_used` / `learnings_dropped` on the result (report them; `learnings_dropped > 0` means the run saw fewer learnings than requested). No text inside a record is cut.
+- `status: 'budget-exceeded'` → only when even zero learnings do not fit (peer cards, steering and sessions alone). Emit `{status:'budget-exceeded', used:N, budget:M}` (`used` is the full-input estimate); do NOT truncate.
+  The budget is an input CEILING, not a spend. The former 8000 default aborted real runs — a consumer repo estimated 11 158 input tokens (S119, 2026-09-10) and later 30 262, this repo ~12 268 for card bodies + steering alone — so the default is 32000 since #1380. This repo's full input still estimated 34,392 tokens against 32,000 on 2026-10-28 and aborted every run, hence the record-level fit above. If the fixed load alone exceeds the ceiling, raise `--budget-tokens` or `dialectic.budget-tokens` in Session Config.
 - `status: 'would-empty-card'` → warn + require `--allow-emptying` flag
 - `status: 'empty-input'` → exit clean with message "dialectic: skipped (no input)"
 - subagent crash → log ⚠, exit cleanly (do NOT write to `.orchestrator/dialectic-pending.md`) <!-- path-check: example -->

@@ -59,15 +59,23 @@ fi
 # Protocol handlers
 # ---------------------------------------------------------------------------
 
+# The version reported to the client is READ from package.json, never written
+# here. The v2 release cut bumped this literal in sync with every other version
+# string, and it then sat at "2.0.0" through v3, v4 and v5 while the plugin
+# moved on — a hand-kept copy of a number that already has a source of truth.
+SO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SERVER_VERSION="$(jq -r '.version // "unknown"' "$SO_ROOT/package.json" 2>/dev/null || echo unknown)"
+[ -n "$SERVER_VERSION" ] || SERVER_VERSION="unknown"
+
 handle_initialize() {
   local id="$1"
   local result
-  result=$(jq -nc '{
+  result=$(jq -nc --arg version "$SERVER_VERSION" '{
     "protocolVersion": "2024-11-05",
     "capabilities": {"tools": {}},
     "serverInfo": {
       "name": "session-orchestrator",
-      "version": "2.0.0"
+      "version": $version
     }
   }')
   respond "$id" "$result"

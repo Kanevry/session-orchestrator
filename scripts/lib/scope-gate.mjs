@@ -1046,6 +1046,14 @@ function segmentRebindsHome(segment) {
  * `N>&file` with N ≠ 1 is an "ambiguous redirect" in bash 3.2/5 (no write) — it
  * is still reported, the fail-closed over-report (zsh accepts more forms).
  *
+ * Since #1832 `tokenizeCommand` resolves the glued `>&`/`>>&`/`<&` operand
+ * itself (resolveFdOperandRedirects) into exactly the pair this fold built, so
+ * no `\d*>` + chain `&` arrives from those forms and the fold is a no-op on
+ * them; it stays for the blank-separated `> & WORD` (a bash syntax error) and
+ * is idempotent on its own output (a dup token or `>` + word never re-folds).
+ * Parity of extractBashWriteTargets against the pre-#1832 lexer is pinned in
+ * tests/lib/scope-gate.test.mjs (`>& filename form`).
+ *
  * @param {Array<{ text: string, quoted: boolean, redirect?: object }>} tokens
  * @returns {Array<{ text: string, quoted: boolean, redirect?: object }>}
  */

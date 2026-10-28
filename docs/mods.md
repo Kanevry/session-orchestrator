@@ -94,7 +94,7 @@ so-hud writes a receipt or a beacon only when `hud/` (and, for beacons, `hud/bea
 | `argv_sha256` | SHA-256 (hex) of the UTF-8 of `JSON.stringify([tool, text])`, the tool name standing where a program would stand in an argv: `["Bash", "<command>"]` (or `Monitor`, `PowerShell`) with the command exactly as the model sent it for `aussenwirkung`; `["Edit", "<file path>"]` (or `Write`, `NotebookEdit`) for `kollision`. Neither the command nor the path is written, because a command can carry a token |
 | `exit` | exit code, or `null` |
 | `profil` | `locker`, `ausgewogen` or `streng` |
-| `ergebnis` | `ausgefuehrt` (ran after confirmation), `abgelehnt` (declined, dialog closed, facts changed, or refused by a later check), `verfallen` (30 seconds passed), `ohne-zeichenflaeche` (nobody to ask, see below); `fehler` is reserved and not written by 0.2.0 |
+| `ergebnis` | `ausgefuehrt` (ran after confirmation), `abgelehnt` (declined, dialog closed, facts changed, or refused by a later check), `verfallen` (30 seconds passed), `ohne-zeichenflaeche` (nobody to ask, see below), `fehler` (the question to the owner could not be shown; the call was refused and the owner did not decide, #1856) |
 | `art` | optional short lowercase label |
 
 The field set is closed: a receipt with any other field, or larger than 1 KB, is not written.

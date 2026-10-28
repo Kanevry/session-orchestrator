@@ -150,10 +150,20 @@ async function _writeJsonAtomic(filePath, data, { mode = 0o600 } = {}) {
   // 0777 under umask 000 and breaks the owner-policy check beside it (#1629).
   await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const tmp = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  // A process that dies between writeFile and rename leaves this tmp file
+  // behind permanently; sweepZombies' ORPHANED_TMP_RE branch removes it.
   await fs.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode }); // no 0666 window (#1632)
   await fs.rename(tmp, filePath);
   try { await fs.chmod(filePath, mode); } catch { /* best effort */ }
 }
+
+/**
+ * Filename shape `_writeJsonAtomic` leaves behind when a process dies between
+ * writeFile and rename: `<session-id>.json.tmp-<pid>-<8 hex>`. Matched
+ * explicitly rather than by a bare `.tmp` substring so the sweep can never
+ * reach a file it did not write.
+ */
+const ORPHANED_TMP_RE = /\.json\.tmp-\d+-[0-9a-f]{8}$/;
 
 async function _readJsonSafe(filePath) {
   try {
@@ -443,17 +453,19 @@ export async function sweepZombies({ thresholdMin = 60, now = Date.now() } = {})
   const removed = [];
   let logged = 0;
   for (const name of names) {
-    if (!name.endsWith('.json')) continue;
+    const orphanedTmp = ORPHANED_TMP_RE.test(name);
+    if (!name.endsWith('.json') && !orphanedTmp) continue;
     const full = path.join(dir, name);
     const parsed = await _readJsonSafe(full);
-    const valid = _validEntry(parsed);
+    const valid = _validEntry(parsed) && !orphanedTmp;
     let age;
     if (valid && !_isFutureStamp(parsed.last_heartbeat, now)) {
       age = _ageMinutes(parsed.last_heartbeat, now);
     } else {
-      // Malformed files can be fresh semantic-session claim files. Use mtime so
-      // a concurrent SessionStart claim is not swept before registerSelf()
-      // overwrites it with the real heartbeat entry.
+      // Malformed files can be fresh semantic-session claim files, and an
+      // orphaned tmp file can be an IN-FLIGHT write of a live process. Both are
+      // aged by mtime so neither a concurrent SessionStart claim nor a running
+      // _writeJsonAtomic is swept out from under its writer.
       // #1505.1: a future-stamped heartbeat measures no age either — `now - t`
       // was negative, never over the threshold, so it was never swept. The
       // mtime is when it was last written: a live heartbeat() keeps it young.
@@ -474,7 +486,7 @@ export async function sweepZombies({ thresholdMin = 60, now = Date.now() } = {})
             session_id: parsed?.session_id ?? null,
             file: name,
             age_minutes: Number.isFinite(age) ? Math.round(age) : null,
-            reason: valid ? 'stale-heartbeat' : 'malformed-entry',
+            reason: orphanedTmp ? 'orphaned-tmp' : valid ? 'stale-heartbeat' : 'malformed-entry',
           }, { mode: 0o600 }); // #1632
           logged += 1;
         } catch { /* log best-effort */ }

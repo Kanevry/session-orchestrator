@@ -139,10 +139,20 @@ Thumbs.db
 .env.local
 .env.*.local
 
-# Session Orchestrator state (platform-specific, not committed)
-.claude/
-.codex/
-.cursor/
+# Session Orchestrator — per-session STATE only. The surrounding directories are
+# NOT ignored: `/bootstrap` and `/bootstrap --sync-rules` vendor rule files into
+# `.claude/rules/` (plus `.claude/loop.md`), and those are project content that
+# belongs in review, in CI and in every clone. Ignoring the whole tree left them
+# untracked and one `git clean -fdx` from gone.
+.claude/STATE.md
+.claude/wave-scope.json
+.claude/filescopes/
+.claude/metrics/
+.claude/worktrees/
+.claude/*.lock
+.claude/settings.local.json
+.codex/STATE.md
+.cursor/STATE.md
 ```
 
 **Node/TypeScript (append to generic):**

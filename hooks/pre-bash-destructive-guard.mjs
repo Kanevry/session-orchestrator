@@ -203,6 +203,8 @@ async function bootstrap() {
           'splitChainSegments',
           'extractDeleteTargets',
           'firstDeniedDeleteTarget',
+          'shellCommandString',
+          'argvWordsWithoutRedirects',
         ],
       },
     },
@@ -397,24 +399,28 @@ function parseRmTargets(command) {
   const writeTargets = [];
 
   for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
-    const { verb, index } = blocker.resolveSegmentVerb(segment);
-    if (verb !== 'rm') continue;
+    // The rm reading, if any (zsh reads `3>&-echo rm P` as `rm P`, #1832 G1).
+    const rmReading = verbReadingsOf(segment).find((r) => r.verb === 'rm');
+    if (!rmReading) continue;
+    const { index } = rmReading;
 
-    let seenDashDash = false;
     for (let i = index + 1; i < segment.length; i++) {
       const tok = segment[i];
-      if (tok.redirect) {
-        const end = blocker.redirectSpanEnd(segment, i);
-        const mode = tok.redirect.mode;
-        if ((mode === 'truncate' || mode === 'append') && end > i) {
-          const operand = segment[end];
-          if (operand && !(!operand.quoted && /^(;|&&|\|\||\||&)$/.test(operand.text))) {
-            writeTargets.push(operand.text);
-          }
+      if (!tok.redirect) continue;
+      const end = blocker.redirectSpanEnd(segment, i);
+      const mode = tok.redirect.mode;
+      if ((mode === 'truncate' || mode === 'append') && end > i) {
+        const operand = segment[end];
+        if (operand && !(!operand.quoted && /^(;|&&|\|\||\||&)$/.test(operand.text))) {
+          writeTargets.push(operand.text);
         }
-        i = end;
-        continue;
       }
+      i = end;
+    }
+    // The operands rm receives: redirect spans dropped, the bash argv word of a
+    // glued close (`rm 3>&-P`) kept (#1832, one helper for every consumer).
+    let seenDashDash = false;
+    for (const tok of blocker.argvWordsWithoutRedirects(segment, index + 1)) {
       if (!seenDashDash && tok.text === '--') { seenDashDash = true; continue; }
       // A flag is unquoted and starts with '-' (and is not the bare '-' stdin marker).
       if (!seenDashDash && !tok.quoted && tok.text.startsWith('-') && tok.text !== '-') continue;
@@ -470,15 +476,14 @@ function isNullSink(targetPath) {
  */
 function commandHasRecursiveForceRm(command) {
   for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
-    const { verb, index } = blocker.resolveSegmentVerb(segment);
-    if (verb !== 'rm' || segment[index].quoted) continue;
+    const rmReading = verbReadingsOf(segment).find((r) => r.verb === 'rm' && !segment[r.index].quoted);
+    if (!rmReading) continue;
+    const { index } = rmReading;
 
     let recursive = false;
     let force = false;
     let seenDashDash = false;
-    for (let i = index + 1; i < segment.length; i++) {
-      const t = segment[i];
-      if (t.redirect) { i = blocker.redirectSpanEnd(segment, i); continue; }
+    for (const t of blocker.argvWordsWithoutRedirects(segment, index + 1)) {
       if (!seenDashDash && t.text === '--') { seenDashDash = true; continue; }
       if (!seenDashDash && !t.quoted && t.text.startsWith('-') && t.text !== '-') {
         if (t.text === '--recursive') recursive = true;
@@ -573,42 +578,23 @@ function findGitSegments(command, cwd) {
  * @param {number} from
  * @returns {Array<{ text: string, quoted: boolean }>}
  */
-function argvWords(segment, from) {
-  const words = [];
-  for (let i = from; i < segment.length; i++) {
-    if (segment[i].redirect) { i = blocker.redirectSpanEnd(segment, i); continue; }
-    words.push(segment[i]);
-  }
-  return words;
+/**
+ * Every verb reading of a segment (#1832 G1): both flag parses and both shell
+ * readings of a glued close `N>&-WORD` (bash: WORD is argv; zsh: a write to the
+ * FILE `-WORD`). `readings` is non-enumerable on resolveSegmentVerb's result;
+ * a HEAD-fallback module without it degrades to primary + alt.
+ *
+ * @param {Array<object>} segment
+ * @returns {Array<{ verb: string|null, index: number }>}
+ */
+function verbReadingsOf(segment) {
+  const r = blocker.resolveSegmentVerb(segment);
+  return r.readings ?? (r.alt ? [r, r.alt] : [r]);
 }
 
-/** Shell options that take the NEXT word as their value (`-o pipefail`, `+O extglob`). */
-const SHELL_OPTIONS_WITH_VALUE = new Set(['-o', '+o', '-O', '+O']);
-
-/**
- * The command string of a `bash|sh|zsh|dash|ksh` call, or null when it runs
- * no `-c` string (Codex review C2). With `c` anywhere in an option group
- * (`-c`, `-ce`, `-ec`, `-xc`), the FIRST operand after ALL options is the
- * command string — options may follow `-c` (`bash -c -e '…'`); `-o`/`+o`/
- * `-O`/`+O` consume the next word; `--` and a lone `-` end the options.
- *
- * @param {Array<{ text: string }>} words - argv after the shell verb
- * @returns {string|null}
- */
-function shellCommandString(words) {
-  let hasC = false;
-  for (let i = 0; i < words.length; i++) {
-    const text = words[i].text;
-    if (text === '--' || text === '-') return hasC ? (words[i + 1]?.text ?? null) : null;
-    if (SHELL_OPTIONS_WITH_VALUE.has(text)) { i++; continue; }
-    if (text.startsWith('--')) continue; // long options (`--norc`, `--login`) take no value
-    if (/^[-+][A-Za-z]+$/.test(text)) {
-      if (text.startsWith('-') && text.includes('c')) hasC = true;
-      continue;
-    }
-    return hasC ? text : null;
-  }
-  return null;
+function argvWords(segment, from) {
+  // One rule for every consumer, incl. the bash argv word of a glued close (#1832).
+  return blocker.argvWordsWithoutRedirects(segment, from);
 }
 
 /** Shells whose `-c <payload>` runs a nested command line (#1789 M1). */
@@ -641,31 +627,41 @@ function walkGitSegments(command, cwd) {
   for (const part of parts) {
     if (part.substitution) dir = null;
     for (const segment of blocker.splitChainSegments(part.tokens)) {
-      const { verb, index } = blocker.resolveSegmentVerb(segment);
-      if (verb === 'pushd' || verb === 'popd') { dir = null; continue; }
-      if (verb === 'cd') {
-        const operands = segment.slice(index + 1).filter((t) => t.quoted || !/^-[LPe@]+$/.test(t.text));
-        if (!part.cdKnown) dir = null;
-        else if (operands.length === 0) dir = os.homedir();
-        else dir = operands.length === 1 ? literalDir(dir, operands[0]) : null;
-        continue;
-      }
-      if (DASH_C_SHELLS.has(verb)) {
-        const payload = shellCommandString(argvWords(segment, index + 1));
-        if (payload !== null) payloads.push(payload);
-        continue;
-      }
-      if (verb === 'eval') {
-        payloads.push(segment.slice(index + 1).map((t) => t.text).join(' '));
-        continue;
-      }
-      if (verb !== 'git') continue;
-      // Redirects are gone before git builds argv (`git >/dev/null push`):
-      // every consumer reads the redirect-free words (Codex review C1).
-      calls.push({
-        segment: [...segment.slice(0, index + 1), ...argvWords(segment, index + 1)],
-        index,
-        dir: envChdir(segment.slice(0, index), dir),
+      // Every reading and both word views of a glued close (#1832 G1):
+      // `3>&-echo git worktree remove …` runs git in zsh, `git worktree 3>&-z
+      // remove …` is `worktree remove` in zsh. Directory tracking follows the
+      // primary reading only — Ceiling (BV-004): a `cd` that only the zsh
+      // reading runs (`3>&-echo cd x`) leaves `dir` as the bash reading has it.
+      // Revisit trigger: a measured worktree bypass through that form.
+      const readings = verbReadingsOf(segment);
+      const views = segment.some((t) => t.bashArgvWord !== undefined) ? [true, false] : [true];
+      readings.forEach(({ verb, index }, n) => {
+        if (n === 0 && (verb === 'pushd' || verb === 'popd')) { dir = null; return; }
+        if (n === 0 && verb === 'cd') {
+          const operands = segment.slice(index + 1).filter((t) => t.quoted || !/^-[LPe@]+$/.test(t.text));
+          if (!part.cdKnown) dir = null;
+          else if (operands.length === 0) dir = os.homedir();
+          else dir = operands.length === 1 ? literalDir(dir, operands[0]) : null;
+          return;
+        }
+        for (const bash of views) {
+          const words = blocker.argvWordsWithoutRedirects(segment, index + 1, { bash });
+          if (DASH_C_SHELLS.has(verb)) {
+            // One -c grammar for the guard and the pattern matcher (#1832 point 5).
+            const payload = blocker.shellCommandString(words);
+            if (payload !== null) payloads.push(payload);
+          } else if (verb === 'eval') {
+            payloads.push(words.map((t) => t.text).join(' '));
+          } else if (verb === 'git') {
+            // Redirects are gone before git builds argv (`git >/dev/null push`):
+            // every consumer reads the redirect-free words (Codex review C1).
+            calls.push({
+              segment: [...segment.slice(0, index + 1), ...words],
+              index,
+              dir: envChdir(segment.slice(0, index), dir),
+            });
+          }
+        }
       });
     }
   }
@@ -854,9 +850,7 @@ function findWorktreeRemoves(command, cwd, depth = 0) {
     let force = false;
     let operand;
     let seenDashDash = false;
-    for (let i = subAt + 2; i < segment.length; i++) {
-      const t = segment[i];
-      if (t.redirect) { i = blocker.redirectSpanEnd(segment, i); continue; }
+    for (const t of argvWords(segment, subAt + 2)) {
       if (!seenDashDash && t.text === '--') { seenDashDash = true; continue; }
       if (!seenDashDash && t.text.startsWith('-') && t.text !== '-') {
         if (isForceArg(t.text)) force = true;
@@ -896,35 +890,78 @@ function isValuableIgnored(p) {
 }
 
 /**
+ * Why a call failed, for a deny reason: the Node error code (`ENOBUFS`,
+ * `ETIMEDOUT`, `ENOENT`), else git's exit status, else the signal.
+ *
+ * @param {unknown} err
+ * @returns {string}
+ */
+function failureCause(err) {
+  const e = /** @type {{ code?: unknown, status?: unknown, signal?: unknown }} */ (err ?? {});
+  if (typeof e.code === 'string') return e.code;
+  if (typeof e.status === 'number') return `exit ${e.status}`;
+  if (typeof e.signal === 'string') return e.signal;
+  return 'unknown error';
+}
+
+/**
+ * Whether two paths name the same directory, by identity (`dev` + `ino`), not
+ * by spelling (#1829): on a case-insensitive APFS volume git prints the
+ * on-disk spelling (`…/FeedFoundryV2/09-zug`) while `fs.realpathSync` keeps the
+ * input spelling (`…/feedfoundryv2/09-zug`), so a string compare called every
+ * such worktree "no root". A failed stat throws — the caller stays fail-closed.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function sameDirectory(a, b) {
+  const sa = fs.statSync(a, { bigint: true });
+  const sb = fs.statSync(b, { bigint: true });
+  return sa.dev === sb.dev && sa.ino === sb.ino;
+}
+
+/**
  * Judge the ignored entries of one worktree about to be removed without force
  * (#1789). Plain removal still deletes every gitignored file, so "clean" per
  * `git status` protects nothing. One read-only status call lists the ignored
  * entries; any failure, a timeout, or a path that is no worktree root is "not
- * measurable" — fail-closed. A listed worktree whose directory is gone is
- * allowed (nothing on disk to lose).
+ * measurable" — fail-closed, with the cause named (#1829: "no worktree root"
+ * and "git call failed" were one message, which hid the case-spelling defect).
+ * A listed worktree whose directory is gone is allowed (nothing on disk to lose).
  *
  * @param {string} target - absolute path of a listed worktree
- * @returns {null | { unmeasurable: true } | { valuable: string[] }} null = allow
+ * @returns {null | { unmeasurable: string } | { valuable: string[] }} null = allow; `unmeasurable` = the cause
  */
 function judgeWorktreeRemoval(target) {
   if (!fs.existsSync(target)) return null;
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, maxBuffer: GIT_MAX_BUFFER };
+  let top;
   try {
-    const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, maxBuffer: GIT_MAX_BUFFER };
-    const top = execFileSync('git', ['-C', target, 'rev-parse', '--show-toplevel'], opts).trim();
-    if (fs.realpathSync(top) !== fs.realpathSync(target)) return { unmeasurable: true };
-    const out = execFileSync('git', ['-C', target, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=traditional'], opts);
-    const fields = out.split('\0');
-    const valuable = [];
-    for (let i = 0; i < fields.length; i++) {
-      const entry = fields[i];
-      if (entry.length < 4) continue;
-      if (/[RC]/.test(entry.slice(0, 2))) i++; // rename/copy: the next field is the origin
-      if (entry.startsWith('!! ') && isValuableIgnored(entry.slice(3))) valuable.push(entry.slice(3));
-    }
-    return valuable.length > 0 ? { valuable } : null;
-  } catch {
-    return { unmeasurable: true };
+    top = execFileSync('git', ['-C', target, 'rev-parse', '--show-toplevel'], opts).trim();
+  } catch (err) {
+    return { unmeasurable: `git rev-parse failed: ${failureCause(err)}` };
   }
+  try {
+    if (!sameDirectory(top, target)) return { unmeasurable: `no worktree root: git reports the toplevel as ${top}` };
+  } catch (err) {
+    return { unmeasurable: `stat failed: ${failureCause(err)}` };
+  }
+  let out;
+  try {
+    out = execFileSync('git', ['-C', target, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=traditional'], opts);
+  } catch (err) {
+    return { unmeasurable: `git status failed: ${failureCause(err)}` };
+  }
+  const fields = out.split('\0');
+  const valuable = [];
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i];
+    if (entry.length < 4) continue;
+    if (/[RC]/.test(entry.slice(0, 2))) i++; // rename/copy: the next field is the origin
+    if (entry.startsWith('!! ') && isValuableIgnored(entry.slice(3))) valuable.push(entry.slice(3));
+  }
+  return valuable.length > 0 ? { valuable } : null;
 }
 
 /** git's fspathcmp folds case where the filesystem does (core.ignorecase defaults true there). */
@@ -998,7 +1035,7 @@ function unsafeWorktreeRemoval(command, cwd) {
     }
     const verdict = judgeWorktreeRemoval(found.path);
     if (verdict === null) continue;
-    if ('unmeasurable' in verdict) return `git worktree remove ${found.path} — target not measurable (no worktree root, or git status failed)`;
+    if ('unmeasurable' in verdict) return `git worktree remove ${found.path} — target not measurable (${verdict.unmeasurable})`;
     const more = verdict.valuable.length > 3 ? ` (+${verdict.valuable.length - 3} more)` : '';
     return `git worktree remove ${found.path} — would delete ignored ${verdict.valuable.slice(0, 3).join(', ')}${more}`;
   }

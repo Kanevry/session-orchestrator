@@ -72,14 +72,17 @@ function bindRepos(bindings, issues) {
   return { keys, hashes, names, reasons };
 }
 
+// A session is identified by (id, resolved repo), not the id alone: the semantic
+// id `main-<date>-session-<n>` repeats across repos (#1843). Rows with an
+// unresolved repo share the `null` key, so equal ids among them stay duplicates.
 function duplicates(rows, field, source, issues) {
+  const key = (row) => JSON.stringify([row.record?.[field], row.repo ?? null]);
   const counts = new Map();
   for (const row of rows) {
-    const id = row.record?.[field];
-    if (text(id)) counts.set(id, (counts.get(id) || 0) + 1);
+    if (text(row.record?.[field])) counts.set(key(row), (counts.get(key(row)) || 0) + 1);
   }
   for (const row of rows) {
-    if (counts.get(row.record?.[field]) > 1) {
+    if (counts.get(key(row)) > 1) {
       row.ambiguous = true;
       issues.push({ source, index: row.index, code: 'duplicate-session' });
     }

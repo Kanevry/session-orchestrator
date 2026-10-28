@@ -13,8 +13,10 @@
  * installs the runtime dependencies itself.
  *
  * Steps (each skipped when its harness is not installed on this host):
- *   1. repo    — `git fetch origin` + `git merge --ff-only origin/main`, then
- *                `npm ci` when HEAD moved or node_modules is missing.
+ *   1. repo    — `git fetch <remote>` + `git merge --ff-only <remote>/<branch>`
+ *                for the upstream `main` is configured to track (falls back to
+ *                origin/main when none is set, #1846), then `npm ci` when HEAD
+ *                moved or node_modules is missing.
  *   2. claude  — `npm pack` this clone and extract it into STAGE_DIR, then
  *                marketplace update + plugin update, then verify version and
  *                runtime dependencies in the reported installPath. The
@@ -184,26 +186,53 @@ function repoVersion(root = SO_ROOT) {
   return JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 }
 
-function updateRepo({ run, log }, opts) {
+/**
+ * The line `main` is configured to follow (#1846). Read from config, not from
+ * `main@{upstream}`, because a remote name may contain `/`. In this repo's
+ * clone `origin` is a diverged public snapshot line and `main` tracks `gitlab`.
+ * Ceiling: only `refs/heads/<x>` merge refs map to `<remote>/<x>`; anything
+ * else (no upstream, a local `.` upstream, a non-branch ref) falls back to
+ * `origin/main`, the pre-#1846 behaviour — revisit if a clone tracks a tag.
+ */
+function mainUpstream(run, root) {
+  const read = (key) => {
+    const r = run('git', ['config', '--get', key], { cwd: root, mutates: false });
+    return r.ok ? r.stdout.trim() : '';
+  };
+  const remote = read('branch.main.remote');
+  const merge = read('branch.main.merge');
+  if (remote && remote !== '.' && merge.startsWith('refs/heads/')) {
+    return { remote, ref: `${remote}/${merge.slice('refs/heads/'.length)}`, configured: true };
+  }
+  return { remote: 'origin', ref: 'origin/main', configured: false };
+}
+
+/**
+ * The repo step. `ctx.root` exists for tests (a tmp clone); production passes nothing.
+ */
+export function updateRepo({ run, log }, opts, ctx = {}) {
+  const { root = SO_ROOT } = ctx;
   if (opts.skipPull) return { step: 'repo', status: 'skipped', detail: '--skip-pull' };
-  const before = run('git', ['rev-parse', 'HEAD'], { mutates: false });
+  const before = run('git', ['rev-parse', 'HEAD'], { cwd: root, mutates: false });
   if (!before.ok) return { step: 'repo', status: 'failed', detail: before.detail };
-  const branch = run('git', ['branch', '--show-current'], { mutates: false }).stdout?.trim();
+  const branch = run('git', ['branch', '--show-current'], { cwd: root, mutates: false }).stdout?.trim();
   if (branch !== 'main') {
     return { step: 'repo', status: 'failed', detail: `clone is on '${branch}', not main — switch or use --skip-pull` };
   }
-  log('repo: fetching origin and fast-forwarding main');
-  for (const [cmd, args] of [['git', ['fetch', 'origin']], ['git', ['merge', '--ff-only', 'origin/main']]]) {
-    const r = run(cmd, args);
+  const up = mainUpstream(run, root);
+  log(`repo: fetching ${up.remote} and fast-forwarding main to ${up.ref}`
+    + (up.configured ? ' (configured upstream)' : ' (no upstream configured for main — falling back to origin/main)'));
+  for (const [cmd, args] of [['git', ['fetch', up.remote]], ['git', ['merge', '--ff-only', up.ref]]]) {
+    const r = run(cmd, args, { cwd: root });
     if (!r.ok) return { step: 'repo', status: 'failed', detail: r.detail };
   }
-  const after = run('git', ['rev-parse', 'HEAD'], { mutates: false });
+  const after = run('git', ['rev-parse', 'HEAD'], { cwd: root, mutates: false });
   const moved = before.stdout !== after.stdout;
-  if (moved || !existsSync(path.join(SO_ROOT, 'node_modules'))) {
-    const r = run('npm', ['ci']);
+  if (moved || !existsSync(path.join(root, 'node_modules'))) {
+    const r = run('npm', ['ci'], { cwd: root });
     if (!r.ok) return { step: 'repo', status: 'failed', detail: r.detail };
   }
-  return { step: 'repo', status: 'ok', detail: `${repoVersion()}${moved ? ' (updated)' : ' (already current)'}` };
+  return { step: 'repo', status: 'ok', detail: `${repoVersion(root)}${moved ? ' (updated)' : ' (already current)'}` };
 }
 
 /** Marketplace name the packed copy registers under (its own marketplace.json). */

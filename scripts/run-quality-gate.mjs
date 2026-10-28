@@ -57,7 +57,7 @@ import {
 import { buildCommandSignature, spawnInGroup } from './lib/process-group.mjs';
 import { resolveWaveNumber } from './lib/quality-gate-wave.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
-import { gateKillFields } from './lib/quality-gate.mjs';
+import { admitRerunSkipped, gateKillFields } from './lib/quality-gate.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
@@ -245,6 +245,24 @@ function rerunFromGateStdout(stdout) {
   if (!rerun || !Array.isArray(rerun.files) || (rerun.status !== 'pass' && rerun.status !== 'fail')) return null;
   const files = rerun.files.filter((f) => typeof f === 'string' && f.trim());
   return files.length > 0 ? { files, status: rerun.status } : null;
+}
+
+/**
+ * Lift `test.rerun_skipped` — why a red test step got NO serial re-run
+ * (#1673 telemetry) — out of a gate sub-script's JSON stdout envelope, through
+ * the shared `admitRerunSkipped()` rule. `null` when absent, inadmissible or
+ * unparseable. Never throws.
+ *
+ * @param {string} stdout — the gate sub-script's captured stdout.
+ * @returns {string|null}
+ */
+function rerunSkippedFromGateStdout(stdout) {
+  if (typeof stdout !== 'string' || !stdout.trim()) return null;
+  try {
+    return admitRerunSkipped(JSON.parse(stdout)?.test?.rerun_skipped);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -620,6 +638,8 @@ async function main() {
     // The serial re-run of timeout-only failures (#1673): which files it named
     // and how it ended, so the rate of load-rescued gates stays measurable.
     const rerun = rerunFromGateStdout(gateStdout);
+    // …and, when nothing was re-run, why not — a re-run that ran is never a skip.
+    const rerunSkipped = rerun ? null : rerunSkippedFromGateStdout(gateStdout);
     // Wave-scope sidecar is read from the SAME project dir the event lands in
     // (emitEvent's own destination precedence), so a tmp-scoped run cannot pick
     // up the host repo's live wave. Mirrors the hook's projectDir resolution.
@@ -651,6 +671,7 @@ async function main() {
         ...(counts ? { counts } : {}),
         ...(failedFiles ? { failed_files: failedFiles } : {}),
         ...(rerun ? { rerun } : {}),
+        ...(rerunSkipped ? { rerun_skipped: rerunSkipped } : {}),
         ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
         ...sessionAttribution(ledgerRoot ?? repoRoot),
       },

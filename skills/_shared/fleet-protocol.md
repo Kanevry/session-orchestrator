@@ -76,8 +76,20 @@ Lease, kein Eintrag oder ein abgelehnter Wert — nie ein ungeprüfter String). 
 der Zeitpunkt, ab dem die Standard-Auflagen (unten) gelten, in der Form von `zeit` (Code:
 `fallbackDueAt()`); er steht nur auf stdout, die Check-in-Datei behält ihr Schema. Exit 0
 geschrieben, 2 ungültige Eingabe (Fehlerliste auf stderr, keine Datei) oder semantische Session-ID
-von einem anderen Repo belegt (eine Zeile auf stderr mit JSON-escaped Repo-Namen, fremde Datei unverändert,
-tmp entfernt, kein Event), 1 Schreibfehler.
+verweigert und nichts geschrieben (eine Zeile auf stderr mit JSON-escaped Repo-Namen, fremde Datei
+unverändert, tmp entfernt), 1 Schreibfehler.
+Die semantische ID kollidiert über Repos (#1839). Trägt der Check-in ein `session_uuid` und belegt
+bereits der Check-in eines anderen Repos `checkin/<semantische ID>.json`, schreibt der Schreiber
+genau einmal unter `checkin/<session_uuid>.json` (das Feld `session` bleibt die semantische ID);
+stdout trägt dann `key` (der tatsächlich benutzte Dateischlüssel) und `key_fallback: true`, Exit 0.
+Jede Verweigerung (`occupied`: anderes Repo hält die Datei; `changed`: das Ziel änderte sich während
+der Prüfung) emittiert `orchestrator.fleet.checkin_rejected` (`reason`, `fallback`: `uuid`|`none`);
+Exit 2 gibt es nur, wenn nichts geschrieben wurde (auch ein Schreibfehler im UUID-Versuch zählt die
+Verweigerung, dann Exit 1). Die CLI setzt `session_uuid` aus der prozesslokalen nativen ID
+(`readProcessLocalSessionIds()`: `CLAUDE_CODE_SESSION_ID` oder `CODEX_THREAD_ID` je Plattform, keine,
+wenn eine geerbte ID der anderen widerspricht), wenn das eine native UUID ist; dieser Wert überschreibt
+eine Eingabe. Grund: der Navigator schrieb Auflagen einer Session unter der nativen UUID, während sie
+sich unter der semantischen ID eingecheckt hatte.
 Vor dem `rename` lehnt der Schreiber ein vorhandenes String-`repo` ungleich dem eigenen ab;
 gleiches `repo`, unlesbare Dateien und ungültiges JSON dürfen überschrieben werden.
 Die Prüfung folgt keinen Symlinks, öffnet nichtblockierend und liest nur reguläre Dateien
@@ -87,6 +99,7 @@ gelten für diese Prüfung als unlesbar (fail-open zum `rename`).
 | Feld | Inhalt |
 |---|---|
 | `session` | Registry-ID aus `.orchestrator/current-session.json`, pfadsicher (Pflicht) |
+| `session_uuid` | optional: native Harness-UUID (prozesslokal, `readProcessLocalSessionIds()`); Ausweich-Dateischlüssel bei belegter semantischer ID |
 | `plattform` | `claude` / `codex` / `kopflos` (Pflicht) |
 | `repo` | Repo-Name `name` oder `gruppe/name`, nie ein Pfad (Pflicht) |
 | `repo_id`, `worktree` | String oder `null`; Worktree `true`/`false` |
@@ -263,14 +276,22 @@ Offload-Regel, Merge- und Zeitregeln, Besitzkonflikte); Inhalt und Form gehören
 Session **liest** die Datei; sie wartet auf keine Nachricht. Keine Auflage ist eine Freigabe.
 
 **Pflichtfeld `repo`** (#1520, navigator#190): absoluter Pfad auf Toplevel oder git-common-dir des
-Ziel-Repos. Der Dateiname ist die semantische Session-ID, und die kollidiert über Repos hinweg.
-Gelesen wird über `node scripts/fleet-auflagen.mjs <session_id> --render` (Code: `readAuflagen()`); die
+Ziel-Repos. Der Dateiname ist die semantische Session-ID oder die native UUID, je nachdem, was der
+Navigator gewählt hat (#1839); die semantische ID kollidiert über Repos hinweg.
+Gelesen wird über `node scripts/fleet-auflagen.mjs <session_id> [<session_id>...] --render` (Code:
+`readAuflagen()`). Der Leser probiert zuerst die prozesslokale native ID (wie beim Check-in, nur wenn
+eine native UUID), dann die übergebenen IDs der Reihe nach; unter den angenommenen Dateien gewinnt die
+mit dem jüngsten `zeit` (eine fortgesetzte Session behält ihre UUID, eine ältere UUID-Datei darf eine
+frische semantische nicht verdecken; Gleichstand: Reihenfolge; ein `zeit` außerhalb der UTC-Sekundenform
+oder mehr als 5 Minuten in der Zukunft zählt zuletzt), sonst die erste abgelehnte, sonst
+`absent`; das Ergebnis trägt `key`. Je Schlüssel gilt: die
 Datei gilt nur, wenn `repo` und das eigene Repo auf dasselbe `git rev-parse --path-format=absolute
 --git-common-dir` auflösen, ein Worktree passt also zu seinem Haupt-Checkout. Fehlt das Feld, passt
 es nicht oder ist die Datei unlesbar: fail-closed, WARN auf stderr, die Datei zählt als nicht
-vorhanden, die Standard-Auflagen gelten. `--render` gibt das Feld `grenze` einer angenommenen Datei
-nach der JSON-Zeile wörtlich aus (#1809, mit Steuerzeichen nur eine Zurückhalte-Zeile); die Session
-übernimmt es unverändert, auch in Subagent-Prompts, die über Repos suchen.
+vorhanden, die Standard-Auflagen gelten. `--render` gibt nach der JSON-Zeile immer eine Grenze aus
+(#1809, #1842): das Feld `grenze` einer angenommenen Datei wörtlich (mit Steuerzeichen, leer oder nur
+Leerraum nur eine Zurückhalte-Zeile, dann der Standard-Grenzsatz), sonst den Standard-Grenzsatz; die Session übernimmt
+den Block unverändert, auch in Subagent-Prompts, die über Repos suchen.
 
 **Standard-Auflagen (konservative Stufe).** Sie gelten ab `fallback_due_at` (stdout der
 Check-in-CLI), wenn bis dahin keine Auflagen-Datei liegt. Die Frist rechnet `fallbackDueAt()`:
@@ -283,6 +304,13 @@ aktiven Navigator ist `fallback_due_at` gleich `zeit`, die Auflagen gelten also 
   unmittelbar davor als bereit belegt ist (`skills/remote-offload/SKILL.md`); ohne Beleg kein neues
   Offload. Lokal nur `vitest` bzw. `eslint` je Datei mit `timeout`.
 - Zeiten nur aus `date`.
+- Grenze (Standard-Grenzsatz, `STANDARD_GRENZSATZ` in `scripts/lib/fleet-protocol.mjs`, #1842). Ohne
+  angenommene `grenze` des Navigators gilt wörtlich:
+
+  > Vor Lesen oder Arbeit in einem fremden Checkout entscheidet navigator grenze <pfad>, für einen Checkout auf einem anderen Host navigator grenze --host <alias> <pfad> vom Host aus, auf dem navigator läuft. Nur Exit 0 erlaubt es; Exit 7 (Grenztreffer), Exit 6 (nicht messbar) und ein fehlendes navigator (Exit 127) heißen nicht lesen. Keine Dateisystemsuche über ~/Projects oder außerhalb tor-freigegebener Repos. Ein Sperrtreffer wird nur mit dem Repo-Namen gemeldet, nie mit URL oder Host. Jeder Subagent-Prompt mit Dateisystemsuche über Repos trägt diesen Absatz wörtlich.
+
+  Anders als die übrigen Standard-Auflagen wartet sie nicht auf `fallback_due_at`: sie bindet sofort
+  und fail-closed. Jeder Subagent-Prompt mit Dateisystemsuche über Repos trägt sie wörtlich.
 - Kein Merge ohne ausdrücklichen Owner-Auftrag, der Merge für genau dieses Repo nennt
   (`auftrag_ref`).
 

@@ -198,7 +198,15 @@ export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, 
       ![report.test, report.typecheck, report.lint].some((check) => check.timed_out === true);
     if (emit) try {
       const { emitEvent, sessionAttribution } = await import('./events.mjs');
+      // Lazy like events.mjs: the shared admission rule lives in quality-gate.mjs,
+      // whose import graph the blocking verdict above must not depend on. A failed
+      // import costs only `rerun_skipped`, never the whole event.
+      const admitRerunSkipped = await import('./quality-gate.mjs')
+        .then((m) => m.admitRerunSkipped, () => () => null);
       const counts = admitSuiteCounts(report?.test);
+      const hasRerun = Array.isArray(report?.test?.rerun?.files) && report.test.rerun.files.length > 0;
+      // Why a red test step got no re-run (#1673) — never beside a re-run that ran.
+      const rerunSkipped = hasRerun ? null : admitRerunSkipped(report?.test?.rerun_skipped);
       const waveNumber = resolveWaveNumber(ledgerRoot);
       await emitEvent(`orchestrator.quality_gate.${passed ? 'passed' : 'failed'}`, {
         variant: 'full-gate', exit_code: passed ? 0 : 1, remote_host: alias, host: alias, host_source: hostSource,
@@ -207,8 +215,8 @@ export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, 
         ...(counts ? { counts } : {}),
         ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
         ...(report?.test?.failed_files?.length ? { failed_files: report.test.failed_files } : {}),
-        ...(Array.isArray(report?.test?.rerun?.files) && report.test.rerun.files.length
-          ? { rerun: { files: report.test.rerun.files, status: report.test.rerun.status } } : {}),
+        ...(hasRerun ? { rerun: { files: report.test.rerun.files, status: report.test.rerun.status } } : {}),
+        ...(rerunSkipped ? { rerun_skipped: rerunSkipped } : {}),
       }, { repoRoot: ledgerRoot });
     } catch { /* telemetry cannot change the blocking verdict */ }
     logFn(`remote quality gate ${passed ? 'passed' : 'FAILED — Push blocked'} (${alias}).`);

@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-25T00:49:10.260Z",
-  "head": "245e01abaa01c302c0bec6a760c73dee3b8c508d",
+  "generated_at": "2026-10-27T05:08:38.098Z",
+  "head": "1dfcbfe26817aace3226f0aaf978d70f72baf62e",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -1834,6 +1834,13 @@
     },
     {
       "file": "scripts/lib/session-schema/validator.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-schema/work-evidence.mjs",
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs"

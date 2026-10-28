@@ -73,6 +73,10 @@ import { eventsFilePath, scanEventsBackwards } from './events.mjs'; // eventsFil
 // the SessionStart/SessionEnd hook graph. The profile enum must not be
 // re-literalled: `VALID_SESSION_PROFILES` is its SSOT (GitLab #1252).
 import { VALID_SESSION_PROFILES } from './session-schema/constants.mjs';
+// #1835: leaf module, stdlib only — counts what a stub did, decides when that counts as measured.
+import { emptyWorkCounts, countWorkEvent, addSkillCalls, workEvidenceFor } from './session-schema/work-evidence.mjs';
+// #1835 MITTEL-A: a Skill tool call writes no event, only a skill-invocations row.
+import { DEFAULT_SKILL_INVOCATIONS_PATH } from './skill-invocations-schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -224,12 +228,20 @@ function readJsonlSafe(readFileSync, filePath) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      out.push(JSON.parse(trimmed));
+      const parsed = JSON.parse(trimmed);
+      // A parsed `null`/array/scalar line is valid JSON but no record: kept, it
+      // made every `ev.event` read throw and the backfill return `error`.
+      if (isPlainRecord(parsed)) out.push(parsed);
     } catch {
       /* skip malformed line */
     }
   }
   return out;
+}
+
+/** True for a non-null, non-array object — the only shape a ledger record has. */
+function isPlainRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** Normalise any parseable timestamp to canonical ISO-8601 UTC ms form. */
@@ -343,9 +355,20 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
   // since a session that never emitted a terminal event is exactly the
   // abandoned case this module exists to reconstruct.
   let lastEventMs = null;
+  // #1835: the platform of session.started and the work-event counts, read from
+  // the same matched events the record is built from (no extra pass).
+  // `firstStartSource` is the `native_source` of the FIRST matched start: Claude
+  // Code writes another `session.started` with the same raw id on compact/resume,
+  // and the hook path stops reading at the active file once any start is there —
+  // a non-fresh first start means the session's beginning may sit unread in an
+  // archive, so the evidence is omitted rather than read as `empty`.
+  let platform = null;
+  let firstStartSource;
+  const workCounts = emptyWorkCounts();
 
   for (const ev of events) {
     if (typeof ev.session_id !== 'string' || !uuids.has(ev.session_id)) continue;
+    countWorkEvent(workCounts, ev.event);
     const ts = typeof ev.timestamp === 'string' ? Date.parse(ev.timestamp) : NaN;
     if (!Number.isNaN(ts)) {
       earliestMs = earliestMs === null ? ts : Math.min(earliestMs, ts);
@@ -356,6 +379,10 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
       if (typeof ev.timestamp === 'string') startedAt = ev.timestamp;
       if (typeof ev.branch === 'string' && ev.branch.length > 0) branch = ev.branch;
       if (typeof ev.project === 'string') project = ev.project;
+      if (typeof ev.platform === 'string' && ev.platform.length > 0) platform = ev.platform;
+      if (firstStartSource === undefined) {
+        firstStartSource = typeof ev.native_source === 'string' ? ev.native_source : null;
+      }
     } else if (ev.event === EVENT_STOPPED || ev.event === EVENT_TURN_STOPPED || ev.event === EVENT_ENDED) {
       if (!Number.isNaN(ts)) {
         lastTerminalMs = lastTerminalMs === null ? ts : Math.max(lastTerminalMs, ts);
@@ -378,6 +405,9 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
     lastTerminalMs,
     earliestMs,
     lastEventMs,
+    platform,
+    workCounts,
+    firstStartSource: firstStartSource ?? null,
   };
 }
 
@@ -418,7 +448,8 @@ function recordsMentioning(eventsPath, id, deadlineMs) {
     filter: id,
     budgetMs,
     onRecord: (record) => {
-      newestFirst.push(record);
+      // Same guard as readJsonlSafe: a `null` line must not abort the history read.
+      if (isPlainRecord(record)) newestFirst.push(record);
       return false;
     },
   });
@@ -602,6 +633,99 @@ function isCandidateDeadByAge({ relaxDeadByAge, assumeDeadBeforeMs, lastEventMs,
 }
 
 /**
+ * `selected` skill-invocation rows per session_id over several ledger files,
+ * de-duplicated by row CONTENT across files (#1841): a repo that tracks the
+ * ledger and committed a session's rows has the SAME row in the main checkout
+ * and the worktree, and summing counted it twice. Per identity key (timestamp,
+ * skill, session_id, event) the count is the MAX over the files, so distinct
+ * rows still add up and a row repeated inside ONE file still counts per copy.
+ * Ceiling (BV-004): two genuinely separate calls with an identical key that
+ * landed one per file collapse to one. Revisit when a ledger writer can emit
+ * such twins (e.g. a coarser timestamp than milliseconds).
+ * Rows are filtered exactly like `countSkillInvocationsBySession`. A missing
+ * file (ENOENT) is a readable zero; any other read error marks the result
+ * unreadable but the remaining files are still counted. Never throws on I/O.
+ *
+ * @param {string[]} filePaths
+ * @param {(p: string, enc: string) => string} [readFileSync]
+ * @returns {{ counts: Map<string, number>, readable: boolean }}
+ */
+export function countSkillInvocationsAcrossFiles(filePaths, readFileSync = fs.readFileSync) {
+  const maxPerKey = new Map(); // key → { sessionId, n }
+  let readable = true;
+  for (const filePath of filePaths) {
+    let raw;
+    try {
+      raw = readFileSync(filePath, 'utf8');
+    } catch (err) {
+      if (err?.code !== 'ENOENT') readable = false;
+      continue;
+    }
+    const perFile = new Map();
+    for (const line of String(raw).split('\n')) {
+      if (line.trim() === '') continue;
+      let row;
+      try {
+        row = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (row === null || typeof row !== 'object' || row.event !== 'selected') continue;
+      if (typeof row.session_id !== 'string' || row.session_id === '') continue;
+      const key = JSON.stringify([row.timestamp ?? null, row.skill ?? null, row.session_id, row.event]);
+      const entry = perFile.get(key) ?? { sessionId: row.session_id, n: 0 };
+      entry.n += 1;
+      perFile.set(key, entry);
+    }
+    for (const [key, entry] of perFile) {
+      const prev = maxPerKey.get(key);
+      if (!prev || entry.n > prev.n) maxPerKey.set(key, entry);
+    }
+  }
+  const counts = new Map();
+  for (const { sessionId, n } of maxPerKey.values()) counts.set(sessionId, (counts.get(sessionId) ?? 0) + n);
+  return { counts, readable };
+}
+
+/**
+ * Skill calls of the session's single raw id, read from skill-invocations.jsonl
+ * (#1835 MITTEL-A: a session cleared before its first Stop left only lifecycle
+ * events, yet two Skill tool calls). Read at most once per backfill call, and
+ * skipped only when the record cannot carry evidence anyway (not exactly one
+ * raw id, or no start found); `workEvidenceFor` makes every other decision.
+ *
+ * Two files, merged by row content (`countSkillInvocationsAcrossFiles`): the
+ * skill hook writes through `resolveLedgerPath`, which stays in a linked
+ * worktree when that repo does NOT git-ignore the ledger, while the events
+ * always go to the main checkout (`eventsFilePath`). So the events root and
+ * this checkout's own root are both read; a committed tracked ledger puts the
+ * same row in both, which must count once (#1841). Joining on
+ * the roots directly avoids `defaultSkillInvocationsPath`, whose
+ * `resolveLedgerRoot` spawns `git check-ignore` per SessionStart/SessionEnd.
+ * Ceiling (BV-004, #1726 family): in a repo that does not ignore the ledger, a
+ * stub of ANOTHER worktree's session is backfilled without that worktree's
+ * skill rows. Revisit when a stub from such a repo reads `empty` while its
+ * worktree's skill-invocations.jsonl holds rows for its raw id.
+ * Never throws.
+ *
+ * @returns {{ n: number, readable: boolean }}
+ */
+function skillCallsFor(readFileSync, repoRoot, gathered) {
+  try {
+    if (!(gathered.uuids instanceof Set) || gathered.uuids.size !== 1 || typeof gathered.startedAt !== 'string') {
+      return { n: 0, readable: true };
+    }
+    const [uuid] = gathered.uuids;
+    const roots = [...new Set([resolveEventsLedgerRoot(repoRoot), path.resolve(repoRoot)])];
+    const { counts, readable } = countSkillInvocationsAcrossFiles(roots.map((root) => path.join(root, DEFAULT_SKILL_INVOCATIONS_PATH)), readFileSync);
+    if (!readable) return { n: 0, readable: false };
+    return { n: counts.get(uuid) ?? 0, readable: true };
+  } catch {
+    return { n: 0, readable: false };
+  }
+}
+
+/**
  * Build a backfilled stub record. Required fields with no events source are
  * defaulted to empty/zero and enumerated in `_backfill_incomplete_fields`;
  * the mode → session_type coercion sets `_session_type_inferred`.
@@ -615,7 +739,7 @@ function isCandidateDeadByAge({ relaxDeadByAge, assumeDeadBeforeMs, lastEventMs,
  * this record replaces. It is emitted only when non-null, so every existing
  * record shape is byte-identical to before.
  */
-function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'abandoned', backfillSource = 'events-jsonl', supersedes = null, rawSessionId = null }) {
+function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'abandoned', backfillSource = 'events-jsonl', supersedes = null, rawSessionId = null, skillCalls = { n: 0, readable: false } }) {
   const startedIso = canonicalIso(gathered.startedAt, gathered.earliestMs ?? nowMs);
   const startedMs = Date.parse(startedIso);
   // completed_at is events-attested, never the backfill-run wall-clock (#914 R1).
@@ -707,6 +831,28 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'aban
   };
   if (branchFound) record.branch = gathered.branch;
   if (sessionProfile) record.session_profile = sessionProfile;
+  // #1835 — the total_* zeros above are placeholders (listed as incomplete), so
+  // an empty restart and a stub that ran 86 agents looked identical. The event
+  // counts are the measurement; written ONLY when the session's history was read
+  // whole and its platform emits turn stops (`workEvidenceFor` decides). Absent
+  // means "not measured" — never null, 0 or {}.
+  // One raw id only: a semantic label bridging several would sum their counts
+  // into one record, which the census cannot attribute.
+  const historyWhole = startedFound
+    && gathered.uuids instanceof Set && gathered.uuids.size === 1
+    && gathered.historyUnread !== true
+    && !(Array.isArray(gathered.historyLostFields) && gathered.historyLostFields.length > 0)
+    // An unreadable skill ledger hides tool calls: the absence of work is unprovable.
+    && skillCalls?.readable === true;
+  const counts = { ...gathered.workCounts };
+  addSkillCalls(counts, skillCalls?.n);
+  const evidence = workEvidenceFor({
+    platform: gathered.platform,
+    counts,
+    complete: historyWhole,
+    firstStartSource: gathered.firstStartSource,
+  });
+  if (evidence !== null) record.work_evidence = evidence;
   if (inferred) {
     record._session_type_inferred = true;
     // GitLab #1234 — BACKFILLER HONESTY, half landed 2026-09-06.
@@ -1170,6 +1316,7 @@ export async function backfillAbandonedSession({
         synthetic,
         gathered,
         nowMs,
+        skillCalls: skillCallsFor(readFileSync, repoRoot, gathered),
         rawSessionId: isUuid(sessionId) ? sessionId : null,
       });
       if (recordId !== semanticRecordId) record.semantic_session_id = semanticRecordId;
@@ -1446,6 +1593,7 @@ export async function backfillCompletedFromStateMd({
         synthetic: false,
         gathered,
         nowMs,
+        skillCalls: skillCallsFor(readFileSync, repoRoot, gathered),
         status: 'completed',
         backfillSource: 'state-md-completed',
         supersedes,

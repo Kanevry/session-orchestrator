@@ -4,17 +4,17 @@
 
 | Version | Supported |
 |---------|-----------|
-| 3.x | Yes |
-| 2.x and earlier | No |
+| 5.x | Yes |
+| 4.x and earlier | No |
 
-Only the latest 3.x minor receives fixes. See [CHANGELOG.md](CHANGELOG.md) for the
+Only the latest 5.x minor receives fixes. See [CHANGELOG.md](CHANGELOG.md) for the
 current release.
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in Session Orchestrator, please report it responsibly.
+If you discover a security vulnerability in Session Orchestrator, please report it responsibly and privately.
 
-**Email:** [security@gotzendorfer.at](mailto:security@gotzendorfer.at)
+**Report it through GitHub Private Vulnerability Reporting:** [open a private report](https://github.com/Kanevry/session-orchestrator/security/advisories/new) (repository tab *Security* → *Report a vulnerability*). This is the only channel; please do not open a public issue for a vulnerability.
 
 Please include:
 - Description of the vulnerability

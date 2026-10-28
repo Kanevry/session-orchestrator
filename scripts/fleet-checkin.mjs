@@ -20,8 +20,22 @@
  * and a write would create the navigator directory, which then flips every later solo session to
  * fleet. A headless run without fleet integration applies the Standard-Auflagen instead (#1559 review).
  *
+ * Identity (#1839): the semantic id collides across repos on the same day. When
+ * this process's native id (`readProcessLocalSessionIds()`: platform-selected
+ * `CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`, none when an inherited id
+ * contradicts the other) is a native UUID, it is stamped as `session_uuid`
+ * (a process-local witness, overriding any input value); otherwise an input
+ * `session_uuid` is kept and validated. When the semantic file is
+ * occupied by another repo and a `session_uuid` is set, the check-in is written
+ * ONCE more under `checkin/<session_uuid>.json` — `session` stays the semantic
+ * id. Every refusal emits `orchestrator.fleet.checkin_rejected` with
+ * `{ session, repo, reason: 'occupied'|'changed', fallback: 'uuid'|'none' }`
+ * (best-effort, never changes the exit code).
+ *
  * stdout: one JSON line
- * `{ ok, path, navigator_state, navigator_adresse, fallback_due_at, event }`.
+ * `{ ok, path, key, key_fallback, navigator_state, navigator_adresse, fallback_due_at, event }`.
+ * `key` is the file key actually used (the semantic id or the UUID),
+ * `key_fallback` is true when it is the UUID.
  * `navigator_adresse` is the active lease's `adresse` exactly as
  * `readNavigatorLease()` validated it (a ListAgents peer name), else `null` — no
  * active lease, no address in it, or one the validator refused. It is the only
@@ -33,7 +47,9 @@
  * Exit codes:
  *   0 — check-in written (an event failure only WARNs; `event: false` on stdout)
  *   1 — write error
- *   2 — invalid input or semantic session ID occupied by another repo (no write/event)
+ *   2 — invalid input (no write/event), or the semantic session ID refused
+ *       (occupied by another repo, or changed during the check) with no UUID
+ *       fallback written (no write; only the `checkin_rejected` event)
  */
 
 import { randomBytes } from 'node:crypto';
@@ -45,6 +61,7 @@ import {
   checkinPath,
   fleetIntegrationEnabled,
   fallbackDueAt,
+  isNativeUuid,
   navigatorDir,
   readNavigatorLease,
   utcSecondsTimestamp,
@@ -52,6 +69,7 @@ import {
 } from './lib/fleet-protocol.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { openNoFollow } from './lib/no-follow-open.mjs';
+import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 
 const PREFIX = 'fleet-checkin:';
 
@@ -73,10 +91,12 @@ async function readStdin() {
  * @param {typeof openNoFollow} [options.open] opener for the ownership read.
  *   Injectable only so tests can reach the fail-closed `ERR_FILE_CHANGED`
  *   branch, which `openNoFollow` never takes on POSIX; production passes nothing.
+ * @param {(reason: 'occupied'|'changed') => void} [options.onRefused] called
+ *   with the refusal reason right before returning false (#1839).
  * @returns {Promise<boolean>} false when another repo already owns the target,
  *   or the target changed during the ownership check
  */
-export async function writeCheckinFile(target, record, { open = openNoFollow } = {}) {
+export async function writeCheckinFile(target, record, { open = openNoFollow, onRefused } = {}) {
   const checkinDir = path.dirname(target);
   await fs.mkdir(navigatorDir(), { recursive: true, mode: 0o700 });
   await fs.mkdir(checkinDir, { recursive: true, mode: 0o700 });
@@ -121,6 +141,7 @@ export async function writeCheckinFile(target, record, { open = openNoFollow } =
       if (err?.code === 'ERR_FILE_CHANGED') {
         await fs.rm(tmp, { force: true });
         process.stderr.write(`${PREFIX} check-in target ${path.basename(target)} changed during the safety check; refusing to overwrite\n`);
+        onRefused?.('changed');
         return false;
       }
       // Fail-open otherwise: a missing (first write), symlinked, non-regular,
@@ -129,7 +150,8 @@ export async function writeCheckinFile(target, record, { open = openNoFollow } =
     }
     if (typeof existing?.repo === 'string' && existing.repo !== record.repo) {
       await fs.rm(tmp, { force: true });
-      process.stderr.write(`${PREFIX} semantic session ID ${record.session} is already occupied by another repo: ${JSON.stringify(existing.repo)}\n`);
+      process.stderr.write(`${PREFIX} check-in key ${path.basename(target, '.json')} (session ${record.session}) is already occupied by another repo: ${JSON.stringify(existing.repo)}\n`);
+      onRefused?.('occupied');
       return false;
     }
     // BV-004 ceiling: protects an already-visible foreign check-in, not concurrent
@@ -158,6 +180,13 @@ async function main() {
   }
 
   const record = { ...input, zeit: utcSecondsTimestamp() };
+  // A process-local witness replaces a shared one (#1839). The platform-selected
+  // reader yields nothing when an inherited Claude id contradicts a Codex one.
+  // BV-004 ceiling: a non-harness child that inherits ONLY CLAUDE_CODE_SESSION_ID
+  // still stamps its parent's UUID (the repo check confines any mix-up to one
+  // repo); revisit when a harness without its own id env runs this CLI.
+  const [nativeId] = readProcessLocalSessionIds();
+  if (isNativeUuid(nativeId)) record.session_uuid = nativeId;
   const errors = validateCheckin(record);
   if (errors.length > 0) {
     for (const e of errors) process.stderr.write(`${PREFIX} ${e}\n`);
@@ -169,6 +198,8 @@ async function main() {
       ok: true,
       skipped: 'no-fleet',
       path: null,
+      key: null,
+      key_fallback: false,
       navigator_state: 'none',
       navigator_adresse: null,
       fallback_due_at: null,
@@ -177,10 +208,42 @@ async function main() {
     return 0;
   }
 
-  const target = checkinPath(record.session);
+  const repoRoot = (process.env.CLAUDE_PROJECT_DIR || '').trim() || process.cwd();
+  /** @param {string} reason @param {'uuid'|'none'} fallback */
+  const emitRejected = async (reason, fallback) => {
+    try {
+      await emitEvent(
+        'orchestrator.fleet.checkin_rejected',
+        { session: record.session, repo: record.repo, reason, fallback },
+        { repoRoot },
+      );
+    } catch (err) {
+      process.stderr.write(
+        `${PREFIX} WARN: checkin_rejected event emission failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  };
+
+  let key = record.session;
+  let target = checkinPath(key);
+  /** @type {'occupied'|'changed'|null} */
+  let refused = null;
   try {
-    if (!await writeCheckinFile(target, record)) return 2;
+    if (!await writeCheckinFile(target, record, { onRefused: (r) => { refused = r; } })) {
+      const reason = refused ?? 'occupied';
+      let fallbackOk = false;
+      if (reason === 'occupied' && typeof record.session_uuid === 'string') {
+        key = record.session_uuid;
+        target = checkinPath(key);
+        fallbackOk = await writeCheckinFile(target, record);
+      }
+      refused = null;
+      await emitRejected(reason, fallbackOk ? 'uuid' : 'none');
+      if (!fallbackOk) return 2;
+    }
   } catch (err) {
+    // A retry that throws after a refusal still counts the refusal.
+    if (refused) await emitRejected(refused, 'none');
     process.stderr.write(`${PREFIX} write failed: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
@@ -194,7 +257,6 @@ async function main() {
 
   let event = true;
   try {
-    const repoRoot = (process.env.CLAUDE_PROJECT_DIR || '').trim() || process.cwd();
     await emitEvent(
       'orchestrator.fleet.checkin',
       {
@@ -220,6 +282,8 @@ async function main() {
     JSON.stringify({
       ok: true,
       path: shownPath,
+      key,
+      key_fallback: key !== record.session,
       navigator_state: navigatorState,
       navigator_adresse: navigatorAdresse,
       fallback_due_at: fallbackDueAt(record.zeit, navigatorState),

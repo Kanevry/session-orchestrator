@@ -117,7 +117,9 @@ export function estimateInputTokens(payload) {
 
 /**
  * Check the estimated input tokens against the configured budget. Per #506 EARS
- * state-driven: budget exceeded → return verdict, do NOT truncate.
+ * state-driven: budget exceeded → return verdict, do NOT truncate. The caller
+ * `runDialecticDeriver()` may re-check after dropping whole learning records
+ * (#1840); no text inside a record is ever cut.
  *
  * @param {number} estimatedInput
  * @param {{input: number, output?: number}} budget
@@ -515,8 +517,14 @@ async function readSteering(repoRoot) {
  * @property {{user?: string, agent?: string}} [diff]
  * @property {{input_tokens?: number, output_tokens?: number, estimated_input?: number}} [usage]
  * @property {string} [skipped_reason]
- * @property {number} [used]
+ * @property {number} [used] — budget-exceeded only: the FULL-input estimate
  * @property {number} [budget]
+ * @property {number} [learnings_used] — set on every result that reached Gate 3
+ *   (#1840): learnings in the dispatched prompt; on `budget-exceeded` the full
+ *   loaded count n (nothing was dispatched, nothing counted as dropped)
+ * @property {number} [learnings_dropped] — set on every result that reached
+ *   Gate 3: lowest-ranked learnings left out so the prompt fits the budget;
+ *   always 0 on `budget-exceeded`
  */
 
 /**
@@ -542,6 +550,12 @@ async function recordThrownAbort(repoRoot, status, t0) {
 /**
  * Run the deriver loop: load inputs → build payload → check budget → dispatch
  * agent → parse response → guard empty-card. Returns a structured verdict.
+ *
+ * Budget fit (#1840): when the full input exceeds `budget.input`, learnings
+ * are dropped from the lowest-ranked end as whole records until the prompt
+ * fits; the reduced payload's `meta.top_n_learnings` is the count actually
+ * sent, and the result carries `learnings_used` / `learnings_dropped`.
+ * `budget-exceeded` is returned only when even zero learnings do not fit.
  *
  * All I/O is injected via opts — pass real implementations in production,
  * mocks in tests. Mirrors the `runLoop({opts})` pattern in scripts/lib/autopilot.
@@ -624,29 +638,59 @@ export async function runDialecticDeriver({
     return { status: 'empty-input', skipped_reason: 'no-input', diff: {} };
   }
 
-  const payload = buildPayload({
-    learnings,
-    sessions,
-    peerCards,
-    steering,
-    topN: topNLearnings,
-    lastK: lastKSessions,
-  });
-  const prompt = buildPrompt(payload, model, randomNonce);
+  // One nonce for every rebuild below (#1840): the prompt whose size was
+  // estimated must be byte-identical to the prompt that gets dispatched.
+  const nonce = randomNonce();
+  const promptFor = (k) => buildPrompt(
+    buildPayload({
+      learnings: k === learnings.length ? learnings : learnings.slice(0, k),
+      sessions,
+      peerCards,
+      steering,
+      // Full set keeps the requested N (unchanged contract); a reduced set
+      // tells the model the number actually sent.
+      topN: k === learnings.length ? topNLearnings : k,
+      lastK: lastKSessions,
+    }),
+    model,
+    () => nonce,
+  );
 
   // Gate 3: budget — fail-fast BEFORE dispatch when the prompt would exceed it.
-  const estimatedInput = estimateInputTokens(prompt);
-  const verdict = checkBudget(estimatedInput, budget);
+  // #1840 fit loop: when the full input is over budget, drop learnings from
+  // the lowest-ranked end as WHOLE records, one at a time, until it fits. No
+  // text inside a record is ever cut (#506 do-not-truncate). Only when even
+  // zero learnings do not fit is the run aborted as before. At most n+1
+  // prompt builds — a smarter search is not worth it at n ≤ topN (BV-001).
+  const fullPrompt = promptFor(learnings.length);
+  const fullEstimate = estimateInputTokens(fullPrompt);
+  let prompt = fullPrompt;
+  let estimatedInput = fullEstimate;
+  let learningsUsed = learnings.length;
+  let verdict = checkBudget(estimatedInput, budget);
+  while (verdict.ok === false && learningsUsed > 0) {
+    learningsUsed -= 1;
+    prompt = promptFor(learningsUsed);
+    estimatedInput = estimateInputTokens(prompt);
+    verdict = checkBudget(estimatedInput, budget);
+  }
   if (verdict.ok === false) {
     await recordDialecticRun({ repoRoot, status: 'budget-exceeded', durationMs: Date.now() - t0 });
+    // `used` and `estimated_input` keep their pre-#1840 meaning: the FULL-input
+    // estimate. Nothing was dropped from what was measured, so the counts
+    // describe the full set (learnings_used = n, learnings_dropped = 0).
+    const full = checkBudget(fullEstimate, budget);
     return {
       status: 'budget-exceeded',
-      used: verdict.used,
-      budget: verdict.budget,
-      usage: { estimated_input: estimatedInput },
+      used: full.used,
+      budget: full.budget,
+      usage: { estimated_input: fullEstimate },
+      learnings_used: learnings.length,
+      learnings_dropped: 0,
       diff: {},
     };
   }
+  const learningsDropped = learnings.length - learningsUsed;
 
   // Dispatch — DI boundary. Caller wires the real Agent({...}) wrapper or a mock.
   const maxTokens = typeof budget?.output === 'number' ? budget.output : DEFAULT_BUDGET.output;
@@ -668,6 +712,8 @@ export async function runDialecticDeriver({
       status: 'would-empty-card',
       skipped_reason: 'detected-empty-card-target',
       diff,
+      learnings_used: learningsUsed,
+      learnings_dropped: learningsDropped,
       usage: {
         estimated_input: estimatedInput,
         input_tokens: response?.usage?.input_tokens,
@@ -700,6 +746,8 @@ export async function runDialecticDeriver({
   return {
     status: 'ok',
     diff,
+    learnings_used: learningsUsed,
+    learnings_dropped: learningsDropped,
     usage: {
       estimated_input: estimatedInput,
       input_tokens: response?.usage?.input_tokens,

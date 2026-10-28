@@ -810,18 +810,51 @@ function coerceMaxRetries(n) {
  *   pids themselves stay in the gate output / diagnostics bundle.
  * - `kill_signals` — the signals actually sent, in order (`SIGTERM`, `SIGKILL`).
  *   Copied, because `spawnInGroup` records them at send time into a live array.
+ * - `leftover_groups` — OPTIONAL (#1708 N2): present only when `run.leftoverGroup`
+ *   is, i.e. the run's process group was reaped after a NORMAL exit (#1704).
+ *   One entry `{command, pgid, signals, survivors}` with copied arrays; `command`
+ *   is `run.gate` when the run is one gate command (the library emitter's
+ *   `lastFailure` carries `gate: 'lint'|'typecheck'|'test'`), else `'gate'` —
+ *   the CLI's whole gate sub-script. Its pids are NOT counted in `survivors`.
  *
- * @param {{timedOut?: boolean, killSignals?: string[], survivors?: number[]|null, error?: string}|null|undefined} run
- * @returns {{timed_out: boolean, survivors: number|null, error?: string, kill_signals: string[]}}
+ * @param {{timedOut?: boolean, killSignals?: string[], survivors?: number[]|null, error?: string,
+ *   gate?: string, leftoverGroup?: {pgid: number, signals?: string[], survivors?: number[]}}|null|undefined} run
+ * @returns {{timed_out: boolean, survivors: number|null, error?: string, kill_signals: string[],
+ *   leftover_groups?: Array<{command: string, pgid: number, signals: string[], survivors: number[]}>}}
  */
 // Explicit null is an unmeasurable cleanup, never a measured zero.
 export function gateKillFields(run) {
+  const leftover = run?.leftoverGroup;
   return {
     timed_out: run?.timedOut === true,
     survivors: run?.survivors === null ? null : (Array.isArray(run?.survivors) ? run.survivors.length : 0),
     ...(run?.survivors === null ? { error: run.error, ok: false } : {}),
     kill_signals: Array.isArray(run?.killSignals) ? [...run.killSignals] : [],
+    ...(leftover ? { leftover_groups: [{
+      command: typeof run.gate === 'string' && run.gate ? run.gate : 'gate',
+      pgid: leftover.pgid,
+      signals: [...(leftover.signals ?? [])],
+      survivors: [...(leftover.survivors ?? [])],
+    }] } : {}),
   };
+}
+
+/** Shape of an admissible `rerun_skipped` token: lowercase kebab-case, ≤ 64 chars. */
+const RERUN_SKIPPED_TOKEN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/**
+ * The ONE admission rule for `test.rerun_skipped` (#1673 telemetry), shared by
+ * both `orchestrator.quality_gate.*` emitters that lift it out of a
+ * `gate-full.mjs` envelope — the CLI (`scripts/run-quality-gate.mjs`) and the
+ * remote pre-push route (`scripts/lib/pre-push-remote-gate.mjs`). An envelope
+ * is foreign input there (a remote host wrote it), so free text or an unbounded
+ * string never reaches the ledger. Pure; never throws.
+ *
+ * @param {unknown} value — the envelope's `test.rerun_skipped`.
+ * @returns {string|null} the token when admissible, else `null` (callers omit the key).
+ */
+export function admitRerunSkipped(value) {
+  return typeof value === 'string' && RERUN_SKIPPED_TOKEN.test(value) ? value : null;
 }
 
 /**

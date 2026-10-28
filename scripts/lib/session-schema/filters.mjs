@@ -35,7 +35,8 @@
  *
  * Exports: isRealSession, filterRealSessions, tailRealSessions,
  *          isCoordinatorDirectHousekeeping, waveAgentCount,
- *          isCoordinatorDirectWave, normalizeWaveRole
+ *          isCoordinatorDirectWave, normalizeWaveRole,
+ *          STUB_WORK_CLASSES, classifyStubWork
  */
 
 // ---------------------------------------------------------------------------
@@ -168,4 +169,46 @@ export function normalizeWaveRole(role) {
   if (typeof role !== 'string') return null;
   const key = role.trim().toLowerCase().replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '');
   return key.length > 0 ? key : null;
+}
+
+/** The four answers of {@link classifyStubWork} for an `abandoned` stub. */
+export const STUB_WORK_CLASSES = Object.freeze(['empty', 'conversation', 'dispatched', 'unmeasured']);
+
+/**
+ * What an `abandoned` stub measurably did (#1835), read from its optional
+ * `work_evidence` field (`session-schema/work-evidence.mjs`):
+ *
+ *   dispatched   — at least one `agent.stopped` or `wave.completed` event
+ *   conversation — turn stops or other activity (tool-call events) only; files
+ *                  may have changed, the events cannot say
+ *   empty        — measured: no turn stop, no agent stop, no wave completion,
+ *                  no event beyond start/end bookkeeping and no Skill call (an
+ *                  empty restart after `/clear`, or a start nobody typed into).
+ *                  Ceiling: a turn cut off before its Stop hook whose tool calls
+ *                  left no hook event reads `empty` too — see work-evidence.mjs
+ *   unmeasured   — no well-formed `work_evidence`: history cut, platform without
+ *                  turn stops, or a stub written before #1835
+ *
+ * Only `empty` is a measured absence of recorded work; an abort rate may drop
+ * it and nothing else. The placeholder zeros in `total_waves` / `total_agents` /
+ * `total_files_changed` are never read here — they are listed in
+ * `_backfill_incomplete_fields` because nobody measured them.
+ *
+ * The writer (`workEvidenceFor`) is the only place that decides whether the
+ * evidence counts as measured; a well-formed object is that decision.
+ *
+ * @param {unknown} record — a parsed sessions.jsonl entry
+ * @returns {'empty'|'conversation'|'dispatched'|'unmeasured'|null} — null for
+ *   anything that is not an `abandoned` stub
+ */
+export function classifyStubWork(record) {
+  if (record === null || typeof record !== 'object' || Array.isArray(record)) return null;
+  if (record.status !== 'abandoned') return null;
+  const w = record.work_evidence;
+  if (w === null || typeof w !== 'object' || Array.isArray(w)) return 'unmeasured';
+  const counts = [w.turn_stops, w.agent_stops, w.wave_completions, w.activity_events];
+  if (!counts.every((n) => Number.isSafeInteger(n) && n >= 0)) return 'unmeasured';
+  if (w.agent_stops > 0 || w.wave_completions > 0) return 'dispatched';
+  if (w.turn_stops > 0 || w.activity_events > 0) return 'conversation';
+  return 'empty';
 }

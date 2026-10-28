@@ -26,7 +26,13 @@ import { spawnSync } from 'node:child_process';
 
 import { warn } from './common.mjs';
 import { normalizeLabel } from './label-scope.mjs';
-import { detectVcsFamily, isQueryFailure, redactUrlCredentials, resolveRepoSpec } from './vcs-repo-spec.mjs';
+import {
+  detectVcsFamily,
+  isQueryFailure,
+  readConfiguredVcs,
+  redactUrlCredentials,
+  resolveRepoSpec,
+} from './vcs-repo-spec.mjs';
 
 export const STALE_THRESHOLD_DAYS = 30;
 
@@ -76,10 +82,10 @@ const _cache = new Map();
  *   instead of shelling out); `repoRoot` defaults to `process.cwd()` there.
  * @returns {'github'|'gitlab'|null}
  */
-export function detectVcs({ repoRoot, gitRun } = {}) {
+export function detectVcs({ repoRoot, gitRun, preferVcs } = {}) {
   let detected;
   try {
-    detected = detectVcsFamily({ repoRoot, gitRun });
+    detected = detectVcsFamily({ repoRoot, gitRun, preferVcs });
   } catch {
     return null;
   }
@@ -242,7 +248,9 @@ export async function scanBacklog(opts = {}) {
   // `repoRoot` is passed through so detection and `-R` spec resolution below
   // answer about the SAME repo — they used to disagree whenever a caller passed
   // `repoRoot` (detection silently read `process.cwd()` instead).
-  const vcs = 'vcs' in opts ? opts.vcs : detectVcs({ repoRoot });
+  // The repo's Session Config `vcs:` breaks an AMBIGUOUS remote tie (#1846):
+  // a GitHub snapshot mirror on `origin` must not stand in for a GitLab backlog.
+  const vcs = 'vcs' in opts ? opts.vcs : detectVcs({ repoRoot, preferVcs: await readConfiguredVcs(repoRoot) });
   const nowMs = typeof opts.nowMs === 'number' ? opts.nowMs : Date.now();
 
   if (vcs !== 'github' && vcs !== 'gitlab') return null;

@@ -36,7 +36,32 @@ const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(__filename);
 const SO_ROOT = path.dirname(SCRIPT_DIR);
 
-const TARGET = process.argv[2] ?? process.cwd();
+const ARGS = process.argv.slice(2);
+
+if (ARGS.includes('-h') || ARGS.includes('--help')) {
+  process.stdout.write(
+    [
+      'Usage: node scripts/cursor-install.mjs [TARGET]',
+      '',
+      'Install the Session Orchestrator Cursor surface into a project.',
+      '',
+      '  TARGET      path to the project to install into (default: the current directory)',
+      '  -h, --help  show this help',
+      '',
+    ].join('\n')
+  );
+  process.exit(0);
+}
+
+// An unrecognised flag must not be read as TARGET: the old code resolved
+// `--help` to a directory name and reported "Target directory does not exist".
+const UNKNOWN = ARGS.find((a) => a.startsWith('-'));
+if (UNKNOWN) {
+  process.stderr.write(`ERROR: unknown option: ${UNKNOWN}\nRun with --help for usage.\n`);
+  process.exit(1);
+}
+
+const TARGET = ARGS[0] ?? process.cwd();
 
 if (!existsSync(TARGET) || !statSync(TARGET).isDirectory()) {
   process.stderr.write(`ERROR: Target directory does not exist: ${TARGET}\n`);

@@ -111,8 +111,9 @@ const HEAD_BYTES = 64 * 1024;
  * `listEventSourcesNewestFirst` call); the seventh, `session-close-backfill`,
  * joined with #1498, the eighth, `session-work-trees`, with #1659. Re-run
  * 2026-10-23 @ `925df3f3` (same command): 9 call sites — the ninth,
- * `session-end/close-without-plan`, joined with #1762. A test re-runs that
- * census, so a tenth reader cannot join unlisted.
+ * `session-end/close-without-plan`, joined with #1762; the tenth,
+ * `session-ledger-census`, with #1835. A test re-runs that census, so an
+ * eleventh reader cannot join unlisted.
  */
 export const EVENTS_WINDOW_READERS = Object.freeze([
   { label: 'eval/engine', spec: './eval/engine.mjs' },
@@ -124,6 +125,7 @@ export const EVENTS_WINDOW_READERS = Object.freeze([
   { label: 'session-close-backfill', spec: './session-close-backfill.mjs' },
   { label: 'session-work-trees', spec: './session-work-trees.mjs' },
   { label: 'session-end/close-without-plan', spec: './session-end/close-without-plan.mjs' },
+  { label: 'session-ledger-census', spec: '../session-ledger-census.mjs' },
 ]);
 
 /**

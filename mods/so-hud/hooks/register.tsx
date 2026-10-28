@@ -29,6 +29,10 @@ const CONFIRM_WINDOW_MS = 30_000
 const PLUGIN_LIST_RETRY_MS = 5 * 60_000
 const STEP_ONE = ['Weiter zur Bestätigung', 'Ablehnen'] as const
 const STEP_TWO = ['Jetzt genau einmal ausführen', 'Ablehnen'] as const
+// The engine's rejection texts for a question the owner answered without a label (#1856); see askOwner below.
+// The engine builds `$.ui.ask: no answer (<deny or text, else "the dialog was dismissed">)`: an empty answer gives
+// the default, Esc on the dialog the permission deny text (claude-code 2.1.312 binary, read 2026-10-28).
+const DIALOG_DISMISSED = /no answer \((?:the dialog was dismissed|The user doesn't want to proceed)/
 // Tools whose `command` is a shell line: traps, outward classification and receipts apply to each.
 const COMMAND_TOOLS: ReadonlySet<string> = new Set(['Bash', 'Monitor', 'PowerShell'])
 // The push configuration nobody set: the most permissive one pushNeedsConfirm accepts (#1569).
@@ -347,7 +351,7 @@ export const register: Register = (on, options) => {
     return [head, `Ausgehende Commits nach ${remote}/${dsts[0]}: ${lines.length === 0 ? 'keine' : lines.length}`, ...lines.map(line => `  ${displayText(line)}`)]
   }
   /** Appends one receipt; false when it could not be written. Never throws: a write failure must not deny or re-run. */
-  const receipt = async (io: IO, r: Receipt, ergebnis: 'ausgefuehrt' | 'abgelehnt' | 'verfallen' | 'ohne-zeichenflaeche', exit: number | null): Promise<boolean> => {
+  const receipt = async (io: IO, r: Receipt, ergebnis: 'ausgefuehrt' | 'abgelehnt' | 'verfallen' | 'ohne-zeichenflaeche' | 'fehler', exit: number | null): Promise<boolean> => {
     try {
       const sessionId = await io.sessionId()
       await helper(io, 'aktion', sessionId, { zeit: new Date(await io.now()).toISOString(), session_id: sessionId, vorgang: 'pane-aktion',
@@ -454,6 +458,17 @@ export const register: Register = (on, options) => {
     classes.set(id, { outward: outward.length > 0, sec008: traps.some(trap => trap.klasse === 'sec008') })
     const done = <T,>(value: T): T => { classes.delete(id); return value }
     const toast = (text: string) => { try { $.ui.toast(text, { timeoutMs: 8000 }) } catch { /* best effort, never a deny */ } }
+    // A question that could not be asked is no answer from the owner (#1856): `.catch(() => null)` made it
+    // look like a closed dialog, and the gate then told the model the owner had declined. Keep both apart.
+    // The engine rejects in both cases with the same HooksError and no code (measured, claude-code 2.1.312 kit):
+    // a dismissed dialog or Esc (DIALOG_DISMISSED) stays an answer, the owner refused; any other or unknown
+    // wording counts as a failed question, so a changed message never invents a decision.
+    const askOwner = (text: string, options: Parameters<typeof $.ui.ask>[1]) =>
+      $.ui.ask(text, options).then(
+        answer => ({ asked: true as const, answer }),
+        (err: unknown) => (DIALOG_DISMISSED.test(String((err as Error)?.message ?? ''))
+          ? { asked: true as const, answer: null }
+          : { asked: false as const, answer: null }))
     type Ergebnis = Parameters<typeof receipt>[2]
     const record = async (list: readonly Receipt[], ergebnis: Ergebnis, exit: number | null) => {
       let ok = true
@@ -494,20 +509,23 @@ export const register: Register = (on, options) => {
         const labels = [...new Set(needing.map(a => KIND_LABEL[a.hit.kind]))].join(' + ')
         const lines = [`Befehl: ${displayText(await redactText(command, []), 300)}`]
         needing.forEach((a, i) => lines.push(`Ordner: ${displayText(a.cwd ?? 'nicht auflösbar', 300)}`, ...effects[i] ?? []))
-        const decline = async (ergebnis: 'abgelehnt' | 'verfallen', text: string) => {
+        const decline = async (ergebnis: 'abgelehnt' | 'verfallen' | 'fehler', text: string) => {
           await record(receipts, ergebnis, null)
           return done({ deny: text })
         }
         const refused = `[so-hud] Der Owner hat ${labels} abgelehnt; nichts ausgeführt. Denselben Aufruf nicht erneut versuchen.`
-        const first = await $.ui.ask([...lines, `${labels} freigeben?`].join('\n'), { options: [...STEP_ONE], header: 'Außenwirkung' }).catch(() => null)
-        if (first !== STEP_ONE[0]) return decline('abgelehnt', refused)
+        const notAsked = '[so-hud] Die Rückfrage an den Owner ließ sich nicht stellen; nichts ausgeführt. Der Owner hat nicht entschieden; erneut versuchen, sobald gefragt werden kann.'
+        const first = await askOwner([...lines, `${labels} freigeben?`].join('\n'), { options: [...STEP_ONE], header: 'Außenwirkung' })
+        if (!first.asked) return decline('fehler', notAsked)
+        if (first.answer !== STEP_ONE[0]) return decline('abgelehnt', refused)
         const firstAt = await io.now()
         // Step two shows the facts measured again; a push whose facts moved since step one is not confirmed on old ones.
         const again = await measure()
         if (again.key !== key) return decline('abgelehnt', '[so-hud] Stand hat sich geändert; neu bestätigen. Nichts ausgeführt.')
-        const second = await $.ui.ask([...again.effects.flat(), `${labels} jetzt genau einmal ausführen?`].join('\n'), { options: [...STEP_TWO], header: 'Bestätigen' }).catch(() => null)
+        const second = await askOwner([...again.effects.flat(), `${labels} jetzt genau einmal ausführen?`].join('\n'), { options: [...STEP_TWO], header: 'Bestätigen' })
+        if (!second.asked) return decline('fehler', notAsked)
         if (await io.now() - firstAt > CONFIRM_WINDOW_MS) return decline('verfallen', '[so-hud] Bestätigung verfallen; nichts ausgeführt.')
-        if (second !== STEP_TWO[0]) return decline('abgelehnt', refused)
+        if (second.answer !== STEP_TWO[0]) return decline('abgelehnt', refused)
         after.push(...receipts)
       }
     }
@@ -523,12 +541,17 @@ export const register: Register = (on, options) => {
       if (collision.aktion === 'fragen') {
         const r: Receipt = { aktion: 'kollision', tool: e.tool, text: filePath, art: e.tool.toLowerCase() }
         const asking = await canAsk()
-        const answer = asking ? await $.ui.ask(`${collision.text}\nTrotzdem in ${displayText(filePath)} schreiben?`, { options: [...collision.optionen], header: 'Kollision' }).catch(() => null) : null
+        const asked = asking ? await askOwner(`${collision.text}\nTrotzdem in ${displayText(filePath)} schreiben?`, { options: [...collision.optionen], header: 'Kollision' }) : null
+        const answer = asked?.answer ?? null
         if (answer === 'Trotzdem') after.push(r)
         else {
           if (!asking) {
             const who = [...new Set(hits.map(hit => hit.session_id))].join(', ')
             return done({ deny: `[so-hud] Kollision mit ${who} und niemand zum Fragen da (kopfloser Lauf); nichts geschrieben.` })
+          }
+          if (asked !== null && !asked.asked) {
+            await record([r], 'fehler', null)
+            return done({ deny: `${collision.text}\n[so-hud] Die Rückfrage an den Owner ließ sich nicht stellen; nichts geschrieben. Der Owner hat nicht entschieden.` })
           }
           await record([r], 'abgelehnt', null)
           const sid = (await io.sessionId()).slice(0, 8)

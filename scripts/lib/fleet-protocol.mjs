@@ -197,6 +197,18 @@ const REPO_NAME_RE = /^[A-Za-z0-9._-]{1,100}(?:\/[A-Za-z0-9._-]{1,100})?$/;
 /** Lease `adresse` shape (a ListAgents peer name): no whitespace, no control bytes. */
 const ADRESSE_RE = /^[A-Za-z0-9._:@-]{1,128}$/;
 
+/** Native harness session UUID shape (`CLAUDE_CODE_SESSION_ID`). */
+const NATIVE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * True only for a string shaped like a native harness session UUID (#1839).
+ * @param {unknown} v
+ * @returns {boolean}
+ */
+export function isNativeUuid(v) {
+  return typeof v === 'string' && NATIVE_UUID_RE.test(v);
+}
+
 /** True for an issue reference: a non-negative integer or a `#123` / `123` string. */
 function isIssueRef(v) {
   if (typeof v === 'number') return Number.isInteger(v) && v >= 0;
@@ -211,6 +223,9 @@ function isIssueRef(v) {
 const CHECKIN_FIELD_CHECKS = {
   session: (v) =>
     isSafeSessionId(v) ? null : 'session must be a safe id: [A-Za-z0-9._-], 1..128 chars, not . or ..',
+  // Optional (#1839): the process-local native id, the fallback file key when the
+  // semantic id is occupied by another repo; the navigator matches on it too.
+  session_uuid: (v) => (isNativeUuid(v) ? null : 'session_uuid must be a native UUID'),
   plattform: (v) => (PLATTFORMEN.includes(/** @type {string} */ (v)) ? null : `plattform must be one of ${PLATTFORMEN.join('|')}`),
   // A repo NAME (optionally `group/name`), never a filesystem path: the value
   // travels in `orchestrator.fleet.checkin`, which may leave the host over the
@@ -438,24 +453,45 @@ export function terminalSafeJson(value) {
 }
 
 /**
- * Human-readable lines for session-start Phase 7.6 (#1809): the navigator's
- * `grenze` field (which repos are off limits and how to call the boundary gate
- * before reading) from an ACCEPTED auflagen file, byte for byte after one
- * header line. Nothing for `absent`/`rejected` or a missing field. A `grenze`
- * that is not a string or carries an `UNSAFE_CONTROL_RE` character is
- * withheld — a single notice line takes its place, the text is never printed.
+ * The boundary that binds when the navigator issued none (#1842): fail-closed,
+ * a session never runs without a boundary rule.
+ */
+export const STANDARD_GRENZSATZ =
+  'Vor Lesen oder Arbeit in einem fremden Checkout entscheidet navigator grenze <pfad>, für einen Checkout auf einem anderen Host navigator grenze --host <alias> <pfad> vom Host aus, auf dem navigator läuft. Nur Exit 0 erlaubt es; Exit 7 (Grenztreffer), Exit 6 (nicht messbar) und ein fehlendes navigator (Exit 127) heißen nicht lesen. Keine Dateisystemsuche über ~/Projects oder außerhalb tor-freigegebener Repos. Ein Sperrtreffer wird nur mit dem Repo-Namen gemeldet, nie mit URL oder Host. Jeder Subagent-Prompt mit Dateisystemsuche über Repos trägt diesen Absatz wörtlich.';
+
+const STANDARD_GRENZE_LINES = [
+  'fleet-auflagen: grenze (Standard-Grenzsatz: no navigator boundary accepted, binding):',
+  STANDARD_GRENZSATZ,
+];
+
+/**
+ * Human-readable lines for session-start Phase 7.6 (#1809, #1842): never empty.
+ * An ACCEPTED auflagen file's `grenze` (which repos are off limits and how to
+ * call the boundary gate before reading) is printed byte for byte after one
+ * header line. A `grenze` that is not a string, is blank or carries an
+ * `UNSAFE_CONTROL_RE` character is withheld — a notice line takes its place,
+ * the text is never printed — followed by the {@link STANDARD_GRENZSATZ}. An
+ * accepted file without `grenze`, and `absent`/`rejected`, yield the
+ * {@link STANDARD_GRENZSATZ} under its own header.
  *
  * @param {Awaited<ReturnType<typeof readAuflagen>>} result
  * @returns {string[]} lines to print; `grenze` may itself span several lines
  */
 export function renderAuflagenNotice(result) {
-  if (result.state !== 'accepted' || !('grenze' in result.auflagen)) return [];
+  if (result.state !== 'accepted' || !('grenze' in result.auflagen)) return [...STANDARD_GRENZE_LINES];
   const grenze = result.auflagen.grenze;
   if (typeof grenze !== 'string') {
-    return ['fleet-auflagen: grenze withheld (not a string) — ask the navigator for the boundary'];
+    return ['fleet-auflagen: grenze withheld (not a string) — ask the navigator for the boundary', ...STANDARD_GRENZE_LINES];
   }
   if (grenze.search(UNSAFE_CONTROL_RE) !== -1) {
-    return ['fleet-auflagen: grenze withheld (contains control characters) — ask the navigator for the boundary'];
+    return [
+      'fleet-auflagen: grenze withheld (contains control characters) — ask the navigator for the boundary',
+      ...STANDARD_GRENZE_LINES,
+    ];
+  }
+  // An empty or blank grenze names no boundary at all: fail-closed like a missing one.
+  if (grenze.trim() === '') {
+    return ['fleet-auflagen: grenze withheld (empty) — ask the navigator for the boundary', ...STANDARD_GRENZE_LINES];
   }
   return ['fleet-auflagen: grenze (verbatim from the navigator, binding):', grenze];
 }

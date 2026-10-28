@@ -157,6 +157,27 @@ export function parseCodexHookWrapperCommand(command) {
   return match ? { handlerRelativePath: match[1] } : null;
 }
 
+// Native Windows entry (#1849): the POSIX wrapper above fails under cmd.exe,
+// which Codex uses for hooks on Windows (`%COMSPEC% /C`, codex-rs
+// hooks/src/engine/command_runner.rs @26ad281f). Every handler therefore also
+// carries a `commandWindows` of exactly this shape: the `set` stops cmd.exe
+// from finding a `node` planted in the session directory before PATH, and the
+// bootstrap loads hooks/codex-win.cjs only from an absolute PLUGIN_ROOT.
+const CODEX_HOOK_WINDOWS_COMMAND =
+  /^set NoDefaultCurrentDirectoryInExePath=1&& node -e "require\(require\('path'\)\.join\(require\('path'\)\.isAbsolute\(process\.env\.PLUGIN_ROOT\|\|''\)\?process\.env\.PLUGIN_ROOT:process\.exit\(1\),'hooks','codex-win\.cjs'\)\)" ([A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*\.mjs)$/;
+
+/**
+ * Parse the exact trusted native-Windows Codex hook command grammar (#1849).
+ *
+ * @param {unknown} command
+ * @returns {{handlerRelativePath: string} | null}
+ */
+export function parseCodexHookWindowsCommand(command) {
+  if (typeof command !== 'string') return null;
+  const match = command.match(CODEX_HOOK_WINDOWS_COMMAND);
+  return match ? { handlerRelativePath: match[1] } : null;
+}
+
 /**
  * Validate the tracked Codex plugin manifest and hook surface.
  *
@@ -496,8 +517,19 @@ function validateSessionStartSurface(groups, expectedBaseVersion, errors) {
   }
 }
 
+function sessionStartBannerText(version) {
+  return `🎯 Session Orchestrator v${version} — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]`;
+}
+
 function sessionStartBannerCommand(version) {
-  return `echo '🎯 Session Orchestrator v${version} — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]'`;
+  return `echo '${sessionStartBannerText(version)}'`;
+}
+
+// cmd.exe treats the banner's `|` as a pipe even inside single quotes, and its
+// `echo` writes the OEM code page, so the Windows banner prints through node
+// (#1849), with the same cwd-search guard as every handler.
+function sessionStartBannerWindowsCommand(version) {
+  return `set NoDefaultCurrentDirectoryInExePath=1&& node -e "console.log('${sessionStartBannerText(version)}')"`;
 }
 
 function validateMatcherGroup(group, eventName, groupIndex, root, expectedBaseVersion, errors) {
@@ -551,6 +583,14 @@ function validateHandler(handler, path, eventName, root, expectedBaseVersion, er
 
   const command = handler.command;
   if (eventName === 'SessionStart' && command === sessionStartBannerCommand(expectedBaseVersion)) {
+    if (handler.commandWindows !== sessionStartBannerWindowsCommand(expectedBaseVersion)) {
+      addError(
+        errors,
+        `${path}.commandWindows`,
+        'windows-entry',
+        'the banner must carry the exact native Windows banner command',
+      );
+    }
     return;
   }
   const parsed = parseCodexHookWrapperCommand(command);
@@ -565,6 +605,7 @@ function validateHandler(handler, path, eventName, root, expectedBaseVersion, er
   }
 
   const { handlerRelativePath } = parsed;
+  validateWindowsEntry(handler.commandWindows, handlerRelativePath, path, root, errors);
   if (DISALLOWED_EDIT_HANDLERS.includes(handlerRelativePath)) {
     addError(
       errors,
@@ -582,6 +623,42 @@ function validateHandler(handler, path, eventName, root, expectedBaseVersion, er
       'handler-file',
       `referenced handler 'hooks/${handlerRelativePath}' must exist as a file`,
     );
+  }
+}
+
+// Without commandWindows a handler never starts on native Windows (#1849); a
+// second, unchecked command would be an untrusted path past the wrapper rule.
+function validateWindowsEntry(commandWindows, handlerRelativePath, path, root, errors) {
+  if (typeof commandWindows !== 'string') {
+    addError(
+      errors,
+      `${path}.commandWindows`,
+      'windows-entry',
+      'every Codex handler needs a commandWindows native Windows entry (#1849)',
+    );
+    return;
+  }
+  const parsed = parseCodexHookWindowsCommand(commandWindows);
+  if (parsed === null) {
+    addError(
+      errors,
+      `${path}.commandWindows`,
+      'trusted-windows-wrapper',
+      'commandWindows must exactly match the trusted codex-win.cjs entry grammar',
+    );
+    return;
+  }
+  if (parsed.handlerRelativePath !== handlerRelativePath) {
+    addError(
+      errors,
+      `${path}.commandWindows`,
+      'windows-entry-mismatch',
+      `commandWindows starts '${parsed.handlerRelativePath}' but command starts '${handlerRelativePath}'`,
+    );
+  }
+  const launcher = resolve(root, 'hooks', 'codex-win.cjs');
+  if (!existsSync(launcher) || !safeIsType(launcher, 'file')) {
+    addError(errors, `${path}.commandWindows`, 'handler-file', "the Windows entry 'hooks/codex-win.cjs' must exist as a file");
   }
 }
 
