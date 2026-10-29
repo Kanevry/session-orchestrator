@@ -46,6 +46,29 @@
 import { readFile, writeFile, rename, mkdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
+// Windows rename retry (GH#79 / #1858): on win32 `rename` over a destination
+// another process holds open fails with EPERM/EBUSY for the life of that
+// handle; retry 10+20+30+40 = 100 ms total, never on POSIX. BV-004 ceiling: a
+// longer-held handle still fails the write (reported as `{ ok: false }`).
+// Deliberate copy of `scripts/lib/io.mjs#_renameWithRetry` — this module must
+// stay stdlib-only and may not import from `scripts/`; revisit on a third copy.
+const WIN_RENAME_RETRY_DELAYS_MS = [10, 20, 30, 40];
+const WIN_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY']);
+
+async function renameWithRetry(renameFn, from, to, platform) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await renameFn(from, to);
+    } catch (err) {
+      const delay = WIN_RENAME_RETRY_DELAYS_MS[attempt];
+      if (platform !== 'win32' || delay === undefined || !WIN_RENAME_RETRY_CODES.has(err?.code)) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 /**
  * Atomic read-modify-write of a JSON file via temp-file + rename.
  *
@@ -74,9 +97,17 @@ import path from 'node:path';
  *   concurrent callers targeting the same `filePath` from different hooks
  *   don't collide on the same tmp path (mirrors the per-caller suffixes the
  *   four pre-extraction copies used: `-cwd-`, `-ose-`, `-ptb-`, `-ptf-`).
+ * @param {object} [opts]
+ * @param {string} [opts.platform=process.platform] — platform seam for the
+ *   win32 rename retry (tests).
+ * @param {{ rename?: Function, unlink?: Function }} [opts.fs] — fs/promises
+ *   seam (tests).
  * @returns {Promise<{ ok: true, value: object } | { ok: false, reason: string }>}
  */
-export async function atomicMutateJson(filePath, defaultValue, mutate, tmpTag = 'ajs') {
+export async function atomicMutateJson(filePath, defaultValue, mutate, tmpTag = 'ajs', opts = {}) {
+  const platform = opts.platform ?? process.platform;
+  const fsRename = opts.fs?.rename ?? rename;
+  const fsUnlink = opts.fs?.unlink ?? unlink;
   let current = defaultValue;
   try {
     const raw = await readFile(filePath, 'utf8');
@@ -98,10 +129,10 @@ export async function atomicMutateJson(filePath, defaultValue, mutate, tmpTag = 
   try {
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(tmp, JSON.stringify(updated, null, 2) + '\n', 'utf8');
-    await rename(tmp, filePath);
+    await renameWithRetry(fsRename, tmp, filePath, platform);
   } catch (err) {
     try {
-      await unlink(tmp);
+      await fsUnlink(tmp);
     } catch {
       // tmp was never created, or is already gone — nothing to clean up.
     }

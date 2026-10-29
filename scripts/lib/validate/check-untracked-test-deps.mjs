@@ -105,10 +105,10 @@
 // guard at the bottom is the only side-effecting path.
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { isMainModule } from '../is-main-module.mjs';
 import { maskSource } from '../js-mask.mjs';
+import { spawnSync } from '../native-command.mjs';
 
 // `maskSource` moved to `scripts/lib/js-mask.mjs` (#1388 — three other modules
 // needed the same lexer). `package.json` carries no `exports` map, so every

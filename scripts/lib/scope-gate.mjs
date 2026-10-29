@@ -2185,13 +2185,19 @@ function clockAgeMs(file, field, now) {
 // ## Named ceilings (BV-004)
 //
 //   - HOME grants (`/Users/…`, `/home/…`) are graded by SHAPE and RETURN before
-//     canonicalisation. Deliberate: that is the one root where a legitimate
-//     out-of-repo grant is routine, and the shape rule must not become
+//     the canonical DENYLIST pass. Deliberate: that is the one root where a
+//     legitimate out-of-repo grant is routine, and the shape rule must not become
 //     platform-dependent (on macOS `fs.realpathSync('/home')` is
 //     `/System/Volumes/Data/home`, whose top segment is denylisted — grading a
 //     Linux-home grant against that would refuse it on a macOS coordinator and
-//     accept it on a Linux one). Revisit trigger: the first home grant Gate 5b
-//     provably never matches because the home itself is a symlink.
+//     accept it on a Linux one). Since #1861 an honoured home grant IS checked
+//     for a non-canonical spelling BELOW the home root (junction, symlink or
+//     letter case under the user folder — measured on Windows 11: both graded
+//     `warn` while Gate 5b matched neither); the home ROOT itself keeps its
+//     literal spelling, alias or case variant (`/users/<u>/p/**` on macOS
+//     still grades `warn` although Gate 5b's native realpath answers `/Users`).
+//     Revisit trigger: the first home grant Gate 5b provably never matches
+//     because of the spelling of the home ROOT.
 //   - With NO `resolve` the grader is PURE and grades the literal spelling only.
 //     NO PRODUCTION CALLER IS IN THAT SHAPE ANY MORE (#1398 cond. 4, closed
 //     2026-09-21): `hooks/enforce-scope.mjs` Gate 5b was the one resolver-free
@@ -2566,6 +2572,17 @@ const CANONICAL_PREFIX_CACHE = new Map();
  * The module header's "no I/O at import time" is untouched: this is I/O inside a
  * function, exactly as {@link findScopeFile} already does with `existsSync`.
  *
+ * NATIVE REALPATH, because Gate 5b's is native (#1861 / GH#82). The hook
+ * resolves the candidate with `fs.promises.realpath`, which is the libuv
+ * realpath: it resolves Windows junctions and restores the ON-DISK letter case.
+ * The JS `fs.realpathSync` keeps the caller's spelling. Measured 2026-10-28 on
+ * macOS (APFS, case-insensitive), dir `REAL_TARGET`: `realpathSync('…/real_target')`
+ * → `…/real_target`, `realpathSync.native` and `fs.promises.realpath` → both
+ * `…/REAL_TARGET`. With the JS variant a grant spelled in another case was
+ * graded canonical although the case-sensitive {@link pathMatchesPattern} in
+ * Gate 5b never matches it. Symlink aliases (`/tmp` → `/private/tmp`) resolve
+ * identically in both variants.
+ *
  * PURE ENOUGH FOR LINUX CI: a prefix that does not exist never throws — the walk
  * climbs to the nearest existing ancestor and re-attaches the missing suffix (the
  * same strategy `hooks/enforce-scope.mjs` uses for a Write to a not-yet-existing
@@ -2588,7 +2605,7 @@ export function canonicalizeGrantPrefix(absPath) {
   const missing = [];
   for (;;) {
     try {
-      const real = realpathSync(current).split(path.sep).join('/');
+      const real = realpathSync.native(current).split(path.sep).join('/');
       const suffix = [...missing].reverse().join('/');
       result = suffix.length === 0 ? real : `${real === '/' ? '' : real}/${suffix}`;
       break;
@@ -2623,7 +2640,11 @@ export function canonicalizeGrantPrefix(absPath) {
  *      same set through the glob branch;
  *   3. non-absolute entries are not ours to grade → `null`;
  *   4. the denylisted system roots, LITERAL spelling;
- *   5. home grants, by shape — these RETURN, see the ceiling above;
+ *   5. home grants, by shape — these RETURN, see the ceiling above: a refused
+ *      shape returns its `error`; an honoured shape first passes the rung-7
+ *      check BELOW the home root (#1861 — a junction, symlink or case variant
+ *      under the user folder is `error / non-canonical`, not `warn`), then
+ *      returns `warn / home-grant`. Rung 6 is skipped for home grants;
  *   6. the denylisted system roots, CANONICAL spelling (#1405.1);
  *   7. a literal prefix that is not canonical — Gate 5b can never match it
  *      (#1405.2);
@@ -2708,17 +2729,62 @@ export function gradeScopeEntry(entry, opts = {}) {
     };
   }
 
+  // Windows: realpath answers in forward slashes with an upper-case drive letter.
+  const comparable = (p) => (windowsDrive
+    ? p.replace(/\\/g, '/').replace(/^([a-z]):/, (_, d) => `${d.toUpperCase()}:`)
+    : p);
+  /**
+   * Rung 7's verdict, shared with the home rung (#1861). `comparedLength` is the
+   * length of the literal prefix that was compared; everything after it is
+   * re-attached to the suggestion, so a trailing `/` (the directory-prefix form
+   * {@link pathMatchesPattern} honours) survives into the suggested spelling.
+   */
+  const nonCanonical = (canonical, comparedLength = literalPrefix.length) => ({
+    verdict: 'error',
+    code: 'non-canonical',
+    message:
+      `contains a non-canonical absolute path: ${entry} — hooks/enforce-scope.mjs Gate 5b ` +
+      `matches the REALPATH-resolved write candidate, which never carries this spelling ` +
+      `("${literalPrefix}" resolves to "${canonical}"), so this grant can match NOTHING; ` +
+      `write ${canonical}${normalized.slice(comparedLength)} instead`,
+  });
+
   const home = classifyHomeGrant(rootless);
   if (home !== null) {
-    return home.verdict === 'error'
-      ? { verdict: 'error', code: 'home-grant', message: `${home.reason}: ${entry}` }
-      : {
-          verdict: 'warn',
-          code: 'home-grant',
-          message:
-            `contains an absolute (out-of-repo) path: ${entry} — ${home.reason}; ` +
-            `verify this grant is intentional`,
-        };
+    if (home.verdict === 'error') {
+      return { verdict: 'error', code: 'home-grant', message: `${home.reason}: ${entry}` };
+    }
+    // #1861 (GH#82): this rung used to return `warn` unchecked, so a grant
+    // written through a junction under the user folder, or in another letter
+    // case, read as "honoured by Gate 5b" while Gate 5b (native realpath,
+    // case-sensitive match) never matched it. Compared BELOW the home root
+    // only — the named ceiling above: the home ROOT keeps its literal spelling,
+    // whether it is an alias (macOS `/home` → `/System/Volumes/Data/home`) or a
+    // case variant (`/users` → `/Users`), so the verdict on the root stays
+    // shape-based and platform-independent (pinned by
+    // tests/scripts/validate-wave-scope.test.mjs "keeps a legitimate project
+    // grant at WARN under the fold").
+    // Trailing separators are not a spelling (Codex MED-1): realpath drops the
+    // `/` of a directory-prefix grant (`~/Projects/`), which Gate 5b honours as
+    // a subtree, so both sides are compared without it and the suggestion
+    // re-attaches it. A home grant always has ≥3 segments, so trimming never
+    // reaches the root.
+    const trimTrailing = (p) => p.replace(/\/+$/, '');
+    const literalHome = trimTrailing(literalPrefix);
+    const homeRoot = literalHome.split('/').slice(0, 2).join('/');
+    const canonicalRoot = comparable(canonicalize(homeRoot));
+    const canonicalHome = trimTrailing(comparable(canonicalize(literalHome)));
+    const seen = canonicalHome.startsWith(`${canonicalRoot}/`)
+      ? `${homeRoot}${canonicalHome.slice(canonicalRoot.length)}`
+      : canonicalHome;
+    if (comparable(seen) !== comparable(literalHome)) return nonCanonical(seen, literalHome.length);
+    return {
+      verdict: 'warn',
+      code: 'home-grant',
+      message:
+        `contains an absolute (out-of-repo) path: ${entry} — ${home.reason}; ` +
+        `verify this grant is intentional`,
+    };
   }
 
   const canonicalPrefix = canonicalize(literalPrefix);
@@ -2737,21 +2803,7 @@ export function gradeScopeEntry(entry, opts = {}) {
     };
   }
 
-  // Windows: realpath answers in forward slashes with an upper-case drive letter.
-  const comparable = (p) => (windowsDrive
-    ? p.replace(/\\/g, '/').replace(/^([a-z]):/, (_, d) => `${d.toUpperCase()}:`)
-    : p);
-  if (comparable(canonicalPrefix) !== comparable(literalPrefix)) {
-    return {
-      verdict: 'error',
-      code: 'non-canonical',
-      message:
-        `contains a non-canonical absolute path: ${entry} — hooks/enforce-scope.mjs Gate 5b ` +
-        `matches the REALPATH-resolved write candidate, which never carries this spelling ` +
-        `("${literalPrefix}" resolves to "${canonicalPrefix}"), so this grant can match NOTHING; ` +
-        `write ${canonicalPrefix}${normalized.slice(literalPrefix.length)} instead`,
-    };
-  }
+  if (comparable(canonicalPrefix) !== comparable(literalPrefix)) return nonCanonical(canonicalPrefix);
 
   // KNOWN DIVERGENCE, carried over from #1402 and still message-only: `*` is the
   // sole wildcard this check knows, while {@link isGlobScopeEntry} ALSO counts a

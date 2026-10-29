@@ -2,8 +2,8 @@
 // Cross-platform typecheck: iterate .mjs files ourselves so Windows doesn't
 // need shell glob expansion. `node --check` per file; exit non-zero on any failure.
 import { readdirSync, statSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { spawnSync } from './lib/native-command.mjs';
 
 const ROOTS = ['scripts/lib', 'hooks'];
 

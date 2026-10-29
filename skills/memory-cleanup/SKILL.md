@@ -211,7 +211,7 @@ A worktree is stale iff `mtime(worktree-dir) < now - stale-branch-days × 86400 
 After Phase 4 (Prune & Index) compiles its list of items to offer for removal, ALSO include any stale auto-promoted worktrees. The user sees them in the same AUQ ("batch-decide" per PRD §3 P3 Gherkin row 4):
 
 ```js
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '$PLUGIN_ROOT/scripts/lib/native-command.mjs';
 import { listAutoPromotedWorktrees, isWorktreeStale } from '$PLUGIN_ROOT/scripts/lib/memory-cleanup/worktree-sweep.mjs';
 import { discoverActiveSessions } from '$PLUGIN_ROOT/scripts/lib/session-discovery.mjs';
 

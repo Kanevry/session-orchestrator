@@ -53,7 +53,6 @@
  */
 
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -65,6 +64,7 @@ import { readCanonicalSessions } from '../sessions-canonical.mjs';
 import { isCoordinatorDirectHousekeeping } from '../session-schema/filters.mjs';
 import { buildRunId, CURRENT_STANDARD_VERSION, VALID_MODEL_SOURCES } from './schema.mjs';
 import { resolveSession, computeWindow, findPeerOverlap } from './session-resolve.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 /** The rubric version this engine scores against. */
 export const RUBRIC_VERSION = 'rubric-v3';

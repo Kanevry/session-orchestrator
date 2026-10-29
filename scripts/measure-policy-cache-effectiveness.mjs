@@ -33,11 +33,11 @@
  *   --json                 Machine-readable JSON output (default: human).
  */
 
-import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from './lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI flags

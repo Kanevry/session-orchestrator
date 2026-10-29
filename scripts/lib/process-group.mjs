@@ -24,7 +24,6 @@
  *    kills the group. Hence {@link installExitHandler}.
  */
 
-import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import {
@@ -40,6 +39,7 @@ import path from 'node:path';
 import { NOT_A_REGULAR_FILE, appendNoFollow } from './orphan-reaper/no-follow-append.mjs';
 import { readTailWindow } from './tail-window.mjs';
 import { killWindowsProcessTree } from './win-process-tree.mjs';
+import { spawn } from './native-command.mjs';
 
 /**
  * Grace period between SIGTERM and SIGKILL, in ms — the repo's one definition,

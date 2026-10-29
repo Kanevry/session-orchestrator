@@ -29,7 +29,6 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { appendSkillInvocation } from '../scripts/lib/skill-invocations-schema.mjs';
@@ -39,6 +38,7 @@ import { shouldDailyFlush } from '../scripts/lib/telemetry/sync.mjs';
 import { resolveConsent, readTelemetryState } from '../scripts/lib/telemetry/consent.mjs';
 import { loadOwnerConfig } from '../scripts/lib/owner-yaml.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
+import { spawn } from '../scripts/lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants

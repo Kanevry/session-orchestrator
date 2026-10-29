@@ -4,9 +4,9 @@
  * Issue #561 — ADR-0007 tmux-visualization substrate.
  */
 
-import { execSync } from 'node:child_process';
 
 import { shellQuote } from '../sh-quote.mjs';
+import { execSync } from '../native-command.mjs';
 
 const MIN_MAJOR = 3;
 const MIN_MINOR = 0;

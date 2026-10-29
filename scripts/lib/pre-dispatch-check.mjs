@@ -12,9 +12,9 @@
  * Stdlib-only, cross-platform, no zx.
  */
 
-import { execFileSync } from 'node:child_process';
 import { parsePorcelainEntries } from './git-porcelain.mjs';
 import { pathMatchesPattern } from './hardening.mjs';
+import { execFileSync } from './native-command.mjs';
 
 /**
  * @typedef {Object} OverlapResult

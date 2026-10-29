@@ -8,11 +8,11 @@
  * `hooks/*.mjs` commands listed in hooks/hooks-pi.json.
  */
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { resolvePluginRoot } from './plugin-root.mjs';
+import { spawnSync } from './native-command.mjs';
 
 export const PI_TO_CANONICAL_EVENT = Object.freeze({
   session_start: 'SessionStart',

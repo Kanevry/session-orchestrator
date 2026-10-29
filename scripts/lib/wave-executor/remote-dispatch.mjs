@@ -27,7 +27,6 @@
  * backstop for a channel that stops answering (`timeoutSec + 60`).
  */
 
-import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -41,6 +40,7 @@ import {
   isSafeRunId,
   runChild,
 } from './dispatch-common.mjs';
+import { execFileSync, spawn as nodeSpawn } from '../native-command.mjs';
 
 /** The `offload` binary. Resolved on PATH; a missing binary surfaces as ENOENT
  * and is classified as a CHANNEL failure, never as a model failure. */

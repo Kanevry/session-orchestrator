@@ -49,7 +49,7 @@
 
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '../native-command.mjs';
 
 /**
  * Environment handed to `git`. An allowlist rather than `process.env`: an

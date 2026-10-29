@@ -26,8 +26,8 @@
 
 import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { execFileSync } from './lib/native-command.mjs';
 
 /** The four hook manifests whose entry files seed the crawl. */
 export const HOOK_MANIFESTS = [

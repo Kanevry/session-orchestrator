@@ -3,9 +3,9 @@
 // Usage: check-pi-prompts.mjs <plugin-root>
 // Exit 0 = all checks passed, 1 = at least one failure.
 
-import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawnSync } from '../native-command.mjs';
 
 const pluginRoot = process.argv[2];
 if (!pluginRoot) {

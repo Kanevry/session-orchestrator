@@ -2,14 +2,13 @@
 /**
  * security-delta.mjs — close-time Security-Delta over one commit range (#1769, stage 1).
  *
- * Runs the five delta checks (lockfile advisories, runtime floor, floating
- * tags, gitleaks, age gate) via `runSecurityDelta()` and prints the Result.
+ * Runs the six delta checks (lockfile advisories, runtime floor, floating
+ * tags, gitleaks, age gate, package floor) via `runSecurityDelta()` and prints the Result.
  * Fail-open by design: only a `block` verdict (mode `strict` + an introduced
  * blocking finding) exits non-zero for a reason other than bad usage.
  *
  * Mode resolution: `--mode`, else Session Config `security-delta.mode`, else `off`.
  */
-import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -21,13 +20,16 @@ import { EXIT_BLOCK, MODES } from './lib/security-delta/contract.mjs';
 import { runSecurityDelta } from './lib/security-delta/runner.mjs';
 import { emitDeltaEvent } from './lib/security-delta/telemetry.mjs';
 import { safePackageName, safePackageVersion } from './lib/security-pulse-banner.mjs';
+import { execFile } from './lib/native-command.mjs';
 
 const PREFIX = 'security-delta:';
 const EXIT_USAGE = 1;
 const EXIT_CRASH = 2;
 const execFileAsync = promisify(execFile);
-// eslint-disable-next-line no-control-regex -- remove untrusted C0/C1 controls from each text line
-const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/g;
+// Remove untrusted C0/C1 controls, the line/paragraph separators U+2028/U+2029
+// and the bidi controls from each text line (escapes only: no literal bidi here).
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
 
 // These are output grammars, not replacements for the runner's raw identities.
 // A display value that cannot be represented safely becomes a neutral marker.
@@ -66,7 +68,8 @@ const HELP = [
   '',
   'Checks what a commit range introduces: vulnerable or malicious lockfile',
   'packages (OSV), runtime floors below the supported line, floating image/action',
-  'tags, secrets (gitleaks, if installed) and a missing package age gate.',
+  'tags, secrets (gitleaks, if installed), a missing package age gate and',
+  'packages below the security-floor register (package-floor).',
   '',
   'Options:',
   '  --range <base>..<head>   commit range to check (head defaults to HEAD);',
@@ -85,7 +88,8 @@ const HELP = [
   '  1  usage error (bad flag, bad range, unknown mode, unreadable config file)',
   '  2  unexpected crash before any result existed',
   `  ${EXIT_BLOCK}  verdict block: mode strict and an introduced blocking finding`,
-  '     (malicious package, or critical vulnerability with a known fix)',
+  '     (malicious package, critical vulnerability with a known fix, or a',
+  '     package below its register floor)',
   '',
   'Example:',
   '  node scripts/security-delta.mjs --range origin/main..HEAD --mode warn --json',

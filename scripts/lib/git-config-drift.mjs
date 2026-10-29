@@ -100,10 +100,10 @@
  *  - `skills/session-start/SKILL.md` Phase 4 — banner render site.
  */
 
-import { spawnSync } from 'node:child_process';
 import { accessSync, constants, existsSync } from 'node:fs';
 import { detectPackageManager } from './package-manager.mjs';
 import { isAbsolute, join, relative } from 'node:path';
+import { spawnSync } from './native-command.mjs';
 
 /** Default timeout in ms for each `git config` invocation. */
 export const DEFAULT_TIMEOUT_MS = 5000;

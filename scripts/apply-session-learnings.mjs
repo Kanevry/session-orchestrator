@@ -354,7 +354,8 @@ async function emitSessionWriteApplied({ repoRoot, filePath, payload }) {
     );
     return;
   }
-  const rel = path.relative(canonicalPath(root), file);
+  // The event payload carries a repo-relative POSIX path on every platform (GH#81).
+  const rel = path.relative(canonicalPath(root), file).split(path.sep).join('/');
   try {
     const { emitEvent, sessionAttribution } = await import('./lib/events.mjs');
     await emitEvent(

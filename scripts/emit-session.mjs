@@ -27,7 +27,6 @@
  *   {"action":"appended","path":"<file>","session_id":"<id>","schema_version":2}
  */
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { explainEventsLedgerRoot, resolveEventsLedgerRoot } from './lib/platform.mjs';
@@ -57,6 +56,7 @@ import {
 import { stableHostname } from './lib/host-identity.mjs';
 import { activeDir } from './lib/session-registry.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { execFileSync } from './lib/native-command.mjs';
 
 /**
  * The events ledger beside `sessionsFile` — mapped to the main checkout when the

@@ -12,11 +12,11 @@
  * Stdlib-only, cross-platform, no zx.
  */
 
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { WORKTREE_META_DIR } from './worktree.mjs';
 import { pathMatchesPattern } from './hardening.mjs';
+import { execFileSync } from './native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Types (JSDoc)

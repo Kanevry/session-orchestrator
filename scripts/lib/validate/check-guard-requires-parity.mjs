@@ -11,11 +11,11 @@
  * the CLI path is guarded at the bottom of the file.
  */
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parse } from '@babel/parser';
 import { isMainModule } from '../is-main-module.mjs';
+import { spawnSync } from '../native-command.mjs';
 
 const HOOKS_RELATIVE_DIR = 'hooks';
 const MODULE_RELATIVE_PREFIX = 'scripts/lib';

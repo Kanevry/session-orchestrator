@@ -25,8 +25,8 @@
  */
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { parseSessionId } from '../session-id.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 /**
  * Repo-relative location of the promotion marker `enterWorktree()` drops into

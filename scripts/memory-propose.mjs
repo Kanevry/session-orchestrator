@@ -42,7 +42,6 @@
 
 import { parseArgs } from 'node:util';
 import { readFileSync, existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,6 +49,7 @@ import { isRepoRelativePathEntry } from './lib/learnings/schema.mjs';
 import { isWaveAgentContext, WAVE_AGENT_ENV_VAR, WAVE_AGENT_ENV_VALUE } from './lib/wave-context.mjs';
 import { readProcessLocalSessionIds, manifestSessionBinding } from './lib/session-identity/own-session.mjs';
 import { readLockDetailed } from './lib/session-lock.mjs';
+import { spawnSync } from './lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants & defaults

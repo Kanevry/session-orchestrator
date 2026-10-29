@@ -85,7 +85,6 @@
  */
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { warn } from './lib/common.mjs';
 import { MANIFEST_SESSION_KEYS } from './lib/session-identity/own-session.mjs';
 import {
@@ -118,6 +117,7 @@ import {
   // renaming it — the #970 call path stays byte-identical.
   expandTestSiblings as expandScopeTestSiblings,
 } from './lib/scope-gate.mjs';
+import { execFileSync } from './lib/native-command.mjs';
 
 /**
  * Write an error to stderr and exit with the given code.

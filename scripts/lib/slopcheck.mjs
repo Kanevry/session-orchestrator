@@ -40,10 +40,10 @@
  *  - skills/discovery/probes/supply-chain-slopcheck.mjs — Agent C (parallel).
  */
 
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWriteWithBackup } from './io.mjs';
+import { execFile } from './native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants

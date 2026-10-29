@@ -115,6 +115,18 @@ additionally honours `PROJECTS_BASELINE_DIR` above all four, for back-compat.
 `scripts/promote-vault-strict.mjs` also uses a baseline template and already ships
 an explicit `--no-baseline` opt-out.
 
+## Security readers, and what each degrades to
+
+Two security checks read data from the baseline. Neither carries its own copy of
+that data, and neither reports a clean result when it is missing: without a
+baseline they skip, and `package-floor` degrades when a configured baseline
+cannot be read.
+
+| Reader | Reads | Without a baseline |
+|---|---|---|
+| `scripts/lib/security-delta/package-floor.mjs` (Security-Delta check `package-floor`, session-end Phase 2.4, #1769) | the security-floor register `scripts/lib/security-floors.json`, located via `resolveBaselineLocation()` | falls back to the register as committed in the repo at `head` (`scripts/security-floors.json`, then `scripts/lib/security-floors.json` — the copy projects-baseline vendors into consumer repos) ONLY when no baseline is configured or the baseline has no register file; with neither, `skipped` / `no-register`. A baseline that is configured but unavailable (resolver failure, unsafe or unreadable register file) gives `degraded` / `baseline-unavailable` and does NOT fall back to the repo register |
+| `skills/discovery/probes/insecure-infra-defaults.mjs` (discovery probe, category `infra`, #1770) | runs the pattern SSOT `scripts/check-insecure-defaults.sh --json <repo>` | `skipped` / `no-baseline`. The probe resolves the baseline host-locally only — `SO_BASELINE_PATH`, then `owner.yaml` `paths.baseline-path`; the scanned repo's committed config is never consulted, and a baseline inside the scanned repo is rejected |
+
 ## The public fallback
 
 A repository bootstrapped without the baseline is a normal, supported outcome —

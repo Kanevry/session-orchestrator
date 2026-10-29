@@ -52,7 +52,6 @@
 //   - --no-verify bypass: this hook is invoked as a git pre-commit hook;
 //     `git commit --no-verify` skips it entirely (operator opts out by name).
 
-import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 
@@ -72,6 +71,7 @@ import {
   readProcessLocalSessionIds,
 } from '../scripts/lib/session-identity/own-session.mjs';
 import { resolveOwnLockRoot } from './_lib/hook-root.mjs';
+import { execSync } from '../scripts/lib/native-command.mjs';
 
 // Resolve the "current" agent id from SO_WAVE_AGENT_ID (when set by the
 // caller) or fall back to a PID-derived marker. The fence files themselves

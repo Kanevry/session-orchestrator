@@ -20,10 +20,10 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { homedir } from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 import { expandTilde } from './lib/common.mjs';
+import { spawnSync } from './lib/native-command.mjs';
 
 const COMMIT_MSG = 'chore(orchestrator): Promote vault-integration to strict mode — refs #305';
 

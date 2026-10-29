@@ -15,13 +15,12 @@
  * (the `detect` help of 8.30.1 still lists `--log-opts`/`--source`).
  */
 
-import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { commandOnPath } from '../native-command.mjs';
+import { commandOnPath, spawn } from '../native-command.mjs';
 import { BUDGET, makeCheckResult, makeFinding } from './contract.mjs';
 import { isSafeRef } from './floating-tags.mjs';
 

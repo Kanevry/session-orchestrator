@@ -49,8 +49,7 @@
  *   migrate-vault-paths: N files scanned, M lines fixed, K historical skipped [dry-run|applied]
  */
 
-import { promises as fs, existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { promises as fs, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { load as loadYaml } from 'js-yaml';
@@ -130,7 +129,8 @@ const EXCLUDE_GLOBS = [
  *     when filename includes a date stamp or "session-" prefix
  */
 function isHistorical(filePath) {
-  const lower = filePath.toLowerCase();
+  // `/`-anchored segment checks below: judge the POSIX spelling (#1860).
+  const lower = posixForm(filePath).toLowerCase();
   const base = path.basename(lower);
   if (base === 'decisions.md') return true;
   if (lower.includes('/history/')) return true;
@@ -274,57 +274,107 @@ function resolveRepoPath(nameOrPath) {
     return existsSync(nameOrPath) ? nameOrPath : null;
   }
   // Search up to 4 levels deep under the projects root
-  const result = spawnSync(
-    'find',
-    [projectsRoot(), '-maxdepth', '4', '-type', 'd', '-name', nameOrPath],
-    { encoding: 'utf8' },
-  );
-  if (result.status !== 0) return null;
-  const lines = result.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+  let lines;
+  try {
+    lines = findDirsNamed(projectsRoot(), nameOrPath, 4);
+  } catch {
+    return null; // `find` exited non-zero on any traversal error → no match
+  }
   // Prefer non-vault paths; the vault mirror under 01-projects/<name>/ is the wrong target.
-  const nonVault = lines.find((l) => !l.includes('/vault/'));
+  const nonVault = lines.find((l) => !posixForm(l).includes('/vault/'));
   return nonVault ?? lines[0] ?? null;
 }
 
 /**
- * Use grep -r -l -I to find every text file under any root that contains the
- * literal old-username segment. Returns absolute file paths.
- * The -I flag excludes binary files.
+ * POSIX spelling of a path, so the `/`-anchored EXCLUDE_GLOBS and `/vault/`
+ * checks also hold for native Windows paths (#1860). A no-op on POSIX.
+ * @param {string} p
+ * @returns {string}
  */
-function findCandidateFiles(roots) {
-  if (roots.length === 0) return [];
-  const result = spawnSync(
-    'grep',
-    [
-      '-r', // recursive
-      '-l', // list-files-with-matches
-      '-I', // skip binary
-      '--include=*.md', // markdown only (CLI runbooks live in .md; STATE.md and STATUS.md included)
-      OLD_SEGMENT,
-      ...roots,
-    ],
-    { encoding: 'utf8' },
-  );
-  // ENOENT guard (GitLab #600 F2): when the `grep` binary is missing from PATH,
-  // spawnSync sets `result.error` (ENOENT) and `result.status` is null. The
-  // status check below treats null as a failure but reports an empty stderr
-  // ("grep failed: "), masking the real cause. Surface the spawn error first.
-  if (result.error) {
+function posixForm(p) {
+  return p.split(path.sep).join('/');
+}
+
+/** True when the path falls under one of the EXCLUDE_GLOBS segments. */
+function isExcludedPath(p) {
+  const posix = posixForm(p);
+  return EXCLUDE_GLOBS.some((g) => posix.includes(g));
+}
+
+/**
+ * Node replacement for `find <root> -maxdepth <maxDepth> -type d -name <name>`
+ * (#1860 / #1743: `find` does not exist on native Windows). Pre-order walk in
+ * directory order like find; symlinked directories are not followed (find -P),
+ * and the start point itself counts at depth 0. A traversal error throws —
+ * find exits non-zero then, which the caller maps to "no match".
+ * @param {string} root
+ * @param {string} name
+ * @param {number} maxDepth
+ * @returns {string[]}
+ */
+function findDirsNamed(root, name, maxDepth) {
+  const out = [];
+  const visit = (dir, depth) => {
+    if (path.basename(dir) === name) out.push(dir);
+    if (depth >= maxDepth) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) visit(path.join(dir, entry.name), depth + 1);
+    }
+  };
+  if (statSync(root).isDirectory()) visit(root, 0);
+  return out;
+}
+
+/**
+ * Node replacement for `grep -r -l -I --include=*.md <needle> <roots…>` (#1860 /
+ * #1743: `grep` does not exist on native Windows, so every run exited 2 there).
+ * Same semantics: recursive, `.md` files only, files containing a NUL byte are
+ * binary and skipped (-I), symlinks below a root are not followed (grep -r), a
+ * literal substring match. Directories under an EXCLUDE_GLOBS segment are pruned
+ * — every file below them was filtered out of grep's output anyway. Any read
+ * error exits 2, as grep's exit 2 did.
+ * @param {string[]} roots
+ * @param {string} needle
+ * @returns {string[]} matching file paths, EXCLUDE_GLOBS filtered
+ */
+function grepMarkdownFiles(roots, needle) {
+  const out = [];
+  const visitFile = (file) => {
+    if (!file.endsWith('.md')) return;
+    const buf = readFileSync(file);
+    if (buf.includes(0)) return;
+    if (buf.includes(needle)) out.push(file);
+  };
+  const visitDir = (dir) => {
+    if (isExcludedPath(dir + path.sep)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) visitDir(p);
+      else if (entry.isFile()) visitFile(p);
+    }
+  };
+  try {
+    for (const root of roots) {
+      if (statSync(root).isDirectory()) visitDir(root);
+      else visitFile(root);
+    }
+  } catch (err) {
     process.stderr.write(
-      `migrate-vault-paths: grep/find not found on PATH (${result.error.code ?? result.error.message})\n`,
+      `migrate-vault-paths: scan failed: ${err.code ?? err.message}${err.path ? ` ${err.path}` : ''}\n`,
     );
     process.exit(2);
   }
-  // grep exits 1 when no matches; both 0 and 1 are valid responses
-  if (result.status !== 0 && result.status !== 1) {
-    process.stderr.write(`migrate-vault-paths: grep failed: ${result.stderr}\n`);
-    process.exit(2);
-  }
-  return result.stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .filter((p) => !EXCLUDE_GLOBS.some((g) => p.includes(g)));
+  return out.filter((p) => !isExcludedPath(p));
+}
+
+/**
+ * Find every markdown file under any root that contains the literal
+ * old-username segment. Returns absolute file paths; binary files are skipped.
+ */
+function findCandidateFiles(roots) {
+  if (roots.length === 0) return [];
+  // markdown only (CLI runbooks live in .md; STATE.md and STATUS.md included)
+  return grepMarkdownFiles(roots, OLD_SEGMENT);
 }
 
 /**
@@ -340,36 +390,10 @@ function findCandidateFiles(roots) {
  */
 function findMissingSegmentFiles(roots) {
   if (roots.length === 0) return [];
-  const result = spawnSync(
-    'grep',
-    [
-      '-r',
-      '-l',
-      '-I',
-      '--include=*.md',
-      // Coarse literal pre-filter; precise vault-dir/idempotency check happens
-      // per-line in findMissingSegmentHits(). 'Projects/vault' also matches
-      // longer paths; exact per-line matching prevents unrelated rewrites.
-      'Projects/vault',
-      ...roots,
-    ],
-    { encoding: 'utf8' },
-  );
-  if (result.error) {
-    process.stderr.write(
-      `migrate-vault-paths: grep/find not found on PATH (${result.error.code ?? result.error.message})\n`,
-    );
-    process.exit(2);
-  }
-  if (result.status !== 0 && result.status !== 1) {
-    process.stderr.write(`migrate-vault-paths: grep failed: ${result.stderr}\n`);
-    process.exit(2);
-  }
-  return result.stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .filter((p) => !EXCLUDE_GLOBS.some((g) => p.includes(g)));
+  // Coarse literal pre-filter; precise vault-dir/idempotency check happens
+  // per-line in findMissingSegmentHits(). 'Projects/vault' also matches
+  // longer paths; exact per-line matching prevents unrelated rewrites.
+  return grepMarkdownFiles(roots, 'Projects/vault');
 }
 
 /**
@@ -471,8 +495,16 @@ function findMissingSegmentHits(filePath, content) {
 function rewriteMissingSegment(content, originalContent, canonicalVaultPath) {
   const origLines = originalContent.split('\n');
   if (typeof canonicalVaultPath !== 'string' || !canonicalVaultPath.trim()) return content;
-  const target = canonicalVaultPath.trim().replace(/\/+$/, '') || '/';
-  if (!target.startsWith('/') && !target.startsWith('~/')) return content;
+  // A native Windows target (`C:\…\vault`, #1860) is absolute too; on POSIX
+  // path.isAbsolute() is exactly the former startsWith('/') check.
+  const trailingSep = process.platform === 'win32' ? /[\\/]+$/ : /\/+$/;
+  const trimmed = canonicalVaultPath.trim();
+  const stripped = trimmed.replace(trailingSep, '');
+  // Never trim below a drive or UNC root: `C:\` stripped to `C:` is drive-relative.
+  // A bare separator root keeps the former `|| '/'` path, so POSIX is unchanged.
+  const { root } = path.parse(trimmed);
+  const target = stripped.length < root.length && !/^[\\/]+$/.test(root) ? root : stripped || '/';
+  if (!path.isAbsolute(target) && !target.startsWith('~/')) return content;
   if ([...target].some((c) => c.charCodeAt(0) < 32)) return content;
   return content.split('\n').map((line, i) => {
     if (isOwnedByUsernamePath(origLines[i])) return line;
@@ -494,7 +526,10 @@ function rewriteMissingSegment(content, originalContent, canonicalVaultPath) {
         const replacement = target === '/' && legacy[1].startsWith('/') ? legacy[1] : target + legacy[1];
         if (double !== undefined) return prefix + JSON.stringify(replacement + tailSpace);
         if (single !== undefined) return prefix + "'" + (replacement + tailSpace).replace(/'/g, "''") + "'";
-        const scalar = /[\s#:'"[\]{}&*!|>]/.test(replacement) ? JSON.stringify(replacement) : replacement;
+        // A drive-letter colon (`C:\…`) is not a YAML indicator — a plain scalar
+        // keeps it — so only the rest of the value decides on quoting (#1860).
+        const quoteProbe = replacement.replace(/^[A-Za-z]:(?=[\\/])/, '');
+        const scalar = /[\s#:'"[\]{}&*!|>]/.test(quoteProbe) ? JSON.stringify(replacement) : replacement;
         return prefix + scalar + tailSpace;
       });
   }).join('\n');
@@ -632,7 +667,7 @@ async function main() {
 
   for (const filePath of candidateFiles) {
     // Skip if path matches an exclude glob (defense-in-depth; grep filter already applied)
-    if (EXCLUDE_GLOBS.some((g) => filePath.includes(g))) continue;
+    if (isExcludedPath(filePath)) continue;
 
     let content;
     try {

@@ -44,7 +44,7 @@ When detection returns a worktree object AND `isWorktreeClean()` returns `true`,
 > **Authoritative impl:** import `detectAutoPromotedWorktree` + `isWorktreeClean` from `scripts/lib/session-end/worktree-cleanup.mjs`. All git invocation MUST go through the injection-safe arg-array form (`execFileSync('git', ['-C', dir, …])`, #577 HARDEN-001) — never the legacy `execSync(\`git -C ${var} …\`)` template-literal shell form.
 
 ```js
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '${PLUGIN_ROOT}/scripts/lib/native-command.mjs';
 import { detectAutoPromotedWorktree, isWorktreeClean } from '${PLUGIN_ROOT}/scripts/lib/session-end/worktree-cleanup.mjs';
 
 const promoted = detectAutoPromotedWorktree(process.cwd(), sessionId);

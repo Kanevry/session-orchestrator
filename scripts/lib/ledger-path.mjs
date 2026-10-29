@@ -41,9 +41,9 @@
  * @module scripts/lib/ledger-path
  */
 
-import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { dotGitAncestor, getProjectDir, resolveEventsLedgerRoot } from './platform.mjs';
+import { spawnSync } from './native-command.mjs';
 
 /** @type {Map<string, boolean>} `<root>\0<rel>` → ignored in that worktree */
 const ignoredMemo = new Map();

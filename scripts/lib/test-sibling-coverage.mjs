@@ -34,7 +34,6 @@
  * Exit:  0 measured · 2 tool error (not a git repo, bad argument)
  */
 
-import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 import {
@@ -44,6 +43,7 @@ import {
   testSiblingsFor,
 } from './scope-gate.mjs';
 import { isMainModule } from './is-main-module.mjs';
+import { execFileSync } from './native-command.mjs';
 
 /** Machine-readable schema tag for the --json envelope. */
 export const SCHEMA = 'test-sibling-coverage/1';

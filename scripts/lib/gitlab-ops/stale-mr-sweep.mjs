@@ -19,12 +19,12 @@
  * interpolates repo/branch identifiers into a shell string (SEC-006).
  */
 
-import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { detectVcsForRepo, discoverVaultRepos } from '../gitlab-portfolio/vcs-detect.mjs';
 import { resolveRepoSpec } from '../vcs-repo-spec.mjs';
 import { isMainModule } from '../is-main-module.mjs';
+import { execFile as execFileCb } from '../native-command.mjs';
 
 const realExecFile = promisify(execFileCb);
 

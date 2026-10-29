@@ -9,13 +9,13 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
 
 import { safeRead, lineCount, pass, fail } from './helpers.mjs';
 import { resolveInstructionFile } from '../../common.mjs';
 import { listRemotes } from '../../vcs-repo-spec.mjs';
 import { _extractConfigSection, _parseKV } from '../../config/section-extractor.mjs';
 import { parseSourceCommitTrailer } from '../../github-export.mjs';
+import { execFileSync } from '../../native-command.mjs';
 
 export function runCategory6(root) {
   const checks = [];

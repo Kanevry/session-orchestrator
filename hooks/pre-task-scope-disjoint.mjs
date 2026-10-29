@@ -244,11 +244,11 @@
 
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+import { execFileSync } from '../scripts/lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // #993 — late-bound repo dependencies

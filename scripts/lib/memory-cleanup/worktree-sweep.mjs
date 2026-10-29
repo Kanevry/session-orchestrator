@@ -22,10 +22,10 @@
  * kept divergent on purpose — unifying them would break the sync/async boundary.
  */
 
-import { execFileSync } from 'node:child_process';
 import { statSync } from 'node:fs';
 import path from 'node:path';
 import { parseSessionId } from '../session-id.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 /**
  * List all auto-promoted sibling worktrees for a given main checkout root.

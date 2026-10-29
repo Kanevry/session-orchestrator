@@ -318,13 +318,13 @@
  * failure this hook exists to replace.
  */
 
-import { spawnSync } from 'node:child_process';
 import { lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
+import { spawnSync } from '../scripts/lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // #993 — late-bound repo dependencies

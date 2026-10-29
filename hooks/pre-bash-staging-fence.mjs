@@ -68,7 +68,6 @@
 import { readStdin, emitAllow, writeJsonAtomicSync } from '../scripts/lib/io.mjs';
 import { isWaveAgentContext } from '../scripts/lib/wave-context.mjs';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -77,6 +76,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { stableHostname } from '../scripts/lib/host-identity.mjs';
 import { dotGitAncestor, launchDirFromEnv } from '../scripts/lib/platform.mjs';
+import { execFileSync } from '../scripts/lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants

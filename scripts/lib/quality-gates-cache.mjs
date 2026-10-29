@@ -50,9 +50,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { digestMultiBufferSha256 } from './crypto-digest-utils.mjs';
 import { isIgnoredRootFile } from './package-manager.mjs';
+import { spawnSync } from './native-command.mjs';
 
 const CACHE_RELATIVE_PATH = '.orchestrator/metrics/baseline-results.jsonl';
 const DEFAULT_TTL_DAYS = 7;

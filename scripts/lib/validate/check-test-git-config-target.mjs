@@ -734,7 +734,7 @@ export function inspectTestGitConfigTarget(pluginRoot) {
 
   const files = walk(scanRoot).sort();
   for (const absolute of files) {
-    const relative = path.relative(pluginRoot, absolute);
+    const relative = path.relative(pluginRoot, absolute).split(path.sep).join('/');
     /** @type {string} */
     let body;
     try {

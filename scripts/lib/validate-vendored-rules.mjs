@@ -63,10 +63,10 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { parseGlobsFrontmatter, FRONTMATTER_NOT_AT_TOP } from './rule-loader.mjs';
 import { isMainModule } from './is-main-module.mjs';
+import { execFileSync } from './native-command.mjs';
 
 // Mirrors rules-sync.mjs's exported PLUGIN_HEADER_PREFIX (rules-sync.mjs
 // line ~13). NOT imported from there on purpose: rules-sync.mjs imports

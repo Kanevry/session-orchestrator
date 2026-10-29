@@ -110,9 +110,9 @@ import {
 } from 'node:fs';
 import { join, relative as relativePath, sep, basename, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { packedFilename } from './lib/plugin-package-stage.mjs';
+import { resolveNativeCommand, spawn, spawnSync } from './lib/native-command.mjs';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
@@ -1457,7 +1457,16 @@ function run(cmd, args, opts = {}) {
   // in those seconds surfaces as a `tag-and-push` reconciliation result, never
   // silence. Revisit if that is ever observed.
   const detached = releaseTailShield.armed && process.platform !== 'win32';
-  const res = spawnSync(cmd, args, { ...SPAWN_OPTS, ...(detached ? { detached: true } : {}), ...opts });
+  // Windows: npm is npm.cmd, which Node refuses to spawn without a shell
+  // (CVE-2024-27980); run npm-cli.js with this Node instead (#1743). A missing
+  // npm throws here, loud. Unix argv is unchanged (identity resolution).
+  let native;
+  try {
+    native = resolveNativeCommand(cmd, args, { env: opts.env ?? process.env });
+  } catch (err) {
+    throw new Error(`${cmd} ${args.join(' ')}: ${err.message}`, { cause: err });
+  }
+  const res = spawnSync(native.cmd, native.args, { ...SPAWN_OPTS, ...(detached ? { detached: true } : {}), ...opts });
   if (res.error) throw new Error(`${cmd} ${args.join(' ')}: ${res.error.message}`);
   return res;
 }

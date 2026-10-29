@@ -34,7 +34,6 @@
  * issues. See `scripts/lib/vcs-repo-spec.mjs` for the full rationale.
  */
 
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { digestSha256Short } from './crypto-digest-utils.mjs';
@@ -46,6 +45,7 @@ import {
 import { resolveProjectDir } from './platform.mjs';
 import { resolveOwnLockRoot } from '../../hooks/_lib/hook-root.mjs';
 import { resolveRepoSpec } from './vcs-repo-spec.mjs';
+import { execFileSync } from './native-command.mjs';
 
 /**
  * Compute a stable 8-char sha256 hash of a task description.

@@ -53,10 +53,10 @@
  */
 
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { closeSync, lstatSync, openSync, readSync } from 'node:fs';
 
 import { redactHomeDir } from '../common.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 /** Upper bound on the returned `candidates` list; `total` still counts all. */
 export const MAX_CANDIDATES = 200;

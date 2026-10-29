@@ -4,13 +4,13 @@
 import { constants, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { readConfigFile } from './config/io.mjs';
 import { _extractConfigSection, _parseKV, findSessionConfigBlock } from './config/section-extractor.mjs';
 import { _coerceString } from './config/coercers.mjs';
 import { loadHostPaths, resolveHostPath } from './config/host-paths.mjs';
 import { resolveNamedBaseline } from './named-baseline-resolver.mjs';
 import { resolveArchetype, syncRules } from './rules-sync.mjs';
+import { resolveGitBash, spawnSync } from './native-command.mjs';
 
 const DEFAULT_PLUGIN_ROOT = path.resolve(import.meta.dirname, '../..');
 const MAX_BYTES = 1024 * 1024;
@@ -377,8 +377,11 @@ export async function scaffoldBaselineArchetype(options = {}) {
     sourceFiles(shared);
     const common = baselineSourcePath(root, 'scripts/lib/common.sh');
     const renderer = baselineSourcePath(root, 'scripts/lib/render-archetype.sh');
+    // Windows: Git Bash only, never the WSL launcher; none found fails loud.
+    let bash;
+    try { bash = resolveGitBash(options.nativeHost); } catch (error) { fail('bash-unavailable', error.message); }
     staging = mkdtempSync(path.join(tmpdir(), 'baseline-bootstrap-'));
-    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', [
+    const result = spawnSync(bash, ['-euo', 'pipefail', '-c', [
       'source "$1"', 'source "$2"', 'export TEMPLATES_DIR="$3/templates"',
       'render_archetype_dir "$4" "$6"', 'render_shared_and_substitute "$5" "$6"',
       'render_archetype_metadata "$4" "$5" "$6"',

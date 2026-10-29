@@ -70,7 +70,6 @@
  * @see Issue #1107
  */
 
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -84,6 +83,7 @@ import {
 } from './schema.mjs';
 import { scanFenceBlocks } from '../validate/markdown-fences.mjs';
 import { maskSource } from '../js-mask.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Korpus-Abgrenzung

@@ -54,7 +54,6 @@
  * @see Issue #1107
  */
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,6 +76,7 @@ import {
 import { corpusKindOf, parseRepo } from './lib/auq/parse.mjs';
 import { writeStdoutLineSync } from './lib/io.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { execFileSync } from './lib/native-command.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT_DEFAULT = path.resolve(HERE, '..');

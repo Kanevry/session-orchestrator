@@ -29,6 +29,7 @@
 // hook timeout Codex terminates the hook's job object, or runs `taskkill /T`,
 // which takes the child with it (command_runner.rs @26ad281f). Revisit if a
 // Windows run shows a handler outliving its timeout.
+// eslint-disable-next-line no-restricted-syntax -- CommonJS entry; its only start is process.execPath, an absolute path (#1864)
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const process = require('node:process');

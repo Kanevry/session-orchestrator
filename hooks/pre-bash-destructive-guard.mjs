@@ -52,7 +52,6 @@
  * finalized; a telemetry failure never changes the guard's decision.
  */
 
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -61,6 +60,7 @@ import { pathToFileURL } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
+import { execFileSync } from '../scripts/lib/native-command.mjs';
 
 // #1826 — stdout ceiling for every git read in this hook. Node's default 1 MiB
 // made a CLEAN worktree with node_modules "not measurable": its

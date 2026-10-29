@@ -10,9 +10,9 @@
  * Testable: accepts spawn as an injected dependency.
  */
 
-import { spawn as _spawn } from 'node:child_process';
 
 import { normalizeLabel, normalizedLabelSet } from '../label-scope.mjs';
+import { spawn as _spawn } from '../native-command.mjs';
 
 /** Default timeout per repo CLI invocation (ms). */
 export const DEFAULT_TIMEOUT_MS = 15_000;

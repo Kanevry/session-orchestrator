@@ -153,7 +153,6 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync, statSync } from 'node:fs';
 
 import { readStdin, writeStdoutLineSync } from '../scripts/lib/io.mjs';
@@ -180,6 +179,7 @@ import {
   readProcessLocalSessionIds,
   classifyManifestSession,
 } from '../scripts/lib/session-identity/own-session.mjs';
+import { execFileSync } from '../scripts/lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants

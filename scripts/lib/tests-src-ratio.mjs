@@ -88,10 +88,10 @@
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, isAbsolute, relative, resolve } from 'node:path';
-import { execFileSync } from 'node:child_process';
 
 import { writeStdoutLineSync } from './io.mjs';
 import { isMainModule } from './is-main-module.mjs';
+import { execFileSync } from './native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // The definition — the part that must never be re-derived by hand

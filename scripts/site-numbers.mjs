@@ -107,13 +107,13 @@
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, relative, sep } from 'node:path';
-import { execFileSync } from 'node:child_process';
 
 import { writeStdoutLineSync, writeJsonAtomicSync } from './lib/io.mjs';
 import { isMeasuredSession, readCanonicalSessions } from './lib/sessions-canonical.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { slashCommandNames } from './lib/user-invocable-skills.mjs';
 import { resolveEventsLedgerRoot } from './lib/platform.mjs';
+import { execFileSync } from './lib/native-command.mjs';
 
 /** Machine-readable schema tag for the --json envelope. */
 export const SCHEMA = 'site-numbers/1';

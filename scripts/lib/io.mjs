@@ -817,12 +817,22 @@ export function emitSystemMessage(msg) {
  * @param {object} [opts]
  * @param {(value: *) => {ok: boolean, errors?: Array<object>}} [opts.validatorFn]
  *        Pre-write validator. Throws (without writing) on `ok=false`.
+ * On Windows a `rename` over a destination another process holds open fails
+ * with `EPERM`/`EBUSY`; it is retried briefly (see {@link _renameWithRetry},
+ * GH#79). A write that still fails unlinks its tmp file (best-effort) and
+ * rethrows the ORIGINAL error — a failed write never leaves `<file>.<id>.tmp`.
+ *
  * @param {number} [opts.indent=2]  JSON.stringify indent.
+ * @param {string} [opts.platform=process.platform]  Platform seam (tests).
+ * @param {{ rename?: Function, unlink?: Function }} [opts.fs]  fs/promises seam (tests).
  * @returns {Promise<{ path: string, bytes: number }>}
- * @throws {Error} If validatorFn rejects the value (with `.validationErrors` array attached).
+ * @throws {Error} If validatorFn rejects the value (with `.validationErrors` array attached),
+ *   or the original fs error when the write/rename fails.
  */
 export async function writeJsonAtomic(filePath, value, opts = {}) {
-  const { validatorFn, indent = 2 } = opts;
+  const { validatorFn, indent = 2, platform = process.platform, fs: injectedFs } = opts;
+  const fsRename = injectedFs?.rename ?? rename;
+  const fsUnlink = injectedFs?.unlink ?? unlink;
 
   if (typeof validatorFn === 'function') {
     const result = validatorFn(value);
@@ -837,8 +847,17 @@ export async function writeJsonAtomic(filePath, value, opts = {}) {
 
   const tmp = `${filePath}.${randomUUID().slice(0, 8)}.tmp`;
   const content = JSON.stringify(value, null, indent);
-  await writeFile(tmp, content, 'utf8');
-  await rename(tmp, filePath);
+  try {
+    await writeFile(tmp, content, 'utf8');
+    await _renameWithRetry(fsRename, tmp, filePath, platform);
+  } catch (err) {
+    try {
+      await fsUnlink(tmp);
+    } catch {
+      // Best-effort: never let cleanup replace the error the caller needs.
+    }
+    throw err;
+  }
 
   return { path: filePath, bytes: Buffer.byteLength(content, 'utf8') };
 }
@@ -983,6 +1002,8 @@ export function writeJsonAtomicSync(filePath, data, opts = {}) {
  * @param {string} [opts.tmpPrefix='.tmp']  Tmp-file prefix (callers pick their domain prefix).
  * @param {number} [opts.mode]  File mode of the tmp file, kept by the rename (#1632).
  * @param {Date} [opts.now]  Clock seam for the backup stamp (tests).
+ * @param {string} [opts.platform=process.platform]  Platform seam for the win32
+ *   rename retry (tests; GH#79).
  * @param {{ mkdirSync?: Function, writeFileSync?: Function, renameSync?: Function,
  *   copyFileSync?: Function, existsSync?: Function, unlinkSync?: Function }} [opts.fs]
  *   Injectable fs (tests). Omitted methods fall back to `node:fs` — EXCEPT on
@@ -999,6 +1020,7 @@ export function atomicWriteWithBackup(filePath, body, opts = {}) {
     tmpPrefix = '.tmp',
     mode,
     now = new Date(),
+    platform = process.platform,
     fs: injectedFs,
   } = opts;
 
@@ -1047,7 +1069,7 @@ export function atomicWriteWithBackup(filePath, body, opts = {}) {
 
     tmpFile = _tmpPathFor(dir, tmpPrefix);
     fsWriteFile(tmpFile, body, mode === undefined ? encoding : { encoding, mode });
-    fsRename(tmpFile, filePath);
+    _renameSyncWithRetry(fsRename, tmpFile, filePath, platform);
 
     return { ok: true, path: filePath, bytes: _byteLength(body, encoding), backupPath };
   } catch (err) {
@@ -1090,6 +1112,8 @@ export function atomicWriteWithBackup(filePath, body, opts = {}) {
  * @param {boolean} [opts.backup=false]  Snapshot the existing file to `.bak-<ISO>` first.
  * @param {string} [opts.tmpPrefix='.tmp']  Tmp-file prefix (callers pick their domain prefix).
  * @param {Date} [opts.now]  Clock seam for the backup stamp (tests).
+ * @param {string} [opts.platform=process.platform]  Platform seam for the win32
+ *   rename retry (tests; GH#79).
  * @param {{ mkdir?: Function, writeFile?: Function, rename?: Function,
  *   copyFile?: Function, unlink?: Function }} [opts.fs]
  *   Injectable `fs/promises`-shaped object (tests). Omitted methods fall back to
@@ -1103,6 +1127,7 @@ export async function atomicWriteText(filePath, body, opts = {}) {
     backup = false,
     tmpPrefix = '.tmp',
     now = new Date(),
+    platform = process.platform,
     fs: injectedFs,
   } = opts;
 
@@ -1134,7 +1159,7 @@ export async function atomicWriteText(filePath, body, opts = {}) {
 
     tmpFile = _tmpPathFor(dir, tmpPrefix);
     await fsWriteFile(tmpFile, body, encoding);
-    await fsRename(tmpFile, filePath);
+    await _renameWithRetry(fsRename, tmpFile, filePath, platform);
 
     return { ok: true, path: filePath, bytes: _byteLength(body, encoding), backupPath };
   } catch (err) {
@@ -1196,6 +1221,55 @@ function _partialAdapterRefusal(backup, injectedFs, methods) {
 function _backupPathFor(filePath, now) {
   const stamp = (now instanceof Date ? now : new Date()).toISOString().replace(/[:.]/g, '-');
   return `${filePath}.bak-${stamp}`;
+}
+
+// ── Windows rename retry (GH#79 / #1858) ─────────────────────────────────────
+// On win32 `rename` over a destination that another process holds open — even
+// with read-sharing only (an editor, an indexer, a concurrent reader) — fails
+// with EPERM/EBUSY for the few ms the handle lives. Retry that window briefly;
+// POSIX never retries (rename(2) there does not fail on open handles).
+// Sync additionally retries EACCES, which renameSync reports for the same lock.
+// Total backoff 10+20+30+40 = 100 ms. BV-004 ceiling: a handle held longer than
+// ~100 ms still loses the write (as an error, never silently); revisit if
+// Windows reports of EPERM persist. Duplicated on purpose in
+// `hooks/_lib/atomic-json.mjs`, which must stay stdlib-only and cannot import
+// from `scripts/` — revisit if a third copy appears.
+const WIN_RENAME_RETRY_DELAYS_MS = [10, 20, 30, 40];
+const WIN_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY']);
+const WIN_RENAME_RETRY_CODES_SYNC = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+/** `rename` with the bounded win32 retry; rethrows the last error unchanged. */
+async function _renameWithRetry(renameFn, from, to, platform) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await renameFn(from, to);
+    } catch (err) {
+      const delay = WIN_RENAME_RETRY_DELAYS_MS[attempt];
+      if (platform !== 'win32' || delay === undefined || !WIN_RENAME_RETRY_CODES.has(err?.code)) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+/** Sync twin of {@link _renameWithRetry}; sleeps via `Atomics.wait` (bounded, no spin). */
+function _renameSyncWithRetry(renameFn, from, to, platform) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return renameFn(from, to);
+    } catch (err) {
+      const delay = WIN_RENAME_RETRY_DELAYS_MS[attempt];
+      if (
+        platform !== 'win32' ||
+        delay === undefined ||
+        !WIN_RENAME_RETRY_CODES_SYNC.has(err?.code)
+      ) {
+        throw err;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+    }
+  }
 }
 
 /** Sibling tmp path (same filesystem → atomic rename): `<dir>/<tmpPrefix>.<12 hex>`. */

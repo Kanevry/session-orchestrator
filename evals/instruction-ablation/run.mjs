@@ -13,13 +13,13 @@
  * See README.md for design, cost, and the three limits worth knowing.
  */
 
-import { execFileSync, execSync } from 'node:child_process';
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadHostPaths, resolveHostPath } from '../../scripts/lib/config/host-paths.mjs';
 import { resolveNamedBaseline } from '../../scripts/lib/named-baseline-resolver.mjs';
+import { execFileSync, execSync } from '../../scripts/lib/native-command.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');

@@ -26,10 +26,10 @@
  * Part of Epic #643 → issue #647 (C2 auto-repair engine).
  */
 
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from '../native-command.mjs';
 
 /**
  * @typedef {Object} RepairCandidate

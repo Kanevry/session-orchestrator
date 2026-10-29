@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-27T05:08:38.098Z",
-  "head": "1dfcbfe26817aace3226f0aaf978d70f72baf62e",
+  "generated_at": "2026-10-28T14:05:57.241Z",
+  "head": "07d5e1d3f40520921225359e272c75a9db0fabbe",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -1418,6 +1418,7 @@
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
+        "pre-bash-destructive-guard.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
         "pre-bash-sessions-ledger-guard.mjs",
@@ -1565,6 +1566,37 @@
       "file": "scripts/lib/process-group.mjs",
       "reachable_from": [
         "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/program-lookup.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-destructive-guard.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -2086,7 +2118,31 @@
     {
       "file": "scripts/lib/win-process-tree.mjs",
       "reachable_from": [
-        "post-edit-validate.mjs"
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {

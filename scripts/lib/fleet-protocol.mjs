@@ -35,10 +35,10 @@
  * takes a session id refuses an unsafe one with a TypeError.
  */
 
-import { execFileSync } from 'node:child_process';
 import fsSync, { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from './native-command.mjs';
 
 /** Env var that overrides the navigator directory. */
 export const NAVIGATOR_CONFIG_DIR_ENV = 'NAVIGATOR_CONFIG_DIR';

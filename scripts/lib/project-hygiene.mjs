@@ -41,12 +41,12 @@
  * so a caller can split mechanical work from work needing human judgement.
  */
 
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './command-blocker.mjs';
 import { parsePorcelainEntries } from './git-porcelain.mjs';
+import { execFileSync } from './native-command.mjs';
 
 /** Commits past the newest tag before release hygiene is worth mentioning. */
 export const DEFAULT_RELEASE_DRIFT_COMMITS = 50;
@@ -183,9 +183,10 @@ function isOwnRuntimeArtifact(porcelainPath) {
  *
  * @param {string} repoRoot
  * @param {number} ballastMb
+ * @param {{platform?: string}} [host] platform seam for regression tests
  * @returns {object[]}
  */
-export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB) {
+export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB, host = {}) {
   const findings = [];
 
   const ignored = git(
@@ -209,7 +210,7 @@ export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB) {
   // more than the finding is worth on a large tree.
   let totalBytes = 0;
   const heaviest = [];
-  const sizes = duBytesBatch(repoRoot, ignoredPaths);
+  const sizes = duBytesBatch(repoRoot, ignoredPaths, host);
   for (const p of ignoredPaths) {
     const bytes = sizes.get(stripTrailingSlash(p));
     if (bytes === undefined) continue;
@@ -244,7 +245,8 @@ export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB) {
 
 // Ceiling on operands per `du` call. Every path is one argv entry and macOS
 // caps argv+environment at ARG_MAX = 1 048 576 bytes; 500 paths stay far below
-// that even at ~1 KB each. Today: 298 ignored top-level entries in this repo
+// that even at ~1 KB each. On win32 (no `du`, in-process walk) it bounds the
+// paths one 30 s budget covers. Today: 298 ignored top-level entries in this repo
 // (2026-09-12) — one call. Revisit trigger: repos with more than ~5000 ignored
 // entries, where `git status --ignored` itself turns expensive — then move the
 // probe into a detached child with a cache (see the revisit note in
@@ -260,25 +262,38 @@ function stripTrailingSlash(p) {
  * Sizes of repo-relative paths in bytes via batched `du -sk`, one process per
  * {@link DU_CHUNK_SIZE} paths instead of one per path (spawn overhead was the
  * whole cost: 298 single calls 0.685 s vs. one batched call 0.051 s).
+ * Native Windows has no `du`: there an in-process walk ({@link walkWinBytes})
+ * sizes the paths instead, otherwise the map came back empty and the ballast
+ * check went silent (#1743).
  *
  * Keys are the paths without trailing slash; a path absent from the map could
  * not be sized. `du` exits non-zero when ANY operand vanished or is unreadable
  * but still sizes the rest on stdout, so that stdout is parsed rather than
  * discarded — otherwise one bad path would silence the whole ballast check.
- * No `du` at all (Windows) yields an empty map: a silent skip, not a crash.
  * `-l` keeps parity with the old per-path measurement: without it a batched
  * `du` counts an inode shared by hard links only under the FIRST operand
  * (pnpm `node_modules/` pointing into one store → the later ones read ~0).
  * BSD and GNU `du` both define `-l` as "count sizes many times if hard linked".
  * @param {string} repoRoot
  * @param {string[]} relPaths porcelain paths relative to repoRoot
+ * @param {{platform?: string}} [host] platform seam for regression tests
  * @returns {Map<string, number>}
  */
-function duBytesBatch(repoRoot, relPaths) {
+function duBytesBatch(repoRoot, relPaths, { platform = process.platform } = {}) {
   const sizes = new Map();
   const existing = relPaths.filter((p) => existsSync(join(repoRoot, p)));
   for (let i = 0; i < existing.length; i += DU_CHUNK_SIZE) {
     const chunk = existing.slice(i, i + DU_CHUNK_SIZE);
+    if (platform === 'win32') {
+      // Same 30 s budget per chunk the `du` child has; on expiry the rest of
+      // the chunk stays unsized (absent), like a timed-out `du`'s stdout.
+      const deadline = Date.now() + 30_000;
+      for (const p of chunk) {
+        const bytes = walkWinBytes(join(repoRoot, p), deadline);
+        if (bytes !== null) sizes.set(stripTrailingSlash(p), bytes);
+      }
+      continue;
+    }
     let out;
     try {
       out = execFileSync('du', ['-skl', '--', ...chunk], {
@@ -299,6 +314,38 @@ function duBytesBatch(repoRoot, relPaths) {
     }
   }
   return sizes;
+}
+
+/**
+ * `du -skl <root>` for native Windows, which has no `du` (#1743). Windows
+ * reports no allocated block count (`st.blocks` is undefined), so each entry
+ * counts its apparent size in 512-byte units, rounded up to whole KiB like
+ * `du -k`. Ceiling (BV-004): sparse/compressed NTFS files count at apparent
+ * size; revisit if Node exposes allocation size on win32. Symlinks are never
+ * followed (`du -P`). Hard links count under every path (`-l`). Unreadable
+ * subtrees are skipped. Returns null when the root vanished or the deadline
+ * passed (unsized, never a partial undercount).
+ * @param {string} root
+ * @param {number} deadline epoch ms
+ * @returns {number|null} bytes (KiB multiple)
+ */
+function walkWinBytes(root, deadline) {
+  let blocks512 = 0;
+  const stack = [root];
+  let first = true;
+  while (stack.length > 0) {
+    if (Date.now() > deadline) return null;
+    const current = stack.pop();
+    let st;
+    try { st = lstatSync(current); } catch { if (first) return null; continue; }
+    first = false;
+    blocks512 += Math.ceil(st.size / 512);
+    if (!st.isDirectory()) continue;
+    let names;
+    try { names = readdirSync(current); } catch { continue; }
+    for (const name of names) stack.push(join(current, name));
+  }
+  return Math.ceil(blocks512 / 2) * 1024;
 }
 
 /**

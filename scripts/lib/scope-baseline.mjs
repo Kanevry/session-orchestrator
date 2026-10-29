@@ -120,7 +120,6 @@
  */
 
 import { readFileSync, realpathSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 import { parseStateMd, serializeStateMd, writeStateMd } from './state-md.mjs';
@@ -129,6 +128,7 @@ import { pathMatchesPattern } from './scope-gate.mjs';
 import { resolveBaselineRange, isQueryFailure } from './vcs-repo-spec.mjs';
 import { readProcessLocalSessionIds } from './session-identity/own-session.mjs';
 import { readSessionWorkTrees, sessionCommitFiles } from './session-work-trees.mjs';
+import { execFileSync } from './native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // DRIFT_EXCLUDE_PATTERNS — the SINGLE filter source for both the denominator

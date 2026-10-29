@@ -34,10 +34,10 @@
  * report, not a gate), exit 2 on `degraded`.
  */
 
-import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveRepoSpec as _resolveRepoSpec, resolveRepoHost as _resolveRepoHost } from './lib/vcs-repo-spec.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { execFile as _execFile } from './lib/native-command.mjs';
 
 const execFileAsync = promisify(_execFile);
 

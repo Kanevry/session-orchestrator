@@ -2,11 +2,12 @@
 
 import { readFileSync, readdirSync, statSync, existsSync, realpathSync, lstatSync, openSync, fstatSync, closeSync, readSync, constants } from 'node:fs';
 import { join, extname, relative, basename, sep, resolve, dirname, isAbsolute } from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { argv } from 'node:process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+// eslint-disable-next-line no-restricted-imports -- import leaf (#1244): consumer repos copy this scanner standalone for their own pre-commit, so it cannot depend on native-command.mjs (#1864)
+import { execFileSync } from 'node:child_process';
 
 function canonicalPath(p) {
   try {

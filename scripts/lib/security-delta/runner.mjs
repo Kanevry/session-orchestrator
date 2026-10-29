@@ -1,7 +1,8 @@
 /**
  * runner.mjs — runs the stage-1 Security-Delta checks under one budget (#1769).
  *
- * The five checks run CONCURRENTLY. Each is raced against the total budget: a
+ * The six checks (lockfile, runtime-floor, floating-tag, gitleaks, age-gate,
+ * package-floor) run CONCURRENTLY. Each is raced against the total budget: a
  * check that has not settled by `start + budget.totalMs` is reported as
  * `degraded`/`budget` and the run moves on without it — a slow registry or a
  * hung binary must never hold the close. The late promise is abandoned, not
@@ -16,6 +17,7 @@ import { BUDGET, MODES, deriveStatus, deriveVerdict, makeCheckResult, summarize 
 import { runFloatingTagCheck } from './floating-tags.mjs';
 import { runGitleaksCheck } from './gitleaks.mjs';
 import { runLockfileCheck } from './osv.mjs';
+import { runPackageFloorCheck } from './package-floor.mjs';
 import { runRuntimeFloorCheck } from './runtime-floor.mjs';
 
 /**
@@ -34,7 +36,10 @@ import { runRuntimeFloorCheck } from './runtime-floor.mjs';
  * @property {(ctx: CheckContext) => Promise<object>} run  returns one CheckResult, never throws
  */
 
-/** The five stage-1 checks, in CHECK_IDS order. @type {ReadonlyArray<CheckSpec>} */
+/**
+ * The six checks, in CHECK_IDS order: the five stage-1 checks plus the offline
+ * `package-floor` register check (#1769 stage 3). @type {ReadonlyArray<CheckSpec>}
+ */
 export const DEFAULT_CHECKS = Object.freeze([
   { id: 'lockfile', network: true, run: ({ repoRoot, base, head, deadlineAt }) => runLockfileCheck({ repoRoot, base, head, deadlineAt }) },
   {
@@ -49,6 +54,7 @@ export const DEFAULT_CHECKS = Object.freeze([
     run: ({ repoRoot, base, head, timeoutMs }) => runGitleaksCheck({ repoRoot, base, head, timeoutMs }),
   },
   { id: 'age-gate', network: false, run: ({ repoRoot, base, head }) => runAgeGateCheck({ repoRoot, base, head }) },
+  { id: 'package-floor', network: false, run: ({ repoRoot, base, head }) => runPackageFloorCheck({ repoRoot, base, head }) },
 ]);
 
 const LATE = Symbol('late');

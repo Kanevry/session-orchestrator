@@ -32,9 +32,9 @@
 
 import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, posix } from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { resolveInstructionFile } from '../../scripts/lib/common.mjs';
+import { commandOnPath, execFileSync } from '../../scripts/lib/native-command.mjs';
 import { _parseVaultIntegration } from '../../scripts/lib/config/vault-integration.mjs';
 import { _parseDriftCheck } from '../../scripts/lib/config/drift-check.mjs';
 import { isSessionConfigHeading } from '../../scripts/lib/config/section-extractor.mjs';
@@ -501,7 +501,10 @@ function isSafeRepoSpec(spec) {
   return typeof spec === 'string' && spec.length > 0 && !/\s/.test(spec);
 }
 
+// POSIX keeps the `command -v` builtin (needs only `sh`, no external `which`);
+// native Windows has no `sh`, so it uses the shell-free locator (#1743).
 function hasGlab() {
+  if (process.platform === 'win32') return commandOnPath('glab');
   try {
     execFileSync('sh', ['-c', 'command -v glab'], { stdio: 'pipe' });
     return true;

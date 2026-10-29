@@ -33,9 +33,9 @@
  *  - `skills/session-start/SKILL.md` Phase 4 — banner render site.
  */
 
-import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveRepoSpec as _resolveRepoSpec } from './vcs-repo-spec.mjs';
+import { execFile as _execFile } from './native-command.mjs';
 
 const execFileAsync = promisify(_execFile);
 

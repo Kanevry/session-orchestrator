@@ -62,13 +62,13 @@
  * implementation instead of each re-deriving it.
  */
 
-import { execFileSync } from 'node:child_process';
 
 // Three dependency-free config leaves (no import back into this module), so
 // reading the Session Config `vcs:` key here forms no cycle (#1846).
 import { _coerceString } from './config/coercers.mjs';
 import { readConfigFile } from './config/io.mjs';
 import { _extractConfigSection, _parseKV } from './config/section-extractor.mjs';
+import { execFileSync } from './native-command.mjs';
 
 /**
  * argv-boundary guard (#872 follow-up, Q3-LOW centralization). A well-formed

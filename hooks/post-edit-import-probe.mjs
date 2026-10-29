@@ -41,10 +41,10 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import path from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 
 import { getProjectDir } from '../scripts/lib/platform.mjs';
+import { spawnSync } from '../scripts/lib/native-command.mjs';
 
 /** Tool names whose payload carries an edited file path. */
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit']);
@@ -127,7 +127,7 @@ export function toRepoRelative(projectDir, absFile) {
  * Locate an ESLint entry script. The PROJECT's own install is tried first —
  * in an npm-installed consumer repo the plugin root has no devDependencies at
  * all, so a plugin-root-only lookup makes the primary check a silent no-op
- * there. Both the `.bin` shim and the package's own entry script are probed at
+ * there. The package's own entry script and the `.bin` shim are probed at
  * each root (a pnpm/npm layout may publish either).
  *
  * `SO_IMPORT_PROBE_ESLINT` overrides the search: an explicit path is used as
@@ -148,8 +148,11 @@ export function resolveEslintBin(projectDir) {
   }
   const candidates = [];
   for (const root of [projectDir, PLUGIN_ROOT]) {
-    candidates.push(path.join(root, 'node_modules', '.bin', 'eslint'));
+    // The package's own entry script first: it is run via `process.execPath`,
+    // and on Windows `.bin/eslint` is a POSIX shell wrapper that node cannot
+    // parse (no report, so the check went silent; GH#81, #1743).
     candidates.push(path.join(root, 'node_modules', 'eslint', 'bin', 'eslint.js'));
+    candidates.push(path.join(root, 'node_modules', '.bin', 'eslint'));
   }
   for (const c of candidates) {
     try { if (existsSync(c)) return c; } catch { /* unreadable → next candidate */ }

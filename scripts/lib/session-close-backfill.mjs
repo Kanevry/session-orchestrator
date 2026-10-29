@@ -542,7 +542,7 @@ function windowGapVerdict(gaps, records) {
  * measured 2026-10-02: 25 candidates over a synthetic 58 MB ledger of six
  * sources took 1.17-1.20 s, active reads included, at load average ~20; the
  * review measured +0.80-0.87 s for the scans alone at 60 MB and load ~7. That
- * does not fit the 5 s SessionStart hook unbounded, so a caller may pass
+ * does not fit the 10 s SessionStart hook unbounded, so a caller may pass
  * `deadlineMs`: ONE epoch-ms deadline shared by every candidate of a run. A
  * scan the deadline skipped or cut returns `historyUnread: true` instead of a
  * partial answer, and the caller defers the candidate — never the active-file

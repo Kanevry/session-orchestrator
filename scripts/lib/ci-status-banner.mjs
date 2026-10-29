@@ -27,7 +27,6 @@
  * are named `gitlab`/`github` (#1039).
  */
 
-import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   resolveRepoSpec,
@@ -38,6 +37,7 @@ import {
   isQueryFailure,
   readConfiguredVcs,
 } from './vcs-repo-spec.mjs';
+import { execFile as _execFile } from './native-command.mjs';
 
 const execFileAsync = promisify(_execFile);
 

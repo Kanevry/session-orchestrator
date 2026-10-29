@@ -12,7 +12,6 @@
  * poetry.lock and Pipfile.lock are not read — revisit when a fleet repo
  * commits one of them.
  */
-import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -21,6 +20,7 @@ import { promisify } from 'node:util';
 import { parseAllDocuments } from 'yaml';
 
 import { gitEnv, isGitExecError, PATH_ABSENT } from './floating-tags.mjs';
+import { execFile } from '../native-command.mjs';
 
 const execFileAsync = promisify(execFile);
 

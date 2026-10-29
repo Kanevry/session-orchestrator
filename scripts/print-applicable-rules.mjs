@@ -97,7 +97,7 @@
 
 import { parseArgs } from 'node:util';
 import { readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 import { findProjectRoot } from './lib/common.mjs';
 import { deriveFenceToken } from './lib/reconcile/sanitize.mjs';
@@ -229,7 +229,9 @@ function neutraliseWrapperForgeries(text) {
  * @returns {string}
  */
 function safeSrc(absPath, root) {
-  return relative(root, absPath).replace(/[^A-Za-z0-9._/-]/g, '_');
+  // POSIX separators: on Windows `relative()` yields `\`, which the guard below
+  // would otherwise mangle into `_` (GH#81).
+  return relative(root, absPath).split(sep).join('/').replace(/[^A-Za-z0-9._/-]/g, '_');
 }
 
 /**

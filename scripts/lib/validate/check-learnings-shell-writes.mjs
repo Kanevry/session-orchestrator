@@ -143,7 +143,7 @@ export function scanLearningsShellWrites({ pluginRoot, dirs = SCAN_DIRS }) {
   let exempt = 0;
   for (const abs of files) {
     const lines = readFileSync(abs, 'utf8').split('\n');
-    const rel = path.relative(pluginRoot, abs);
+    const rel = path.relative(pluginRoot, abs).split(path.sep).join('/');
     let inFence = false;
     let prev = '';
     lines.forEach((text, i) => {

@@ -155,7 +155,7 @@ If `snaps.length >= 1` → present the following choice:
 Before asking, read what "Recover" would actually put back — the operator decides on that diff, not on the word:
 
 ```js
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '$PLUGIN_ROOT/scripts/lib/native-command.mjs';
 
 // Read-only: `git stash show` prints a diffstat and never touches the working tree.
 // Capped at 12 lines so the preview box stays shorter than the option list beside it.

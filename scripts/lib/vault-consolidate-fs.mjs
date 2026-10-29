@@ -19,7 +19,7 @@ import { promises as fs } from 'node:fs';
 import { isUtf8 } from 'node:buffer';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from './native-command.mjs';
 
 export const SCRIPT_NAME = 'vault-consolidate';
 export const BACKUP_PREFIX = '.vault-backup-';

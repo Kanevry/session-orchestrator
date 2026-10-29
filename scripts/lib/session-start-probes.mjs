@@ -3,12 +3,13 @@
  *
  * ## Why this module exists
  *
- * `skills/session-start/SKILL.md` § Phase 4 names 21 measurement probes, each
- * with a module path and an entry function (re-measured 2026-10-02 — see the
+ * `skills/session-start/SKILL.md` § Phase 4 names 22 measurement probes, each
+ * with a module path and an entry function (re-measured 2026-10-28 — see the
  * registry Census below; the family stood at 18 when this module was written
  * on 2026-08-23, at 19 on 2026-09-11, gained `events-retention` with
- * #1401 and `security-pulse` with #1769 stage 2 (2026-10-25) — update this
- * count with every registration).
+ * #1401, `security-pulse` with #1769 stage 2 (2026-10-25) and
+ * `runtime-readiness` with #1848 (2026-10-28) — update this count with every
+ * registration).
  * Measured 2026-08-23 at `4f6404e`, NONE of them had a mechanical caller:
  *
  * ```
@@ -45,7 +46,6 @@
  * @module scripts/lib/session-start-probes
  */
 
-import { execFile } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -53,6 +53,7 @@ import { promisify } from 'node:util';
 
 import { emitEvent, eventsFilePath } from './events.mjs';
 import { ARCHIVE_DIR_NAME, ARCHIVE_NAME_RE } from './events-schema.mjs';
+import { execFile } from './native-command.mjs';
 
 /**
  * Resolve a sibling module to an absolute `file:` URL.
@@ -478,7 +479,7 @@ function droppedFailedLine(r) {
  * Wall-clock ceiling for the ENTIRE probe run, in milliseconds.
  *
  * Derived from measurement, not aspiration:
- *   - `hooks/hooks.json` gives the whole SessionStart hook `timeout: 5` (5s).
+ *   - `hooks/hooks.json` gives the whole SessionStart hook `timeout: 10` (10s; was 5 until #1859).
  *     Everything below is carved out of that, not out of nothing.
  *   - The pre-existing work in the same hook already spends a measured ~845 ms
  *     median on `backfillOnSessionStart` alone, plus git, registry and the
@@ -489,7 +490,7 @@ function droppedFailedLine(r) {
  *     `project-hygiene` and `tests-src-ratio`, the two probes that shell out.
  *
  * 2000 ms is ~2x the measured median here and still leaves the hook well over
- * half its 5s envelope. Note the headroom is real but not generous, and this is
+ * half its 10s envelope. Note the headroom is real but not generous, and this is
  * the WORST repo in the fleet by design — see the revisit trigger below, which
  * this repo already sits just underneath rather than comfortably below.
  *
@@ -601,14 +602,15 @@ function startLoopBlockedMeter() {
  * `SKILL.md` itself, so the original 2026-08-23 citation of SKILL.md lines
  * 693-835 no longer resolves; re-run the census against the reference file):
  *   grep -oE "fn: 'check[A-Za-z]+'" scripts/lib/session-start-probes.mjs \
- *     | sed "s/fn: '//;s/'//" > fns.txt                                  # -> 21
+ *     | sed "s/fn: '//;s/'//" > fns.txt                                  # -> 22
  *   grep -oFf fns.txt \
  *     skills/session-start/references/phase-4-ssot-environment-check.md \
- *     | sort -u | wc -l                                                    # -> 21
+ *     | sort -u | wc -l                                                    # -> 22
  * i.e. every registered entry function is named in the reference file
- * (re-measured 2026-10-25 on the working tree over base `2afb2c60`: 21 + 21
- * after `security-pulse` / #1769 and its reference-file prose naming
- * `checkSecurityPulse`; 20 + 20 on 2026-10-02 after `events-retention` / #1401;
+ * (re-measured 2026-10-28 on the working tree over base `864de090`: 22 + 22
+ * after `runtime-readiness` / #1848 and its reference-file prose naming
+ * `checkRuntimeReadinessBanner`; 21 + 21 on 2026-10-25 after
+ * `security-pulse` / #1769; 20 + 20 on 2026-10-02 after `events-retention` / #1401;
  * 19 on 2026-09-11). The older
  * census `grep -oE 'via \`(await )?check[A-Za-z]+'` returned 0 at `86e636a9`
  * — the prose no longer says "via" — so it is retired, not re-counted.
@@ -864,6 +866,20 @@ export const PROBES = [
     network: false,
     // Host-wide `owner.yaml`, deliberately NOT repo-scoped — no repoRoot arg.
     args: () => ({}),
+  },
+  {
+    // #1848: do the runtime deps of the plugin install THIS code runs from
+    // resolve? Install-level, not repo-scoped — no repoRoot arg; the module
+    // defaults to its own plugin root. node:* only, no process, installs
+    // nothing. `null` means every dependency resolves (missing: 0); an
+    // unreadable package.json is `degraded`, persisted as missing: null —
+    // a check that could not run is not a zero (absent is not zero).
+    id: 'runtime-readiness',
+    spec: local('./runtime-readiness.mjs'),
+    fn: 'checkRuntimeReadinessBanner',
+    network: false,
+    args: () => ({}),
+    telemetry: (r) => ({ missing: r === null ? 0 : (r?.degraded ? null : (r?.missing?.length ?? null)) }),
   },
   {
     id: 'moc-staleness',
@@ -1220,7 +1236,7 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
   // Network probes: excluded by default, and the exclusion is RECORDED.
   //
   // `ci-status` and `mirror-issues` spawn `glab`/`gh` against a remote with an
-  // 8s CLI timeout of their own — a single one can exceed the hook's entire 5s
+  // 8s CLI timeout of their own — a single one can eat most of the hook's 10s (5s before #1859)
   // `hooks.json` budget. Measured warm here on 2026-08-23: 520 ms and 498 ms,
   // and that is the BEST case (warm CLI, live network, authenticated). Paying
   // that on every session start of every repo buys a signal the operator can

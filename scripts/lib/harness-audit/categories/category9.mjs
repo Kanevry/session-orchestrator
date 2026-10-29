@@ -32,11 +32,11 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 
 import { pass, fail } from './helpers.mjs';
 import { resolveEventsLedgerRoot } from '../../platform.mjs';
 import { resolveLedgerPath } from '../../ledger-path.mjs';
+import { spawnSync } from '../../native-command.mjs';
 
 const TELEMETRY_REL = '.orchestrator/metrics/skill-invocations.jsonl';
 const SESSIONS_REL = '.orchestrator/metrics/sessions.jsonl';

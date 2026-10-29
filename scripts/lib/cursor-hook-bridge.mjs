@@ -15,13 +15,13 @@
  *   sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event beforeShellExecution
  */
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { matcherMatches, readHookDecision } from './pi-hook-bridge.mjs';
 import { resolvePluginRoot } from './plugin-root.mjs';
 import { isMainModule } from './is-main-module.mjs';
+import { spawnSync } from './native-command.mjs';
 
 export const CURSOR_TO_CANONICAL_EVENT = Object.freeze({
   sessionStart: 'SessionStart',

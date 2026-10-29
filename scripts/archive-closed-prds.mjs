@@ -41,7 +41,6 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
 import { findProjectRoot, redactHomeDir, resolveInstructionFile, warn } from './lib/common.mjs';
@@ -53,6 +52,7 @@ import { readLock } from './lib/session-lock.mjs';
 import { resolveStateMdWriteTarget, warnForeignStateMd } from './lib/state-md/frontmatter-mutators.mjs';
 import { parseStateMd } from './lib/state-md/yaml-parser.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { spawnSync } from './lib/native-command.mjs';
 
 const DEFAULT_PRD_DIR = 'docs/prd';
 const DEFAULT_VAULT_SUBDIR = '01-projects/session-orchestrator/prd';

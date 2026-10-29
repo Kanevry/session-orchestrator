@@ -37,7 +37,6 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { spawnSync, spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -55,6 +54,7 @@ import { normalizeSession } from './lib/session-schema.mjs';
 import { isBackfillStub, readCanonicalSessions } from './lib/sessions-canonical.mjs';
 import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 import { resolveLedgerPath } from './lib/ledger-path.mjs';
+import { spawnSync, spawn } from './lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI-level flag extraction

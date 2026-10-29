@@ -11,7 +11,7 @@ Compute the v0 recommendation from in-memory session metrics and additively writ
 ```bash
 node --input-type=module -e "
 import {appendFileSync, mkdirSync} from 'node:fs';
-import {execSync} from 'node:child_process';
+import {execSync} from '${PLUGIN_ROOT}/scripts/lib/native-command.mjs';
 import {updateFrontmatterFieldsOnDisk} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 import {computeV0Recommendation} from '${PLUGIN_ROOT}/scripts/lib/recommendations-v0.mjs';
 

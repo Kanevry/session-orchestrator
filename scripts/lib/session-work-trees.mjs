@@ -22,12 +22,12 @@
  * zaehlen); an unusable tree is reported `skipped` with a reason.
  */
 
-import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { readEventsWithRotations } from './events.mjs';
 import { SESSION_WORK_TREE_EVENT } from './events-schema.mjs';
+import { execFileSync } from './native-command.mjs';
 
 /**
  * Events-ledger window for the #1401 census (`events-retention-banner.mjs`):

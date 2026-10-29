@@ -27,10 +27,11 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { isLockShape } from '../session-lock-shape.mjs';
+import { creationMs, readWindowsProcessTable } from '../win-process-tree.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 /**
  * Read the two session ids out of `<repoRoot>/.orchestrator/session.lock`.
@@ -245,20 +246,48 @@ function readProcessParent(pid) {
 }
 
 /**
+ * win32 has no `ps` (#1743): read parent pid + image name from ONE CIM
+ * process-table snapshot per ancestry walk (a PowerShell spawn costs 1–5 s,
+ * so never one per hop). Only reached from the `/templates-ack` CLI path, not
+ * from a hook. Windows never rewrites ParentProcessId when a parent dies, so a
+ * "parent" born after its child is a reused PID — unmeasurable, never guessed.
+ * A failed snapshot throws into the caller's fail-closed catch.
+ * @param {() => Array<{ ProcessId: number, ParentProcessId: number, Name?: string, CreationDate?: string|null }>} readTable
+ * @returns {(pid: number) => { ppid: number, comm: string } | null}
+ */
+function createWindowsProcessReader(readTable) {
+  let rows;
+  return (pid) => {
+    rows ??= readTable();
+    const self = rows.find((row) => row.ProcessId === pid);
+    if (!self || typeof self.Name !== 'string') return null;
+    const parent = rows.find((row) => row.ProcessId === self.ParentProcessId);
+    if (parent) {
+      const parentBorn = creationMs(parent);
+      const selfBorn = creationMs(self);
+      if (parentBorn === null || selfBorn === null || parentBorn > selfBorn) return null;
+    }
+    return { ppid: self.ParentProcessId, comm: self.Name };
+  };
+}
+
+/**
  * Prove an acknowledgement's own invocation using the nearest Claude process.
  * Unlike the general identity union, inherited env and shared repo files are
  * never proof here. Stop at the nearest Claude even when its session is unreadable.
  * Missing, contradictory or unmeasurable evidence returns null; never throws.
  * Reader injection permits deterministic fixtures when native ps is unavailable.
  *
- * @param {{ env?: object, pid?: number, homeDir?: string,
+ * @param {{ env?: object, pid?: number, homeDir?: string, platform?: string,
+ *   readTable?: () => Array<object>,
  *   readProcess?: (pid: number) => { ppid: number, comm: string } | null,
  *   readSession?: (pid: number) => unknown }} [opts]
  * @returns {string|null}
  */
 export function readInvocationSessionId({
-  env = process.env, pid = process.pid, homeDir = homedir(),
-  readProcess = readProcessParent,
+  env = process.env, pid = process.pid, homeDir = homedir(), platform = process.platform,
+  readTable = () => readWindowsProcessTable({ env }),
+  readProcess = platform === 'win32' ? createWindowsProcessReader(readTable) : readProcessParent,
   readSession = (ancestorPid) => JSON.parse(readFileSync(
     path.join(homeDir, '.claude', 'sessions', `${ancestorPid}.json`), 'utf8',
   )),
@@ -272,7 +301,9 @@ export function readInvocationSessionId({
       if (!processInfo || !Number.isSafeInteger(processInfo.ppid) || processInfo.ppid < 0 ||
           seen.has(processInfo.ppid) || typeof processInfo.comm !== 'string' || !processInfo.comm.trim()) return null;
       // macOS reports comm as argv[0]; a Claude started by absolute path must still count.
-      if (path.basename(processInfo.comm) === 'claude') {
+      // Windows reports the image name, e.g. claude.exe.
+      const image = path.basename(processInfo.comm);
+      if (image === 'claude' || (platform === 'win32' && image.toLowerCase() === 'claude.exe')) {
         const session = readSession(pid);
         const sessionId = typeof session?.sessionId === 'string' ? session.sessionId.trim() : '';
         if (!sessionId) return null;

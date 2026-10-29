@@ -3,11 +3,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFile } from 'node:child_process';
 import { promisify, parseArgs } from 'node:util';
 import { measure } from './lib/so-hud/runtime.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { parseSessionId } from './lib/session-id.mjs';
+import { execFile } from './lib/native-command.mjs';
 const exec = promisify(execFile);
 const SO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 

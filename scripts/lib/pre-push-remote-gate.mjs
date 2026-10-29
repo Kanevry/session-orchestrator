@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Optional pre-push router: 0 verified, 1 blocked, 2 SO_GATE_HOSTS invalid or none of its
 // hosts could run the gate (blocked, no local fallback), 10 transport/readiness fallback.
-import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -11,6 +10,7 @@ import { _parseRemoteHosts } from './config/remote-hosts.mjs';
 import { isMainModule } from './is-main-module.mjs';
 import { admitSuiteCounts, joinGateKillFields } from './gates/gate-helpers.mjs';
 import { resolveWaveNumber } from './quality-gate-wave.mjs';
+import { spawnSync } from './native-command.mjs';
 
 const log = (message) => process.stderr.write(`pre-push: ${message}\n`);
 

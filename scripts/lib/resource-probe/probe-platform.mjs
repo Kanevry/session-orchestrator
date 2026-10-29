@@ -10,7 +10,6 @@
  */
 
 import os from 'node:os';
-import { spawn } from 'node:child_process';
 import { SO_IS_WINDOWS } from '../platform.mjs';
 import {
   countProcessMatches,
@@ -19,6 +18,7 @@ import {
   parseMemoryPressureOutput,
   parseVmStatAvailableGb,
 } from './parsers.mjs';
+import { spawn } from '../native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // RAM / CPU primitives (synchronous, via Node os module)

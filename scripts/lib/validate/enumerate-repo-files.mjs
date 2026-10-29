@@ -114,11 +114,11 @@
  * @module scripts/lib/validate/enumerate-repo-files
  */
 
-import { execFileSync } from 'node:child_process';
 import { statSync } from 'node:fs';
 import path from 'node:path';
 
 import { EXCLUDED_DIRS, isGitToplevel, listOnDiskFiles } from './repo-files.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 /**
  * Environment handed to `git`. An allowlist rather than `process.env`: an

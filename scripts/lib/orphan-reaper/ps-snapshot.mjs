@@ -3,9 +3,9 @@
  * measures the process table, and how it reads what it measured.
  */
 
-import { spawn } from 'node:child_process';
 
 import { parseEtimeToSeconds } from '../resource-probe/parsers.mjs';
+import { spawn } from '../native-command.mjs';
 
 /**
  * The binding `ps` invocation (Discovery d-2, 2026-09-21, Darwin 25.6.0).

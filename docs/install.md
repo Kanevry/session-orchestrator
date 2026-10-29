@@ -35,15 +35,28 @@ PowerShell 5.1, Git for Windows 2.55 and Claude Code 2.1.296:
 - Quality gates captured UTF-8 output and correct exit codes, reported a missing
   command as `fail`, and ended the process tree on timeout with `taskkill /T /F`.
   Survivor reporting uses measured PIDs, or `null` when measurement is unavailable.
-  Windows PowerShell 5.1 suffices; PowerShell 7 is not required.
-  <!-- sources: scripts/ci/windows-smoke.mjs:53-89; scripts/lib/process-group.mjs:1010-1040 -->
+  The process table is read with PowerShell 7 when it is installed
+  (`%ProgramFiles%\PowerShell\7\pwsh.exe`), otherwise with Windows PowerShell
+  5.1, which sufficed on the measurement machine. On one external Windows 11 host
+  5.1 crashed or timed out; survivors are then reported as not measurable
+  (`null`), never as zero (#1859).
+  <!-- sources: scripts/ci/windows-smoke.mjs:53-89; scripts/lib/process-group.mjs:1010-1040; scripts/lib/win-process-tree.mjs -->
 - Plugin validation passed 239 checks with 0 failures; the native
-  `scripts/ci/windows-smoke.mjs` probes passed 49/49 on the measurement machine.
+  `scripts/ci/windows-smoke.mjs` probes passed 49/49 on the measurement machine;
+  an external host reported 45 to 48 of 49 on 5.13.0, caused by the process-table
+  query (#1859).
   <!-- sources: scripts/validate-plugin.mjs:1-37; scripts/ci/windows-smoke.mjs:18-25 -->
+
+The SessionStart hook timeout is 10 s (it was 5 s; #1859). Configured gate
+commands (`test-command`, `typecheck-command`, `lint-command`) run through
+`cmd.exe` on Windows, so POSIX forms such as `VAR=1 cmd` or `2>/dev/null` fail
+(closed). Write gate commands that work in `cmd.exe`, for example a
+`package.json` script (GH#80 point 3).
+<!-- sources: hooks/hooks.json; scripts/lib/process-group.mjs:1042-1044; scripts/lib/gates/gate-helpers.mjs:446 -->
 
 The contributor test suite does not pass on Windows yet: 19,651 passed and 881
 failed natively (2026-10-14), almost all of them POSIX assumptions inside the
-tests (`sh`, `/` separators, symlinks); tracked in #1613. The full suite runs on
+tests (`sh`, `/` separators, symlinks); tracked in #1613. The 18 test files named in GH#81 now pass natively (#1860). The full suite runs on
 GitLab only: the GitHub mirror carries no `tests/` directory. GitHub Actions runs
 the product checks above in the informational `test-windows-smoke` job
 (`windows-latest`, non-blocking for now): `npm run test:mirror`, then
@@ -152,16 +165,27 @@ interactive sessions are unaffected.
 ### Claude Code: check the Node dependencies
 
 Current Claude Code installs the plugin's Node dependencies itself during
-`/plugin install`. Measured 2026-10-26 on macOS (Apple M4) with Claude Code
-2.1.310 in an empty profile (`CLAUDE_CONFIG_DIR` pointed at a new directory),
-against the slim snapshot the GitHub mirror publishes for plugin 5.13.0:
-`claude plugin marketplace add` and `claude plugin install
-session-orchestrator@kanevry` both exited 0, the install path held all 11
-runtime packages in `node_modules/` and no `tests/`, `.env*` or `CLAUDE.md`,
-and the SessionStart hook ran from it with exit 0. A session with model calls
-was not run there: the empty profile has no login (`Not logged in`). Older
-Claude Code versions did not install the dependencies, so check once. First
-locate the installed plugin:
+`/plugin install`. Measured 2026-10-28 on macOS (Apple M4, Node 24.22.1) with
+Claude Code 2.1.312 in an empty profile, against the slim snapshot the GitHub
+mirror publishes for plugin 5.14.0: `claude plugin marketplace add
+Kanevry/session-orchestrator` and `claude plugin install
+session-orchestrator@kanevry` both exited 0, and 11 of 11 runtime packages
+resolved from the install path. `/session-orchestrator:bootstrap --fast
+--no-interview` wrote `.orchestrator/bootstrap.lock` and the `## Session
+Config` block (149-223 s across five runs). `/session-orchestrator:session
+feature ...` ended at a plan offering `/go` with no project file changed, after
+the session asked one or two questions that the run answered with "1". The
+questions were the scope of the change, a CI setup choice, or, in one run, the
+Dispatcher Autonomy choice of session-start Phase 1.1. The model route was an
+Anthropic-compatible endpoint (model `gpt-6-sol`). Without
+`SO_TELEMETRY_DISABLED=1` the first session stopped at the one-time telemetry
+consent question instead, because the hook asks it in headless `claude -p` runs
+too (tracked in #1872). In 2 of 5 runs the plugin's SEC-008 detector reported
+that a command the model chose had printed the session's own
+`CLAUDE_CODE_MESSAGING_TOKEN`. That token belonged to the throwaway session and
+ended with it; the cause is tracked in #1873, and those two runs are not
+counted as clean. Older Claude Code versions did not install the dependencies,
+so check once. First locate the installed plugin:
 
 ```bash
 claude plugin list --json
@@ -179,6 +203,62 @@ If it ran `npm install`, restart Claude Code. If the entry is missing or
 disabled, resolve it through `/plugin` first. Use the path reported for that
 entry; another cached version or a nested dependency is not the installed
 plugin.
+
+From the release after 5.14.0 on, the plugin ships `scripts/runtime-readiness.mjs`
+(#1848), which does the same check without guessing. It reads one install:
+declared runtime dependencies (Node's `node_modules` lookup), two import probes
+in a fresh child process, and the owner-config source. Exit 0 means ready, 3 not
+ready, 1 usage or target error, 2 system error (also when the import probe
+itself crashed while every dependency is present). It installs nothing unless
+you pass `--repair`, which runs `npm ci` (or `npm install` without a lockfile)
+with `--ignore-scripts`, and with `--omit=dev` only for a plugin install: in a
+git checkout it keeps the dev dependencies, so vitest and eslint survive.
+`--codex` and `--claude` pick the enabled install and stop when there is more
+than one:
+
+```bash
+node <installPath>/scripts/runtime-readiness.mjs [--root <dir> | --codex | --claude] [--repair] [--json]
+```
+
+Session start also runs a `runtime-readiness` banner probe (22 probes now). It
+warns at every start when the install the harness loaded lacks runtime
+dependencies, so a new version cache is re-checked automatically. It installs
+nothing.
+
+### Re-running the install smoke (maintainers)
+
+`scripts/install-smoke.mjs` (#1764) repeats the measurement above from an empty
+throwaway profile. Rerun it after each release:
+
+```bash
+node scripts/install-smoke.mjs --harness <claude|codex|codex-clone> --model <id> [--repair] [--json] [--out <file>]
+```
+
+Credentials come only from `SMOKE_ANTHROPIC_BASE_URL` / `SMOKE_ANTHROPIC_API_KEY`
+(Claude Code) or `SMOKE_OPENAI_BASE_URL` / `SMOKE_OPENAI_API_KEY` (Codex), and
+the endpoint must be Anthropic- or OpenAI-compatible. The smoke installs from
+the GitHub mirror, runs the readiness check, `/bootstrap --fast
+--no-interview`, and one feature session. It answers a session's questions with
+"1" (up to 3), but not after the plugin's SEC-008 detector reported a secret in
+a command output. It sets `SO_TELEMETRY_DISABLED=1` in the profile. It passes
+only when the session ends at a plan offering `/go`, has changed no project file
+(committed or not) since bootstrap, and shows a successful tool call that opened
+the session skill. A `secret-hygiene` step fails the run when the detector fired.
+A model that writes the requested file without planning fails the smoke; that is
+recorded as model behaviour (see [Codex setup](codex-setup.md)). A readiness
+step that finds missing dependencies stays failed even after `--repair` fixed
+them: the documented install path alone was not runnable, and the `repair`
+step records separately that the repair works.
+
+**The smoke is not a sandbox.** The profile, caches and temp files live in a
+throwaway directory, but the model steps run with
+`--dangerously-skip-permissions` (Claude Code) or
+`--dangerously-bypass-approvals-and-sandbox` (Codex) as your OS user. A tool
+call can read or change any file you can reach by absolute path. Whoever
+answers the model calls and the plugin source you install therefore act with
+your rights. Run it only against an endpoint and a source you trust, or as a
+separate OS user or in a VM. The model key is kept out of every tool call's
+environment, but a deliberate read of the key file is not prevented.
 
 Setup guides: [Codex](codex-setup.md) · [Cursor IDE](cursor-setup.md) ·
 [Pi](pi-setup.md). Per-IDE notes on which instruction file each harness reads:
@@ -221,7 +301,9 @@ Claude Code 2.1.287 the harness refuses to install dependencies for a package
 whose `package.json` sets `overrides` — releases up to and including 5.4.0 do —
 and reports it only as `noteDetails: [{"type": "dependencies-refused"}]` in that
 JSON (measured 2026-10-02). Later releases dropped the `overrides` block. If
-`node_modules/` is missing, run `npm ci --omit=dev` in that directory.
+`node_modules/` is missing, run `npm ci --omit=dev` in that directory (older
+versions), or `node <installPath>/scripts/runtime-readiness.mjs --repair` once
+your installed version ships it.
 
 **From a clone, one command does all of it:** `npm run update:local`
 (`scripts/self-update.mjs`) fast-forwards the clone, packs it with `npm pack`

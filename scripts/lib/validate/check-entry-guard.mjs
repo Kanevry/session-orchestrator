@@ -71,12 +71,12 @@
  * arrival for work nobody intends to do.
  */
 
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { isMainModule } from '../is-main-module.mjs';
 import { maskSource } from '../js-mask.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 /**
  * Files whose `process.argv[1]` comparison the oracle flags but which are NOT

@@ -29,7 +29,6 @@
 
 import path from 'node:path';
 import { existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { spawnInGroup } from '../scripts/lib/process-group.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -44,6 +43,7 @@ import {
   readProcessLocalSessionIds,
 } from '../scripts/lib/session-identity/own-session.mjs';
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
+import { spawnSync } from '../scripts/lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Internal helpers

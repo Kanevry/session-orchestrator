@@ -29,7 +29,6 @@
  *   findingsFromErrors, journeyFindings, collect
  */
 
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -58,6 +57,7 @@ import {
   screenshotsDir,
 } from './paths.mjs';
 import { appendRunRecord } from './run-record.mjs';
+import { execFile } from '../native-command.mjs';
 
 /** Binary driven by this module. Resolved via PATH — the global install is `/opt/homebrew/bin/agent-browser`. */
 const AGENT_BROWSER = 'agent-browser';

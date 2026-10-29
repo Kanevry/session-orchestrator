@@ -28,8 +28,8 @@
  * before applying any autonomous config repair.
  */
 
-import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { spawnSync } from '../native-command.mjs';
 
 /**
  * @typedef {object} SubCheckResult

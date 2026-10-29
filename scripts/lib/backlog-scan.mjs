@@ -22,7 +22,6 @@
  *    `origin` lookup with a `url.includes('github.com')` test.
  */
 
-import { spawnSync } from 'node:child_process';
 
 import { warn } from './common.mjs';
 import { normalizeLabel } from './label-scope.mjs';
@@ -33,6 +32,7 @@ import {
   redactUrlCredentials,
   resolveRepoSpec,
 } from './vcs-repo-spec.mjs';
+import { spawnSync } from './native-command.mjs';
 
 export const STALE_THRESHOLD_DAYS = 30;
 

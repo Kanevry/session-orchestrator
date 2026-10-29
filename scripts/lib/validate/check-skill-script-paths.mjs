@@ -108,12 +108,12 @@
  * @module scripts/lib/validate/check-skill-script-paths
  */
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { enumerateRepoFiles } from './enumerate-repo-files.mjs';
 import { forEachLine } from './markdown-fences.mjs';
 import { isMainModule } from '../is-main-module.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 /**
  * Documentation roots whose prose is treated as a claim about the repo.
@@ -499,7 +499,7 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
   }
 
   for (const absolute of files) {
-    const relative = path.relative(pluginRoot, absolute);
+    const relative = path.relative(pluginRoot, absolute).split(path.sep).join('/');
     /** @type {string} */
     let body;
     try {

@@ -46,7 +46,6 @@
  * `hookTampering` — a `true` there invalidates the run regardless of `ok`.
  */
 
-import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -61,6 +60,7 @@ import {
   isSafeRunId,
   runChild,
 } from './dispatch-common.mjs';
+import { execFileSync, spawn as nodeSpawn } from '../native-command.mjs';
 
 /**
  * argv prefix for every foreign dispatch, ahead of `--model`/`--output-format`.

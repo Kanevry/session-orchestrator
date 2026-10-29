@@ -6,7 +6,6 @@
  * Part of v3.2 shell-helper port migration (issue #218 / #317).
  */
 
-import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 import {
@@ -15,6 +14,7 @@ import {
   spawnInGroup,
 } from '../process-group.mjs';
 import { detectStubCommand } from './echo-stub-detect.mjs';
+import { execSync } from '../native-command.mjs';
 
 const RUN_CHECK_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 

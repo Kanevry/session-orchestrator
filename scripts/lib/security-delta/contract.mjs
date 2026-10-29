@@ -22,7 +22,14 @@
  */
 
 /** Check ids, in the order the runner reports them. */
-export const CHECK_IDS = Object.freeze(['lockfile', 'runtime-floor', 'floating-tag', 'gitleaks', 'age-gate']);
+export const CHECK_IDS = Object.freeze([
+  'lockfile',
+  'runtime-floor',
+  'floating-tag',
+  'gitleaks',
+  'age-gate',
+  'package-floor',
+]);
 
 /**
  * Per-check measurement status.
@@ -37,7 +44,10 @@ export const CHECK_STATUS = Object.freeze(['ok', 'degraded', 'skipped', 'not-mea
 /** Severity, most severe first. OSV `MODERATE` maps to `medium`. */
 export const SEVERITY = Object.freeze(['critical', 'high', 'medium', 'low', 'unknown']);
 
-/** Finding classes. `malicious` = OSV `MAL-*` record. */
+/**
+ * Finding classes. `malicious` = OSV `MAL-*` record; `package-floor` = a package
+ * below its security-floor register floor, or on a bad line (#1769 stage 3).
+ */
 export const FINDING_CLASS = Object.freeze([
   'vuln',
   'malicious',
@@ -45,6 +55,7 @@ export const FINDING_CLASS = Object.freeze([
   'floating-tag',
   'secret',
   'age-gate-missing',
+  'package-floor',
 ]);
 
 /** Session Config `security-delta.mode` values. */
@@ -212,9 +223,11 @@ export function makeCheckResult(r) {
 
 /**
  * Whether a finding may block the close under mode `strict`: an INTRODUCED
- * malicious package, or an INTRODUCED critical vulnerability with a known fix.
- * Pre-existing findings and secrets never block (stage 1; gitleaks already
- * blocks at pre-commit).
+ * malicious package, an INTRODUCED critical vulnerability with a known fix, or
+ * an INTRODUCED critical package-floor miss with a known floor (`fixedIn`).
+ * A bad-line package-floor finding (`fixedIn: null`) never blocks: there is no
+ * same-line version to move to. Pre-existing findings and secrets never block
+ * (stage 1; gitleaks already blocks at pre-commit).
  *
  * @param {ReturnType<typeof makeFinding>} finding
  * @returns {boolean}
@@ -222,7 +235,11 @@ export function makeCheckResult(r) {
 export function isBlockingFinding(finding) {
   if (!finding || finding.introduced !== true) return false;
   if (finding.class === 'malicious') return true;
-  return finding.class === 'vuln' && finding.severity === 'critical' && typeof finding.fixedIn === 'string';
+  return (
+    (finding.class === 'vuln' || finding.class === 'package-floor') &&
+    finding.severity === 'critical' &&
+    typeof finding.fixedIn === 'string'
+  );
 }
 
 /**

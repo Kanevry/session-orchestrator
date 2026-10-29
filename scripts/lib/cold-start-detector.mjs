@@ -21,7 +21,7 @@
  *
  * Hard contract:
  *   - Never throws. Any error → return {shouldEmit: false, reason: '...'}.
- *   - Pure async fs.promises — must not block the SessionStart hook's 5s
+ *   - Pure async fs.promises — must not block the SessionStart hook's 10s
  *     budget. Internally uses stat + readFile only on small files.
  *   - No external deps. ESM only. Node 20+ `node:fs/promises`.
  *
@@ -94,7 +94,7 @@ function buildBannerLines({ bootstrappedAt = null } = {}) {
  *
  * Reads the full file because sessions.jsonl is small (1 line/session, ~2 KB
  * each — even 100 sessions = ~200 KB). The async `readFile` is kept (the
- * SessionStart hook's 5s budget must not block); only the collapse rules come
+ * SessionStart hook's 10s budget must not block); only the collapse rules come
  * from the shared canonical module.
  *
  * @param {string} filePath

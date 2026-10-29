@@ -32,7 +32,6 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { join, dirname, resolve, parse as parsePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSessionConfig } from './lib/config.mjs';
@@ -40,6 +39,7 @@ import { collectUnparsableLines, collectTopLevelKeyLines } from './lib/config/se
 import { knownTemplateKeys } from './lib/config/template-keys.mjs';
 import { findUnterminatedComment } from './lib/config/block-preprocess.mjs';
 import { ENFORCEMENT_VALUES } from './lib/config-schema.mjs';
+import { spawnSync } from './lib/native-command.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 

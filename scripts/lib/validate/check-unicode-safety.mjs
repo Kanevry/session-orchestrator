@@ -34,8 +34,8 @@
 
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { join, extname, relative, sep } from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { isMainModule } from '../is-main-module.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // File enumeration — git ls-files primary, recursive fs walk fallback.

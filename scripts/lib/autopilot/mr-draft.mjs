@@ -10,10 +10,10 @@
 //   - "Autopilot Phase D — Per-Story Worktree Pipelines" (#341; archived in the private Meta-Vault) (OPEN-6 [DECIDED])
 //   - docs/adr/2026-05-10-364-remote-agent-substrate.md (C5 security finding)
 
-import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { resolveRepoSpec } from '../vcs-repo-spec.mjs';
+import { execFile as execFileCb } from '../native-command.mjs';
 
 const realExecFile = promisify(execFileCb);
 

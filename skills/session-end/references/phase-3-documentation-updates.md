@@ -73,7 +73,7 @@ Review `<state-dir>/rules/` files that are relevant to this session's work:
 1. Finalize the frontmatter in ONE lock-guarded write, into the SAME file Phase 3.7a wrote (#1640 — identical `statePath`, passed explicitly): `status: completed`, `updated: <ISO 8601 UTC>` (#184), the final wave count as `current-wave`, and `session-id` re-stamped to this process's own raw id when one is measurable (after a mid-session `/clear` the record still names the pre-`/clear` id; the re-stamp keeps it this session's). Do not hand-edit any of these fields:
    ```bash
    node --input-type=module -e "
-   import {execSync} from 'node:child_process';
+   import {execSync} from '${PLUGIN_ROOT}/scripts/lib/native-command.mjs';
    import {markStateMdCompletedOnDisk} from '${PLUGIN_ROOT}/scripts/lib/state-md/frontmatter-mutators.mjs';
    const repoRoot = execSync('git rev-parse --show-toplevel', {encoding: 'utf8'}).trim();
    const statePath = '<state-dir>/STATE.md'; // same value as Phase 3.7a

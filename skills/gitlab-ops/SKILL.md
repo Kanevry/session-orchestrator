@@ -130,6 +130,8 @@ done
 - `status:review` — MR/PR created, awaiting review
 - `status:blocked` — waiting on external dependency
 
+**A closed issue carries no `status:*` label.** Closing via `node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --close` strips them, but an issue closed by `Closes #N` on an MR or train merge bypasses that path and keeps its label (309 closed issues still carried one on 2026-10-28, #1876). So the post-merge check of every merge that closes issues runs `node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --strip-closed --apply`. Without `--apply` it is a dry run that lists the closed issues per `status:*` label. With `--apply` it removes only `status:*` labels, then re-reads the listing and exits 1 unless every label count is 0. Count by status only with a state filter (`--opened`), never across all states.
+
 ### Area Labels
 - `area:frontend` | `area:backend` | `area:database`
 - `area:ai` | `area:security` | `area:testing`

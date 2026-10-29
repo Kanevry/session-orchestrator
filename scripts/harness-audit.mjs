@@ -16,7 +16,6 @@
 
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { execFileSync } from 'node:child_process';
 
 import {
   runCategory1,
@@ -30,6 +29,7 @@ import {
   runCategory9,
 } from './lib/harness-audit/categories.mjs';
 import { resolveLedgerPath } from './lib/ledger-path.mjs';
+import { execFileSync } from './lib/native-command.mjs';
 
 const RUBRIC_VERSION = '2026-06';
 

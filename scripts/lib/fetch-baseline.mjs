@@ -28,9 +28,9 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
 
 import { isMainModule } from './is-main-module.mjs';
+import { execSync } from './native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Configuration defaults (mirrors the .sh defaults)

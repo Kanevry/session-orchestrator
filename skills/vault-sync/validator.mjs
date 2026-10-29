@@ -57,7 +57,7 @@
  */
 
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
-import { join, relative, resolve, dirname, basename } from 'node:path';
+import { join, relative, resolve, dirname, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import YAML from 'yaml';
@@ -621,7 +621,9 @@ function extractWikiLinks(content) {
 // the record and surfaced later by the validation loop.
 const records = [];
 for (const file of mdFiles) {
-  const rel = relative(vaultDir, file);
+  // Vault-relative paths are reported (errors[].file, skipped paths): POSIX `/`
+  // on every host (#1860); `file` stays native for filesystem access.
+  const rel = relative(vaultDir, file).split(sep).join('/');
   let raw;
   try {
     raw = readFileSync(file, 'utf8');

@@ -15,7 +15,6 @@
  *    (the default) pays for one config read and no throttle module at all.
  */
 
-import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -23,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import { _parseReaper } from '../config/reaper.mjs';
 import { getProjectDir } from '../platform.mjs';
+import { spawn } from '../native-command.mjs';
 
 /**
  * Filesystem path of the scan CLI, spawned as a PLAIN argv call.

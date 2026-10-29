@@ -30,7 +30,6 @@
  * All diagnostics → stderr. Structured actions → stdout (one JSON object per line).
  */
 
-import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { sep as pathSep } from 'node:path';
@@ -39,6 +38,7 @@ import { validatePathInsideProject } from './lib/path-utils.mjs';
 import { resolveRepoSpec, redactUrlCredentials } from './lib/vcs-repo-spec.mjs';
 import { expandTilde } from './lib/common.mjs';
 import { shellQuote } from './lib/sh-quote.mjs';
+import { spawnSync } from './lib/native-command.mjs';
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 

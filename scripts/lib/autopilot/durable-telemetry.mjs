@@ -9,9 +9,9 @@
  * commit path against real Routines fires before wiring it into production paths.
  */
 
-import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { execSync } from '../native-command.mjs';
 
 /** Branch names safe to interpolate into git commands (defense-in-depth; #483 W4-Q5-MED-1). */
 const SAFE_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;

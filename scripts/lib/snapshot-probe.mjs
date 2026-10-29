@@ -16,7 +16,6 @@
  * the policy yields a new tree and invalidates it.
  */
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,6 +25,7 @@ import { isPublicExportExcluded } from './validate/check-owner-leakage.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
 import { runRemoteGate } from './pre-push-remote-gate.mjs';
 import { registerExitCleanup, spawnInGroup } from './process-group.mjs';
+import { spawnSync } from './native-command.mjs';
 
 export const RECEIPT_SCHEMA = 1;
 export const RECEIPT_DIR_REL = '.orchestrator/tmp/snapshot-probe';

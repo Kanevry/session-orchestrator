@@ -103,7 +103,7 @@
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.15.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.16.0</span></span></a>
     <nav class="nav" aria-label="Main">
       <a href="/#how">How it works</a>
       <a href="/commands">Commands</a>
@@ -198,7 +198,7 @@
           <p>After <code>/close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
         </li>
       </ol>
-      <p class="run-record">Last documented install run: 2026-10-26, plugin 5.13.0, Claude Code 2.1.310 on macOS, from the curated GitHub snapshot in an empty profile. <code>marketplace add</code> and <code>install</code> exit 0, all runtime dependencies present, SessionStart hook exit 0. A session with model calls was not part of the run, because the empty profile had no login.</p> <!-- site-numbers:historical -->
+      <p class="run-record">Last documented install run: 2026-10-28, plugin 5.14.0, Claude Code 2.1.312 on macOS (Node 24.22.1), from the public GitHub mirror in an empty profile. <code>marketplace add</code> and <code>install</code> exit 0, 11 of 11 runtime dependencies resolve, and <code>bootstrap --fast --no-interview</code> wrote the Session Config block. A feature session (model <code>gpt-6-sol</code> on an Anthropic-compatible endpoint) ended at a plan offering <code>/go</code> after one or two answered questions (scope, CI), with no project file changed. In 2 of 5 runs a model-chosen command printed the session's own messaging token, which the plugin's secret detector flagged (#1873).</p> <!-- site-numbers:historical -->
     </div>
   </section>
 
@@ -233,7 +233,7 @@
           <p>After <code>$session-orchestrator:close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
         </li>
       </ol>
-      <p class="run-record">Last documented install run: 2026-10-26, plugin 5.13.0, Codex CLI 0.160.1 on macOS, from the curated GitHub snapshot in an empty profile. The short marketplace form and the clone installer above both exit 0, the plugin is installed and enabled. A session with model calls was not part of the run, because the empty profile had no login.</p> <!-- site-numbers:historical -->
+      <p class="run-record">Last documented install run: 2026-10-28, plugin 5.14.0, Codex CLI 0.160.1 on macOS (Node 24.22.1), from the public GitHub mirror in an empty profile. The clone installer exits 0 with 11 of 11 runtime dependencies; the short marketplace form exits 0 but its new cache had 0 of 11 (measured six times) until the repair step brought it to 11 of 11. With model <code>gpt-5.6-sol</code> 3 of 4 runs (both paths) ended a feature session at a plan after two or three answered questions, with no project file changed; in 2 of the 4 runs <code>bootstrap --fast --no-interview</code> asked for the tier and archetype instead of completing. With <code>gpt-6-sol</code> the session wrote the file without a plan (3 of 3 runs), a model behaviour.</p> <!-- site-numbers:historical -->
     </div>
   </section>
 
@@ -268,7 +268,7 @@
           <p>After <code>/close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
         </li>
       </ol>
-      <p class="run-record">Last documented install run: 2026-10-26, cursor-agent 2026.10.22 on macOS. The project install wrote the rules, commands, skills and hooks. A session was not part of the run, because the empty profile had no login.</p>
+      <p class="run-record">Last documented install run: 2026-10-26, cursor-agent 2026.10.22 on macOS. The project install wrote the rules, commands, skills and hooks. Not re-run on 2026-10-28: a model session needs a Cursor login, and the empty profile answers <code>status</code> with <code>Not logged in</code>.</p>
     </div>
   </section>
 
@@ -301,7 +301,7 @@
           <p>After <code>/close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
         </li>
       </ol>
-      <p class="run-record">No documented install run for this version yet: Pi was not installed on the test host (checked 2026-10-26).</p>
+      <p class="run-record">No documented install run for this version yet: Pi was not installed on the test host (checked 2026-10-28).</p>
     </div>
   </section>
 

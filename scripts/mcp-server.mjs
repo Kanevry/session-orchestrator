@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 /** Native, dependency-free MCP stdio transport. No shell, WSL, or jq required. */
-import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -8,6 +7,7 @@ import { isSessionConfigHeading } from './lib/config/section-extractor.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { canonicalizeSessions, isMeasuredSession } from './lib/sessions-canonical.mjs';
 import { resolveEventsLedgerRoot } from './lib/platform.mjs';
+import { execFileSync } from './lib/native-command.mjs';
 
 // The version is READ from package.json, never written here: a hand-kept
 // literal sat at "2.0.0" through v3, v4 and v5 (same fix in mcp-server.sh).

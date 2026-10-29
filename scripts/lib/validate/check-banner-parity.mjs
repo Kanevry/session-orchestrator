@@ -43,11 +43,11 @@
  * the CLI path is guarded at the bottom of the file.
  */
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { HISTORICAL_GUARD_BANNER } from '../historical-guard.mjs';
 import { isMainModule } from '../is-main-module.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 /** Directories whose markdown quotes the banner as coordinator-facing prose. */
 const SCAN_DIRS = Object.freeze(['skills', 'commands']);
@@ -290,7 +290,7 @@ export function inspectBannerParity(pluginRoot) {
   result.summary.filesScanned = markdownFiles.length;
 
   for (const filePath of markdownFiles) {
-    const relative = path.relative(pluginRoot, filePath);
+    const relative = path.relative(pluginRoot, filePath).split(path.sep).join('/');
     let body;
     try {
       body = readFileSync(filePath, 'utf8');

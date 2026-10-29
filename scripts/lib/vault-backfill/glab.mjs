@@ -5,10 +5,10 @@
  * Part of scripts/vault-backfill.mjs (Issue #241).
  */
 
-import { spawnSync } from 'node:child_process';
 
 import { redactUrlCredentials } from '../vcs-repo-spec.mjs';
 import { isValidRepoPath } from './manifest.mjs';
+import { spawnSync } from '../native-command.mjs';
 
 let _verbose = false;
 

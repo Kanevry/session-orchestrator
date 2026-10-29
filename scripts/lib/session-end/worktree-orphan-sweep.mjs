@@ -49,9 +49,9 @@
  */
 
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 
 import { isWorktreeClean } from './worktree-cleanup.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 /**
  * Strip a `<mainRepoName>-` prefix from a worktree directory basename to

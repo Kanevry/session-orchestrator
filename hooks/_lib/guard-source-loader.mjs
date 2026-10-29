@@ -112,7 +112,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '../../scripts/lib/native-command.mjs';
 
 /** TTL for the session-id-less marker fallback, mirroring `run-node.sh` (6h). */
 const BANNER_TTL_MS = 6 * 60 * 60 * 1000;

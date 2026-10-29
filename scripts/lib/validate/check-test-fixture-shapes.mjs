@@ -44,7 +44,7 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '../native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI: single positional arg required

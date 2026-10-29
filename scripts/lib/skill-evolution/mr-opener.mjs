@@ -35,7 +35,6 @@
  *     back to its own real-resolveRepoSpec default.
  */
 
-import { execFile as execFileCb, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,6 +47,7 @@ import {
 } from '../autopilot/mr-draft.mjs';
 import { detectVcsCommand } from '../tmux-layout/vcs-detector.mjs';
 import { classifyPackages } from '../slopcheck.mjs';
+import { execFile as execFileCb, spawnSync } from '../native-command.mjs';
 
 const realExecFile = promisify(execFileCb);
 

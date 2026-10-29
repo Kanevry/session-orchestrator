@@ -29,7 +29,6 @@
  * a path the export removed, so the curated tree cannot turn GitHub's validate-plugin red.
  */
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -42,6 +41,7 @@ import {
 } from './validate/check-owner-leakage.mjs';
 import { scanSkillScriptPaths } from './validate/check-skill-script-paths.mjs';
 import { checkSkillLinks } from './validate/check-skill-links.mjs';
+import { spawnSync } from './native-command.mjs';
 
 export const EXPORT_REF = 'refs/heads/github-export';
 export const MIRROR_REMOTE = 'github';

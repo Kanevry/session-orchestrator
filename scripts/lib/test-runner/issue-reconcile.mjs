@@ -42,10 +42,10 @@
  *     (same DI seam as mr-draft.mjs) — never via caller-supplied binary paths.
  */
 
-import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fingerprintFinding } from './fingerprint.mjs';
 import { resolveRepoSpec } from '../vcs-repo-spec.mjs';
+import { execFile as execFileCb } from '../native-command.mjs';
 
 const realExecFile = promisify(execFileCb);
 

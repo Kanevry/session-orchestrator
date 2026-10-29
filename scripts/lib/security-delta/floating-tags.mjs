@@ -7,12 +7,12 @@
  * `lts`, `lts-*` or `current`.
  */
 
-import { execFile } from 'node:child_process';
 import { basename } from 'node:path';
 import { promisify } from 'node:util';
 
 import { redactedEnv } from '../redacted-env.mjs';
 import { makeCheckResult, makeFinding } from './contract.mjs';
+import { execFile } from '../native-command.mjs';
 
 const execFileAsync = promisify(execFile);
 

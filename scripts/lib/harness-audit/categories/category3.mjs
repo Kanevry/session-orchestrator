@@ -9,9 +9,9 @@
 
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
 
 import { safeRead, safeJson, pass, fail } from './helpers.mjs';
+import { execFileSync } from '../../native-command.mjs';
 
 export function runCategory3(root) {
   const checks = [];

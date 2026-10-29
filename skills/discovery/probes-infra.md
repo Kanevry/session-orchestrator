@@ -136,3 +136,41 @@ Healthy: true | false
 **Default Severity:** High.
 
 ---
+
+### Probe: insecure-infra-defaults
+
+**Activation:** always attempted in the `infra` category; self-skips without the private baseline. Discovery-only — never run from session-end Phase 2.4.
+
+**Pattern SSOT:** `scripts/check-insecure-defaults.sh` in the private companion baseline. The baseline is resolved HOST-LOCALLY only — env `SO_BASELINE_PATH` > owner.yaml `paths.baseline-path`; the scanned repo's committed config (`plan-baseline-path`) is never consulted, so a foreign repo cannot choose the script. The probe only RUNS it (`bash <script> --json <repoRoot>`, `execFile`, no shell, cwd = baseline root, `PYTHONSAFEPATH=1` — the SSOT's `python3 -` would otherwise import modules from the scanned repo) and reads its JSON, relativizing each ROOT-joined `file` to the repo; it carries no copy of the patterns. Classes today: `compose-public-port`, `ssh-host-key-disabled`, `caddy-panel-public`. New classes arrive through the SSOT and are passed through unchanged — never add a pattern here.
+
+**Detection Method:**
+
+```bash
+# Step 1: Verify the probe exists; skip if missing
+# Probes live in the PLUGIN, not the project: ${PLUGIN_ROOT} is resolved per
+# skills/_shared/config-reading.md. The probe still scans process.cwd() (project root).
+test -f "${PLUGIN_ROOT}/skills/discovery/probes/insecure-infra-defaults.mjs" || { echo "SKIPPED: insecure-infra-defaults -- ${PLUGIN_ROOT}/skills/discovery/probes/insecure-infra-defaults.mjs not found (PLUGIN_ROOT='${PLUGIN_ROOT}'; empty = unresolved, see skills/_shared/config-reading.md)"; exit 0; }
+
+# Step 2: Run the probe. It resolves the baseline, runs the SSOT script with a
+# 20 s timeout and maps its exit code (0 clean, 1 findings, 2 skipped).
+node --input-type=module -e "
+import {runProbe} from '${PLUGIN_ROOT}/skills/discovery/probes/insecure-infra-defaults.mjs';
+const cfg = JSON.parse(process.env.SO_CONFIG || '{}');
+const r = await runProbe(process.cwd(), cfg);
+for (const f of r.findings) {
+  console.log('FINDING:', JSON.stringify(f));
+}
+console.log('METRICS:', JSON.stringify(r.metrics));
+if (r.skipped_reason) console.log('SKIPPED:', r.skipped_reason);
+"
+```
+
+**Output:** one `FINDING:` line per (class, file) — several lines of the same class in one file are grouped (`evidence.lines`, `evidence.count`), with a stable `fingerprint` per class + file. `METRICS.status` is `ok`, `findings`, `skipped` or `degraded`.
+
+**Skip / degrade reasons:** `no-baseline` (no host-local baseline path, or it does not exist — the normal public fallback), `baseline-unavailable` (resolver error, not a directory, or a symlink), `baseline-inside-repo` (baseline path equals or lies inside the scanned repo), `no-ssot-script`, `ssot-script-unsafe`, `ssot-exit-2` (usage/read error, zero checkable files, or `python3` missing), `ssot-exit-other`, `ssot-timeout`, `ssot-spawn-error`, `ssot-output-too-large`; `degraded` with `ssot-unparseable` / `ssot-no-valid-records` when exit 1 yields no usable record — never read as a clean run. The script's stderr is never surfaced.
+
+**Untrusted data:** `text` comes from the scanned repo and is stripped of control/ANSI/bidi characters, collapsed to one line and truncated to 200 chars (`evidence.sample`); records with an absolute path outside the repo root, a `..` path, control characters in `file`, or a non-positive `line` are dropped (`METRICS.dropped_records`).
+
+**Default Severity:** Medium.
+
+---

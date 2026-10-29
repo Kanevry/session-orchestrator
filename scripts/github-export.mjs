@@ -38,9 +38,9 @@
  * Exit 0 allowed.
  */
 
-import { spawnSync } from 'node:child_process';
 
 import { buildGithubExport, createGitRunner, plainPushGuard, verifyExportCommit } from './lib/github-export.mjs';
+import { spawnSync } from './lib/native-command.mjs';
 
 function usage(msg) {
   if (msg) console.error(`github-export: ${msg}`);

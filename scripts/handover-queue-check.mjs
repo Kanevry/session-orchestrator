@@ -38,11 +38,11 @@
  *         symlink, or older than --since (nothing filed or written).
  */
 
-import { spawnSync } from 'node:child_process';
 import { lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fleetIntegrationEnabled } from './lib/fleet-protocol.mjs';
 import { findOpenPoints, insertMarks, kindFor, refFor, unmarkedPoints } from './lib/handover-queue-marks.mjs';
+import { spawnSync } from './lib/native-command.mjs';
 
 const EXIT_OK = 0;
 const EXIT_USAGE = 2;

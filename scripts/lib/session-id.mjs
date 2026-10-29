@@ -66,6 +66,10 @@ import { parseStateMd } from './state-md/yaml-parser.mjs';
  * Note: the branch group is case-insensitive at the regex level, but
  * callers must normalise branches to the form they store in activeSessions.
  *
+ * The `/` in the branch group stays on purpose (#1863): IDs minted before the
+ * path-safe mapping carry the raw branch (`fix/x-2026-10-28-deep-1`) and must
+ * still parse as semantic. New IDs carry `-` instead (`fix-x-…`).
+ *
  * @type {RegExp}
  */
 export const SEMANTIC_ID_RE = /^([a-z0-9._/-]+)-(\d{4}-\d{2}-\d{2})-([a-z-]+)-(\d+)$/;
@@ -106,6 +110,34 @@ export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]
  */
 function isValidBranch(branch) {
   return typeof branch === 'string' && branch.length > 0 && /^[a-zA-Z0-9._/-]+$/.test(branch);
+}
+
+/**
+ * Longest branch part a semantic ID carries. With the fixed suffix
+ * `-YYYY-MM-DD-<mode>-<n>` (12 chars plus mode plus counter) this keeps the
+ * whole ID within the 128-char fleet limit (`isSafeSessionId`,
+ * `scripts/lib/fleet-protocol.mjs`) as long as mode plus counter digits stay
+ * at or below 35 chars. Ceiling: today's modes are at most 12 chars
+ * (`housekeeping`); revisit if a mode name ever approaches 30 chars.
+ */
+const SAFE_BRANCH_MAX = 80;
+
+/**
+ * Map a branch name to the path-safe form used inside a semantic session ID
+ * (#1863). Every character outside `[A-Za-z0-9._-]` (`/`, `+`, `@`, spaces,
+ * non-ASCII code points) becomes `-`, then the result is cut to
+ * {@link SAFE_BRANCH_MAX} chars. A branch made only of safe characters
+ * (e.g. `main`) passes through unchanged, so its IDs stay byte-identical.
+ *
+ * Not injective: `fix/a` and `fix-a` map to the same part. The counter in
+ * {@link resolveSemanticSessionId} keys on this mapped form, so both branches
+ * draw from one counter and never mint the same ID.
+ *
+ * @param {string} branch
+ * @returns {string}
+ */
+function safeBranchPart(branch) {
+  return branch.replace(/[^A-Za-z0-9._-]/gu, '-').slice(0, SAFE_BRANCH_MAX);
 }
 
 /**
@@ -391,6 +423,9 @@ export function parseSessionId(id) {
  *
  * The generated ID matches the regex:
  *   `^[a-z0-9._/-]+-\d{4}-\d{2}-\d{2}-[a-z-]+-\d+$`
+ * and is path-safe since #1863: the branch part is mapped by
+ * `safeBranchPart()` (`feature/foo` → `feature-foo`), so the ID never holds a
+ * path separator and passes the fleet's `[A-Za-z0-9._-]{1,128}` check.
  *
  * Counter semantics (PRD §3.A P2 Ubiquitous + #585 history-aware extension):
  *   n = max(existing n values for same branch+date+mode across FOUR sources) + 1
@@ -484,6 +519,8 @@ export async function resolveSemanticSessionId({
   const effectiveSources = Array.isArray(sources) ? sources : DEFAULT_SESSION_ID_SOURCES;
   const effectiveRoot = repoRoot ?? process.cwd();
 
+  const branchKey = safeBranchPart(branch);
+
   return withStateMdLock(repoRoot, async () => {
     // Derive the current UTC date as YYYY-MM-DD.
     const today = new Date().toISOString().slice(0, 10);
@@ -515,7 +552,12 @@ export async function resolveSemanticSessionId({
         (parsed) =>
           parsed !== null &&
           parsed.format === 'semantic' &&
-          parsed.branch === branch &&
+          // Compare the path-safe form on BOTH sides (#1863): an old-form id
+          // (`fix/a-…`, minted before the mapping) and a new-form id (`fix-a-…`)
+          // of the same branch share one counter, so the branch does not
+          // restart at 1. `fix/a` and `fix-a` map to the same key on purpose —
+          // they share one counter space, so their ids can never collide.
+          safeBranchPart(parsed.branch) === branchKey &&
           parsed.date === today &&
           parsed.mode === mode,
       )
@@ -534,12 +576,13 @@ export async function resolveSemanticSessionId({
  * Exposed for testing only — the leading underscore marks this as an internal
  * helper that production callers should NOT use directly.
  *
- * @param {string} branch - Git branch name.
+ * @param {string} branch - Git branch name; mapped to its path-safe form
+ *   (see `safeBranchPart`) before formatting.
  * @param {string} date - ISO date string (YYYY-MM-DD).
  * @param {string} mode - Session mode.
  * @param {number} n - Monotonic counter value.
  * @returns {string} The formatted session ID, e.g. "main-2026-05-27-deep-1".
  */
 export function _formatSemanticId(branch, date, mode, n) {
-  return `${branch}-${date}-${mode}-${n}`;
+  return `${safeBranchPart(branch)}-${date}-${mode}-${n}`;
 }

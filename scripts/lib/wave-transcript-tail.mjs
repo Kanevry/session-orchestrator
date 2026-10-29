@@ -54,7 +54,7 @@ import {
   readdirSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative, isAbsolute, sep } from 'node:path';
 
 import { emitEvent, eventsFilePath, sessionAttribution } from './events.mjs';
 import { tryAcquireFileLock, releaseFileLock } from './file-lock.mjs';
@@ -560,7 +560,8 @@ function relativizeFile(p, repoRoot) {
   if (typeof p !== 'string' || p.length === 0) return null;
   if (repoRoot && isAbsolute(p)) {
     const rel = relative(repoRoot, p);
-    return rel.startsWith('..') ? p : rel;
+    // Reported file is repo-relative POSIX on every platform (GH#81).
+    return rel.startsWith('..') ? p : rel.split(sep).join('/');
   }
   return p;
 }

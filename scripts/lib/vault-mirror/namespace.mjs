@@ -116,6 +116,9 @@ const SCP_LIKE_REMOTE_RE = /^[^@/\s]+@[^:/\s]+:(.+)$/;
 /** `scheme://[authority]/path` remote: https, ssh, git, file, … */
 const SCHEME_REMOTE_RE = /^([a-z][a-z0-9+.-]*):\/\/[^/]*\/(.+)$/i;
 
+/** Drive-letter (`C:\`, `C:/`) or UNC (`\\server`) filesystem path. */
+const WINDOWS_FS_PATH_RE = /^(?:[a-z]:[\\/]|\\\\)/i;
+
 /**
  * Split a remote's path portion into meaningful segments: drop a trailing
  * `.git` (with any trailing slashes), then discard empty and `.`/`..` segments.
@@ -125,12 +128,13 @@ const SCHEME_REMOTE_RE = /^([a-z][a-z0-9+.-]*):\/\/[^/]*\/(.+)$/i;
  * is routinely a bare dot (measured golden record, 2026-08-19).
  *
  * @param {string} path
+ * @param {string|RegExp} [separator] — `/` (default) or a both-separators regex
  * @returns {string[]}
  */
-function remotePathSegments(path) {
+function remotePathSegments(path, separator = '/') {
   return path
-    .replace(/\.git\/*$/i, '')
-    .split('/')
+    .replace(separator === '/' ? /\.git\/*$/i : /\.git[\\/]*$/i, '')
+    .split(separator)
     .map((segment) => segment.trim())
     .filter((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
@@ -167,7 +171,14 @@ function repoIdentifierFromRemoteUrl(url) {
       : segments[segments.length - 1];
   }
 
-  const segments = remotePathSegments(isFileUrl ? asUrl[2] : value);
+  // A filesystem remote may be a Windows path (`C:\…\repo`, `C:/…/repo`,
+  // `\\server\share\repo`, #1860): split it on BOTH separators so it yields
+  // the same repo name as its POSIX spelling. Only a drive/UNC-shaped value or a
+  // win32 host opts in — on POSIX `\` is a legal filename byte, so a plain
+  // POSIX path keeps its pre-#1860 `/`-only split byte-identically.
+  const fsPath = isFileUrl ? asUrl[2] : value;
+  const windowsShaped = process.platform === 'win32' || WINDOWS_FS_PATH_RE.test(fsPath);
+  const segments = remotePathSegments(fsPath, windowsShaped ? /[\\/]/ : '/');
   return segments.length === 0 ? '' : segments[segments.length - 1];
 }
 

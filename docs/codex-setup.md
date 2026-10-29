@@ -34,7 +34,10 @@ A marketplace on the working checkout copies all of it into the Codex plugin cac
 
 It operates only through public Codex plugin commands; hook trust remains untouched.
 
-**Verified 2026-10-26 (codex-cli 0.160.1, macOS on Apple M4, plugin 5.13.0).** Both paths were run against the slim snapshot the GitHub mirror publishes, each with an empty `HOME`, `CODEX_HOME` and `XDG_CACHE_HOME`. The clone path (`npm ci --ignore-scripts`, then `node scripts/codex-install.mjs --json`) exited 0 and reported `installed: true, enabled: true`, version `5.13.0+codex.20261020173803`. `codex plugin marketplace add <snapshot>` and `codex plugin add session-orchestrator@kanevry` also exited 0, and `codex plugin list --available --json --marketplace kanevry` showed the plugin installed and enabled. Not run: a Codex task with model calls, because the empty profile has no Codex login.
+**Verified 2026-10-28 (codex-cli 0.160.1, macOS on Apple M4, Node 24.22.1, plugin 5.14.0), including a model session.** Both paths were run from the public GitHub mirror with `scripts/install-smoke.mjs` (see [install.md](install.md#re-running-the-install-smoke-maintainers)), each in an empty profile, with an OpenAI-compatible endpoint as the model route. The passing runs used `--dangerously-bypass-hook-trust`, because a fresh `CODEX_HOME` holds no hook trust; the plugin's hooks ran as after a user trusts them.
+
+- **Clone path** (`--harness codex-clone`, model `gpt-5.6-sol`): `npm ci --ignore-scripts`, then `node scripts/codex-install.mjs --json` exited 0. 11 of 11 runtime dependencies resolved, because the clone path installs them. Bootstrap succeeded, and the feature session ended at a plan after two questions the run answered with "1" (a warning that the bootstrap run still looked like a live parallel session, then the scope of the change): pass.
+- **Short marketplace form** (`--harness codex`): `marketplace add ... --ref main` and `plugin add ... --json` exited 0, version `5.14.0+codex.20261026070538`. The new cache had 0 of 11 runtime dependencies (`runtime-readiness` exit 3), measured six times; `--repair` brought it to 11 of 11 in 1-3 s. The skill and script reads all came from that cache (105 path references, none from the marketplace clone). `bootstrap --fast --no-interview` completed in 4 of 6 runs; in the other 2 (both `gpt-5.6-sol`) it asked for the bootstrap tier and project archetype instead. With model `gpt-5.6-sol` the feature session ended at a plan offering `$session-orchestrator:go` in 2 of 3 runs, after two or three answered questions, and no project file changed; in the third, bootstrap finished only during the session and its scaffold files counted as changes. With model `gpt-6-sol` the session wrote the requested file directly, without a plan (3 of 3 runs; in the 2 runs that recorded tool calls it had read the skill first); this is model behaviour, recorded as such. The smoke is not a sandbox: see [install.md](install.md#re-running-the-install-smoke-maintainers) for the residual risk.
 
 ### Short-Form Marketplace Add (Verified 2026-09-04, codex-cli 0.144.4; dependencies measured 2026-10-21, codex-cli 0.160.1)
 
@@ -60,7 +63,12 @@ $ echo $?
 - `owner.yaml` loads `js-yaml` lazily: when the file exists, owner preferences fall back to defaults and the process prints `WARN owner-yaml: 'js-yaml' is not installed … Run 'npm install' in the plugin directory`.
 - Scripts that import a dependency at the top stop with `ERR_MODULE_NOT_FOUND` and no warning: the worktree helpers (`zx`), the learnings index (`zod`), the persona panel and the PRD archive (`js-yaml`), among others (18 files import `js-yaml` that way).
 
-To restore them, run `npm install --omit=dev --ignore-scripts` in the `installedPath` that `codex plugin add --json` prints, and again after every update, because each version gets a new cache directory. The clone path above avoids this.
+Re-measured 2026-10-28 on plugin 5.14.0: the new cache again had 0 of 11 runtime dependencies. Session start now reports the gap at every start (the `runtime-readiness` banner probe), so a new version cache is checked without you remembering to. To restore the dependencies, take the `installedPath` that `codex plugin add --json` prints and run:
+
+- From the release after 5.14.0 on: `node <installedPath>/scripts/runtime-readiness.mjs --repair`. It runs `npm ci --omit=dev --ignore-scripts` (or `npm install ...` without a lockfile) in that install and re-checks. Without `--repair` it installs nothing; `--codex` finds the enabled Codex install by itself. Exit 0 means ready, 3 not ready.
+- For 5.14.0 caches: `npm install --omit=dev --ignore-scripts` in the `installedPath`.
+
+Each version gets a new cache directory, so the check applies again after every update. The clone path above avoids this.
 
 **Historical note:** on codex-cli 0.141.0 (2026-08-28), the identical `plugin add` command failed against this same layout with `Error: plugin session-orchestrator was not found in marketplace kanevry`; upgrading to 0.144.4+ resolves it.
 

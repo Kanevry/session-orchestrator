@@ -64,10 +64,10 @@
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { listRepoFiles } from './repo-files.mjs';
 import { SHELL_LANGS, forEachLine } from './markdown-fences.mjs';
 import { isMainModule } from '../is-main-module.mjs';
+import { spawnSync } from '../native-command.mjs';
 
 /** Directories walked for documentation. Mirrors check-vcs-repo-flag.mjs. */
 const SCAN_DIRS = Object.freeze([

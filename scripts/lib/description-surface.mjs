@@ -57,7 +57,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { join, relative, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { isMainModule } from './is-main-module.mjs';
 
 /** Block-scalar indicator on the `description:` line: '>' (folded) or '|' (literal), optional chomping '+'/'-'. */
@@ -404,7 +404,7 @@ export function measureDescriptionSurface(opts = {}) {
     if (bySurfaceBytes[entry.surface] !== undefined) bySurfaceBytes[entry.surface] += correctBytes;
 
     perFile.push({
-      file: relative(repoRoot, entry.path),
+      file: relative(repoRoot, entry.path).split(sep).join('/'),
       surface: entry.surface,
       naiveChars,
       correctChars,

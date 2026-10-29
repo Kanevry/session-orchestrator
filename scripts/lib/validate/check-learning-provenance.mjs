@@ -137,7 +137,7 @@ import { isMainModule } from '../is-main-module.mjs';
 import { resolveLedgerPath } from '../ledger-path.mjs';
 
 /** Directory holding the rule corpus, relative to the plugin root. */
-const RULES_REL = path.join('.claude', 'rules');
+const RULES_REL = '.claude/rules';
 
 /** Live learnings store, relative to the plugin root. */
 const LIVE_STORE_REL = path.join('.orchestrator', 'metrics', 'learnings.jsonl');
@@ -192,7 +192,9 @@ const LEARNING_KEY_RE = /^[-*][ \t]+learning-key:[ \t]*(.+)$/m;
  */
 function displayPath(pluginRoot, absolutePath) {
   const rel = path.relative(pluginRoot, absolutePath);
-  return rel === '' || rel.startsWith('..') || path.isAbsolute(rel) ? absolutePath : rel;
+  return rel === '' || rel.startsWith('..') || path.isAbsolute(rel)
+    ? absolutePath
+    : rel.split(path.sep).join('/');
 }
 
 /**
@@ -332,7 +334,7 @@ export async function inspectLearningProvenance(pluginRoot, opts = {}) {
     } catch (error) {
       findings.push({
         kind: 'tool-error',
-        file: path.join(RULES_REL, name),
+        file: `${RULES_REL}/${name}`,
         learningId: null,
         learningKey: null,
         message: `cannot read rule file: ${error instanceof Error ? error.message : String(error)}`,
@@ -341,7 +343,7 @@ export async function inspectLearningProvenance(pluginRoot, opts = {}) {
     }
     const { id, key } = extractProvenance(body);
     if (id === null && key === null) continue;
-    pointers.push({ file: path.join(RULES_REL, name), id, key });
+    pointers.push({ file: `${RULES_REL}/${name}`, id, key });
   }
   result.summary.rulesWithProvenance = pointers.length;
 

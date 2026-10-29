@@ -17,11 +17,11 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { validateCodexPluginContract } from './lib/codex/plugin-contract.mjs';
 import { resolveStageDir, stagePackage } from './lib/plugin-package-stage.mjs';
+import { spawnSync } from './lib/native-command.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(__filename);

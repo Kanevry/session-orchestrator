@@ -13,12 +13,12 @@
  * for the side effect: an unwritable cache dir means the refresher could not
  * write its result either).
  */
-import { spawn } from 'node:child_process';
 import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ensurePrivateDir, stampMs } from './cache.mjs';
+import { spawn } from '../native-command.mjs';
 
 /** At most one refresher spawn per repo per 10 min. */
 export const SPAWN_THROTTLE_MS = 10 * 60 * 1000;

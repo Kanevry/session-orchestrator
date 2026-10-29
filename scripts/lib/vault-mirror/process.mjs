@@ -599,7 +599,9 @@ function toVaultRelative(path, vaultDir) {
   const root = resolve(vaultDir);
   if (path === root) return '';
   const prefix = root.endsWith(sep) ? root : root + sep;
-  return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+  // Vault-relative paths are OUTPUT (action lines, SKIP stderr): POSIX `/` on
+  // every host (#1860). A no-op on POSIX, where `sep` already is `/`.
+  return path.startsWith(prefix) ? path.slice(prefix.length).split(sep).join('/') : path;
 }
 
 /**

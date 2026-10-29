@@ -190,7 +190,7 @@ Dispatch probe agents IN PARALLEL using the Agent tool. Group by category (max `
 > **Cursor IDE:** No Agent() tool available. Run probes sequentially within the current session — one category at a time. Complete each category's analysis before moving to the next.
 
 - **Code probes agent**: Runs all activated code probes (hardcoded-values, orphaned-annotations, dead-code, ai-slop, type-safety-gaps, test-coverage-gaps, test-anti-patterns, security-basics)
-- **Infra probes agent**: Runs all activated infra probes
+- **Infra probes agent**: Runs all activated infra probes. Deterministic member: `skills/discovery/probes/insecure-infra-defaults.mjs` (invoked via `node` per `probes-infra.md`; runs the private baseline's pattern SSOT `scripts/check-insecure-defaults.sh` and returns `{findings, metrics, duration_ms}`; skips with `no-baseline` without it; discovery-only, never session-end Phase 2.4).
 - **UI probes agent**: Runs all activated UI probes
 - **Arch probes agent**: Runs all activated arch probes
 - **Session probes agent**: Runs all activated session probes

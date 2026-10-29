@@ -66,7 +66,6 @@
  * hooks.json wiring is managed separately (W3-C4 scope).
  */
 
-import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -83,6 +82,7 @@ import {
 } from '../scripts/lib/session-identity/own-session.mjs';
 import { atomicMutateJson } from './_lib/atomic-json.mjs';
 import { maybeTriggerOrphanScan } from '../scripts/lib/orphan-reaper/trigger.mjs';
+import { execFileSync } from '../scripts/lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -25,10 +25,20 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, sep } from 'node:path';
 import YAML from 'js-yaml';
 
 import { expandTilde } from './common.mjs';
+
+/**
+ * Repo-/vault-relative paths are OUTPUT (frontmatter `source`, manifest
+ * `source`/`target`): POSIX `/` on every host (#1860). A no-op on POSIX.
+ * @param {string} p
+ * @returns {string}
+ */
+function toPosixRel(p) {
+  return p.split(sep).join('/');
+}
 
 // ── Schema mirror (SSOT: skills/vault-sync/validator.mjs Z.104-134) ──────────
 export const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -269,7 +279,7 @@ export function buildArchiveFields({
     created,
     updated: dateStr,
     status,
-    source: repoRoot ? relative(repoRoot, sourcePath) : filename,
+    source: repoRoot ? toPosixRel(relative(repoRoot, sourcePath)) : filename,
     'source-repo': SOURCE_REPO,
   };
   if (finalTitle !== undefined && finalTitle !== null && String(finalTitle).length > 0) {
@@ -365,7 +375,7 @@ export function archiveFileToVault({
   if (!sourcePath) throw new Error('vault-archive: sourcePath is required');
 
   const filename = basename(sourcePath);
-  const targetRel = join(targetSubdir, filename);
+  const targetRel = posix.join(toPosixRel(targetSubdir), filename);
   // Expand a `~`-prefixed vaultDir (e.g. the committed Session Config default
   // `~/Projects/vault`) before joining — without this, a host lacking
   // owner.yaml/SO_VAULT_DIR writes into a literal `./~` directory instead of
@@ -409,7 +419,7 @@ export function archiveFileToVault({
   }
 
   return {
-    source: repoRoot ? relative(repoRoot, sourcePath) : sourcePath,
+    source: repoRoot ? toPosixRel(relative(repoRoot, sourcePath)) : sourcePath,
     target: targetRel,
     action: dryRun ? 'would-archive' : 'archived',
     id: fields.id,

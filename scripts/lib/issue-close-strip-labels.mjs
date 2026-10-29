@@ -32,13 +32,19 @@
  * `closeIssues()` is the same sequence as a library call; `stripStatusLabels()`
  * stays exported for callers that only strip.
  *
+ * Issues closed by `Closes #N` on an MR merge bypass `--close` and keep their
+ * `status:*` label (309 closed issues, measured 2026-10-28, #1876). The
+ * post-merge sweep lists them (dry run) and strips them with `--apply`:
+ *
+ *   node scripts/lib/issue-close-strip-labels.mjs --strip-closed --apply
+ *
  * Auto-created by `scripts/lib/issue-close-strip-labels.mjs` (#308).
  */
 
-import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { isMainModule } from './is-main-module.mjs';
 import { resolveRepoSpec } from './vcs-repo-spec.mjs';
+import { execFileSync } from './native-command.mjs';
 
 /** Regex that matches any `status:*` label name. */
 const STATUS_LABEL_RE = /^status:/;
@@ -299,13 +305,173 @@ export async function closeIssues({
   return results;
 }
 
+/** Page size for every list call; a short page ends the pagination. */
+const PAGE_SIZE = 100;
+
+/** Upper bound on pages per list call — guards against a CLI that ignores `--page`. */
+const MAX_PAGES = 50;
+
+/**
+ * Run a paginated JSON list command and concatenate the pages. GitLab pages via
+ * `--per-page/--page`; GitHub has no page flag, so one call with `--limit`.
+ *
+ * @param {{ cli: 'glab' | 'gh', args: string[], spec?: string, execFile?: typeof execFileSync }} opts
+ * @returns {{ ok: boolean, items: any[], stderr: string }}
+ */
+function listAllJson({ cli, args, spec, execFile }) {
+  const items = [];
+  const pageCount = cli === 'gh' ? 1 : MAX_PAGES;
+  for (let page = 1; page <= pageCount; page++) {
+    const pageArgs =
+      cli === 'gh'
+        ? [...args, '--limit', String(PAGE_SIZE * MAX_PAGES)]
+        : [...args, '--per-page', String(PAGE_SIZE), '--page', String(page)];
+    if (spec) pageArgs.push('-R', spec);
+    const res = runCli(cli, pageArgs, execFile);
+    if (!res.ok) return { ok: false, items, stderr: res.stderr };
+    let data;
+    try {
+      data = res.stdout.trim() === '' ? [] : JSON.parse(res.stdout);
+    } catch (e) {
+      return { ok: false, items, stderr: `JSON parse failed: ${e?.message ?? String(e)}` };
+    }
+    if (!Array.isArray(data))
+      return { ok: false, items, stderr: 'list output is not a JSON array' };
+    items.push(...data);
+    if (data.length < PAGE_SIZE) return { ok: true, items, stderr: '' };
+  }
+  if (cli === 'gh') return { ok: true, items, stderr: '' };
+  return { ok: false, items, stderr: `more than ${MAX_PAGES} pages — refusing a partial count` };
+}
+
+/**
+ * List CLOSED issues per `status:*` label. The status labels are discovered
+ * from the project's label list, so a new `status:` value is covered without a
+ * code change.
+ *
+ * @param {{ vcs: 'gitlab' | 'github', spec?: string, execFile?: typeof execFileSync }} opts
+ * @returns {{ ok: boolean, byLabel: Record<string, number[]>, stderr: string }}
+ *   `byLabel` maps each status label to the sorted issue numbers carrying it.
+ */
+function listClosedByStatusLabel({ vcs, spec, execFile }) {
+  const cli = vcs === 'github' ? 'gh' : 'glab';
+  const labelList = listAllJson({
+    cli,
+    args:
+      vcs === 'github'
+        ? ['label', 'list', '--json', 'name']
+        : ['label', 'list', '--output', 'json'],
+    spec,
+    execFile,
+  });
+  if (!labelList.ok)
+    return { ok: false, byLabel: {}, stderr: `label list failed: ${labelList.stderr}` };
+  const statusLabels = [
+    ...new Set(
+      labelList.items
+        .map((l) => l?.name)
+        .filter((n) => typeof n === 'string' && STATUS_LABEL_RE.test(n)),
+    ),
+  ].sort();
+
+  const byLabel = {};
+  for (const label of statusLabels) {
+    const list = listAllJson({
+      cli,
+      args:
+        vcs === 'github'
+          ? ['issue', 'list', '--state', 'closed', '--label', label, '--json', 'number']
+          : ['issue', 'list', '--closed', '--label', label, '--output', 'json'],
+      spec,
+      execFile,
+    });
+    if (!list.ok)
+      return { ok: false, byLabel, stderr: `issue list for ${label} failed: ${list.stderr}` };
+    byLabel[label] = [
+      ...new Set(
+        list.items.map((i) => Number(vcs === 'github' ? i?.number : i?.iid)).filter((n) => n > 0),
+      ),
+    ].sort((a, b) => a - b);
+  }
+  return { ok: true, byLabel, stderr: '' };
+}
+
+/**
+ * Strip `status:*` labels from issues that are ALREADY closed (#1876). Issues
+ * closed by `Closes #N` on an MR merge never pass through `closeIssues()`, so
+ * they keep `status:ready`/`status:review` and every state-less label query
+ * over-counts.
+ *
+ * Dry run by default: lists, changes nothing. With `apply: true` each issue is
+ * stripped through `stripStatusLabels()` (same per-issue update shape, fresh
+ * label read, only `status:*` removed), then the listing is re-read so `after`
+ * is the platform's own count, not ours. Never closes, reopens or comments.
+ *
+ * @param {{
+ *   apply?: boolean,
+ *   vcs?: 'gitlab' | 'github',
+ *   repo?: string,
+ *   repoRoot?: string,
+ *   resolveRepoSpecFn?: (opts: { repoRoot: string, vcs: 'gitlab' | 'github' }) => string | undefined,
+ *   execFile?: typeof execFileSync
+ * }} opts
+ * @returns {Promise<{ ok: boolean, mode: 'dry-run' | 'apply',
+ *   before: Record<string, { count: number, ids: number[] }>, issues: number,
+ *   stripped?: number, after?: Record<string, number>, errors: string[] }>}
+ */
+export async function stripClosedStatusLabels({
+  apply = false,
+  vcs = 'gitlab',
+  repo,
+  repoRoot = process.cwd(),
+  resolveRepoSpecFn = resolveRepoSpec,
+  execFile = execFileSync,
+} = {}) {
+  const vcsResolved = vcs === 'github' ? 'github' : 'gitlab';
+  const spec = repo?.trim() || resolveRepoSpecFn({ repoRoot, vcs: vcsResolved });
+  const mode = apply ? 'apply' : 'dry-run';
+  const errors = [];
+
+  const listed = listClosedByStatusLabel({ vcs: vcsResolved, spec, execFile });
+  const before = {};
+  for (const [label, ids] of Object.entries(listed.byLabel))
+    before[label] = { count: ids.length, ids };
+  const ids = [...new Set(Object.values(listed.byLabel).flat())].sort((a, b) => a - b);
+  if (!listed.ok) return { ok: false, mode, before, issues: ids.length, errors: [listed.stderr] };
+  if (!apply) return { ok: true, mode, before, issues: ids.length, errors };
+
+  let stripped = 0;
+  for (const id of ids) {
+    const res = await stripStatusLabels({
+      issueId: id,
+      vcs: vcsResolved,
+      resolveRepoSpecFn: () => spec,
+      execFile,
+    });
+    if (res.error) errors.push(`#${id}: ${res.error}`);
+    else if (res.stripped.length > 0) stripped++;
+  }
+
+  const reread = listClosedByStatusLabel({ vcs: vcsResolved, spec, execFile });
+  if (!reread.ok) errors.push(`read-back: ${reread.stderr}`);
+  const after = {};
+  for (const [label, left] of Object.entries(reread.byLabel)) after[label] = left.length;
+  const ok = reread.ok && errors.length === 0 && Object.values(after).every((n) => n === 0);
+  return { ok, mode, before, issues: ids.length, stripped, after, errors };
+}
+
 const USAGE =
-  'usage: issue-close-strip-labels.mjs --close [--vcs gitlab|github] [-R|--repo <spec>] <id>...';
+  'usage: issue-close-strip-labels.mjs --close [--vcs gitlab|github] [-R|--repo <spec>] <id>...\n' +
+  '       issue-close-strip-labels.mjs --strip-closed [--apply] [--vcs gitlab|github] [-R|--repo <spec>]';
 
 /**
  * CLI: `--close [--vcs gitlab|github] [-R <spec>] <id>...` — one JSON line per
  * id on stdout. Exit 0 = every id verified closed, 1 = at least one did not,
  * 2 = usage error (no GitLab/GitHub call made).
+ *
+ * `--strip-closed [--apply]` — one JSON object on stdout (see
+ * `stripClosedStatusLabels`). Exit 0 = listing ok (dry run) / every closed
+ * issue verified free of `status:*` (apply), 1 = otherwise.
  *
  * @param {string[]} [argv]
  * @returns {Promise<number>} exit code
@@ -318,6 +484,8 @@ async function main(argv = process.argv.slice(2)) {
       allowPositionals: true,
       options: {
         close: { type: 'boolean', default: false },
+        'strip-closed': { type: 'boolean', default: false },
+        apply: { type: 'boolean', default: false },
         vcs: { type: 'string', default: 'gitlab' },
         repo: { type: 'string', short: 'R' },
       },
@@ -327,7 +495,28 @@ async function main(argv = process.argv.slice(2)) {
     return 2;
   }
   const { values, positionals } = parsed;
-  if (!values.close || positionals.length === 0 || !['gitlab', 'github'].includes(values.vcs)) {
+  if (
+    values['strip-closed'] &&
+    !values.close &&
+    positionals.length === 0 &&
+    ['gitlab', 'github'].includes(values.vcs)
+  ) {
+    const result = await stripClosedStatusLabels({
+      apply: values.apply,
+      vcs: values.vcs,
+      repo: values.repo,
+    });
+    for (const e of result.errors) process.stderr.write(`⚠ ${e}\n`);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return result.ok ? 0 : 1;
+  }
+  if (
+    !values.close ||
+    values['strip-closed'] ||
+    values.apply ||
+    positionals.length === 0 ||
+    !['gitlab', 'github'].includes(values.vcs)
+  ) {
     process.stderr.write(`${USAGE}\n`);
     return 2;
   }

@@ -61,7 +61,6 @@
  *   tests/unit/quality-gate-autofix.test.mjs          — unit tests (Agent C's scope)
  */
 
-import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,6 +78,7 @@ import { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
 import { atomicWriteWithBackup, writeJsonAtomicSync } from './io.mjs';
 import { readProcessLocalSessionIds } from './session-identity/own-session.mjs';
 import { resolveOwnLockRoot } from '../../hooks/_lib/hook-root.mjs';
+import { spawnSync } from './native-command.mjs';
 
 export { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
 

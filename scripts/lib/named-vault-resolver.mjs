@@ -53,8 +53,8 @@
 
 import { join, dirname } from 'node:path';
 import { existsSync as nodeExistsSync, realpathSync as nodeRealpathSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { resolvePreferredRemote, isQueryFailure, redactUrlCredentials } from './vcs-repo-spec.mjs';
+import { spawnSync } from './native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Internal helpers

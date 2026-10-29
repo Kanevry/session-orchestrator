@@ -39,7 +39,6 @@
  */
 
 import { promises as fs, existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import {
   loadVaultRelocationRules,
@@ -57,6 +56,7 @@ import { noteIdMatches } from './lib/vault-mirror/utils.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { atomicWriteText, envelopeToError } from './lib/io.mjs';
+import { spawnSync } from './lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants

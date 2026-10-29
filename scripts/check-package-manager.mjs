@@ -74,9 +74,9 @@
 
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { execFileSync, spawnSync } from './lib/native-command.mjs';
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 

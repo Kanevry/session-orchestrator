@@ -96,8 +96,7 @@
 
 import { parseArgs } from 'node:util';
 import { readFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { findProjectRoot } from './lib/common.mjs';
@@ -112,6 +111,7 @@ import {
   selectLearningsFromFile,
 } from './lib/learnings/select.mjs';
 import { deriveFenceToken } from './lib/reconcile/sanitize.mjs';
+import { spawnSync } from './lib/native-command.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -380,9 +380,12 @@ if (selection.evidence) {
 
 /** Repo-relative learnings path for the retrieval pointer (absolute is noise). */
 function learningsPathForDisplay() {
-  return learningsPath.startsWith(`${repoRoot}/`)
-    ? learningsPath.slice(repoRoot.length + 1)
-    : learningsPath;
+  // `relative()` instead of a `${repoRoot}/` prefix test: on Windows the
+  // separator is `\`; the displayed pointer is always POSIX (GH#81).
+  if (!isAbsolute(learningsPath)) return learningsPath;
+  const rel = relative(repoRoot, learningsPath);
+  const inside = rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+  return inside ? rel.split(sep).join('/') : learningsPath;
 }
 
 /**

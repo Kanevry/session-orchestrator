@@ -19,7 +19,6 @@
  * reported. When any part is due (see {@link cachePartStatus}) the probe starts
  * the detached refresher (throttled, see spawn.mjs).
  */
-import { execFile } from 'node:child_process';
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 
 import { eventsFilePath } from './events.mjs';
@@ -28,6 +27,7 @@ import { SECURITY_DELTA_EVENT } from './security-delta/contract.mjs';
 import { compareVersions, parseVersion } from './security-delta/runtime-floor.mjs';
 import { CACHE_TTL_MS, cachePaths, readCacheFile, stampMs } from './security-pulse/cache.mjs';
 import { maybeSpawnRefresh } from './security-pulse/spawn.mjs';
+import { execFile } from './native-command.mjs';
 
 const HEAD_TIMEOUT_MS = 1500;
 const SHA_RE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;

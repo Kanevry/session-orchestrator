@@ -1,39 +1,99 @@
-/** Windows tree cleanup: PowerShell 5.1 CIM identities, then taskkill and readback. */
-import { spawnSync } from 'node:child_process';
+/** Windows tree cleanup: CIM identities via PowerShell 7 or 5.1, then taskkill and readback. */
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from './native-command.mjs';
 
 // Ceiling per native call: 5 s. Revisit if measured CIM startup exceeds this;
 // a hung PowerShell must never hang gate cleanup (including the exit handler).
 const OPTIONS = { encoding: 'utf8', shell: false, windowsHide: true, timeout: 5000, maxBuffer: 16 * 1024 * 1024 };
-const system32 = () => path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+// One snapshot never spends more than the old single-call ceiling, whichever
+// shells it tries (#1859). pwsh 7 measured 1.3–1.4 s on the reporting host, so
+// 3 s leaves 5.1 a real fallback window; revisit if pwsh 7 is measured slower.
+const SNAPSHOT_BUDGET_MS = OPTIONS.timeout;
+const PWSH7_TIMEOUT_MS = 3000;
+const system32 = (env = process.env) => path.join(env.SystemRoot || 'C:\\Windows', 'System32');
 
-function readWindowsProcesses(spawnSyncFn = spawnSync) {
-  const result = spawnSyncFn(
-    path.join(system32(), 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate | ConvertTo-Json -Compress'],
-    OPTIONS,
-  );
-  if (result.error || result.status !== 0) throw new Error('CIM snapshot failed');
+/** Both shells print CreationDate as the same explicit /Date(ms)/ string;
+ * pwsh 7 would otherwise emit ISO 8601 where 5.1 emits /Date(ms)/ (#1859). */
+export const CIM_PROCESS_QUERY = 'Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ '
+  + 'ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; '
+  + "CreationDate = $(if ($_.CreationDate) { '/Date(' + ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() + ')/' } else { $null }) "
+  + '} } | ConvertTo-Json -Compress';
+
+/** Absolute shell candidates in preference order. pwsh 7 only from
+ * %ProgramFiles% as an existing absolute path — never a bare `pwsh` that a
+ * cwd/PATH search could resolve to a repo-planted binary. */
+function shellCandidates(env, existsSyncFn) {
+  const candidates = [];
+  const programFiles = (typeof env?.ProgramFiles === 'string' ? env.ProgramFiles : '').trim();
+  if (programFiles && path.win32.isAbsolute(programFiles)) {
+    const pwsh = path.join(programFiles, 'PowerShell', '7', 'pwsh.exe');
+    let present = false;
+    try { present = existsSyncFn(pwsh) === true; } catch { /* unreadable = absent */ }
+    if (present) candidates.push({ file: pwsh, timeout: PWSH7_TIMEOUT_MS });
+  }
+  candidates.push({ file: path.join(system32(env), 'WindowsPowerShell', 'v1.0', 'powershell.exe'), timeout: OPTIONS.timeout });
+  return candidates;
+}
+
+function parseSnapshot(result) {
+  if (result.error) throw new Error(result.error.code ?? result.error.message ?? 'spawn error');
+  if (result.status !== 0) throw new Error(result.signal ? `signal ${result.signal}` : `exit ${result.status}`);
   let parsed;
   try {
     parsed = JSON.parse(String(result.stdout));
   } catch {
     // A truncated or banner-polluted snapshot is "not measurable", never "no processes".
-    throw new Error('CIM snapshot output is not JSON');
+    throw new Error('output is not JSON');
   }
   const rows = Array.isArray(parsed) ? parsed : [parsed];
   if (!rows.length || rows.some(p => !p || !Number.isInteger(p.ProcessId)
     || !Number.isInteger(p.ParentProcessId))) {
-    throw new Error('CIM snapshot has no usable process identities');
+    throw new Error('no usable process identities');
   }
   return rows;
 }
 
-// PowerShell 5.1 ConvertTo-Json uses /Date(epoch milliseconds)/.
-// Other formats (including WMI dates) remain explicitly unmeasurable.
-function creationMs(row) {
-  const match = /^\/Date\((-?\d+)\)\/$/.exec(row?.CreationDate);
-  return match && Number.isFinite(Number(match[1])) ? Number(match[1]) : null;
+/**
+ * Read the Windows process table (ProcessId, ParentProcessId, Name, CreationDate).
+ * Tries pwsh 7, then Windows PowerShell 5.1; a failed candidate (error, exit,
+ * signal, timeout, unparseable output) falls through to the next. All failing
+ * throws — callers must report "not measurable", never an empty table.
+ * @param {{ env?: object, existsSyncFn?: (p: string) => boolean, spawnSyncFn?: Function }} [opts]
+ * @returns {Array<{ ProcessId: number, ParentProcessId: number, Name?: string, CreationDate?: string|null }>}
+ */
+export function readWindowsProcessTable({ env = process.env, existsSyncFn = existsSync, spawnSyncFn = spawnSync } = {}) {
+  const reasons = [];
+  let spent = 0;
+  for (const { file, timeout } of shellCandidates(env, existsSyncFn)) {
+    const budget = Math.min(timeout, SNAPSHOT_BUDGET_MS - spent);
+    if (budget <= 0) { reasons.push(`${path.win32.basename(file)}: no budget left`); continue; }
+    const started = Date.now();
+    try {
+      return parseSnapshot(spawnSyncFn(file, ['-NoProfile', '-NonInteractive', '-Command', CIM_PROCESS_QUERY],
+        { ...OPTIONS, timeout: budget }));
+    } catch (err) {
+      // A timed-out call consumes its whole budget even if the clock reads less.
+      const timedOut = err.message === 'ETIMEDOUT';
+      spent += timedOut ? budget : Math.max(Date.now() - started, 0);
+      reasons.push(`${path.win32.basename(file)}: ${err.message}`);
+    }
+  }
+  throw new Error(`CIM snapshot failed (${reasons.join('; ')})`);
+}
+
+// Primary form: the explicit /Date(epoch ms)/ the query emits. Tolerant
+// fallback: ISO 8601 WITH an offset (pwsh 7 default serialisation). Anything
+// else — offset-less local times, WMI dates — stays explicitly unmeasurable.
+/** @param {{ CreationDate?: unknown }} row @returns {number|null} epoch ms, or null when unmeasurable */
+export function creationMs(row) {
+  const value = row?.CreationDate;
+  if (typeof value !== 'string') return null;
+  const match = /^\/Date\((-?\d+)\)\/$/.exec(value);
+  if (match) return Number.isFinite(Number(match[1])) ? Number(match[1]) : null;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 function descendantIds(rows, seeds) {
@@ -53,7 +113,9 @@ function descendantIds(rows, seeds) {
  */
 export function killWindowsProcessTree(pid, {
   spawnSyncFn = spawnSync,
-  snapshotFn = () => readWindowsProcesses(spawnSyncFn),
+  env = process.env,
+  existsSyncFn = existsSync,
+  snapshotFn = () => readWindowsProcessTable({ env, existsSyncFn, spawnSyncFn }),
   child,
   spawnedAtMs,
   verifyTree = true,
@@ -66,7 +128,7 @@ export function killWindowsProcessTree(pid, {
     base.signalsSent.push('taskkill');
     try {
       const args = tree ? ['/PID', String(target), '/T', '/F'] : ['/PID', String(target), '/F'];
-      const result = spawnSyncFn(path.join(system32(), 'taskkill.exe'), args, OPTIONS);
+      const result = spawnSyncFn(path.join(system32(env), 'taskkill.exe'), args, OPTIONS);
       if (result.error || result.status !== 0) killError = result.error?.message ?? `taskkill exit ${result.status}`;
     } catch (err) { killError = String(err); }
   };
@@ -121,7 +183,7 @@ export function killWindowsProcessTree(pid, {
     return unknown('missing tree identity');
   }
   const survivors = new Set(targets.filter(p => after.some(q =>
-    q.ProcessId === p.ProcessId && q.CreationDate === p.CreationDate)).map(p => p.ProcessId));
+    q.ProcessId === p.ProcessId && creationMs(q) === creationMs(p))).map(p => p.ProcessId));
 
   // Include descendants born during taskkill, following parents through both
   // snapshots even when an intermediate parent has already disappeared.

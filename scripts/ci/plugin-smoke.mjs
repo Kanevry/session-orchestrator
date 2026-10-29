@@ -8,10 +8,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { spawnInGroup } from '../lib/process-group.mjs';
+import { spawn, spawnSync } from '../lib/native-command.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const HOOK_TIMEOUT_MS = 60_000;

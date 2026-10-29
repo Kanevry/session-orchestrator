@@ -43,7 +43,6 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 
 import { die, warn } from './lib/common.mjs';
 import { loadQualityGatesPolicy, resolveCommand } from './lib/quality-gates-policy.mjs';
@@ -59,6 +58,7 @@ import { resolveWaveNumber } from './lib/quality-gate-wave.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 import { admitRerunSkipped, gateKillFields } from './lib/quality-gate.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { spawn } from './lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants

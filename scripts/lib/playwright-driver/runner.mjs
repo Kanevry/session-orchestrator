@@ -25,7 +25,6 @@
  * Issue: #385 — web-gate end-to-end proof against an EspoCRM web target
  */
 
-import { spawn as realSpawn } from 'node:child_process';
 import realFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,6 +32,7 @@ import { parseArgs } from 'node:util';
 import { getProfile, loadProfiles, validateProfile } from '../profiles/registry.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { isMainModule } from '../is-main-module.mjs';
+import { spawn as realSpawn } from '../native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -161,7 +161,9 @@ export default async function run(opts = {}) {
   // path-sanitization (original rationale: reporter comma+colon split is now obsolete
   // after the 2026-05-14 deep-3 reporter fix — paths flow via env vars, not CLI string).
   // Kept as belt-and-braces against pathological run-dirs; revisit alongside #390 path-traversal.
-  if (/[,:]/.test(runDir)) {
+  // The filesystem root is exempt: a Windows drive root (`C:\`) carries a colon
+  // that is not part of any pathological segment.
+  if (/[,:]/.test(runDir.slice(path.parse(runDir).root.length))) {
     console.error('runner: --run-dir must not contain commas or colons');
     process.exit(2);
   }

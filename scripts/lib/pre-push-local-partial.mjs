@@ -17,10 +17,10 @@
 // send each archive move of a doc to the full local suite).
 // Revisit trigger: an MR pipeline red that a selected-by-path test would have caught
 // locally on a push routed through this gate.
-import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { isMainModule } from './is-main-module.mjs';
+import { spawnSync } from './native-command.mjs';
 
 const log = (message) => process.stderr.write(`pre-push: ${message}\n`);
 

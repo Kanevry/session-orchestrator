@@ -137,8 +137,8 @@
 
 import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { join, isAbsolute, relative } from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { isGitToplevel } from './repo-files.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // argv

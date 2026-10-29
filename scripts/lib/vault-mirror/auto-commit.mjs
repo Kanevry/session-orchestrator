@@ -9,9 +9,9 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
-import { spawnSync } from 'node:child_process';
 
 import { redactHomeDir } from '../common.mjs';
+import { spawnSync } from '../native-command.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 const MIRROR_DIRS = ['40-learnings', '50-sessions'];

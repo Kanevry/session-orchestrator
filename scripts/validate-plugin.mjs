@@ -16,10 +16,10 @@
  * spawned via child_process so that check logic stays in a single place.
  */
 
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { die, requireJq } from './lib/common.mjs';
+import { spawnSync } from './lib/native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -524,6 +524,13 @@ if (runCheck('check-skill-links.mjs') !== 0) checkFailed = 1;
 // `sweep-expired-learnings.mjs --prune`) validate, snapshot `.bak` and archive.
 process.stdout.write('\n');
 if (runCheck('check-learnings-shell-writes.mjs') !== 0) checkFailed = 1;
+
+// BLOCKING (#1870): a fenced skill snippet that imports `node:child_process`.
+// The model runs these snippets in the USER's repo, where Windows Node starts a
+// bare `git` from the cwd; snippets use `scripts/lib/native-command.mjs`. The
+// ESLint ban from #1864 covers `.mjs` only. Backlog was 0 when it landed.
+process.stdout.write('\n');
+if (runCheck('check-skill-child-process.mjs') !== 0) checkFailed = 1;
 
 // WARN-only: a state-mutating `git` call in tests/ that names no target resolves
 // its destination from the ambient cwd (or an inherited GIT_DIR) — the 2026-08-19

@@ -9,8 +9,8 @@
  * Part of the Clawpatch Borrow Cluster (issue #420).
  */
 
-import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { execFile } from '../native-command.mjs';
 
 const execFileAsync = promisify(execFile);
 

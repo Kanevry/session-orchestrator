@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { discoverActiveSessions } from '../session-discovery.mjs';
 import { readRegistry, activeDir } from '../session-registry.mjs';
@@ -12,6 +11,7 @@ import { resolveStateMdPath } from '../state-md.mjs';
 import { resolveOwnLockRootFor } from '../own-lock-root.mjs';
 import { collectSnapshot } from './collect.mjs';
 import { resolveEventsLedgerRoot } from '../platform.mjs';
+import { execFile } from '../native-command.mjs';
 const exec = promisify(execFile);
 export const MAX_EVENT_BYTES = 512 * 1024;
 

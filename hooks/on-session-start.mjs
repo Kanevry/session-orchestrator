@@ -24,13 +24,12 @@
  * Exit codes:
  *   0 — always (informational, never blocking)
  *
- * hooks.json wiring (SessionStart, async: true, timeout: 5s) is managed separately.
+ * hooks.json wiring (SessionStart, async: true, timeout: 10s) is managed separately.
  * stdin: optional JSON payload from Claude Code containing session_id.
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync, writeSync } from 'node:fs';
-import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -64,6 +63,7 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 // never drift apart. readClaudePid() is the process witness current-session.json
 // carries next to the raw id (#1746).
 import { SAME_LOGICAL_SESSION_SOURCES, readClaudePid } from './_lib/lock-bootstrap.mjs';
+import { execFile, execFileSync } from '../scripts/lib/native-command.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -630,12 +630,11 @@ async function deriveSemanticCandidate({ projectRoot, mode }) {
   try {
     const { resolveSemanticSessionId, parseSessionId } = await import('../scripts/lib/session-id.mjs');
     const { discoverActiveSessions } = await import('../scripts/lib/session-discovery.mjs');
-    const { execSync } = await import('node:child_process');
 
     // Derive branch from git (cheap, ~5ms). Fall back to 'main' if outside a repo.
     let branch = 'main';
     try {
-      branch = execSync('git rev-parse --abbrev-ref HEAD', {
+      branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
         cwd: projectRoot,
         stdio: ['ignore', 'pipe', 'ignore'],
         encoding: 'utf8',
@@ -762,11 +761,35 @@ async function emitHostBanner(projectRoot) {
  * It names the phase rather than restating it, so the AUQ wording stays
  * single-sourced in `skills/session-start/SKILL.md` § Phase 6.8.
  */
-const CONSENT_NUDGE =
-  'Telemetrie-Consent ist auf diesem Host unentschieden. Stelle JETZT, vor jeder anderen Arbeit, '
-  + 'genau einmal die consent-neutrale AskUserQuestion aus skills/session-start/SKILL.md § Phase 6.8 '
-  + '(zwei Optionen, keine "(Recommended)"-Markierung; Codex/Cursor: nummerierte Liste) und rufe danach '
-  + 'grantConsent() bzw. denyConsent() aus scripts/lib/telemetry/consent.mjs. Danach nie wieder fragen.';
+const CONSENT_NUDGE = {
+  en: 'Telemetry consent is undecided on this host. NOW, before any other work, ask exactly once the '
+    + 'consent-neutral AskUserQuestion from skills/session-start/SKILL.md § Phase 6.8 '
+    + '(two options, no "(Recommended)" marker; Codex/Cursor: numbered list), then call '
+    + 'grantConsent() or denyConsent() from scripts/lib/telemetry/consent.mjs. Never ask again afterwards.',
+  de: 'Telemetrie-Consent ist auf diesem Host unentschieden. Stelle JETZT, vor jeder anderen Arbeit, '
+    + 'genau einmal die consent-neutrale AskUserQuestion aus skills/session-start/SKILL.md § Phase 6.8 '
+    + '(zwei Optionen, keine "(Recommended)"-Markierung; Codex/Cursor: nummerierte Liste) und rufe danach '
+    + 'grantConsent() bzw. denyConsent() aus scripts/lib/telemetry/consent.mjs. Danach nie wieder fragen.',
+};
+
+/**
+ * #1872 — is there an operator who could answer an AskUserQuestion in this run?
+ *
+ * Not when CI is detected, and not when Claude Code runs headless: the
+ * entrypoint is `cli` interactively and `sdk-cli` under `claude -p` (measured
+ * in a tool child process, 2026-10-28; other SDK hosts use further `sdk-*`
+ * values). That the SessionStart hook sees the same value is the best signal
+ * available, not a measured fact. Revisit trigger (BV-004): a headless run
+ * that still shows the nudge, or a harness that exports a different marker.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {boolean}
+ */
+export function isInteractiveSession(env) {
+  if (isCiEnv(env)) return false;
+  const entrypoint = String(env.CLAUDE_CODE_ENTRYPOINT ?? '').trim().toLowerCase();
+  return !entrypoint.startsWith('sdk');
+}
 
 /**
  * #1138 — queue the consent nudge when, and only when, this host has no
@@ -785,7 +808,8 @@ const CONSENT_NUDGE =
  * operator who can answer an AskUserQuestion?" The prompting happens in the
  * live session, not in this process, so TTY-ness of the hook is irrelevant and
  * `isCiEnv()` — the fail-closed "this is unattended automation" probe — is the
- * correct gate. (The same trap sits in the Phase 6.8 prose, which passes
+ * correct gate, together with the headless entrypoint (#1872,
+ * `isInteractiveSession`). (The same trap sits in the Phase 6.8 prose, which passes
  * `interactive: !isHeadless()` from a `node -e` subprocess whose stdout is also
  * a pipe: it would have resolved `prompt:false` every time even if executed.)
  *
@@ -796,15 +820,18 @@ const CONSENT_NUDGE =
  */
 function maybeQueueConsentNudge() {
   try {
-    if (isCiEnv(process.env)) return;
+    const interactive = isInteractiveSession(process.env);
+    if (!interactive) return;
+    const ownerConfig = loadOwnerConfig().config;
     const consent = resolveConsent({
       env: process.env,
-      ownerConfig: loadOwnerConfig().config,
+      ownerConfig,
       state: readTelemetryState().record,
-      interactive: true,
+      interactive,
     });
     if (consent.prompt !== true) return;
-    setAdditionalContext(CONSENT_NUDGE);
+    // owner.yaml `owner.language` (default 'en'); German only when set to 'de'.
+    setAdditionalContext(ownerConfig?.owner?.language === 'de' ? CONSENT_NUDGE.de : CONSENT_NUDGE.en);
   } catch { /* best effort — the nudge is informational, never blocks */ }
 }
 
