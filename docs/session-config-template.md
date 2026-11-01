@@ -663,11 +663,11 @@ Read by: `skills/session-start/phase-8-5-express-path.md`, `skills/session-plan/
 
 ## Hook Runtime Profile (env-only, not config)
 
-`SO_HOOK_PROFILE` and `SO_DISABLED_HOOKS` are environment variables, **not Session Config fields**. They control hook execution at runtime without editing `hooks.json`.
+`SO_HOOK_PROFILE` and `SO_DISABLED_HOOKS` are environment variables, **not Session Config fields**. They control hook execution at runtime without editing `hooks.json`. The same two settings can be kept per host in `owner.yaml` as `hooks.profile` (`strict`, `full`, `standard`) and `hooks.disabled` (#1881); the environment wins. owner.yaml cannot choose `minimal`/`off` or disable a safety hook.
 
 | Variable | Values | Default | Effect |
 |----------|--------|---------|--------|
-| `SO_HOOK_PROFILE` | `full` \| `minimal` \| `off` | `full` | Preset bundle — `minimal` keeps only `on-session-start` + `pre-bash-destructive-guard`. |
+| `SO_HOOK_PROFILE` | `strict` \| `standard` \| `minimal` \| `off` (`full` = `strict`) | `standard` | Preset bundle — `standard` leaves `pre-bash-templates-first` and `pre-tool-state-md-path-guard` off and lets `worktree-remove-unsafe` warn when it cannot measure the target; `minimal` keeps only `on-session-start` + `pre-bash-destructive-guard`. |
 | `SO_DISABLED_HOOKS` | comma-separated hook names | _(none)_ | Per-hook override; takes precedence over the profile. |
 
 Read by: `hooks/_lib/profile-gate.mjs`. See [docs/session-config-reference.md § Hook Runtime Profile Control](./session-config-reference.md#hook-runtime-profile-control-211).

@@ -6,7 +6,7 @@
  * (Epic #124, issue #138). ESM, Node 20+, no external dependencies beyond stdlib.
  *
  * Decision flow (8 gates, early-exit):
- *   G1 tool filter — only Bash tool is gated
+ *   G1 tool filter — Bash and PowerShell tools are gated
  *   G2 command present + string
  *   G3 wave-scope.json exists
  *   G4 command-guard gate enabled
@@ -92,6 +92,7 @@ import { pathToFileURL } from 'node:url';
 // and gates whether this hook runs at all.
 // ---------------------------------------------------------------------------
 /** @type {typeof import('../scripts/lib/io.mjs').readStdin} */ let readStdin;
+/** @type {typeof import('../scripts/lib/io.mjs').isShellCommandTool} */ let isShellCommandTool;
 /** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
 /** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
 /** @type {typeof import('../scripts/lib/io.mjs').emitWarn} */ let emitWarn;
@@ -206,7 +207,7 @@ async function bootstrap() {
     }
   );
 
-  ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
+  ({ readStdin, emitAllow, emitDeny, emitWarn, isShellCommandTool } = modules.io);
   ({ readJson } = modules.common);
   ({ extractBashWriteTargets, pathMatchesPattern } = modules.hardening);
   ({ resolveScopeContext } = modules.scopeGate);
@@ -254,8 +255,8 @@ async function main() {
   const input = await readStdin();
   if (!input) return emitAllow();
 
-  // G1 — only Bash is gated
-  if (input.tool_name !== 'Bash') return emitAllow();
+  // G1 — Bash, Monitor and PowerShell are gated
+  if (!isShellCommandTool(input.tool_name) && input.tool_name !== 'PowerShell') return emitAllow();
 
   // G2 — command must be a non-empty string
   const command = input?.tool_input?.command;
@@ -371,7 +372,7 @@ async function main() {
   // and never changes the exit path — it only writes advisory stderr lines — so
   // it is safe to run before the command-guard gate/enforcement early-returns.
   // Skipped under enforcement:off (nothing is enforced there). See #800.
-  if (enforcement !== 'off' && scope?.gates?.['bash-write-guard'] === true) {
+  if (isShellCommandTool(input.tool_name) && enforcement !== 'off' && scope?.gates?.['bash-write-guard'] === true) {
     runBashWriteGuard(command, scope, projectRoot, input.cwd);
   }
 
@@ -379,6 +380,15 @@ async function main() {
   if (!gateOn) return flushNotices(notices);
   // G5 — enforcement "off" → allow
   if (enforcement === 'off') return flushNotices(notices);
+
+  // #1900 — refuse PowerShell before POSIX analysis. A cmdlet allowlist cannot
+  // establish safety because module autoload can execute additional code.
+  if (input.tool_name === 'PowerShell') {
+    const reason = 'session-orchestrator: commands from the PowerShell tool cannot be checked against the wave-scope rules because they can only read POSIX shell syntax. Run the command through the Bash tool (Git Bash) instead.';
+    if (enforcement === 'strict') return emitDeny(reason);
+    notices.push(reason);
+    return flushNotices(notices);
+  }
 
   // G6 — determine which list to check
   const useFallback = blockedCommands.length === 0;

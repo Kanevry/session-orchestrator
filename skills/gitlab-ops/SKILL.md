@@ -339,6 +339,7 @@ Labels: `type:discovery`, `priority::<level>`, `area:<inferred>`, `status:ready`
 Pattern 3 of the gsd Pattern Adoption (Issue #519) registers a PreToolUse hook
 `hooks/pre-bash-templates-first.mjs` that **blocks** `gh|glab pr|mr|issue create|new`
 Bash calls when the current session contains no prior `Read` on a matching template file.
+It runs only under the `strict` hook profile (#1881); the default `standard` profile leaves it off.
 
 **When this matters:** before you or a subagent opens an MR, PR, or issue via CLI, a
 matching template must have been read in the current session:

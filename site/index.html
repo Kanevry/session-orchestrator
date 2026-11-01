@@ -216,13 +216,13 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261026a">
+<link rel="stylesheet" href="/assets/site.css?v=20261029">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.16.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.17.0</span></span></a>
     <nav class="nav" aria-label="Main"><a href="#how">How it works</a><a href="/commands">Commands</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="/lead">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
     <p class="lang"><a href="/" aria-current="page" lang="en">EN</a><a href="/de"  lang="de">DE</a></p>
     <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="#how">How it works</a><a href="/commands">Commands</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="/lead">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
@@ -236,9 +236,17 @@
         <p class="eyebrow">Free workflow plugin for coding agents</p>
         <h1 class="h-display">From your task<br>to checked work.</h1>
         <p class="hero-lede">You say what you want. Your agent suggests a plan. You say yes. It works in small rounds, checks each round and writes down what is done. The next session starts from there. It is not another AI: your coding tool writes the code, this plugin keeps the work in order.</p>
-        <p class="hero-cmd"><span class="hero-cmd-where">In your coding tool</span><code>/session feature add a CSV export</code><span class="hero-cmd-then">reads your repository, proposes a plan, waits for your yes</span></p>
+        <p class="hero-cmd"><span class="hero-cmd-where">In your coding tool</span><code>/session feature add a CSV export</code><span class="hero-cmd-then">reads your repository, proposes a plan, waits for your yes</span><span class="hero-cmd-alt">On Codex you pick the same command as a skill in the chat, not in a shell: <code>$session-orchestrator:session feature add a CSV export</code></span></p>
         <div class="cta"><a class="btn btn-primary" href="#install">Install the plugin<span aria-hidden="true">↓</span></a><a class="btn btn-secondary" href="#how">See how it works<span aria-hidden="true">↓</span></a></div>
         <p class="hero-note">Free · MIT licensed · No account · Runs on your machine</p>
+        <details class="glossary"><summary>New to these words? A short glossary</summary><dl>
+          <div><dt>Repository</dt><dd>The folder with your project's files and their full history.</dd></div>
+          <div><dt>Commit</dt><dd>A saved step in that history, with a short note on what changed.</dd></div>
+          <div><dt>Branch</dt><dd>A separate line of work, so a change can be tried without touching the main version.</dd></div>
+          <div><dt>Issue</dt><dd>A to-do note on GitLab or GitHub: a bug, a wish or an open question.</dd></div>
+          <div><dt>CI or pipeline</dt><dd>Checks that run on a server after each change and report whether the tests still pass.</dd></div>
+          <div><dt>Hook</dt><dd>A small check your coding tool runs at fixed moments, for example before a command, and which can stop it.</dd></div>
+        </dl></details>
       </div>
       <figure class="hero-art">
         <img src="/img/agent-production-800.webp" srcset="/img/agent-production-480.webp 480w, /img/agent-production-800.webp 800w, /img/agent-production-1536.webp 1536w" sizes="(min-width: 1360px) 622px, (min-width: 1101px) calc(50vw - 58px), (min-width: 960px) calc(50vw - 54px), (min-width: 601px) calc(100vw - 56px), calc(100vw - 40px)" width="1536" height="1024" fetchpriority="high" decoding="async" alt="A human at the control desk oversees small agents planning, building in parallel, inspecting and handing over work.">
@@ -363,7 +371,8 @@
     <div class="wrap">
       <div class="section-heading"><div><p class="eyebrow">How it fits together</p><h2>Your tool writes the code.<br>This plugin keeps the work in order.</h2></div><p>It is not another AI. It adds a fixed way of working to the coding tool you already use, and everything it keeps is plain text in your repository.</p></div>
       <figure class="connect-fig">
-        <svg viewBox="0 0 1000 400" role="img" aria-labelledby="connect-t connect-d">
+        <p class="scroll-hint" aria-hidden="true">Swipe sideways to see the whole picture.</p>
+        <div class="fig-scroll" tabindex="0" role="region" aria-label="How it fits together, diagram"><svg viewBox="0 0 1000 400" role="img" aria-labelledby="connect-t connect-d">
           <title id="connect-t">How the pieces fit together</title>
           <desc id="connect-d">You type commands in your coding tool. Inside it, session-orchestrator adds commands, checks and agents with file lists. It writes plain text into your repository and files what is left as issues on GitLab or GitHub. The next session reads both first. Optionally, one lead session sits above several sessions.</desc>
           <defs><marker id="cf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="cf-head"/></marker></defs>
@@ -396,7 +405,7 @@
           <path class="cf-flow cf-back" d="M930 232C930 380 360 392 360 330" marker-end="url(#cf-arrow)"/>
           <text class="cf-small" x="640" y="384">reads both first</text>
           <path class="cf-flow cf-dash" d="M360 58V92" marker-end="url(#cf-arrow)"/>
-        </svg>
+        </svg></div>
         <figcaption>Schematic. The plugin runs inside your coding tool, on your machine.</figcaption>
       </figure>
       <ul class="connect-facts">
@@ -459,13 +468,13 @@ expires-at: 2027-01-12</code></pre></li>
         <caption class="sr">What works in which coding tool</caption>
         <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader"><span class="sr">What</span></th><th scope="col" role="columnheader">Claude Code</th><th scope="col" role="columnheader">Codex CLI</th><th scope="col" role="columnheader">Cursor IDE</th><th scope="col" role="columnheader">Pi</th></tr></thead>
         <tbody role="rowgroup">
-          <tr role="row"><th scope="row" role="rowheader">You type</th><td role="cell" data-label="Claude Code"><code>/session</code></td><td role="cell" data-label="Codex CLI"><code>$session-orchestrator:session</code></td><td role="cell" data-label="Cursor IDE"><code>/session</code></td><td role="cell" data-label="Pi"><code>/session</code></td></tr>
-          <tr role="row"><th scope="row" role="rowheader">Agents</th><td role="cell" data-label="Claude Code">side by side</td><td role="cell" data-label="Codex CLI">side by side</td><td role="cell" data-label="Cursor IDE">one after another</td><td role="cell" data-label="Pi">one after another</td></tr>
-          <tr role="row"><th scope="row" role="rowheader">Dangerous commands</th><td role="cell" data-label="Claude Code" class="t-yes">blocked</td><td role="cell" data-label="Codex CLI" class="t-yes">blocked</td><td role="cell" data-label="Cursor IDE">blocked through a bridge</td><td role="cell" data-label="Pi">blocked through a bridge</td></tr>
-          <tr role="row"><th scope="row" role="rowheader">File list per agent</th><td role="cell" data-label="Claude Code" class="t-yes">blocks in strict mode</td><td role="cell" data-label="Codex CLI" class="t-part">an instruction only</td><td role="cell" data-label="Cursor IDE">blocks in strict mode</td><td role="cell" data-label="Pi">blocks in strict mode</td></tr>
-          <tr role="row"><th scope="row" role="rowheader">Tests and checks</th><td role="cell" data-label="Claude Code">yes</td><td role="cell" data-label="Codex CLI">yes</td><td role="cell" data-label="Cursor IDE">yes</td><td role="cell" data-label="Pi">yes</td></tr>
-          <tr role="row"><th scope="row" role="rowheader">Lessons and rules</th><td role="cell" data-label="Claude Code">yes</td><td role="cell" data-label="Codex CLI">yes</td><td role="cell" data-label="Cursor IDE">yes</td><td role="cell" data-label="Pi">yes</td></tr>
-          <tr role="row"><th scope="row" role="rowheader">Lead Inbox pane</th><td role="cell" data-label="Claude Code" class="t-yes">yes, a mod in the <a href="/lead#start">lead npm package</a> (early access)</td><td role="cell" data-label="Codex CLI">sessions are led; the pane runs in Claude Code</td><td role="cell" data-label="Cursor IDE">not documented</td><td role="cell" data-label="Pi">not documented</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">You type</th><td role="cell" data-what="You type" data-label="Claude Code"><code>/session</code></td><td role="cell" data-what="You type" data-label="Codex CLI"><code>$session-orchestrator:session</code></td><td role="cell" data-what="You type" data-label="Cursor IDE"><code>/session</code></td><td role="cell" data-what="You type" data-label="Pi"><code>/session</code></td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Agents</th><td role="cell" data-what="Agents" data-label="Claude Code">side by side</td><td role="cell" data-what="Agents" data-label="Codex CLI">side by side</td><td role="cell" data-what="Agents" data-label="Cursor IDE">one after another</td><td role="cell" data-what="Agents" data-label="Pi">one after another</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Dangerous commands</th><td role="cell" data-what="Dangerous commands" data-label="Claude Code" class="t-yes">blocked</td><td role="cell" data-what="Dangerous commands" data-label="Codex CLI" class="t-yes">blocked</td><td role="cell" data-what="Dangerous commands" data-label="Cursor IDE">blocked through a bridge</td><td role="cell" data-what="Dangerous commands" data-label="Pi">blocked through a bridge</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">File list per agent</th><td role="cell" data-what="File list per agent" data-label="Claude Code" class="t-yes">blocks in strict mode</td><td role="cell" data-what="File list per agent" data-label="Codex CLI" class="t-part">an instruction only</td><td role="cell" data-what="File list per agent" data-label="Cursor IDE">blocks in strict mode</td><td role="cell" data-what="File list per agent" data-label="Pi">blocks in strict mode</td></tr>
+          <tr role="row" class="t-same"><th scope="row" role="rowheader">Tests and checks</th><td role="cell" data-what="Tests and checks" data-label="Claude Code">yes</td><td role="cell" data-what="Tests and checks" data-label="Codex CLI">yes</td><td role="cell" data-what="Tests and checks" data-label="Cursor IDE">yes</td><td role="cell" data-what="Tests and checks" data-label="Pi">yes</td></tr>
+          <tr role="row" class="t-same"><th scope="row" role="rowheader">Lessons and rules</th><td role="cell" data-what="Lessons and rules" data-label="Claude Code">yes</td><td role="cell" data-what="Lessons and rules" data-label="Codex CLI">yes</td><td role="cell" data-what="Lessons and rules" data-label="Cursor IDE">yes</td><td role="cell" data-what="Lessons and rules" data-label="Pi">yes</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Lead Inbox pane</th><td role="cell" data-what="Lead Inbox pane" data-label="Claude Code" class="t-yes">yes, a mod in the <a href="/lead#start">lead npm package</a> (early access)</td><td role="cell" data-what="Lead Inbox pane" data-label="Codex CLI">sessions are led; the pane runs in Claude Code</td><td role="cell" data-what="Lead Inbox pane" data-label="Cursor IDE">not documented</td><td role="cell" data-what="Lead Inbox pane" data-label="Pi">not documented</td></tr>
         </tbody>
       </table>
       <p class="tools-note"><b>Bridge:</b> on Cursor and Pi the guards run through a small adapter, for the commands those tools report. <b>Strict mode:</b> set <code>enforcement: strict</code> in your Session Config; with the default <code>warn</code>, an edit outside the file list is reported, not blocked.</p>
@@ -556,19 +565,19 @@ expires-at: 2027-01-12</code></pre></li>
     </div></details><details class="technical-detail" id="measured"><summary>Repository numbers and their receipt</summary><div class="detail-body">
 
       <div class="cards">
-        <div class="card"><p class="n">v<span class="num" data-metric="version">5.16.0</span></p><p class="l">current release</p></div>
+        <div class="card"><p class="n">v<span class="num" data-metric="version">5.17.0</span></p><p class="l">current release</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="skills">52</span></p><p class="l">skills</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="commands">31</span></p><p class="l">slash commands</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typed sub-agents</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="hooks">30</span></p><p class="l">hook files</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="tests">823</span></p><p class="l">test files</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="sessions">294</span></p><p class="l">session records in this repo</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="tests">824</span></p><p class="l">test files</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="sessions">296</span></p><p class="l">session records in this repo</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="learnings">46</span></p><p class="l">learnings in this repo</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3212</span></p><p class="l">npm downloads, last 30 days</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3510</span></p><p class="l">npm downloads, last 30 days</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="github-stars">52</span></p><p class="l">GitHub stars</p></div>
       </div>
 
-      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-10-29</span> at commit <span class="num" data-metric="counted-sha">8a783e0a</span>. Repository records describe development activity, not active users. The session count includes only sessions that actually ran, not every line in the session log, so it is lower than on older versions of this page. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
+      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-11-01</span> at commit <span class="num" data-metric="counted-sha">7763efae</span>. Repository records describe development activity, not active users. The session count includes only sessions that actually ran, not every line in the session log, so it is lower than on older versions of this page. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
       <div class="faq-layout">

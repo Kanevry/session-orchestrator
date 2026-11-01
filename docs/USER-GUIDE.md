@@ -1434,8 +1434,22 @@ terminal.
 All hook commands route through
 [`hooks/run-node.sh`](https://github.com/Kanevry/session-orchestrator/blob/main/hooks/run-node.sh),
 which resolves Node via `$SO_NODE_BIN` → PATH → well-known install dirs → nvm
-and degrades gracefully: hooks are skipped with **one** warning per 6 hours
-instead of a shell error on every tool call.
+and also checks Windows locations under `ProgramFiles`/`PROGRAMFILES` (`nodejs`),
+`LOCALAPPDATA` (`Volta/bin`), and `NVM_SYMLINK` when `SO_NODE_SEARCH_DIRS` is unset.
+If Node is missing, PreToolUse guards for Bash, PowerShell, Edit, Write, and
+MultiEdit block the tool call and report the fix every time; other hooks are
+skipped with **one** warning per 6 hours.
+Install Node.js 24+, expose it on the harness PATH, or set `SO_NODE_BIN`.
+
+Three limits apply:
+
+- On native Windows, Codex starts its hooks through the `commandWindows` entries
+  in `hooks/hooks-codex.json`. They call `node` directly and never reach
+  `run-node.sh`, so this block does not apply there.
+- Cursor starts the bridge through the `.cursor/hooks.json` written by
+  `cursor-install`, and that outer call does not pass `--fail-closed` yet.
+- Whether Codex treats the launcher's exit 2 as a block has not been measured
+  yet.
 
 Fixes, in order of preference:
 

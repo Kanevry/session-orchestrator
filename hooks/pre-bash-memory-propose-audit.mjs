@@ -8,7 +8,7 @@
  * Part of issue #501. Node 20+, ESM, no external deps beyond project libs.
  *
  * Decision flow (G1-G7 early-return ladder):
- *   G1 — Bash tool only (other tools → exit 0)
+ *   G1 — Bash and Monitor commands (other tools → exit 0)
  *   G2 — non-empty command string (else → exit 0)
  *   G3 — regex match /\bnode\b.*\bmemory-propose\.mjs\b/i (no match → exit 0)
  *   G4 — resolve session_id (from stdin payload or .orchestrator/current-session.json)
@@ -22,7 +22,7 @@
  *   0  — always (audit hook is observe-only, never denies)
  */
 
-import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
+import { isShellCommandTool, readStdin, emitAllow } from '../scripts/lib/io.mjs';
 import crypto from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -235,8 +235,8 @@ async function main() {
   const input = await readStdin();
   if (!input) return emitAllow();
 
-  // G1 — only Bash tool is audited
-  if (input.tool_name !== 'Bash') return emitAllow();
+  // G1 — Bash and Monitor commands are audited
+  if (!isShellCommandTool(input.tool_name)) return emitAllow();
 
   // G2 — command must be a non-empty string
   const command = input?.tool_input?.command;

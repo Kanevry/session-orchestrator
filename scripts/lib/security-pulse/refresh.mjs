@@ -2,28 +2,34 @@
  * refresh.mjs — fills the security-pulse cache (#1769, stage 2).
  *
  * Runs DETACHED from the SessionStart probe (see spawn.mjs), never on the hook
- * path. Two independent parts:
+ * path. Three independent parts:
  *   - host part (TTL 6 h): Node security floors per major from the Node release
  *     index, and the CISA KEV CVE id list. Each source is fetched on its own; a
  *     failed source keeps its previous value and is marked `degraded`.
  *   - repo part (TTL 6 h, or HEAD moved): every lockfile package at HEAD, checked
  *     against OSV by REUSING the close-time `runLockfileCheck` with git's empty
  *     tree as base — one filter for private packages, one OSV client.
+ *   - PVR part (TTL 6 h): counts and oldest timestamp of private GitHub reports.
  *
  * Package names stay in the host-local cache; callers print counts only.
  */
+import { promisify } from 'node:util';
+
+import { execFile } from '../native-command.mjs';
 import { httpRequest } from '../http-request.mjs';
 import { releaseFileLock, tryAcquireFileLock } from '../file-lock.mjs';
 import { defaultRunGit } from '../security-delta/lockfiles.mjs';
 import { runLockfileCheck } from '../security-delta/osv.mjs';
 import { NODE_INDEX_URL, securityFloors } from '../security-delta/runtime-floor.mjs';
-import { cachePartStatus, hostSourcePart, repoPart, safePackageName, safePackageVersion } from '../security-pulse-banner.mjs';
-import { CACHE_SCHEMA, MAX_CACHED_FINDINGS, cachePaths, ensurePrivateDir, readCacheFile, writeCacheJson } from './cache.mjs';
+import { cachePartStatus, hostSourcePart, pvrPart, repoPart, safePackageName, safePackageVersion } from '../security-pulse-banner.mjs';
+import { CACHE_SCHEMA, MAX_CACHED_FINDINGS, cachePaths, ensurePrivateDir, readCacheFile, stampMs, writeCacheJson } from './cache.mjs';
 
 /** git's well-known empty tree object: every lockfile at HEAD reads as introduced. */
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 export const KEV_URL = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json';
+
+const execFileAsync = promisify(execFile);
 
 const CVE_RE = /^CVE-\d{4}-\d{4,}$/;
 const SHA_RE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
@@ -32,6 +38,12 @@ const SHA_RE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const NODE_INDEX_MAX_BYTES = 8 * 1024 * 1024;
 const KEV_MAX_BYTES = 8 * 1024 * 1024;
 const SOURCE_TIMEOUT_MS = 15_000;
+/** NAMED CEILING: 8 MiB of timestamp lines across all pages per remote; overflow is an error, never a partial count. */
+const PVR_MAX_BYTES = 8 * 1024 * 1024;
+/** Parallel remotes share 10 s: host 15 s + OSV 30 s + PVR 10 s leaves 5 s of the CLI's 60 s for local work. */
+const PVR_TIMEOUT_MS = 10_000;
+/** Bound each promise even if gh ignores termination; allow 2 s beyond its process timeout for shutdown. */
+const PVR_DEADLINE_MS = PVR_TIMEOUT_MS + 2_000;
 /** Repo OSV run: generous deadline and detail cap compared with the close-time 2 s / 25. */
 const REPO_DEADLINE_MS = 30_000;
 const REPO_MAX_DETAILS = 50;
@@ -106,6 +118,83 @@ function reduceFinding(f, kevSet) {
   };
 }
 
+/** Parse only fetch remotes on github.com; never use a remote as a command argument. */
+export function githubRepositories(remotes) {
+  const names = new Set();
+  for (const line of String(remotes).split('\n')) {
+    const remote = line.match(/^\S+\s+(\S+)\s+\(fetch\)\s*$/)?.[1];
+    if (!remote) continue;
+    const match = remote.match(/^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([a-z0-9-]+)\/([a-z0-9_.-]+)\/?$/i);
+    if (!match) continue;
+    const repo = match[2].replace(/\.git$/i, '');
+    if (!repo || repo === '.' || repo === '..') continue;
+    names.add(`${match[1]}/${repo}`.toLowerCase());
+    // NAMED CEILING (#1902): inspect at most three distinct GitHub repositories.
+    if (names.size === 3) break;
+  }
+  return [...names];
+}
+
+/** Keep only counts and timestamps; errors never retain a stale count. */
+async function refreshPvr(previous, git, gh, nowIso, deadlineMs) {
+  const entry = { fetched_at: nowIso, ...(previous?.last_ok_at ? { last_ok_at: previous.last_ok_at } : {}) };
+  let names;
+  try {
+    names = githubRepositories(await git(['remote', '-v']));
+  } catch {
+    return { ...entry, status: 'error' };
+  }
+  if (names.length === 0) return { ...entry, status: 'not-applicable' };
+  const results = await Promise.allSettled(names.map(async (name) => {
+    // gh paginates and selects timestamps: advisory titles, bodies and IDs never enter this process.
+    let timer;
+    let output;
+    try {
+      const deadline = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Advisory request deadline exceeded')), deadlineMs);
+        timer.unref();
+      });
+      output = await Promise.race([
+        gh(['api', '--paginate', '--hostname', 'github.com',
+          `repos/${name}/security-advisories?state=triage&per_page=100`, '--jq', '.[].created_at']),
+        deadline,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    return output.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(line)) throw new Error('Invalid advisory timestamp');
+      const at = stampMs(line);
+      if (at === null) throw new Error('Invalid advisory timestamp');
+      return at;
+    });
+  }));
+  let count = 0;
+  let oldest = null;
+  const failures = [];
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      count += result.value.length;
+      for (const at of result.value) oldest = oldest === null ? at : Math.min(oldest, at);
+    } else {
+      const err = result.reason;
+      failures.push(err?.code === 'ENOENT' ? 'gh-missing'
+        : /\bHTTP\s+(403|404)\b/i.test(String(err?.stderr ?? '')) ? 'no-access' : 'error');
+    }
+  }
+  if (failures.length < names.length) {
+    return {
+      ...entry, status: 'ok', count,
+      ...(count > 0 ? { oldest_at: new Date(oldest).toISOString() } : {}),
+      last_ok_at: nowIso,
+      ...(failures.length > 0 ? { unreadable: failures.length } : {}),
+    };
+  }
+  const status = failures.includes('gh-missing') ? 'gh-missing'
+    : failures.every((failure) => failure === 'no-access') ? 'no-access' : 'error';
+  return { ...entry, status };
+}
+
 /**
  * Refresh the cache for one repo. Never throws for network or git failures;
  * an fs failure writing the cache rejects (the CLI maps it to exit 2).
@@ -117,6 +206,8 @@ function reduceFinding(f, kevSet) {
  * @param {boolean} [opts.force]            ignore every TTL
  * @param {typeof httpRequest} [opts.request]  HTTP transport (tests)
  * @param {(args: string[]) => Promise<string>} [opts.runGit]  git runner (tests)
+ * @param {(args: string[]) => Promise<string>} [opts.runGh] gh runner (tests)
+ * @param {number} [opts.pvrDeadlineMs] hard gh promise deadline (tests)
  * @param {typeof runLockfileCheck} [opts.lockfileCheck]  OSV lockfile check (tests)
  * @returns {Promise<object>} counts-only summary
  */
@@ -127,6 +218,8 @@ export async function refreshSecurityPulse({
   force = false,
   request = httpRequest,
   runGit,
+  runGh,
+  pvrDeadlineMs = PVR_DEADLINE_MS,
   lockfileCheck = runLockfileCheck,
 } = {}) {
   const paths = cachePaths(repoRoot, { env });
@@ -158,57 +251,78 @@ export async function refreshSecurityPulse({
 
     // ── repo part ──────────────────────────────────────────────────────────
     const git = runGit ?? defaultRunGit(repoRoot);
-    let head = null;
-    try {
-      const out = String(await git(['rev-parse', 'HEAD'])).trim();
-      head = SHA_RE.test(out) ? out : null;
-    } catch {
-      head = null;
+    await (async () => {
+      let head;
+      try {
+        const out = String(await git(['rev-parse', 'HEAD'])).trim();
+        head = SHA_RE.test(out) ? out : null;
+      } catch {
+        head = null;
+      }
+      if (head === null) {
+        summary.repo.status = 'head-unknown';
+        return;
+      }
+      const prevRepoRead = readCacheFile(paths.repoFile);
+      const prevRepo = prevRepoRead.ok ? prevRepoRead.value : null;
+      const repoDue = force || prevRepo === null || prevRepo.head !== head
+        || cachePartStatus(repoPart(prevRepo), nowMs).due;
+      if (!repoDue) {
+        summary.repo.status = 'fresh';
+        return;
+      }
+      const check = await lockfileCheck({
+        repoRoot,
+        base: EMPTY_TREE,
+        head,
+        deadlineAt: Date.now() + REPO_DEADLINE_MS,
+        maxDetails: REPO_MAX_DETAILS,
+        request,
+        ...(runGit ? { runGit } : {}),
+        env,
+      });
+      const kevSet = new Set(Array.isArray(kev?.cves) ? kev.cves : []);
+      const findings = (check.findings ?? []).slice(0, MAX_CACHED_FINDINGS).map((f) => reduceFinding(f, kevSet));
+      writeCacheJson(paths.repoFile, {
+        schema: CACHE_SCHEMA,
+        fetched_at: nowIso,
+        head,
+        status: check.status,
+        reason: check.reason ?? null,
+        checked: check.checked ?? 0,
+        unchecked: check.unchecked ?? 0,
+        findings_total: (check.findings ?? []).length,
+        findings,
+      });
+      summary.repo = {
+        refreshed: true,
+        status: check.status,
+        checked: check.checked ?? 0,
+        unchecked: check.unchecked ?? 0,
+        findings: findings.length,
+        malicious: findings.filter((f) => f.class === 'malicious').length,
+        critical: findings.filter((f) => f.severity === 'critical').length,
+      };
+    })();
+
+    // ── PVR part: after OSV, including fresh or unknown HEAD ─────────────────
+    const prevPvrRead = readCacheFile(paths.pvrFile);
+    const prevPvr = prevPvrRead.ok ? prevPvrRead.value : null;
+    const pvrDue = force || cachePartStatus(pvrPart(prevPvr), nowMs).due;
+    if (pvrDue) {
+      const gh = runGh ?? (async (args) => {
+        const { stdout } = await execFileAsync('gh', args, {
+          encoding: 'utf8', timeout: PVR_TIMEOUT_MS, maxBuffer: PVR_MAX_BYTES,
+          cwd: repoRoot, env,
+        });
+        return stdout;
+      });
+      const pvr = await refreshPvr(prevPvr, git, gh, nowIso, pvrDeadlineMs);
+      writeCacheJson(paths.pvrFile, { schema: CACHE_SCHEMA, ...pvr });
+      summary.pvr = { refreshed: true, status: pvr.status };
+    } else {
+      summary.pvr = { refreshed: false, status: prevPvr.status };
     }
-    if (head === null) {
-      summary.repo.status = 'head-unknown';
-      return summary;
-    }
-    const prevRepoRead = readCacheFile(paths.repoFile);
-    const prevRepo = prevRepoRead.ok ? prevRepoRead.value : null;
-    const repoDue = force || prevRepo === null || prevRepo.head !== head
-      || cachePartStatus(repoPart(prevRepo), nowMs).due;
-    if (!repoDue) {
-      summary.repo.status = 'fresh';
-      return summary;
-    }
-    const check = await lockfileCheck({
-      repoRoot,
-      base: EMPTY_TREE,
-      head,
-      deadlineAt: Date.now() + REPO_DEADLINE_MS,
-      maxDetails: REPO_MAX_DETAILS,
-      request,
-      ...(runGit ? { runGit } : {}),
-      env,
-    });
-    const kevSet = new Set(Array.isArray(kev?.cves) ? kev.cves : []);
-    const findings = (check.findings ?? []).slice(0, MAX_CACHED_FINDINGS).map((f) => reduceFinding(f, kevSet));
-    writeCacheJson(paths.repoFile, {
-      schema: CACHE_SCHEMA,
-      fetched_at: nowIso,
-      head,
-      status: check.status,
-      reason: check.reason ?? null,
-      checked: check.checked ?? 0,
-      unchecked: check.unchecked ?? 0,
-      findings_total: (check.findings ?? []).length,
-      findings,
-    });
-    summary.repo = {
-      refreshed: true,
-      status: check.status,
-      checked: check.checked ?? 0,
-      unchecked: check.unchecked ?? 0,
-      findings: findings.length,
-      malicious: findings.filter((f) => f.class === 'malicious').length,
-      critical: findings.filter((f) => f.severity === 'critical').length,
-    };
     return summary;
   } finally {
     releaseFileLock(paths.lockFile);

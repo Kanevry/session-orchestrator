@@ -298,6 +298,12 @@ function duBytesBatch(repoRoot, relPaths, { platform = process.platform } = {}) 
     try {
       out = execFileSync('du', ['-skl', '--', ...chunk], {
         cwd: repoRoot,
+        // macOS du rewrites a non-ASCII name's bytes under the C locale (`ä`,
+        // c3 a4, comes back as e4), so the echoed path no longer matched the
+        // Map key and the directory's size vanished. The navigator push path
+        // runs hooks with LC_ALL=C, which made this a pre-push failure (#1884).
+        // A host without C.UTF-8 falls back to C: today's behaviour.
+        env: { ...process.env, LC_ALL: 'C.UTF-8' },
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout: 30_000,

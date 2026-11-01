@@ -143,7 +143,7 @@ export const DISALLOWED_EDIT_HANDLERS = [
 ];
 
 const CODEX_HOOK_WRAPPER_COMMAND =
-  /^SO_PLATFORM=codex CODEX_PLUGIN_ROOT="\$\{PLUGIN_ROOT\}" sh "\$\{PLUGIN_ROOT\}\/hooks\/run-node\.sh" "\$\{PLUGIN_ROOT\}\/hooks\/([A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*\.mjs)"$/;
+  /^SO_PLATFORM=codex CODEX_PLUGIN_ROOT="\$\{PLUGIN_ROOT\}" sh "\$\{PLUGIN_ROOT\}\/hooks\/run-node\.sh"(?: --fail-closed)? "\$\{PLUGIN_ROOT\}\/hooks\/([A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*\.mjs)"$/;
 
 /**
  * Parse the exact trusted Codex hook wrapper grammar.

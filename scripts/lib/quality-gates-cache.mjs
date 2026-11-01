@@ -13,7 +13,10 @@
  * regardless of cache state. shouldSkipIncremental({ waveRole: 'Quality' })
  * hard-returns skip=false (reason 'quality-wave-full-gate-mandate') BEFORE any
  * cache logic runs; the module otherwise only short-circuits Incremental in the
- * Impl waves of wave-executor.
+ * Impl waves of wave-executor. The Full Gate itself may be answered by a
+ * receipt for the identical content tree (`run-quality-gate.mjs --receipt`,
+ * scripts/lib/gate-receipt.mjs, #1897) — visibly, as `reused_from`; this cache
+ * never stands in for it.
  *
  * Storage:
  *   .orchestrator/metrics/baseline-results.jsonl  (append-only JSONL, one
@@ -201,6 +204,9 @@ export function shouldSkipIncremental({ repoRoot, sessionStartRef, scopeThreshol
   // rather than prose-only. Hard-return BEFORE any cache/git logic.
   // Case-insensitive + trimmed match (#F-B) — a coordinator prose typo like
   // 'quality' or 'Quality ' must not silently disable this invariant.
+  // #1897: the Full Gate this returns to may still be answered by a receipt for
+  // the identical content tree (`run-quality-gate.mjs --receipt`), which says so
+  // in `reused_from` — never by this cache.
   if (String(waveRole ?? '').trim().toLowerCase() === 'quality') {
     return { skip: false, reason: 'quality-wave-full-gate-mandate', changedFileCount: -1 };
   }

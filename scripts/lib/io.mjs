@@ -30,6 +30,17 @@ import {
 import path, { dirname } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 
+/**
+ * Whether a hook tool carries a POSIX shell command in tool_input.command.
+ * PowerShell has a separate command policy and is not parsed as POSIX shell.
+ *
+ * @param {unknown} name
+ * @returns {boolean}
+ */
+export function isShellCommandTool(name) {
+  return name === 'Bash' || name === 'Monitor';
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------

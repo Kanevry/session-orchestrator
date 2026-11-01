@@ -491,3 +491,33 @@ h1, h2, h3, h4 { overflow-wrap: break-word; hyphens: auto; }
   .footer-links a { min-height: 44px; margin-block: -6px; }
   .foot .cols a { display: inline-block; padding-block: 9px; margin-block: -9px; }
 }
+/* #1776: Codex form in the hero, glossary, phone layout for strip, tools, artifacts, diagram. */
+.hero-cmd-alt { font-size: .85rem; color: var(--fg-2); }
+.hero-cmd-alt code { display: block; margin-top: 4px; font-size: .85rem; overflow-wrap: anywhere; }
+.glossary { margin: 14px 0 0; max-width: 34rem; font-size: .85rem; color: var(--fg-2); }
+.glossary > summary { display: list-item; padding-block: 12px; min-height: 44px; box-sizing: border-box; cursor: pointer; color: var(--fg); }
+.glossary dl { display: grid; gap: 8px; margin: 4px 0 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.glossary dt { display: inline; margin-right: .35em; color: var(--fg); font-weight: 600; }
+.glossary dt::after { content: ':'; }
+.glossary dd { display: inline; margin: 0; }
+.scroll-hint { display: none; }
+@media (max-width: 600px) {
+  .harness-strip ul { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 4px 0; font-size: .85rem; color: var(--fg-2); }
+  .harness-strip li + li::before { content: '\00b7'; padding-inline: 8px; }
+  .harness-strip > a { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin: 6px 0 0; color: var(--fg); }
+  .learn-step .artifact { white-space: pre-wrap; overflow-wrap: break-word; }
+  .scroll-hint { display: block; margin: 0 0 8px; font-size: var(--text-meta); color: var(--fg-2); }
+  .scroll-hint::after { content: ' \2192'; color: var(--accent); }
+  .fig-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+  .fig-scroll svg { display: block; width: 820px; max-width: none; }
+  /* Tools: one card per tool. DOM and screen readers keep the row-major table. */
+  .tools-table tbody { display: flex; flex-direction: column; }
+  .tools-table tbody tr { display: contents; }
+  .tools-table tbody th, .tools-table tr.t-same > td { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .tools-table td { display: block; position: relative; padding: 4px 0 4px 9rem; border: 0; overflow-wrap: anywhere; }
+  .tools-table td::before { content: attr(data-what); position: absolute; left: 0; top: 4px; width: 8.5rem; color: var(--fg-2); font-size: var(--text-meta); }
+  .tools-table td:nth-child(2) { order: 1; }.tools-table td:nth-child(3) { order: 2; }.tools-table td:nth-child(4) { order: 3; }.tools-table td:nth-child(5) { order: 4; }
+  .tools-table tr:first-child td { margin-top: 16px; padding-top: 52px; border-top: 1px solid var(--line); }
+  .tools-table tr:first-child td::before { top: 52px; }
+  .tools-table tr:first-child td::after { content: attr(data-label); position: absolute; left: 0; top: 14px; font: 500 1.05rem var(--font-display); color: var(--fg); }
+}

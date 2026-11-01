@@ -7,11 +7,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "test": "vitest"
   },
   "dependencies": {
-    "next": "^15.5.28",
+    "next": "^16.4.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
@@ -19,8 +19,8 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "eslint": "^9.0.0",
-    "eslint-config-next": "^15.5.28",
+    "eslint": "^9.22.0",
+    "eslint-config-next": "^16.4.2",
     "typescript": "^5.7.0",
     "vitest": "^4.1.11"
   }

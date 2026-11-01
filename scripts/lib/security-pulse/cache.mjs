@@ -6,6 +6,7 @@
  *                            each source with its own `fetched_at` / `status`.
  *   - `repos/<key>.json`     reduced lockfile findings of one repo at one HEAD;
  *                            `<key>` = first 16 hex of sha256(realpath(repoRoot)).
+ *   - `repos/<key>.pvr.json` counts-only private reports, independent of HEAD.
  *   - `refresh.lock`         non-blocking host lock of the refresher.
  *   - `spawn-<key>.marker`   per-repo spawn throttle of the probe.
  *
@@ -62,7 +63,7 @@ export function repoKey(repoRoot) {
   return createHash('sha256').update(real).digest('hex').slice(0, 16);
 }
 
-/** @returns {{hostFile: string, repoFile: string, lockFile: string, spawnMarker: string, dir: string}} */
+/** @returns {{hostFile: string, repoFile: string, pvrFile: string, lockFile: string, spawnMarker: string, dir: string}} */
 export function cachePaths(repoRoot, { env = process.env } = {}) {
   const dir = cacheDir({ env });
   const key = repoKey(repoRoot);
@@ -70,6 +71,7 @@ export function cachePaths(repoRoot, { env = process.env } = {}) {
     dir,
     hostFile: path.join(dir, 'host.json'),
     repoFile: path.join(dir, 'repos', `${key}.json`),
+    pvrFile: path.join(dir, 'repos', `${key}.pvr.json`),
     lockFile: path.join(dir, 'refresh.lock'),
     spawnMarker: path.join(dir, `spawn-${key}.marker`),
   };

@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Befehle: Welchen tippst du, und was passiert danach</title>
+<meta name="description" content="Alle 31 Befehle von session-orchestrator nach Situation: wann du welchen nutzt, was du bekommst, wie du ihn in Claude Code, Codex, Cursor und Pi tippst und was er ändert.">
+<link rel="canonical" href="https://session-orchestrator.com/de/commands">
+<link rel="alternate" hreflang="en" href="https://session-orchestrator.com/commands">
+<link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de/commands">
+<link rel="alternate" hreflang="x-default" href="https://session-orchestrator.com/commands">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Session Orchestrator">
+<meta property="og:url" content="https://session-orchestrator.com/de/commands">
+<meta property="og:title" content="Befehle: Welchen tippst du, und was passiert danach">
+<meta property="og:description" content="Alle 31 Befehle von session-orchestrator nach Situation: wann du welchen nutzt, was du bekommst, wie du ihn in Claude Code, Codex, Cursor und Pi tippst und was er ändert.">
+<meta property="og:image" content="https://session-orchestrator.com/de/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Session Orchestrator: Plan, Go, Close mit einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
+<meta property="og:locale" content="de_DE">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Befehle: Welchen tippst du, und was passiert danach">
+<meta name="twitter:description" content="Alle 31 Befehle von session-orchestrator nach Situation: wann du welchen nutzt, was du bekommst, wie du ihn in Claude Code, Codex, Cursor und Pi tippst und was er ändert.">
+<meta name="twitter:image" content="https://session-orchestrator.com/de/og.png">
+<meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close mit einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
+<link rel="icon" href="/favicon.svg">
+<link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
+
+<!-- Self-contained graph, same shape as /commands: the shared site/product
+     identities are repeated so a crawler does not need the homepage. No
+     author/publisher node (leakage rule CP7). -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebPage",
+      "@id": "https://session-orchestrator.com/de/commands",
+      "url": "https://session-orchestrator.com/de/commands",
+      "name": "Befehle: Welchen tippst du, und was passiert danach",
+      "inLanguage": "de",
+      "isPartOf": { "@id": "https://session-orchestrator.com/#website" },
+      "about": { "@id": "https://session-orchestrator.com/#software" },
+      "breadcrumb": { "@id": "https://session-orchestrator.com/de/commands#breadcrumb" }
+    },
+    {
+      "@type": "BreadcrumbList",
+      "@id": "https://session-orchestrator.com/de/commands#breadcrumb",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "Session Orchestrator",
+          "item": "https://session-orchestrator.com/de"
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": "Befehle",
+          "item": "https://session-orchestrator.com/de/commands"
+        }
+      ]
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://session-orchestrator.com/#website",
+      "url": "https://session-orchestrator.com/",
+      "name": "Session Orchestrator",
+      "alternateName": "session-orchestrator",
+      "inLanguage": ["en", "de"]
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://session-orchestrator.com/#software",
+      "name": "Session Orchestrator",
+      "url": "https://session-orchestrator.com/"
+    }
+  ]
+}
+</script>
+
+<link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
+<link rel="stylesheet" href="/assets/site.css?v=20261029">
+<link rel="stylesheet" href="/assets/commands.css?v=20261029">
+</head>
+<body class="guide-page commands-page">
+<a class="skip" href="#main">Zum Inhalt</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.17.0</span></span></a>
+    <nav class="nav" aria-label="Hauptnavigation">
+      <a href="/de#how">Ablauf</a>
+      <a href="/de/commands" aria-current="page">Befehle</a>
+      <a href="/de#install">Installieren</a>
+      <a href="/guide" hreflang="en">Anleitung</a>
+      <a href="/lead" hreflang="en">Lead</a>
+      <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
+    </nav>
+    <p class="lang"><a href="/commands" lang="en">EN</a><a href="/de/commands" aria-current="page" lang="de">DE</a></p>
+    <details class="nav-menu"><summary>Menü</summary><nav class="nav" aria-label="Mobile Navigation">
+      <a href="/de#how">Ablauf</a>
+      <a href="/de/commands" aria-current="page">Befehle</a>
+      <a href="/de#install">Installieren</a>
+      <a href="/guide" hreflang="en">Anleitung</a>
+      <a href="/lead" hreflang="en">Lead</a>
+      <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
+    </nav></details>
+  </div>
+</header>
+
+<main id="main">
+  <section class="sec" id="top">
+    <div class="wrap">
+      <p class="eyebrow">31 Befehle &middot; Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
+      <h1 class="h-display">Welcher Befehl hilft mir gerade?</h1>
+      <p class="lede">Such dir aus, was du tun willst. Jeder Befehl unten sagt, wann du ihn nutzt, was du bekommst, wie du ihn tippst und was danach passiert.</p>
+
+      <div class="tool-switch" id="tool-switch" hidden>
+        <p class="tool-switch-label" id="tool-switch-h">Befehle zeigen für</p>
+        <div class="tool-switch-btns" role="group" aria-labelledby="tool-switch-h">
+          <button type="button" data-tool="claude" aria-pressed="true">Claude Code</button>
+          <button type="button" data-tool="codex" aria-pressed="false">Codex</button>
+          <button type="button" data-tool="cursor" aria-pressed="false">Cursor</button>
+          <button type="button" data-tool="pi" aria-pressed="false">Pi</button>
+        </div>
+        <p class="tool-status" id="tool-status" role="status" aria-live="polite"></p>
+      </div>
+
+      <h2 class="small" id="want-h">Ich will &hellip;</h2>
+      <ul class="tiles" aria-labelledby="want-h">
+        <li><a class="tile" href="#clarify"><span class="tile-title">Eine Idee klären</span><span class="tile-hint">/brainstorm, /grill, /deepen</span></a></li>
+        <li><a class="tile" href="#start-project"><span class="tile-title">Ein Projekt starten</span><span class="tile-hint">/bootstrap, /plan new</span></a></li>
+        <li><a class="tile" href="#plan-feature"><span class="tile-title">Eine Funktion planen</span><span class="tile-hint">/plan feature</span></a></li>
+        <li><a class="tile" href="#build"><span class="tile-title">Bauen</span><span class="tile-hint">/session, /go, /close</span></a></li>
+        <li><a class="tile" href="#maintain"><span class="tile-title">Pflegen</span><span class="tile-hint">/session housekeeping</span></a></li>
+        <li><a class="tile" href="#investigate"><span class="tile-title">Untersuchen</span><span class="tile-hint">/discovery, /debug</span></a></li>
+        <li><a class="tile" href="#test"><span class="tile-title">Testen</span><span class="tile-hint">/test, /ux-grill</span></a></li>
+        <li><a class="tile" href="#look-back"><span class="tile-title">Zurückschauen</span><span class="tile-hint">/eval, /plan retro</span></a></li>
+        <li><a class="tile" href="#learn"><span class="tile-title">Lernen</span><span class="tile-hint">/evolve, /reconcile</span></a></li>
+        <li><a class="tile" href="#many-repos"><span class="tile-title">Viele Repositories führen</span><span class="tile-hint">/portfolio, /dispatcher</span></a></li>
+      </ul>
+
+      <aside class="rule-box" aria-labelledby="rule-h">
+        <h2 class="small" id="rule-h">Faustregel</h2>
+        <table class="rule-table">
+          <caption class="sr">Welche Session du startest</caption>
+          <tbody>
+            <tr><th scope="row">Weißt du genau, was du bauen willst?</th><td><a href="#session"><code>/session feature</code></a></td></tr>
+            <tr><th scope="row">Noch unsicher, was du bauen willst?</th><td>Erst <a href="#plan"><code>/plan feature</code></a></td></tr>
+            <tr><th scope="row">Große oder unklare Änderung?</th><td><a href="#session"><code>/session deep</code></a></td></tr>
+            <tr><th scope="row">Aufräumen?</th><td><a href="#session"><code>/session housekeeping</code></a></td></tr>
+          </tbody>
+        </table>
+      </aside>
+
+      <h2 class="small" id="typing-h">So tippst du einen Befehl in deinem Coding-Tool</h2>
+      <table class="kv typing">
+        <caption class="sr">Wie jedes Coding-Tool einen Befehl ausführt</caption>
+        <tbody>
+          <tr><th scope="row">Claude Code</th><td>Tippe <code>/name</code> in den Chat. Im Headless-Modus <code>claude -p</code> nimmst du die lange Form, zum Beispiel <code>/session-orchestrator:session deep</code>.</td></tr>
+          <tr><th scope="row">Codex CLI</th><td>Wähle den Skill im Codex-Chat: <code>$session-orchestrator:name</code>. Es ist kein Shell-Befehl. Das einfache <code>/go</code> und <code>/close</code> funktioniert dort nicht, und Codex startet <code>go</code> oder <code>close</code> nie von selbst.</td></tr>
+          <tr><th scope="row">Cursor IDE</th><td>Tippe <code>/name</code>. Die Agents arbeiten nacheinander.</td></tr>
+          <tr><th scope="row">Pi</th><td>Tippe <code>/name</code>. Jeder Befehl ist eine Prompt-Vorlage.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="wrap cmd-ref">
+  <div class="cmd-filter" id="cmd-filter-box" hidden>
+    <label for="cmd-filter">Befehle filtern</label>
+    <input type="search" id="cmd-filter" autocomplete="off" spellcheck="false" placeholder="zum Beispiel: test, issues, commit" aria-describedby="cmd-count">
+    <p class="cmd-count" id="cmd-count" role="status" aria-live="polite">31 von 31 Befehlen</p>
+    <p class="cmd-empty" id="cmd-empty" hidden>Kein Befehl passt. Leere das Feld, um alle 31 zu sehen.</p>
+  </div>
+
+  <section class="cmd-group" id="start-here" aria-labelledby="start-here-h">
+    <h2 id="start-here-h">Hier anfangen</h2>
+    <p class="group-lede">Sechs Befehle reichen für deine ersten Sessions. Lerne diese und lass den Rest liegen, bis du ihn brauchst.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card is-start" id="bootstrap" data-command="bootstrap">
+      <h3><a class="cmd-name" href="#bootstrap"><code>/bootstrap</code></a> <span class="start-badge">Hier anfangen</span></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du nutzt session-orchestrator zum ersten Mal in einem Repository.</dd>
+      <dt>Du bekommst</dt><dd>Eine CLAUDE.md (auf Codex und Pi AGENTS.md) mit einer Session Config und der Mindeststruktur für das Repository, committet. Du siehst die angelegten Dateien und den Commit-Hash.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/bootstrap [--upgrade &lt;tier&gt;]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:bootstrap</code></dd><dt>Cursor</dt><dd><code>/bootstrap</code></dd><dt>Pi</dt><dd><code>/bootstrap</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-commits">Committet</span> <span class="asks">fragt vorher</span> <span class="touch-note">7 bis 9 Fragen zur Einrichtung; <code>/bootstrap --fast --no-interview</code> überspringt sie und nimmt sinnvolle Standardwerte</span></dd>
+      <dt>Braucht</dt><dd>Ein Git-Repository.</dd>
+      <dt>Danach</dt><dd>Starte mit <code>/session feature</code> deine erste Session.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/bootstrap/SKILL.md">Quelle: skills/bootstrap/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card is-start" id="session" data-command="session">
+      <h3><a class="cmd-name" href="#session"><code>/session</code></a> <span class="start-badge">Hier anfangen</span></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du setzt dich an die Arbeit in einem Repository und willst wissen, was als Nächstes dran ist.</dd>
+      <dt>Du bekommst</dt><dd>Es liest dein Repository (Git-Stand, Issues, CI, Umgebung) und schlägt vor, woran du arbeitest. Nichts ändert sich, bis du zustimmst.</dd>
+      <dt>Modi</dt><dd><ul class="modes"><li><code>housekeeping</code> aufräumen und pflegen</li><li><code>feature</code> eine klare Funktion bauen (am besten für die erste Session)</li><li><code>deep</code> große oder unklare Änderung: erst untersuchen, dann bauen (der Standard)</li><li><code>ultradeep</code> ein optionales, längeres Profil von deep für eine benannte Forschungsfrage; kein vierter Typ</li></ul></dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/session [housekeeping|feature|deep|ultradeep] [task]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:session deep</code></dd><dt>Cursor</dt><dd><code>/session deep</code></dd><dt>Pi</dt><dd><code>/session</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="asks">fragt vorher</span> <span class="touch-note">nur den Session-Stand (STATE.md, Session-Sperre); Code wartet auf /go</span></dd>
+      <dt>Braucht</dt><dd>/bootstrap ist erledigt. Gibt es noch keinen Session-Verlauf, fragt ein einfaches /session zuerst nach Aufgabe und Modus.</dd>
+      <dt>Danach</dt><dd>Stimme dem Plan mit <code>/go</code> zu.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/commands/session.md">Quelle: commands/session.md</a></p>
+    </article>
+    <article class="cmd-card is-start" id="go" data-command="go">
+      <h3><a class="cmd-name" href="#go"><code>/go</code></a> <span class="start-badge">Hier anfangen</span></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du hast den Session-Plan gelesen und bist einverstanden.</dd>
+      <dt>Du bekommst</dt><dd>Die vereinbarte Arbeit, erledigt in Runden (Waves). Jede Runde wird mit deinen Tests geprüft, und du bekommst eine Zusammenfassung des Fortschritts.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/go [instructions]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:go</code></dd><dt>Cursor</dt><dd><code>/go</code></dd><dt>Pi</dt><dd><code>/go</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="touch-note">ändert Code nach dem Plan; ohne Plan tut es nichts</span></dd>
+      <dt>Braucht</dt><dd>Einen Plan aus /session in diesem Chat, oder die pausierte STATE.md dieser Session.</dd>
+      <dt>Danach</dt><dd>Tippe <code>/close</code>, wenn die Runden fertig sind.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/go/SKILL.md">Quelle: skills/go/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card is-start" id="close" data-command="close">
+      <h3><a class="cmd-name" href="#close"><code>/close</code></a> <span class="start-badge">Hier anfangen</span></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Die Arbeit dieser Session ist fertig und du willst sie abschließen.</dd>
+      <dt>Du bekommst</dt><dd>Die volle Prüfung, einen sauberen Commit, Issues für das, was offen bleibt, und eine Zusammenfassung der Session.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/close</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:close</code></dd><dt>Cursor</dt><dd><code>/close</code></dd><dt>Pi</dt><dd><code>/close</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-commits">Committet</span> <span class="touch-note">legt auch Issues an und pusht, wenn das so eingestellt ist; verweigert sich, wenn die STATE.md einer anderen Session gehört</span></dd>
+      <dt>Braucht</dt><dd>Eine aktive Session von dir. Argumente werden ignoriert.</dd>
+      <dt>Danach</dt><dd>Starte die nächste Session mit <code>/session</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/close/SKILL.md">Quelle: skills/close/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card is-start" id="plan" data-command="plan">
+      <h3><a class="cmd-name" href="#plan"><code>/plan</code></a> <span class="start-badge">Hier anfangen</span></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du willst ein neues Projekt oder eine Funktion planen, oder auf eine abgeschlossene Phase zurückschauen.</dd>
+      <dt>Du bekommst</dt><dd>Eine recherchierte Fragerunde, danach ein PRD oder ein Retro-Dokument und priorisierte Issues.</dd>
+      <dt>Modi</dt><dd><ul class="modes"><li><code>new</code> ein neues Projekt: legt auch das Repository an und committet</li><li><code>feature</code> eine Funktion: PRD und Issues</li><li><code>retro</code> auf eine abgeschlossene Phase zurückschauen</li></ul></dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/plan [new|feature|retro]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:plan feature</code></dd><dt>Cursor</dt><dd><code>/plan feature</code></dd><dt>Pi</dt><dd><code>/plan</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-issues">Öffnet Issues</span> <span class="asks">fragt vorher</span> <span class="touch-note">schreibt das PRD oder die Retro; <code>new</code> legt auch ein Repository an und committet</span></dd>
+      <dt>Braucht</dt><dd>/bootstrap ist erledigt. <code>/plan new</code> nutzt <code>plan-baseline-path</code>, wenn gesetzt, sonst die mitgelieferten Vorlagen; <code>feature</code> und <code>retro</code> brauchen es nie.</dd>
+      <dt>Welcher</dt><dd>Nur eine Idee: <code>/brainstorm</code>. Umfang bekannt: <code>/plan feature</code>. Ganz klar: <code>/session feature</code>. Das PRD landet standardmäßig in <code>docs/prd/</code> (<code>plan-prd-location</code>).</dd>
+      <dt>Beispiel</dt><dd>Tippe <code>/plan feature</code>. Beantworte die erste Frage (was gebaut werden soll) mit deiner Aufgabe, zum Beispiel „Füge der Rechnungsliste einen CSV-Export hinzu“. Das PRD wird nach <code>docs/prd/YYYY-MM-DD-&lt;feature-name&gt;.md</code> geschrieben.</dd>
+      <dt>Danach</dt><dd>Wenn du willst, prüfe das PRD mit <code>/grill</code>, dann baust du es mit <code>/session feature</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/plan/SKILL.md">Quelle: skills/plan/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card is-start" id="evolve" data-command="evolve">
+      <h3><a class="cmd-name" href="#evolve"><code>/evolve</code></a> <span class="start-badge">Hier anfangen</span></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Nach ein paar Sessions willst du aus dem lernen, was gut oder schlecht lief.</dd>
+      <dt>Du bekommst</dt><dd>Vorgeschlagene Lehren aus deinen früheren Sessions. Du entscheidest, welche du behältst.</dd>
+      <dt>Modi</dt><dd><ul class="modes"><li><code>analyze</code> Lehren vorschlagen (Standard)</li><li><code>review</code> gespeicherte Lehren bearbeiten</li><li><code>list</code> gespeicherte Lehren zeigen</li><li><code>dialectic</code> USER.md und AGENT.md aktualisieren, nur mit --apply</li></ul></dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/evolve analyze</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:evolve analyze</code></dd><dt>Cursor</dt><dd><code>/evolve analyze</code></dd><dt>Pi</dt><dd><code>/evolve</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="asks">fragt vorher</span> <span class="touch-note">speichert eine Lehre erst, wenn du sie bestätigst</span></dd>
+      <dt>Braucht</dt><dd>/bootstrap ist erledigt, <code>persistence: true</code> in deiner Session Config, etwas Session-Verlauf.</dd>
+      <dt>Danach</dt><dd>Tippe <code>/reconcile</code>, um Lehren in Regeln zu verwandeln.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/evolve/SKILL.md">Quelle: skills/evolve/SKILL.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group" id="clarify" aria-labelledby="clarify-h">
+    <h2 id="clarify-h">Eine Idee klären</h2>
+    <p class="group-lede">Aus einer vagen Idee wird etwas, das du planen kannst.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card" id="brainstorm" data-command="brainstorm">
+      <h3><a class="cmd-name" href="#brainstorm"><code>/brainstorm</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du hast eine Idee für eine Funktion, aber Umfang oder UX sind noch unscharf.</dd>
+      <dt>Du bekommst</dt><dd>Einen kurzen Fragendialog (3 bis 5 Runden) und eine freigegebene Design-Spezifikation in docs/specs/.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/brainstorm [topic-slug]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:brainstorm export-to-csv</code></dd><dt>Cursor</dt><dd><code>/brainstorm export-to-csv</code></dd><dt>Pi</dt><dd><code>/brainstorm</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="asks">fragt vorher</span> <span class="touch-note">schreibt nur die Spezifikation; keine Code-Arbeit, bis du das Design freigibst</span></dd>
+      <dt>Braucht</dt><dd>/bootstrap ist erledigt.</dd>
+      <dt>Danach</dt><dd><code>/plan feature</code> mit der Spezifikation, oder <code>/write-executable-plan</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/brainstorm/SKILL.md">Quelle: skills/brainstorm/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="grill" data-command="grill">
+      <h3><a class="cmd-name" href="#grill"><code>/grill</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Ein Plan oder PRD wirkt fertig, und du willst ihn angreifen lassen, bevor jemand baut.</dd>
+      <dt>Du bekommst</dt><dd>Harte Fragen, eine Entscheidung nach der anderen, gestützt auf deinen Code. Widersprüche und schwache Annahmen kommen ans Licht.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/grill [file-or-topic]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:grill docs/prd/&lt;file&gt;.md</code></dd><dt>Cursor</dt><dd><code>/grill &lt;file&gt;</code></dd><dt>Pi</dt><dd><code>/grill</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="asks">fragt vorher</span> <span class="touch-note">meist nur Gespräch; schreibt auf Wunsch eine Grill-Notiz in docs/specs/</span></dd>
+      <dt>Braucht</dt><dd>Einen Plan im Chat, oder eine Datei zum Prüfen.</dd>
+      <dt>Danach</dt><dd><code>/plan feature</code>, um den gehärteten Plan aufzuschreiben.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/grill/SKILL.md">Quelle: skills/grill/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="deepen" data-command="deepen">
+      <h3><a class="cmd-name" href="#deepen"><code>/deepen</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Ein Bericht, eine Analyse, ein Plan oder ein Audit soll so gemacht werden, wie es ein Profi täte, ohne größer zu werden.</dd>
+      <dt>Du bekommst</dt><dd>Dieselbe Aufgabe neu formuliert, mit Rohdaten als Eingabe, schärferen Methoden und einer unabhängigen Prüfinstanz, und einen Halt, bevor etwas läuft. Kleine Änderungen und Anfragen mit „nur“ oder „schnell“ laufen unverändert durch.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/deepen [task]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:deepen &lt;task&gt;</code></dd><dt>Cursor</dt><dd><code>/deepen</code></dd><dt>Pi</dt><dd><code>/deepen</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-read">Liest nur</span> <span class="asks">fragt vorher</span> <span class="touch-note">liest, bis du die Neufassung bestätigst; danach erledigt es die Aufgabe, die du gewählt hast</span></dd>
+      <dt>Braucht</dt><dd>Eine Aufgabe im Chat oder als Argument.</dd>
+      <dt>Danach</dt><dd>Wähle die Neufassung, das Original oder eine engere Version.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/deepen/SKILL.md">Quelle: skills/deepen/SKILL.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group" id="start-project" aria-labelledby="start-project-h">
+    <h2 id="start-project-h">Ein Projekt starten</h2>
+    <p class="group-lede">Ein Repository einrichten, die Einrichtung prüfen oder ein Produkt in ein eigenes Repository auslagern.</p>
+    <p class="group-also">Auch: <a href="#bootstrap"><code>/bootstrap</code></a> und <a href="#plan"><code>/plan new</code></a> unter Hier anfangen.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card" id="spinout" data-command="spinout">
+      <h3><a class="cmd-name" href="#spinout"><code>/spinout</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Ein Produkt oder eine bereinigte Kopie soll aus diesem Repository in ein eigenes umziehen.</dd>
+      <dt>Du bekommst</dt><dd>Eine geführte Auslagerung in 5 Schritten: Ziel, Prüfung auf sensible Inhalte, Kopie mit frischem Git, Einfriermarke, Remotes.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/spinout [--type venture|snapshot] [--dry-run]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:spinout</code></dd><dt>Cursor</dt><dd><code>/spinout</code></dd><dt>Pi</dt><dd><code>/spinout</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-commits">Committet</span> <span class="asks">fragt vorher</span> <span class="touch-note">legt ein neues Repository an und hinterlässt eine Einfriermarke in der Quelle; --dry-run druckt nur den Plan</span></dd>
+      <dt>Braucht</dt><dd>/bootstrap ist erledigt. Du kennst Zielpfad und Konto.</dd>
+      <dt>Danach</dt><dd>Tippe <code>/bootstrap</code> im neuen Repository.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/spinout/SKILL.md">Quelle: skills/spinout/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="harness-audit" data-command="harness-audit">
+      <h3><a class="cmd-name" href="#harness-audit"><code>/harness-audit</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du willst prüfen, ob session-orchestrator in diesem Repository richtig eingerichtet ist.</dd>
+      <dt>Du bekommst</dt><dd>Eine Bewertung (healthy, warn oder critical) und jede Kategorie unter 7 von 10.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/harness-audit</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:harness-audit</code></dd><dt>Cursor</dt><dd><code>/harness-audit</code></dd><dt>Pi</dt><dd><code>/harness-audit</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="touch-note">hängt einen Eintrag an .orchestrator/metrics/audit.jsonl an</span></dd>
+      <dt>Braucht</dt><dd>Nichts. Argumente werden ignoriert.</dd>
+      <dt>Danach</dt><dd>Behebe schwache Kategorien, zum Beispiel mit <code>/bootstrap --upgrade</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/harness-audit/SKILL.md">Quelle: skills/harness-audit/SKILL.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group" id="plan-feature" aria-labelledby="plan-feature-h">
+    <h2 id="plan-feature-h">Eine Funktion planen</h2>
+    <p class="group-lede">Schreib auf, was gebaut werden soll, bevor es gebaut wird.</p>
+    <p class="group-also">Auch: <a href="#plan"><code>/plan feature</code></a> unter Hier anfangen.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card" id="write-executable-plan" data-command="write-executable-plan">
+      <h3><a class="cmd-name" href="#write-executable-plan"><code>/write-executable-plan</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du hast ein freigegebenes PRD oder eine Design-Spezifikation und willst Schritte, denen jeder Agent folgen kann.</dd>
+      <dt>Du bekommst</dt><dd>Einen Plan in docs/plans/ mit den Dateien je Aufgabe, vollständigem Code und genauen Prüfbefehlen.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/write-executable-plan</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:write-executable-plan</code></dd><dt>Cursor</dt><dd><code>/write-executable-plan</code></dd><dt>Pi</dt><dd><code>/write-executable-plan</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="touch-note">eine Plan-Datei; lehnt Platzhalter wie TBD oder TODO ab</span></dd>
+      <dt>Braucht</dt><dd>/bootstrap ist erledigt, dazu ein freigegebenes PRD (aus /plan feature) oder eine Spezifikation (aus /brainstorm).</dd>
+      <dt>Danach</dt><dd>Baue ihn in <code>/session</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/write-executable-plan/SKILL.md">Quelle: skills/write-executable-plan/SKILL.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group" id="build" aria-labelledby="build-h">
+    <h2 id="build-h">Bauen</h2>
+    <p class="group-lede">Die Arbeit in geprüften Runden erledigen.</p>
+    <p class="group-also">Meistens: <a href="#session"><code>/session</code></a>, <a href="#go"><code>/go</code></a>, <a href="#close"><code>/close</code></a> unter Hier anfangen.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card" id="autopilot" data-command="autopilot">
+      <h3><a class="cmd-name" href="#autopilot"><code>/autopilot</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Mehrere volle Sessions sollen von selbst laufen, während du weg bist.</dd>
+      <dt>Du bekommst</dt><dd>Wiederholte Schleifen aus Start, Plan, Bauen und Abschluss. 10 Notbremsen stoppen es; jeder Lauf steht in autopilot.jsonl.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/autopilot [--headless] [--max-sessions=N] [--max-hours=H] [--dry-run]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:autopilot</code></dd><dt>Cursor</dt><dd><code>/autopilot</code></dd><dt>Pi</dt><dd><code>/autopilot</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-commits">Committet</span> <span class="touch-note">ändert und committet wie /go und /close; --dry-run führt nichts aus</span></dd>
+      <dt>Braucht</dt><dd>Starte es auf oberster Ebene, nie in einer laufenden Session. --headless braucht eine Anmeldung bei <code>claude -p</code>.</dd>
+      <dt>Danach</dt><dd>Lies autopilot.jsonl und die Zusammenfassungen der Sessions.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/autopilot/SKILL.md">Quelle: skills/autopilot/SKILL.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group" id="maintain" aria-labelledby="maintain-h">
+    <h2 id="maintain-h">Pflegen</h2>
+    <p class="group-lede">Halte Code, Gedächtnis und Einrichtung in Form.</p>
+    <p class="group-also">Auch: <a href="#session"><code>/session housekeeping</code></a> für eine kurze Aufräumrunde.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card" id="architecture" data-command="architecture">
+      <h3><a class="cmd-name" href="#architecture"><code>/architecture</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Der Code wirkt verwickelt, und du willst Ideen, die ihn leichter testbar und auffindbar machen.</dd>
+      <dt>Du bekommst</dt><dd>Vorgeschlagene Umbauten, die flache Module zu tiefen machen.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/architecture</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:architecture</code></dd><dt>Cursor</dt><dd><code>/architecture</code></dd><dt>Pi</dt><dd><code>/architecture</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-read">Liest nur</span> <span class="touch-note">schlägt vor, ändert nichts</span></dd>
+      <dt>Braucht</dt><dd>Funktioniert am besten mit CONTEXT.md und docs/adr/. Ohne CONTEXT.md fragt es zuerst nach deiner Fachdomäne.</dd>
+      <dt>Danach</dt><dd>Mach aus einem Vorschlag ein <code>/plan feature</code> oder eine Session-Aufgabe.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/architecture/SKILL.md">Quelle: skills/architecture/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="memory-cleanup" data-command="memory-cleanup">
+      <h3><a class="cmd-name" href="#memory-cleanup"><code>/memory-cleanup</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Die Gedächtnisnotizen von Claude zu diesem Repository sind veraltet, widersprüchlich oder zu lang.</dd>
+      <dt>Du bekommst</dt><dd>Einen aufgeräumten Gedächtnisordner mit einer MEMORY.md unter 200 Zeilen, oder einen Vorschlag, den du später anwendest.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/memory-cleanup [--dry-run | --apply-pending]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:memory-cleanup</code></dd><dt>Cursor</dt><dd><code>/memory-cleanup</code></dd><dt>Pi</dt><dd><code>/memory-cleanup</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="asks">fragt vorher</span> <span class="touch-note">ändert ~/.claude/projects/&lt;repo&gt;/memory/; --dry-run schreibt nur einen Vorschlag</span></dd>
+      <dt>Braucht</dt><dd>Einen vorhandenen Gedächtnisordner.</dd>
+      <dt>Danach</dt><dd>Arbeite weiter. Wiederhole es alle 5 oder mehr Sessions.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/memory-cleanup/SKILL.md">Quelle: skills/memory-cleanup/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="repo-audit" data-command="repo-audit">
+      <h3><a class="cmd-name" href="#repo-audit"><code>/repo-audit</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du willst wissen, ob ein Repository die Grundanforderungen erfüllt: Konfiguration, CI, Tests, Sicherheit, Doku.</dd>
+      <dt>Du bekommst</dt><dd>Einen Prüfbericht über 9 Kategorien: pass, fail oder warn.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/repo-audit</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:repo-audit</code></dd><dt>Cursor</dt><dd><code>/repo-audit</code></dd><dt>Pi</dt><dd><code>/repo-audit</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="touch-note">nur ein Bericht, behebt nie etwas; schreibt eine JSON-Datei nach .orchestrator/metrics/</span></dd>
+      <dt>Braucht</dt><dd>Nichts. Argumente werden ignoriert.</dd>
+      <dt>Danach</dt><dd>Behebe durchgefallene Kategorien in <code>/session housekeeping</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/repo-audit/SKILL.md">Quelle: skills/repo-audit/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="sunset-review" data-command="sunset-review">
+      <h3><a class="cmd-name" href="#sunset-review"><code>/sunset-review</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Einmal im Quartal willst du Skills, Agents oder Befehle finden, die niemand mehr nutzt.</dd>
+      <dt>Du bekommst</dt><dd>Jeden Eintrag einsortiert in Active, Investigate, Demote oder Retire.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/sunset-review [--kind skill|agent|command] [--window-days N]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:sunset-review</code></dd><dt>Cursor</dt><dd><code>/sunset-review</code></dd><dt>Pi</dt><dd><code>/sunset-review</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="touch-note">schreibt einen Bericht; löscht nie etwas</span></dd>
+      <dt>Braucht</dt><dd>Nutzungsaufzeichnungen (Standardzeitraum 90 Tage).</dd>
+      <dt>Danach</dt><dd>Entscheide selbst über die Kandidaten für Retire und Demote.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/sunset-review/SKILL.md">Quelle: skills/sunset-review/SKILL.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group" id="investigate" aria-labelledby="investigate-h">
+    <h2 id="investigate-h">Untersuchen</h2>
+    <p class="group-lede">Finde Probleme und ihre Ursachen, bevor du etwas behebst.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card" id="discovery" data-command="discovery">
+      <h3><a class="cmd-name" href="#discovery"><code>/discovery</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du willst systematisch nach Qualitätsproblemen und technischen Schulden suchen.</dd>
+      <dt>Du bekommst</dt><dd>Eine Liste von Funden, die du einzeln durchgehst. Bestätigte werden zu Issues.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/discovery [all|code|infra|ui|arch|session|audit|vault|feature]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:discovery code</code></dd><dt>Cursor</dt><dd><code>/discovery code</code></dd><dt>Pi</dt><dd><code>/discovery</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-issues">Öffnet Issues</span> <span class="asks">fragt vorher</span> <span class="touch-note">schaut nur, ohne etwas zu ändern; öffnet Issues nur für Funde, die du bestätigst</span></dd>
+      <dt>Braucht</dt><dd>/bootstrap ist erledigt. --since und --full lassen sich nicht kombinieren.</dd>
+      <dt>Danach</dt><dd>Greife die neuen Issues in <code>/session</code> auf.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/discovery/SKILL.md">Quelle: skills/discovery/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="debug" data-command="debug">
+      <h3><a class="cmd-name" href="#debug"><code>/debug</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Ein Test schlägt fehl, der Build bricht, oder etwas verhält sich unerwartet.</dd>
+      <dt>Du bekommst</dt><dd>Eine Ursachenforschung in 4 Schritten, aufgeschrieben, bevor ein Fix vorgeschlagen wird.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/debug [bug-or-issue]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:debug &quot;test timeout in CI&quot;</code></dd><dt>Cursor</dt><dd><code>/debug &lt;bug&gt;</code></dd><dt>Pi</dt><dd><code>/debug</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="asks">fragt vorher</span> <span class="touch-note">schreibt zuerst eine Debug-Notiz nach .orchestrator/debug/</span></dd>
+      <dt>Braucht</dt><dd>/bootstrap ist erledigt. Ohne Argument wählt es einen wahrscheinlichen Fehler und bestätigt ihn mit dir.</dd>
+      <dt>Danach</dt><dd>Behebe ihn in einer Session und verweise dabei auf die Debug-Notiz.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/debug/SKILL.md">Quelle: skills/debug/SKILL.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group" id="test" aria-labelledby="test-h">
+    <h2 id="test-h">Testen</h2>
+    <p class="group-lede">Prüfe, ob die App funktioniert und ob deine Tests es wert sind, behalten zu werden.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card" id="test" data-command="test">
+      <h3><a class="cmd-name" href="#test"><code>/test</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du willst prüfen, ob eine Web- oder macOS-App für einen Nutzer wirklich funktioniert.</dd>
+      <dt>Du bekommst</dt><dd>Gesteuerte Testläufe mit Screenshots, ein UX-Urteil und einen Bericht, der mit deinen offenen Issues abgeglichen ist.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/test [scope|profile] [--dry-run]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:test smoke</code></dd><dt>Cursor</dt><dd><code>/test smoke</code></dd><dt>Pi</dt><dd><code>/test</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-issues">Öffnet Issues</span> <span class="touch-note">schreibt Test-Artefakte und einen Bericht; --dry-run druckt nur den Plan</span></dd>
+      <dt>Braucht</dt><dd>Ein lauffähiges Ziel: Playwright für das Web, Peekaboo für macOS.</dd>
+      <dt>Danach</dt><dd>Behebe die Funde in einer Session oder mit <code>/debug</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/test/SKILL.md">Quelle: skills/test/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="test-audit" data-command="test-audit">
+      <h3><a class="cmd-name" href="#test-audit"><code>/test-audit</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du fragst dich, ob sich ein Test lohnt, oder deine Test-Suite ist zu groß geworden.</dd>
+      <dt>Du bekommst</dt><dd>Ein Urteil über einen neuen Test (gate), oder eine kleinere Suite, in der jedes Löschen und Zusammenlegen einen Beleg trägt.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/test-audit [gate|audit|campaign] [scope]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:test-audit audit tests/lib</code></dd><dt>Cursor</dt><dd><code>/test-audit audit &lt;scope&gt;</code></dd><dt>Pi</dt><dd><code>/test-audit</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="touch-note">audit und campaign ändern Tests unter einer Abdeckungsgrenze; gate urteilt nur</span></dd>
+      <dt>Braucht</dt><dd>Eine Test-Suite. Ein fehlender Bereich wird einmal erfragt.</dd>
+      <dt>Danach</dt><dd>Lass deine vollen Tests laufen und committe mit <code>/close</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/test-audit/SKILL.md">Quelle: skills/test-audit/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="ux-grill" data-command="ux-grill">
+      <h3><a class="cmd-name" href="#ux-grill"><code>/ux-grill</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Eine Web-App läuft lokal, und du willst ihre UX jedes Mal gleich prüfen.</dd>
+      <dt>Du bekommst</dt><dd>Gemessene Prüfungen je Route und Bildschirmgröße, danach einen Rundgang durch jede Nutzer-Reise mit Screenshots.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/ux-grill [loopback-url | manifest-path]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:ux-grill http://127.0.0.1:3100</code></dd><dt>Cursor</dt><dd><code>/ux-grill &lt;url&gt;</code></dd><dt>Pi</dt><dd><code>/ux-grill</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-issues">Öffnet Issues</span> <span class="asks">fragt vorher</span> <span class="touch-note">schreibt Messwerte; committet nie und ändert keinen Produktcode</span></dd>
+      <dt>Braucht</dt><dd>Die App läuft unter einer lokalen URL, und agent-browser ist installiert.</dd>
+      <dt>Danach</dt><dd>Behebe die Issues und lass es danach noch einmal laufen, um zu vergleichen.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/ux-grill/SKILL.md">Quelle: skills/ux-grill/SKILL.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group" id="look-back" aria-labelledby="look-back-h">
+    <h2 id="look-back-h">Zurückschauen</h2>
+    <p class="group-lede">Sieh, wie eine Session oder eine Phase wirklich gelaufen ist.</p>
+    <p class="group-also">Auch: <a href="#plan"><code>/plan retro</code></a> für eine abgeschlossene Phase.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card" id="eval" data-command="eval">
+      <h3><a class="cmd-name" href="#eval"><code>/eval</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du willst eine ehrliche Bewertung, wie gut die letzte Session ihrem Ablauf gefolgt ist.</dd>
+      <dt>Du bekommst</dt><dd>Eine Bewertung je Dimension nach einem festen Raster (keine einzelne Gesamtnote) und auf Wunsch einen HTML-Bericht.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/eval [--session &lt;id&gt;] [--no-write]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:eval</code></dd><dt>Cursor</dt><dd><code>/eval</code></dd><dt>Pi</dt><dd><code>/eval</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="touch-note">hängt an .orchestrator/metrics/eval.jsonl an, außer mit --no-write</span></dd>
+      <dt>Braucht</dt><dd>Mindestens eine abgeschlossene Session.</dd>
+      <dt>Danach</dt><dd>Tippe <code>/evolve</code>, um aus den schwachen Dimensionen zu lernen.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/eval/SKILL.md">Quelle: skills/eval/SKILL.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group" id="learn" aria-labelledby="learn-h">
+    <h2 id="learn-h">Lernen</h2>
+    <p class="group-lede">Verwandle Lehren aus früheren Sessions in Regeln, die deine Agents lesen.</p>
+    <p class="group-also">Zuerst: <a href="#evolve"><code>/evolve</code></a> unter Hier anfangen.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card" id="reconcile" data-command="reconcile">
+      <h3><a class="cmd-name" href="#reconcile"><code>/reconcile</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du hast bestätigte Lehren und willst, dass die starken zu Regeln werden.</dd>
+      <dt>Du bekommst</dt><dd>Vorgeschlagene Regeln in .claude/rules/, vier auf einmal. Deine Agents lesen sie beim nächsten Mal.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/reconcile [--dry-run]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:reconcile</code></dd><dt>Cursor</dt><dd><code>/reconcile</code></dd><dt>Pi</dt><dd><code>/reconcile</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="asks">fragt vorher</span> <span class="touch-note">schreibt nur die Regeln, die du freigibst; --dry-run schreibt nichts</span></dd>
+      <dt>Braucht</dt><dd>Gespeicherte Lehren aus <code>/evolve</code>.</dd>
+      <dt>Danach</dt><dd>Committe die neuen Regeln mit <code>/close</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/reconcile/SKILL.md">Quelle: skills/reconcile/SKILL.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group" id="many-repos" aria-labelledby="many-repos-h">
+    <h2 id="many-repos-h">Viele Repositories führen</h2>
+    <p class="group-lede">Sieh alle deine Repositories auf einmal und wähle das nächste.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card" id="portfolio" data-command="portfolio">
+      <h3><a class="cmd-name" href="#portfolio"><code>/portfolio</code></a> <span class="start-badge start-badge--maint">Für Maintainer</span></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du betreust viele Repositories und willst eine Übersicht über ihre Issues, MRs und ihr Alter.</dd>
+      <dt>Du bekommst</dt><dd>Eine Dashboard-Datei in deinem Vault: 01-projects/_PORTFOLIO.md.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/portfolio [--dry-run] [--repo &lt;name&gt;]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:portfolio</code></dd><dt>Cursor</dt><dd><code>/portfolio</code></dd><dt>Pi</dt><dd><code>/portfolio</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="touch-note">schreibt das Dashboard; --dry-run druckt nur den Diff</span></dd>
+      <dt>Braucht</dt><dd><code>gitlab-portfolio.enabled: true</code> und einen Vault-Ordner in deiner Session Config; glab oder gh angemeldet.</dd>
+      <dt>Danach</dt><dd>Wähle ein Repository, oder frage <code>/dispatcher</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/portfolio/SKILL.md">Quelle: skills/portfolio/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="dispatcher" data-command="dispatcher">
+      <h3><a class="cmd-name" href="#dispatcher"><code>/dispatcher</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Ein Repository ist fertig, und du willst wissen, an welchem es sich als Nächstes am meisten lohnt zu arbeiten.</dd>
+      <dt>Du bekommst</dt><dd>Eine Rangliste der freien Repositories und eine Empfehlung. Sobald du bestätigst, belegt es dieses Repository und übergibt an /session.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/dispatcher [--dry-run] [--repo &lt;name&gt;]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:dispatcher</code></dd><dt>Cursor</dt><dd><code>/dispatcher</code></dd><dt>Pi</dt><dd><code>/dispatcher</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="asks">fragt vorher</span> <span class="touch-note">liest nur, bis du bestätigst; dann nimmt es die Session-Sperre dieses Repositorys</span></dd>
+      <dt>Braucht</dt><dd>Mehrere Repositories unter einem Ordner.</dd>
+      <dt>Danach</dt><dd>Tippe das vorgeschlagene <code>/session</code> im gewählten Repository.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/dispatcher/SKILL.md">Quelle: skills/dispatcher/SKILL.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group" id="more" aria-labelledby="more-h">
+    <h2 id="more-h">Weitere Werkzeuge</h2>
+    <p class="group-lede">Kleinere Helfer für Sonderfälle.</p>
+    <div class="cmd-grid">
+    <article class="cmd-card" id="persona-panel" data-command="persona-panel">
+      <h3><a class="cmd-name" href="#persona-panel"><code>/persona-panel</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Ein Text oder eine Datei soll von mehreren Experten- oder Käufer-Personas auf einmal geprüft werden.</dd>
+      <dt>Du bekommst</dt><dd>Ein Urteil je Persona, zusammengeführt zu einem Gesamturteil.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/persona-panel &lt;target&gt; [--mode voting|hard-gate|summary]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:persona-panel docs/landing.md</code></dd><dt>Cursor</dt><dd><code>/persona-panel &lt;target&gt;</code></dd><dt>Pi</dt><dd><code>/persona-panel</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="touch-note">schreibt eine Ergebnisdatei nach .orchestrator/persona-panel/; --dry-run schreibt nichts</span></dd>
+      <dt>Braucht</dt><dd>Ein Ziel im Projekt und Persona-Dateien in .claude/personas/.</dd>
+      <dt>Danach</dt><dd>Überarbeite das Ziel anhand der Urteile.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/persona-panel/SKILL.md">Quelle: skills/persona-panel/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="eli5" data-command="eli5">
+      <h3><a class="cmd-name" href="#eli5"><code>/eli5</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Die letzte Antwort war zu technisch oder zu lang.</dd>
+      <dt>Du bekommst</dt><dd>Dieselben Fakten in einfachen Worten, in deiner Sprache, ohne dass etwas fehlt.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/eli5 [topic]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:eli5</code></dd><dt>Cursor</dt><dd><code>/eli5</code></dd><dt>Pi</dt><dd><code>/eli5</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-read">Liest nur</span> <span class="touch-note">formuliert nur Text im Chat um</span></dd>
+      <dt>Braucht</dt><dd>Nichts.</dd>
+      <dt>Danach</dt><dd>Handle nach der jetzt klaren Antwort.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/eli5/SKILL.md">Quelle: skills/eli5/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="release" data-command="release">
+      <h3><a class="cmd-name" href="#release"><code>/release</code></a> <span class="start-badge start-badge--maint">Für Maintainer</span></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du betreust dieses Paket und willst eine neue Version herausgeben.</dd>
+      <dt>Du bekommst</dt><dd>Die Release-Schritte in der vorgeschriebenen Reihenfolge, mit den Bedingungen, die ein Release stoppen.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/release [X.Y.Z]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:release X.Y.Z</code></dd><dt>Cursor</dt><dd><code>/release</code></dd><dt>Pi</dt><dd><code>/release</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-publishes">Veröffentlicht</span> <span class="touch-note">veröffentlicht auf npm; das lässt sich nicht rückgängig machen</span></dd>
+      <dt>Braucht</dt><dd>Einen sauberen main-Branch auf dem Stand von origin, einen aktuellen GitHub-Spiegel, einen CHANGELOG-Eintrag und alle Prüfungen von <code>release.mjs --check</code> grün.</dd>
+      <dt>Danach</dt><dd>Prüfe mit <code>npm view session-orchestrator versions</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/release/SKILL.md">Quelle: skills/release/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="tmux-layout" data-command="tmux-layout">
+      <h3><a class="cmd-name" href="#tmux-layout"><code>/tmux-layout</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>In einer langen Session willst du STATE.md, CI und Ereignisse nebeneinander sehen.</dd>
+      <dt>Du bekommst</dt><dd>Ein tmux-Layout mit 4 Bereichen zum Zuschauen. Der Chat bleibt in deinem Terminal.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/tmux-layout [--layout debug]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:tmux-layout</code></dd><dt>Cursor</dt><dd><code>/tmux-layout</code></dd><dt>Pi</dt><dd><code>/tmux-layout</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-read">Liest nur</span> <span class="touch-note">öffnet Bereiche nur zum Zuschauen</span></dd>
+      <dt>Braucht</dt><dd>tmux ist installiert. Dieser Skill ist optional (status: proposed).</dd>
+      <dt>Danach</dt><dd>Arbeite weiter im Chat.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/tmux-layout/SKILL.md">Quelle: skills/tmux-layout/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="templates-ack" data-command="templates-ack">
+      <h3><a class="cmd-name" href="#templates-ack"><code>/templates-ack</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Die Templates-first-Prüfung blockiert ein gh- oder glab-create, aber du hast die Vorlage schon gelesen.</dd>
+      <dt>Du bekommst</dt><dd>Issues und MRs lassen sich für den Rest dieser Session anlegen.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/templates-ack [reason]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:templates-ack</code> (wirkt auf Codex nicht)</dd><dt>Cursor</dt><dd><code>/templates-ack</code></dd><dt>Pi</dt><dd><code>/templates-ack</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-files">Ändert Dateien</span> <span class="touch-note">schreibt eine Bestätigungsdatei nach .orchestrator/runtime/</span></dd>
+      <dt>Braucht</dt><dd>Eine Claude-Code-Session. Ohne sie wird es abgelehnt.</dd>
+      <dt>Danach</dt><dd>Führe den gh- oder glab-create-Befehl noch einmal aus.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/commands/templates-ack.md">Quelle: commands/templates-ack.md</a></p>
+    </article>
+    </div>
+  </section>
+
+  <section class="cmd-group bg-group" id="background" aria-labelledby="background-h">
+    <h2 id="background-h">Passiert im Hintergrund</h2>
+    <p class="group-lede">Diese tippst du nie. Sie laufen, wenn ein Befehl sie braucht.</p>
+    <details class="bg-detail">
+      <summary>23 interne Skills</summary>
+      <p>Bausteine, die die Befehle oben aufrufen, zum Beispiel <code>session-start</code> für <code>/session</code> und <code>wave-executor</code> für <code>/go</code>.</p>
+      <ul class="chips"><li><code>claude-md-drift-check</code></li><li><code>convergence-monitoring</code></li><li><code>docs-orchestrator</code></li><li><code>ecosystem-health</code></li><li><code>frontmatter-guard</code></li><li><code>gitlab-ops</code></li><li><code>gitlab-portfolio</code></li><li><code>hook-development</code></li><li><code>mcp-builder</code></li><li><code>mode-selector</code></li><li><code>npm-publish</code></li><li><code>peekaboo-driver</code></li><li><code>playwright-driver</code></li><li><code>quality-gates</code></li><li><code>remote-offload</code></li><li><code>session-end</code></li><li><code>session-plan</code></li><li><code>session-start</code></li><li><code>test-runner</code></li><li><code>using-orchestrator</code></li><li><code>vault-mirror</code></li><li><code>vault-sync</code></li><li><code>wave-executor</code></li></ul>
+    </details>
+    <details class="bg-detail">
+      <summary>14 Agent-Rollen</summary>
+      <p>Die Agents, die eine Runde losschickt: Jede Rolle erledigt eine Art Arbeit, etwa Code schreiben, Tests schreiben oder prüfen.</p>
+      <ul class="chips"><li><code>analyst</code></li><li><code>architect-reviewer</code></li><li><code>code-implementer</code></li><li><code>db-specialist</code></li><li><code>dialectic-deriver</code></li><li><code>docs-writer</code></li><li><code>eval-judge</code></li><li><code>qa-strategist</code></li><li><code>security-reviewer</code></li><li><code>session-reviewer</code></li><li><code>skill-applied-judge</code></li><li><code>test-writer</code></li><li><code>ui-developer</code></li><li><code>ux-evaluator</code></li></ul>
+    </details>
+    <details class="bg-detail">
+      <summary>10 Hook-Ereignisse</summary>
+      <p>Zeitpunkte in Claude Code, an denen die Guards und die Session-Aufzeichnungen laufen. Codex nutzt sechs davon; Pi bildet fünf über eine Brücke ab.</p>
+      <ul class="chips"><li><code>SessionStart</code></li><li><code>SessionEnd</code></li><li><code>PreToolUse</code></li><li><code>PostToolUse</code></li><li><code>Stop</code></li><li><code>SubagentStop</code></li><li><code>PostToolUseFailure</code></li><li><code>PostToolBatch</code></li><li><code>SubagentStart</code></li><li><code>CwdChanged</code></li></ul>
+    </details>
+    <details class="bg-detail">
+      <summary>2 MCP-Tools</summary>
+      <p>Optionale Tools, die dein Coding-Tool aufrufen kann. Es sind keine Slash-Befehle.</p>
+      <dl class="mcp">
+        <dt><code>session_config</code></dt><dd>Liest die Session Config aus CLAUDE.md oder AGENTS.md.</dd>
+        <dt><code>session_metrics</code></dt><dd>Liest die letzten fünf Session-Einträge aus .orchestrator/metrics/sessions.jsonl.</dd>
+      </dl>
+    </details>
+  </section>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <h2 class="small">Projekt</h2>
+        <ul class="stack">
+          <li><a href="/de">Startseite</a></li>
+          <li><a href="/guide" hreflang="en">Anleitung (Englisch)</a></li>
+          <li><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/session-orchestrator">npm</a></li>
+          <li><a href="/lead" hreflang="en">Lead-Session</a></li>
+          <li><a href="/llms.txt">llms.txt</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2 class="small">Rechtliches</h2>
+        <ul class="stack">
+          <li><a href="/impressum">Impressum</a></li>
+          <li><a href="/datenschutz">Datenschutz</a></li>
+        </ul>
+      </div>
+    </div>
+    <p class="small">MIT</p>
+  </div>
+</footer>
+
+<!-- Vercel Web Analytics, same-origin; see the comment on /guide and /datenschutz Punkt 04. -->
+<script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
+<script src="/_vercel/insights/script.js" defer></script>
+<script src="/assets/commands.js?v=20261029" defer></script>
+<script src="/assets/ui.js?v=20260910" defer></script>
+</body>
+</html>

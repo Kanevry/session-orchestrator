@@ -222,16 +222,16 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261026a">
+<link rel="stylesheet" href="/assets/site.css?v=20261029">
 </head>
 <body>
 <a class="skip" href="#main">Zum Inhalt</a>
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.16.0</span></span></a>
-    <nav class="nav" aria-label="Hauptnavigation"><a href="#how">Ablauf</a><a href="/commands" hreflang="en">Befehle</a><a href="#install">Installieren</a><a href="/guide" hreflang="en">Anleitung</a><a href="/lead" hreflang="en">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
+    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.17.0</span></span></a>
+    <nav class="nav" aria-label="Hauptnavigation"><a href="#how">Ablauf</a><a href="/de/commands">Befehle</a><a href="#install">Installieren</a><a href="/guide" hreflang="en">Anleitung</a><a href="/lead" hreflang="en">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
     <p class="lang"><a href="/"  lang="en">EN</a><a href="/de" aria-current="page" lang="de">DE</a></p>
-    <details class="nav-menu"><summary>Menü</summary><nav class="nav" aria-label="Mobile Navigation"><a href="#how">Ablauf</a><a href="/commands" hreflang="en">Befehle</a><a href="#install">Installieren</a><a href="/guide" hreflang="en">Anleitung</a><a href="/lead" hreflang="en">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
+    <details class="nav-menu"><summary>Menü</summary><nav class="nav" aria-label="Mobile Navigation"><a href="#how">Ablauf</a><a href="/de/commands">Befehle</a><a href="#install">Installieren</a><a href="/guide" hreflang="en">Anleitung</a><a href="/lead" hreflang="en">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
   </div>
 </header>
 <main id="main">
@@ -242,9 +242,17 @@
         <p class="eyebrow">Freies Workflow-Plugin für Coding-Agents</p>
         <h1 class="h-display">Aus deiner Aufgabe<br>wird geprüfte Arbeit.</h1>
         <p class="hero-lede">Du sagst, was du willst. Dein Agent schlägt einen Plan vor. Du sagst Ja. Er arbeitet in kleinen Runden, prüft jede Runde und schreibt auf, was fertig ist. Die nächste Session macht dort weiter. Es ist keine weitere KI: Dein Coding-Tool schreibt den Code, dieses Plugin hält die Arbeit in Ordnung.</p>
-        <p class="hero-cmd"><span class="hero-cmd-where">In deinem Coding-Tool</span><code>/session feature add a CSV export</code><span class="hero-cmd-then">liest dein Repository, schlägt einen Plan vor, wartet auf dein Ja</span></p>
+        <p class="hero-cmd"><span class="hero-cmd-where">In deinem Coding-Tool</span><code>/session feature add a CSV export</code><span class="hero-cmd-then">liest dein Repository, schlägt einen Plan vor, wartet auf dein Ja</span><span class="hero-cmd-alt">Auf Codex wählst du denselben Befehl als Skill im Chat, nicht in einer Shell: <code>$session-orchestrator:session feature add a CSV export</code></span></p>
         <div class="cta"><a class="btn btn-primary" href="#install">Plugin installieren<span aria-hidden="true">↓</span></a><a class="btn btn-secondary" href="#how">So funktioniert es<span aria-hidden="true">↓</span></a></div>
         <p class="hero-note">Kostenlos · MIT-Lizenz · Kein Konto · Läuft auf deinem Rechner</p>
+        <details class="glossary"><summary>Neu bei diesen Wörtern? Ein kurzes Glossar</summary><dl>
+          <div><dt>Repository</dt><dd>Der Ordner mit den Dateien deines Projekts und ihrer ganzen Geschichte.</dd></div>
+          <div><dt>Commit</dt><dd>Ein gespeicherter Schritt in dieser Geschichte, mit einer kurzen Notiz, was sich geändert hat.</dd></div>
+          <div><dt>Branch</dt><dd>Ein eigener Arbeitsstrang, damit du eine Änderung ausprobieren kannst, ohne die Hauptversion anzufassen.</dd></div>
+          <div><dt>Issue</dt><dd>Eine Notiz auf GitLab oder GitHub: ein Fehler, ein Wunsch oder eine offene Frage.</dd></div>
+          <div><dt>CI oder Pipeline</dt><dd>Prüfungen, die nach jeder Änderung auf einem Server laufen und melden, ob die Tests noch durchgehen.</dd></div>
+          <div><dt>Hook</dt><dd>Eine kleine Prüfung, die dein Coding-Tool zu festen Zeitpunkten ausführt, zum Beispiel vor einem Befehl, und die ihn stoppen kann.</dd></div>
+        </dl></details>
       </div>
       <figure class="hero-art">
         <img src="/img/agent-production-800.webp" srcset="/img/agent-production-480.webp 480w, /img/agent-production-800.webp 800w, /img/agent-production-1536.webp 1536w" sizes="(min-width: 1360px) 622px, (min-width: 1101px) calc(50vw - 58px), (min-width: 960px) calc(50vw - 54px), (min-width: 601px) calc(100vw - 56px), calc(100vw - 40px)" width="1536" height="1024" fetchpriority="high" decoding="async" alt="Ein Mensch am Leitstand überblickt kleine Agenten beim Planen, beim parallelen Bauen, beim Prüfen und bei der Übergabe.">
@@ -360,7 +368,7 @@
       <div class="rule-box">
         <p><b>Unsicher, wie groß es ist?</b> Fang mit <code>/session feature</code> an. Wirkt der vorgeschlagene Plan größer als gedacht, fang neu mit <code>/session deep</code> an. Auf Codex wählst du dieselben Befehle als Skills, zum Beispiel <code>$session-orchestrator:session feature</code>.</p>
         <p class="rule-more">Mehrere Sessions gleichzeitig? Die optionale <a href="/lead" hreflang="en">Lead-Session</a> hält sie zusammen (Englisch).</p>
-        <a class="rule-link" href="/commands" hreflang="en">Alle <span class="num" data-metric="commands">31</span> Befehle, nach Situation (Englisch)<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a>
+        <a class="rule-link" href="/de/commands">Alle <span class="num" data-metric="commands">31</span> Befehle, nach Situation<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a>
       </div>
     </div>
   </section>
@@ -369,7 +377,8 @@
     <div class="wrap">
       <div class="section-heading"><div><p class="eyebrow">Wie alles zusammenpasst</p><h2>Dein Tool schreibt den Code.<br>Dieses Plugin hält die Arbeit in Ordnung.</h2></div><p>Es ist keine weitere KI. Es gibt dem Coding-Tool, das du schon nutzt, eine feste Arbeitsweise, und alles, was es aufbewahrt, ist reiner Text in deinem Repository.</p></div>
       <figure class="connect-fig">
-        <svg viewBox="0 0 1000 400" role="img" aria-labelledby="connect-t connect-d">
+        <p class="scroll-hint" aria-hidden="true">Zur Seite wischen, um das ganze Bild zu sehen.</p>
+        <div class="fig-scroll" tabindex="0" role="region" aria-label="Wie alles zusammenpasst, Diagramm"><svg viewBox="0 0 1000 400" role="img" aria-labelledby="connect-t connect-d">
           <title id="connect-t">Wie die Teile zusammenpassen</title>
           <desc id="connect-d">Du tippst Befehle in deinem Coding-Tool. Darin ergänzt session-orchestrator Befehle, Prüfungen und Agents mit Dateilisten. Es schreibt reinen Text in dein Repository und legt Offenes als Issues auf GitLab oder GitHub an. Die nächste Session liest zuerst beides. Optional steht eine Lead-Session über mehreren Sessions.</desc>
           <defs><marker id="cf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="cf-head"/></marker></defs>
@@ -402,7 +411,7 @@
           <path class="cf-flow cf-back" d="M930 232C930 380 360 392 360 330" marker-end="url(#cf-arrow)"/>
           <text class="cf-small" x="640" y="384">liest zuerst beides</text>
           <path class="cf-flow cf-dash" d="M360 58V92" marker-end="url(#cf-arrow)"/>
-        </svg>
+        </svg></div>
         <figcaption>Schematisch. Das Plugin läuft in deinem Coding-Tool, auf deinem Rechner.</figcaption>
       </figure>
       <ul class="connect-facts">
@@ -465,13 +474,13 @@ expires-at: 2027-01-12</code></pre></li>
         <caption class="sr">Was in welchem Coding-Tool funktioniert</caption>
         <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader"><span class="sr">Was</span></th><th scope="col" role="columnheader">Claude Code</th><th scope="col" role="columnheader">Codex CLI</th><th scope="col" role="columnheader">Cursor IDE</th><th scope="col" role="columnheader">Pi</th></tr></thead>
         <tbody role="rowgroup">
-          <tr role="row"><th scope="row" role="rowheader">Du tippst</th><td role="cell" data-label="Claude Code"><code>/session</code></td><td role="cell" data-label="Codex CLI"><code>$session-orchestrator:session</code></td><td role="cell" data-label="Cursor IDE"><code>/session</code></td><td role="cell" data-label="Pi"><code>/session</code></td></tr>
-          <tr role="row"><th scope="row" role="rowheader">Agents</th><td role="cell" data-label="Claude Code">nebeneinander</td><td role="cell" data-label="Codex CLI">nebeneinander</td><td role="cell" data-label="Cursor IDE">nacheinander</td><td role="cell" data-label="Pi">nacheinander</td></tr>
-          <tr role="row"><th scope="row" role="rowheader">Gefährliche Befehle</th><td role="cell" data-label="Claude Code" class="t-yes">blockiert</td><td role="cell" data-label="Codex CLI" class="t-yes">blockiert</td><td role="cell" data-label="Cursor IDE">blockiert über eine Brücke</td><td role="cell" data-label="Pi">blockiert über eine Brücke</td></tr>
-          <tr role="row"><th scope="row" role="rowheader">Dateiliste pro Agent</th><td role="cell" data-label="Claude Code" class="t-yes">blockiert im strict-Modus</td><td role="cell" data-label="Codex CLI" class="t-part">nur eine Anweisung</td><td role="cell" data-label="Cursor IDE">blockiert im strict-Modus</td><td role="cell" data-label="Pi">blockiert im strict-Modus</td></tr>
-          <tr role="row"><th scope="row" role="rowheader">Tests und Prüfungen</th><td role="cell" data-label="Claude Code">ja</td><td role="cell" data-label="Codex CLI">ja</td><td role="cell" data-label="Cursor IDE">ja</td><td role="cell" data-label="Pi">ja</td></tr>
-          <tr role="row"><th scope="row" role="rowheader">Lehren und Regeln</th><td role="cell" data-label="Claude Code">ja</td><td role="cell" data-label="Codex CLI">ja</td><td role="cell" data-label="Cursor IDE">ja</td><td role="cell" data-label="Pi">ja</td></tr>
-          <tr role="row"><th scope="row" role="rowheader">Lead-Inbox-Seitenleiste</th><td role="cell" data-label="Claude Code" class="t-yes">ja, ein Mod im <a href="/lead#start" hreflang="en">npm-Paket des Lead</a> (Early Access)</td><td role="cell" data-label="Codex CLI">Sessions werden geführt; die Seitenleiste läuft in Claude Code</td><td role="cell" data-label="Cursor IDE">nicht dokumentiert</td><td role="cell" data-label="Pi">nicht dokumentiert</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Du tippst</th><td role="cell" data-what="Du tippst" data-label="Claude Code"><code>/session</code></td><td role="cell" data-what="Du tippst" data-label="Codex CLI"><code>$session-orchestrator:session</code></td><td role="cell" data-what="Du tippst" data-label="Cursor IDE"><code>/session</code></td><td role="cell" data-what="Du tippst" data-label="Pi"><code>/session</code></td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Agents</th><td role="cell" data-what="Agents" data-label="Claude Code">nebeneinander</td><td role="cell" data-what="Agents" data-label="Codex CLI">nebeneinander</td><td role="cell" data-what="Agents" data-label="Cursor IDE">nacheinander</td><td role="cell" data-what="Agents" data-label="Pi">nacheinander</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Gefährliche Befehle</th><td role="cell" data-what="Gefährliche Befehle" data-label="Claude Code" class="t-yes">blockiert</td><td role="cell" data-what="Gefährliche Befehle" data-label="Codex CLI" class="t-yes">blockiert</td><td role="cell" data-what="Gefährliche Befehle" data-label="Cursor IDE">blockiert über eine Brücke</td><td role="cell" data-what="Gefährliche Befehle" data-label="Pi">blockiert über eine Brücke</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Dateiliste pro Agent</th><td role="cell" data-what="Dateiliste pro Agent" data-label="Claude Code" class="t-yes">blockiert im strict-Modus</td><td role="cell" data-what="Dateiliste pro Agent" data-label="Codex CLI" class="t-part">nur eine Anweisung</td><td role="cell" data-what="Dateiliste pro Agent" data-label="Cursor IDE">blockiert im strict-Modus</td><td role="cell" data-what="Dateiliste pro Agent" data-label="Pi">blockiert im strict-Modus</td></tr>
+          <tr role="row" class="t-same"><th scope="row" role="rowheader">Tests und Prüfungen</th><td role="cell" data-what="Tests und Prüfungen" data-label="Claude Code">ja</td><td role="cell" data-what="Tests und Prüfungen" data-label="Codex CLI">ja</td><td role="cell" data-what="Tests und Prüfungen" data-label="Cursor IDE">ja</td><td role="cell" data-what="Tests und Prüfungen" data-label="Pi">ja</td></tr>
+          <tr role="row" class="t-same"><th scope="row" role="rowheader">Lehren und Regeln</th><td role="cell" data-what="Lehren und Regeln" data-label="Claude Code">ja</td><td role="cell" data-what="Lehren und Regeln" data-label="Codex CLI">ja</td><td role="cell" data-what="Lehren und Regeln" data-label="Cursor IDE">ja</td><td role="cell" data-what="Lehren und Regeln" data-label="Pi">ja</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Lead-Inbox-Seitenleiste</th><td role="cell" data-what="Lead-Inbox-Seitenleiste" data-label="Claude Code" class="t-yes">ja, ein Mod im <a href="/lead#start" hreflang="en">npm-Paket des Lead</a> (Early Access)</td><td role="cell" data-what="Lead-Inbox-Seitenleiste" data-label="Codex CLI">Sessions werden geführt; die Seitenleiste läuft in Claude Code</td><td role="cell" data-what="Lead-Inbox-Seitenleiste" data-label="Cursor IDE">nicht dokumentiert</td><td role="cell" data-what="Lead-Inbox-Seitenleiste" data-label="Pi">nicht dokumentiert</td></tr>
         </tbody>
       </table>
       <p class="tools-note"><b>Bridge:</b> Bei Cursor und Pi laufen die Guards über einen kleinen Adapter, für die Befehle, die diese Tools melden. <b>Strict-Modus:</b> <code>enforcement: strict</code> in deiner Session Config setzen; mit dem Standard <code>warn</code> wird eine Änderung außerhalb der Dateiliste gemeldet, nicht blockiert.</p>
@@ -562,19 +571,19 @@ expires-at: 2027-01-12</code></pre></li>
     </div></details><details class="technical-detail" id="measured"><summary>Repository-Zahlen mit Zählbeleg</summary><div class="detail-body">
 
       <div class="cards">
-        <div class="card"><p class="n">v<span class="num" data-metric="version">5.16.0</span></p><p class="l">aktuelle Version</p></div>
+        <div class="card"><p class="n">v<span class="num" data-metric="version">5.17.0</span></p><p class="l">aktuelle Version</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="skills">52</span></p><p class="l">Skills</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="commands">31</span></p><p class="l">Slash-Befehle</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typisierte Sub-Agenten</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="hooks">30</span></p><p class="l">Hook-Dateien</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="tests">823</span></p><p class="l">Testdateien</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="sessions">294</span></p><p class="l">Session-Aufzeichnungen im Repository</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="tests">824</span></p><p class="l">Testdateien</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="sessions">296</span></p><p class="l">Session-Aufzeichnungen im Repository</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="learnings">46</span></p><p class="l">Learnings in diesem Repository</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3212</span></p><p class="l">npm-Downloads, letzte 30 Tage</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3510</span></p><p class="l">npm-Downloads, letzte 30 Tage</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="github-stars">52</span></p><p class="l">GitHub-Sterne</p></div>
       </div>
 
-      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-10-29</span> bei Commit <span class="num" data-metric="counted-sha">8a783e0a</span>. Repository-Aufzeichnungen beschreiben Entwicklungsaktivität, keine aktiven Nutzer. Es zählen nur Sessions, die tatsächlich gelaufen sind, nicht jede Zeile im Session-Log; die Zahl ist deshalb kleiner als auf älteren Fassungen dieser Seite. npm-Downloads enthalten auch automatische Abrufe. <a href="/_census.json">Zählbeleg ansehen</a>.</p>
+      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-11-01</span> bei Commit <span class="num" data-metric="counted-sha">7763efae</span>. Repository-Aufzeichnungen beschreiben Entwicklungsaktivität, keine aktiven Nutzer. Es zählen nur Sessions, die tatsächlich gelaufen sind, nicht jede Zeile im Session-Log; die Zahl ist deshalb kleiner als auf älteren Fassungen dieser Seite. npm-Downloads enthalten auch automatische Abrufe. <a href="/_census.json">Zählbeleg ansehen</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
       <div class="faq-layout">

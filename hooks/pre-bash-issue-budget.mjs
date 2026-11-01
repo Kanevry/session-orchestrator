@@ -15,7 +15,7 @@
  * default filters nothing, and the largest producers never read them.
  *
  * Decision flow:
- *   G1 tool filter — only Bash is gated.
+ *   G1 tool filter — Bash and Monitor are gated.
  *   G2 command is a non-empty string.
  *   G3 matcher — `gh|glab … issue create|new` plus the REST route
  *      (`gh|glab api … /issues`, #1163) only. PR/MR creation passes.
@@ -50,7 +50,7 @@
  *        which would throw away the deny envelope entirely (#906).
  */
 
-import { readStdin, emitAllow, emitDeny, emitWarn } from '../scripts/lib/io.mjs';
+import { isShellCommandTool, readStdin, emitAllow, emitDeny, emitWarn } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
 import { findIssueCreateStatements, findLoopedIssueCreates } from './_lib/vcs-create-matcher.mjs';
@@ -309,8 +309,8 @@ async function main() {
   const input = await readStdin();
   if (!input) return emitAllow();
 
-  // G1 — only Bash is gated.
-  if (input.tool_name !== 'Bash') return emitAllow();
+  // G1 — Bash and Monitor are gated.
+  if (!isShellCommandTool(input.tool_name)) return emitAllow();
 
   // G2 — command must be a non-empty string.
   const command = input?.tool_input?.command;

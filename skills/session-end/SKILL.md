@@ -205,6 +205,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 For sessions with many changes, prefer ONE commit per logical unit (not one mega-commit).
 
 ### 4.3 Push
+When a navigator fleet runs this session (an active lease, `scripts/lib/fleet-protocol.mjs`) and its instructions name a push route, push through that route — `push-check --execute <worktree>`, which measures the hook, pushes and starts exactly one MR pipeline (#1897). It must not be preceded by a plain `git push`. Otherwise:
 ```bash
 git push origin HEAD
 ```

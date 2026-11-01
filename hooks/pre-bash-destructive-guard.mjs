@@ -10,7 +10,7 @@
  * Part of issue #155 (deliverable 2). Node 20+, ESM, no bash-isms.
  *
  * Decision flow:
- *   G1 tool filter — only Bash is gated
+ *   G1 tool filter — Bash, Monitor and PowerShell are gated
  *   G2 command present + string
  *   G3 bypass: allow-destructive-ops: true in Session Config → exit 0
  *   G4 policy load: .orchestrator/policy/blocked-commands.json
@@ -21,9 +21,12 @@
  *   G5 rule evaluation per rule in policy.rules
  *      severity:"block" → deny envelope on stdout via emitDeny, exit 0 (#906)
  *      severity:"warn"  → emit warning, exit 0 (allow)
+ *      severity is the policy's, softened by effectiveRuleSeverity() of the
+ *      hook profile (#1881: worktree-remove-unsafe warns unless strict)
  *      Special cases:
  *        git-stash-any: only warn when stash is non-empty
- *        rm-rf-destructive: path exception for .orchestrator/tmp and node_modules
+ *        rm-rf-destructive: path exception for .orchestrator/tmp, node_modules
+ *          and <state-dir>/filescopes
  *        rule.type === 'redirect-truncate' (#983): decided by redirect TARGET
  *          via redirectRuleMatches (target-denylist globs), NEVER by the
  *          generic pattern path — its `pattern: ">"` would FP-match nearly
@@ -58,7 +61,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-import { shouldRunHook } from './_lib/profile-gate.mjs';
+import { shouldRunHook, effectiveRuleSeverity } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { execFileSync } from '../scripts/lib/native-command.mjs';
 
@@ -89,10 +92,12 @@ const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 // that single change removes the shape-check drift that made a 4-of-6-missing
 // HEAD copy read as "still armed".
 //
-// `profile-gate.mjs` stays static on purpose — it has ZERO imports of its own
-// and gates whether this hook runs at all.
+// `profile-gate.mjs` stays static on purpose — it has no static repo imports
+// (only `node:` builtins; owner.yaml is required lazily inside a try) and gates
+// whether this hook runs at all.
 // ---------------------------------------------------------------------------
 /** @type {typeof import('../scripts/lib/io.mjs').readStdin} */ let readStdin;
+/** @type {typeof import('../scripts/lib/io.mjs').isShellCommandTool} */ let isShellCommandTool;
 /** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
 /** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
 /** @type {typeof import('../scripts/lib/io.mjs').emitWarn} */ let emitWarn;
@@ -216,7 +221,7 @@ async function bootstrap() {
     }
   );
 
-  ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
+  ({ readStdin, emitAllow, emitDeny, emitWarn, isShellCommandTool } = modules.io);
   ({ resolveProjectDir, resolvePluginRoot } = modules.platform);
   ({ readConfigFile } = modules.config);
   ({ loadEffectivePolicy } = modules.blockedCommandsPolicy);
@@ -338,6 +343,14 @@ async function blockCommand(pattern, ruleId, rationale, command, sessionId) {
   emitDeny(reason);
 }
 
+/** An rm operand that is only a variable: `$D`, `${D}` (quotes already stripped). */
+const BARE_VARIABLE_RE = /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/;
+
+/** #1883 — the deny hint for removing an mktemp result through a variable. */
+const MKTEMP_CLEANUP_HINT =
+  'A path held in a variable cannot be proven to be the mktemp result, so it stays blocked (#1883). ' +
+  'Skip the cleanup (the OS clears $TMPDIR), or remove the literal path instead: rm -rf /tmp/<name> or $TMPDIR/<name>.';
+
 /**
  * Check whether git stash is non-empty by running `git stash list`.
  * Returns true if non-empty (should warn), false if empty (silent allow).
@@ -391,18 +404,46 @@ async function isGitStashNonEmpty(projectDir) {
  * pattern matched but whose verb does NOT resolve to `rm` (e.g. an interpreter
  * payload) contributes no targets and stays fail-closed.
  *
+ * Each target also carries where its rm may run (#1886 review): `dirs` are
+ * the shell's candidate directories (null = unknown). A `cd` adds its target
+ * instead of replacing the old one, because a failed `cd x; rm …` leaves the
+ * shell where it was. `trustTmpdir` is true only in the first segment, where
+ * nothing earlier on the line can have changed TMPDIR.
+ *
  * @param {string} command
- * @returns {{targets: string[], writeTargets: string[]}}
+ * @param {string|null} cwd — the shell's directory when the command starts
+ * @returns {{targets: RmTarget[], writeTargets: RmTarget[]}}
+ * @typedef {{ text: string, dirs: Array<string|null>, trustTmpdir: boolean }} RmTarget
  */
-function parseRmTargets(command) {
+function parseRmTargets(command, cwd = null) {
   const targets = [];
   const writeTargets = [];
+  let dirs = [cwd];
+  let segmentNo = 0;
+  // Whether the line may set what a `cd` reads (#1886 review 3).
+  const cdReads = {
+    home: /\bHOME\b/.test(command),
+    cdpath: /\bCDPATH\b|\bcdpath\b/.test(command) || Boolean(process.env.CDPATH),
+  };
 
   for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
+    const trustTmpdir = segmentNo++ === 0 && !hidesTmpdirChange(segment);
+    // From the first subshell or substitution on, a `cd` may or may not have run.
+    if (segment.some((t) => t.operator === 'substitution' || t.operator === 'subshell')) dirs = [null];
+    const readings = verbReadingsOf(segment);
+    const move = shellMoveOf(segment);
+    // Builtins that move the shell in a way the guard cannot read. Ceiling: a
+    // function or alias that runs `cd` (zoxide's `z`) is not seen, as before.
+    if (['pushd', 'popd', 'eval', 'source', '.'].includes(move?.verb)) dirs = [null];
+    else if (move?.verb === 'cd' || move?.verb === 'chdir') {
+      dirs = [...new Set([...dirs, ...dirs.map((d) => rmShellDir(d, segment, move.index, cdReads))])];
+      if (dirs.length > 8) dirs = [null]; // Ceiling: more cds than any measured cleanup line.
+    }
     // The rm reading, if any (zsh reads `3>&-echo rm P` as `rm P`, #1832 G1).
-    const rmReading = verbReadingsOf(segment).find((r) => r.verb === 'rm');
+    const rmReading = readings.find((r) => isRmReading(r, segment));
     if (!rmReading) continue;
     const { index } = rmReading;
+    const at = { dirs, trustTmpdir };
 
     for (let i = index + 1; i < segment.length; i++) {
       const tok = segment[i];
@@ -412,7 +453,7 @@ function parseRmTargets(command) {
       if ((mode === 'truncate' || mode === 'append') && end > i) {
         const operand = segment[end];
         if (operand && !(!operand.quoted && /^(;|&&|\|\||\||&)$/.test(operand.text))) {
-          writeTargets.push(operand.text);
+          writeTargets.push({ text: operand.text, ...at });
         }
       }
       i = end;
@@ -423,12 +464,82 @@ function parseRmTargets(command) {
     for (const tok of blocker.argvWordsWithoutRedirects(segment, index + 1)) {
       if (!seenDashDash && tok.text === '--') { seenDashDash = true; continue; }
       // A flag is unquoted and starts with '-' (and is not the bare '-' stdin marker).
-      if (!seenDashDash && !tok.quoted && tok.text.startsWith('-') && tok.text !== '-') continue;
-      targets.push(tok.text);
+      // One the shell still expands may also split off a path (`-rf${x}` with
+      // x=' /'), so it stays a target and passes no exception (#1892).
+      if (!seenDashDash && !tok.quoted && tok.text.startsWith('-') && tok.text !== '-' && !NON_LITERAL_WORD.test(tok.text)) continue;
+      targets.push({ text: tok.text, ...at });
     }
   }
 
   return { targets, writeTargets };
+}
+
+/**
+ * The directory after a `cd` in the main shell, for judging relative rm
+ * operands (#1886 review). A logical `cd` resolves `..` lexically, like
+ * literalDir; `cd -P` or `set -o physical` resolves it through a symlink.
+ * The guard cannot tell which, so a `..` operand makes the directory unknown,
+ * and so does any operand literalDir cannot read. Without `..` both modes end
+ * in the same place. When the line may set HOME, a bare `cd` or `cd ~…` is
+ * unknown; when it may set CDPATH (or Claude Code's environment has one), a
+ * relative operand is unknown, because `CDPATH=/x cd D` lands in `/x/D`.
+ * Ceiling: a CDPATH the shell profile sets without exporting it to Claude
+ * Code is not seen (empty in the agent shells on the M4, 2026-10-31).
+ *
+ * @param {string|null} dir
+ * @param {Array<object>} segment
+ * @param {number} index — position of the `cd` verb
+ * @param {{ home: boolean, cdpath: boolean }} reads
+ * @returns {string|null}
+ */
+function rmShellDir(dir, segment, index, reads) {
+  const operands = segment.slice(index + 1).filter((t) => t.quoted || !/^-[LPe@]+$/.test(t.text));
+  if (operands.length === 0) return reads.home ? null : os.homedir();
+  if (operands.length !== 1 || operands[0].text.split('/').includes('..')) return null;
+  const text = operands[0].text;
+  if (text.startsWith('~')) return reads.home ? null : literalDir(dir, operands[0]);
+  if (reads.cdpath && !path.isAbsolute(text) && !/^\.(?:\/|$)/.test(text)) return null;
+  return literalDir(dir, operands[0]);
+}
+
+/**
+ * Words that run the next word in the same shell: `builtin` and zsh's
+ * precommand modifiers. Measured in zsh 2026-10-31: `noglob cd D`,
+ * `nocorrect cd D`, `- cd D` and `builtin cd D` all move the shell.
+ */
+const SAME_SHELL_PREFIXES = new Set(['builtin', 'noglob', 'nocorrect', '-']);
+
+/**
+ * The verb that decides whether a segment moves the main shell, behind any
+ * `builtin`/zsh precommand modifier (#1886 review 3). The shared verb
+ * resolver stops at those words, so `builtin cd D` read as `builtin`.
+ *
+ * @param {Array<object>} segment
+ * @returns {{ verb: string|null, index: number }|undefined}
+ */
+function shellMoveOf(segment) {
+  let offset = 0;
+  let reading = verbReadingsOf(segment)[0];
+  while (reading && SAME_SHELL_PREFIXES.has(reading.verb) && reading.index >= 0) {
+    offset += reading.index + 1;
+    reading = verbReadingsOf(segment.slice(offset))[0];
+  }
+  return reading && reading.index >= 0 ? { verb: reading.verb, index: offset + reading.index } : undefined;
+}
+
+/**
+ * True when a word of the segment besides a leading `$TMPDIR` may assign
+ * TMPDIR before the operand expands. zsh expands words left to right, so
+ * `rm -rf${${TMPDIR::=/usr}:+} $TMPDIR/y` deletes `/usr/y` (measured
+ * 2026-10-31, #1886 review 3). Any other `$`, backtick or `(` counts.
+ *
+ * @param {Array<object>} segment
+ * @returns {boolean}
+ */
+function hidesTmpdirChange(segment) {
+  return segment.some(
+    (t) => !t.operator && /[$`(]/.test(t.text.replace(/^\$(?:TMPDIR\b|\{TMPDIR\})/, '')),
+  );
 }
 
 /**
@@ -471,12 +582,22 @@ function isNullSink(targetPath) {
  * (rule 14), never here — a second collector would give the guard a silently
  * divergent opinion about the same fact.
  *
+ * NAMED CEILING (BV-004, #1894 decision): recursive rm WITHOUT force (`rm -r`,
+ * `rm -R`, `rm --recursive`) is not judged, although without a terminal on
+ * stdin — how agents run — it deletes exactly like `rm -rf`. Judging it would
+ * have denied 113 more real commands in 7 days (census 2026-10-31: 975
+ * recursive rm commands of 145,960, 220 denied today) against the owner's
+ * loosening of #1881. So a hidden or obfuscated `-f` buys no deletion `rm -r`
+ * does not already have: do not extend the hunt for `-f` spellings beyond
+ * what #1892 closed. REVISIT TRIGGER: a recursive rm without `-f` that
+ * destroyed work, or the #1854 ADR on the guard's goal.
+ *
  * @param {string} command
  * @returns {boolean}
  */
 function commandHasRecursiveForceRm(command) {
   for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
-    const rmReading = verbReadingsOf(segment).find((r) => r.verb === 'rm' && !segment[r.index].quoted);
+    const rmReading = verbReadingsOf(segment).find((r) => isRmReading(r, segment) && !segment[r.index].quoted);
     if (!rmReading) continue;
     const { index } = rmReading;
 
@@ -485,6 +606,13 @@ function commandHasRecursiveForceRm(command) {
     let seenDashDash = false;
     for (const t of blocker.argvWordsWithoutRedirects(segment, index + 1)) {
       if (!seenDashDash && t.text === '--') { seenDashDash = true; continue; }
+      // An option word the shell still expands may carry -r and -f (`-rf${x}`,
+      // `"-r$x"`), as `--{force,}` did for worktree removal (#1888, #1892).
+      if (!seenDashDash && t.text.startsWith('-') && t.text !== '-' && NON_LITERAL_WORD.test(t.text)) {
+        recursive = true;
+        force = true;
+        continue;
+      }
       if (!seenDashDash && !t.quoted && t.text.startsWith('-') && t.text !== '-') {
         if (t.text === '--recursive') recursive = true;
         else if (t.text === '--force') force = true;
@@ -499,6 +627,58 @@ function commandHasRecursiveForceRm(command) {
     if (recursive && force) return true;
   }
   return false;
+}
+
+/**
+ * Whether a verb reading is `rm`, also when the word reads `rm` only once the
+ * shell drops empty expansions: `rm${x}`, `r${x}m`, `rm$(true)` (#1892). The
+ * shared resolver returns such a word verbatim and takes its basename after
+ * the last `/`, even one inside `${…}`, so the word itself is re-read here.
+ * NAMED CEILING (BV-004): an expansion that is not empty (`$R` holding `rm`)
+ * is not seen; revisit when one appears in a real command.
+ *
+ * @param {{ verb: string|null, index: number }} reading
+ * @param {Array<{ text: string }>} segment
+ * @returns {boolean}
+ */
+function isRmReading(reading, segment) {
+  if (reading.verb === 'rm') return true;
+  const text = segment[reading.index]?.text;
+  return typeof text === 'string' && /[$`]/.test(text) && path.basename(withoutExpansions(text)) === 'rm';
+}
+
+/**
+ * `word` without its `${…}`, `$(…)`, `$name`/`$1` and backtick spans, nesting
+ * included (`rm${${TMPDIR::=/usr}:+}` → `rm`).
+ *
+ * @param {string} word
+ * @returns {string}
+ */
+function withoutExpansions(word) {
+  let out = '';
+  for (let i = 0; i < word.length; i++) {
+    const c = word[i];
+    if (c === '`') {
+      const end = word.indexOf('`', i + 1);
+      i = end < 0 ? word.length : end;
+    } else if (c === '$' && (word[i + 1] === '{' || word[i + 1] === '(')) {
+      let depth = 0;
+      let j = i + 1;
+      for (; j < word.length; j++) {
+        if (word[j] === '{' || word[j] === '(') depth++;
+        else if ((word[j] === '}' || word[j] === ')') && --depth === 0) break;
+      }
+      i = j;
+    } else if (c === '$' && /[A-Za-z_]/.test(word[i + 1] ?? '')) {
+      i++;
+      while (/\w/.test(word[i + 1] ?? '')) i++;
+    } else if (c === '$' && /[\d@*#?$!-]/.test(word[i + 1] ?? '')) {
+      i++;
+    } else {
+      out += c;
+    }
+  }
+  return out;
 }
 
 /**
@@ -536,10 +716,13 @@ const GIT_UNKNOWABLE_ENV = /^GIT_(DIR|WORK_TREE|COMMON_DIR|CONFIG\w*)=/;
  * @param {{ text: string } | undefined} tok
  * @returns {string|null}
  */
+/** A word the shell may still expand: parameter, substitution, glob or brace (#1888). */
+const NON_LITERAL_WORD = /[$`*?[{]/;
+
 function literalDir(base, tok) {
   if (base === null || tok === undefined) return null;
   const text = tok.text;
-  if (text === '-' || /[$`*?[]/.test(text)) return null;
+  if (text === '-' || NON_LITERAL_WORD.test(text)) return null;
   if (text === '~' || text.startsWith('~/')) return path.join(os.homedir(), text.slice(1));
   if (text.startsWith('~')) return null;
   return path.resolve(base, text);
@@ -836,10 +1019,13 @@ function isForceArg(text) {
  * unmeasurable call (fail-closed). `prune`, `list`, `add`, `move` are not
  * judged.
  *
+ * `softenable` is false when a word may still expand (a hidden `--force`) or
+ * the call names more than one target (#1881).
+ *
  * @param {string} command
  * @param {string|null} cwd
  * @param {number} [depth]
- * @returns {Array<{ force: boolean, dir: string|null, operand: { text: string } | undefined }>}
+ * @returns {Array<{ force: boolean, dir: string|null, operand: { text: string } | undefined, softenable: boolean }>}
  */
 function findWorktreeRemoves(command, cwd, depth = 0) {
   const calls = [];
@@ -849,20 +1035,29 @@ function findWorktreeRemoves(command, cwd, depth = 0) {
     if (segment[subAt]?.text !== 'worktree' || segment[subAt + 1]?.text !== 'remove') continue;
     let force = false;
     let operand;
+    let operands = 0;
     let seenDashDash = false;
     for (const t of argvWords(segment, subAt + 2)) {
       if (!seenDashDash && t.text === '--') { seenDashDash = true; continue; }
       if (!seenDashDash && t.text.startsWith('-') && t.text !== '-') {
-        if (isForceArg(t.text)) force = true;
+        // #1888: `--{force,}` / `--forc{e,}` expand to `--force`; an option
+        // word the shell may still expand counts as a possible force.
+        if (isForceArg(t.text) || NON_LITERAL_WORD.test(t.text)) force = true;
         continue;
       }
+      operands += 1;
       if (operand === undefined) operand = t;
     }
-    calls.push({ force, dir: gitDir, operand });
+    // #1881 (Lead 7a security review): `--force` can hide in an expansion
+    // (`$F`, `$(printf -- --force)`, a glob) or as a second operand. Only a
+    // call whose every word is literal and that names at most one target may
+    // have its "not measurable" verdict softened by the hook profile.
+    const softenable = operands <= 1 && argvWords(segment, index).every((t) => !NON_LITERAL_WORD.test(t.text));
+    calls.push({ force, dir: gitDir, operand, softenable });
   }
   for (const payload of payloads) {
     if (depth >= MAX_PAYLOAD_DEPTH) {
-      if (/worktree/.test(payload)) calls.push({ force: false, dir: null, operand: { text: '<nested payload>' } });
+      if (/worktree/.test(payload)) calls.push({ force: false, dir: null, operand: { text: '<nested payload>' }, softenable: false });
       continue;
     }
     // A payload's directory is not tracked: unknown, so it is never "missing".
@@ -1008,38 +1203,87 @@ function findWorktreeLikeGit(dir, suffix, resolved) {
 }
 
 /**
- * The deny label of the first `git worktree remove` in the command the guard
- * must refuse, or null when every one may run.
+ * #1881 — a measured hit hidden behind an unknown call directory (`bash -c`,
+ * `$(…)`, `git -C $X`, a variable `cd`). Escalate-only: the target is measured
+ * from itself when the operand is absolute or `~`, else from the payload cwd,
+ * and only a measured hit is returned. A clean or unmatched candidate returns
+ * null, so the call stays "not measurable" (strict denies it, standard warns);
+ * a wrong candidate directory can only add a deny, never an allow. Without
+ * this, re-spelling a denied removal as `bash -c '…'` turned the deny into a
+ * warning under the default profile (review 2026-10-31).
+ *
+ * @param {{ operand: { text: string } | undefined }} call
+ * @param {string} cwd — the payload cwd
+ * @returns {string|null} the measured deny label, or null
+ */
+function measuredHitBehindUnknownDir(call, cwd) {
+  const text = call.operand?.text;
+  if (typeof text !== 'string' || text.length === 0) return null;
+  const cwdIndependent = path.isAbsolute(text) || text === '~' || text.startsWith('~/');
+  const base = cwdIndependent ? path.sep : cwd;
+  const resolved = literalDir(base, call.operand);
+  if (resolved === null) return null;
+  const found = cwdIndependent ? null : findWorktreeLikeGit(cwd, text, resolved);
+  const target = cwdIndependent
+    ? (fs.existsSync(resolved) ? resolved : null)
+    : ('path' in found ? found.path : null);
+  if (target === null) return null;
+  const verdict = judgeWorktreeRemoval(target);
+  if (verdict === null || !('valuable' in verdict)) return null;
+  const more = verdict.valuable.length > 3 ? ` (+${verdict.valuable.length - 3} more)` : '';
+  return `git worktree remove ${target} — would delete ignored ${verdict.valuable.slice(0, 3).join(', ')}${more}`;
+}
+
+/**
+ * The deny verdict for the `git worktree remove` calls in the command, or null
+ * when every one may run. A MEASURED hit (forced removal, valuable ignored
+ * state) wins over an unmeasurable target anywhere in the command: only the
+ * latter may be softened by the hook profile (#1881), so a softened first call
+ * must never hide a measured second one.
  *
  * @param {string} command
  * @param {string} cwd
- * @returns {string|null}
+ * @returns {{ label: string, unmeasurable: boolean }|null}
  */
 function unsafeWorktreeRemoval(command, cwd) {
+  let unmeasurable = null;
+  let hardUnmeasurable = null;
+  // A call the profile may not soften (see findWorktreeRemoves) is a hard hit;
+  // scanning goes on so a measured hit later in the command names the files.
+  const notMeasurable = (call, shown, why) => {
+    const label = `git worktree remove ${shown} — target not measurable (${why})`;
+    if (call.softenable) unmeasurable ??= { label, unmeasurable: true };
+    else hardUnmeasurable ??= { label, unmeasurable: false };
+  };
   for (const call of findWorktreeRemoves(command, cwd)) {
     const resolved = literalDir(call.dir, call.operand);
     const shown = resolved ?? (call.operand?.text || '<no target>');
     if (call.force) {
-      return `git worktree remove --force ${shown} — force removal is the operator's: back up what you need from the worktree, then the operator runs it in their own terminal`;
+      return { label: `git worktree remove --force ${shown} — force removal is the operator's: back up what you need from the worktree, then the operator runs it in their own terminal`, unmeasurable: false };
     }
-    if (resolved === null) return `git worktree remove ${shown} — target not measurable (unreadable directory or operand)`;
+    if (resolved === null) {
+      const measured = measuredHitBehindUnknownDir(call, cwd);
+      if (measured !== null) return { label: measured, unmeasurable: false };
+      notMeasurable(call, shown, 'unreadable directory or operand');
+      continue;
+    }
     // `~` is expanded by the shell; git receives the expanded path.
     const suffix = call.operand.text.startsWith('~') ? resolved : call.operand.text;
     const found = findWorktreeLikeGit(call.dir, suffix, resolved);
-    if ('unmeasurable' in found) return `git worktree remove ${shown} — target not measurable (git worktree list failed)`;
+    if ('unmeasurable' in found) { notMeasurable(call, shown, 'git worktree list failed'); continue; }
     if ('none' in found) {
       // No worktree matches: git refuses by itself. An existing directory that is
       // no listed worktree stays fail-closed, as before.
-      if (fs.existsSync(resolved)) return `git worktree remove ${shown} — target not measurable (no worktree root)`;
+      if (fs.existsSync(resolved)) notMeasurable(call, shown, 'no worktree root');
       continue;
     }
     const verdict = judgeWorktreeRemoval(found.path);
     if (verdict === null) continue;
-    if ('unmeasurable' in verdict) return `git worktree remove ${found.path} — target not measurable (${verdict.unmeasurable})`;
+    if ('unmeasurable' in verdict) { notMeasurable(call, found.path, verdict.unmeasurable); continue; }
     const more = verdict.valuable.length > 3 ? ` (+${verdict.valuable.length - 3} more)` : '';
-    return `git worktree remove ${found.path} — would delete ignored ${verdict.valuable.slice(0, 3).join(', ')}${more}`;
+    return { label: `git worktree remove ${found.path} — would delete ignored ${verdict.valuable.slice(0, 3).join(', ')}${more}`, unmeasurable: false };
   }
-  return null;
+  return hardUnmeasurable ?? unmeasurable;
 }
 
 /**
@@ -1130,7 +1374,9 @@ function findMatchedRedirectEntry(rule, entries, repoRoot) {
 function expandTmpdirToken(targetPath) {
   const m = /^\$(?:TMPDIR\b|\{TMPDIR\})/.exec(targetPath);
   if (!m) return targetPath;
-  const value = process.env.TMPDIR || os.tmpdir();
+  // #1886 review — no os.tmpdir() fallback: with TMPDIR unset the shell expands
+  // `$TMPDIR/usr` to `/usr`, not to the `/tmp/usr` the fallback would judge.
+  const value = process.env.TMPDIR;
   if (!value || !path.isAbsolute(value)) return targetPath;
   return value + targetPath.slice(m[0].length);
 }
@@ -1145,14 +1391,16 @@ function expandTmpdirToken(targetPath) {
  * The upward walk mirrors the identical pattern in hooks/enforce-scope.mjs
  * (SECURITY-REQ-03) rather than inventing a second one.
  *
- * Any other fs error → return the lexical input unchanged. That is the fail-safe
+ * Strict mode (#1886) propagates errors except genuinely missing suffixes.
+ * By default, any other fs error → return the lexical input unchanged. That is the fail-safe
  * direction: the caller then compares lexically, i.e. exactly the pre-#935
  * behaviour, never a broader one.
  *
  * @param {string} absPath
+ * @param {boolean} strict — propagate fs errors for containment checks (#1886)
  * @returns {string}
  */
-function canonicalizeAncestors(absPath) {
+function canonicalizeAncestors(absPath, strict = false) {
   let ancestor = absPath;
   const segments = [];
   for (;;) {
@@ -1161,10 +1409,22 @@ function canonicalizeAncestors(absPath) {
       return segments.length ? path.join(real, ...segments.reverse()) : real;
     } catch (err) {
       // ENOENT: nothing at this level yet. ENOTDIR: a FILE sits in the chain.
-      // Both mean "keep walking up"; anything else (ELOOP, EACCES) → lexical.
-      if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') return absPath;
+      // In default mode both walk up; anything else (ELOOP, EACCES) → lexical.
+      if (strict) {
+        if (err?.code !== 'ENOENT') throw err;
+        // An existing dangling symlink is an error, not a missing suffix (#1886).
+        try {
+          fs.lstatSync(ancestor);
+          throw err;
+        } catch (statErr) {
+          if (statErr === err || statErr?.code !== 'ENOENT') throw statErr;
+        }
+      } else if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') return absPath;
       const parent = path.dirname(ancestor);
-      if (parent === ancestor) return absPath; // reached the fs root, nothing existed
+      if (parent === ancestor) {
+        if (strict) throw err;
+        return absPath; // reached the fs root, nothing existed
+      }
       segments.push(path.basename(ancestor));
       ancestor = parent;
     }
@@ -1187,54 +1447,111 @@ function canonicalizeAncestors(absPath) {
  *     onto the same string → both allowed, no literal-form guessing.
  *
  * @param {string} abs — already `path.normalize`d absolute path
+ * @param {boolean} strict — propagate fs errors for containment checks (#1886)
  * @returns {string}
  */
-function canonicalizeRmTarget(abs) {
+function canonicalizeRmTarget(abs, strict = false) {
   const parent = path.dirname(abs);
   if (parent === abs) return abs; // filesystem root
-  return path.join(canonicalizeAncestors(parent), path.basename(abs));
+  return path.join(canonicalizeAncestors(parent, strict), path.basename(abs));
+}
+
+/**
+ * True when the shell, not the guard, decides which path `rm` gets (#1886).
+ *
+ * The guard collapses `..` lexically, while rm resolves it physically through a
+ * symlink (`node_modules/link/../x` lands next to the link's target). `$` and
+ * backticks can carry any path. A glob or brace in a directory segment can
+ * expand to a symlink that rm then descends into. A glob in the FINAL segment
+ * only names entries that rm unlinks, so that one stays allowed; a zsh `(`
+ * never is, since a glob qualifier like `*(e:…:)` runs code.
+ *
+ * Census 2026-10-31 (M4, 7 days, 595 allowlisted recursive-rm operands):
+ * 1 `..`, 3 `$`, 1 directory glob, 24 final-segment globs. The `..` case and
+ * the directory glob were the review's own probes.
+ *
+ * Ceiling: the verdict reads the filesystem before the command runs. A command
+ * that first creates the link or moves a directory into place (`ln -s`, `mv`)
+ * and then removes through it is beyond any check of the command text.
+ *
+ * @param {string} effective — target after `$TMPDIR` expansion
+ * @returns {boolean}
+ */
+function shellResolvedRmTarget(effective) {
+  const segments = effective.split('/');
+  if (segments.includes('..') || /[$`(]/.test(effective)) return true;
+  return segments.slice(0, -1).some((s) => /[*?[{]/.test(s));
 }
 
 /**
  * Return true when a single path is a safe `rm -rf` target.
  *
  * Safe targets:
- *   - <projectRoot>/.orchestrator/tmp (any depth)
- *   - <projectRoot>/node_modules (any depth)
+ *   - <base>/.orchestrator/tmp (any depth)
+ *   - <base>/node_modules (any depth)
+ *   - <base>/<state-dir>/filescopes (any depth) — plugin wave scope files (#1881)
  *   - /tmp/ (any depth)                    — agent-owned scratch
  *   - /private/tmp/ (any depth)            — macOS canonical /tmp
  *   - resolved os.tmpdir() / $TMPDIR (any depth), in either spelling
+ *
+ * <base> is the project root and the directory the shell runs the rm in
+ * (#1886 review). A relative operand resolves against that directory, as rm
+ * does; if it is unknown, a relative operand is never allowed.
  *
  * The /tmp-class prefixes come from the rule's optional `path-allowlist` and are
  * resolved at runtime here.
  *
  * @param {string} targetPath
- * @param {string} projectDir
+ * @param {{ projectDir: string, dir: string|null, trustTmpdir: boolean }} where
  * @param {string[]} ruleAllowlist — `path-allowlist` entries (e.g. "/tmp/", "$TMPDIR")
  * @returns {boolean}
  */
-function isRmPathAllowed(targetPath, projectDir, ruleAllowlist = []) {
+function isRmPathAllowed(targetPath, { projectDir, dir, trustTmpdir }, ruleAllowlist = []) {
   if (!targetPath) return false;
 
-  const base = projectDir || process.cwd();
-  // Restore the shell's own substitution before judging absoluteness (#935).
-  const effective = expandTmpdirToken(targetPath);
+  // Restore the shell's own substitution before judging absoluteness (#935),
+  // only where nothing earlier on the line can have changed TMPDIR.
+  const effective = trustTmpdir ? expandTmpdirToken(targetPath) : targetPath;
+  if (shellResolvedRmTarget(effective)) return false;
   const wasAbsolute = path.isAbsolute(effective);
+  if (!wasAbsolute && dir === null) return false;
+  // A trailing `/` or `/.` makes rm follow a final symlink (#1886).
+  const followsLeaf = /(?:\/|\/\.)$/.test(effective);
 
-  // Project-relative safe dirs (always allowed, independent of the rule allowlist).
-  // Deliberately LEXICAL: a project-relative candidate is never symlink-resolved,
-  // otherwise a link inside the project pointing at /tmp would read as safe and
+  // Project-relative safe dirs (independent of the rule allowlist).
+  // Classification stays LEXICAL: never resolve a project-relative candidate
+  // into the /tmp allowlist, otherwise a link pointing at /tmp would read as safe and
   // `rm -rf <that link>` — which destroys project content — would be allowed.
   const abs = wasAbsolute
     ? path.normalize(effective)
-    : path.resolve(base, effective);
+    : path.resolve(dir, effective);
 
-  const safeProjectDirs = [
-    path.join(base, '.orchestrator', 'tmp'),
-    path.join(base, 'node_modules'),
-  ];
-  for (const safe of safeProjectDirs) {
-    if (abs === safe || abs.startsWith(safe + path.sep)) return true;
+  for (const base of new Set([projectDir || process.cwd(), dir].filter(Boolean))) {
+    const safeProjectDirs = [
+      path.join(base, '.orchestrator', 'tmp'),
+      path.join(base, 'node_modules'),
+      // #1881 — the per-agent wave scope files the plugin itself writes
+      // (`<state-dir>/filescopes`, state dirs as in resolveStateDir()). Clearing
+      // them after a wave was 30 of 219 rm-rf denials in 7 days.
+      ...['.claude', '.codex', '.cursor', '.pi'].map((d) => path.join(base, d, 'filescopes')),
+    ];
+    for (const safe of safeProjectDirs) {
+      if (abs === safe || abs.startsWith(safe + path.sep)) {
+        try {
+          // #1886 — constrain the directory chain rm follows to the lexical safe
+          // suffix on the canonical base; a bare final symlink is only unlinked.
+          // A base the line creates first (`mkdir -p x && cd x`) need not exist yet.
+          const canonBase = canonicalizeAncestors(base, true);
+          const canonSafe = path.join(canonBase, path.relative(base, safe));
+          const canonTarget = followsLeaf
+            ? canonicalizeAncestors(path.resolve(abs), true)
+            : canonicalizeRmTarget(abs, true);
+          return canonTarget === canonSafe || canonTarget.startsWith(canonSafe + path.sep);
+        } catch {
+          return false;
+        }
+      }
+    }
   }
 
   // Rule-driven absolute prefixes (/tmp/, /private/tmp/, $TMPDIR).
@@ -1247,7 +1564,12 @@ function isRmPathAllowed(targetPath, projectDir, ruleAllowlist = []) {
     // depend on which spelling of the same directory was typed (`/var/folders/…`
     // allowed, `/private/var/folders/…` blocked — #935 cause 2) and let a symlink
     // under /tmp launder a non-temp destination into the allowlist.
-    const canonTarget = canonicalizeRmTarget(abs);
+    let canonTarget;
+    try {
+      canonTarget = followsLeaf ? canonicalizeAncestors(abs, true) : canonicalizeRmTarget(abs);
+    } catch {
+      return false;
+    }
     for (const prefix of resolveAllowlistPrefixes(ruleAllowlist)) {
       // The target must be the prefix dir itself or a descendant of it.
       if (canonTarget === prefix || canonTarget.startsWith(prefix + path.sep)) return true;
@@ -1330,8 +1652,8 @@ async function main() {
   const input = await readStdin();
   if (!input) return emitAllow();
 
-  // G1 — only Bash is gated
-  if (input.tool_name !== 'Bash') return emitAllow();
+  // G1 — Bash, Monitor and PowerShell are gated
+  if (!isShellCommandTool(input.tool_name) && input.tool_name !== 'PowerShell') return emitAllow();
 
   // G2 — command must be a non-empty string
   const command = input?.tool_input?.command;
@@ -1405,6 +1727,12 @@ async function main() {
     // No config file or parse error — proceed to policy check
   }
 
+  // #1900 — refuse PowerShell before POSIX analysis. A cmdlet allowlist cannot
+  // establish safety because module autoload can execute additional code.
+  if (input.tool_name === 'PowerShell') {
+    return emitDeny('session-orchestrator: commands from the PowerShell tool are refused because the destructive-command rules can only read POSIX shell syntax. Run the command through the Bash tool (Git Bash) instead.');
+  }
+
   // G4 — policy load (#972: floor/overlay merge, not first-hit-wins).
   // The plugin-root policy is the FLOOR; a cwd/projectDir policy is an OVERLAY
   // that can only add rules or escalate severity — an empty or malformed
@@ -1427,7 +1755,9 @@ async function main() {
 
   // G5 — rule evaluation
   for (const rule of rules) {
-    const { id, pattern, severity, rationale = '' } = rule;
+    const { id, pattern, rationale = '' } = rule;
+    // #1881 — the hook profile may soften a block rule to warn (strict never does).
+    const severity = effectiveRuleSeverity(id, rule.severity);
 
     // #983 — redirect-truncate rules are decided by redirect TARGET via
     // redirectRuleMatches, NEVER by the generic pattern path below: their
@@ -1567,9 +1897,13 @@ async function main() {
     // a removal the guard cannot judge is the dangerous direction.
     if (rule.type === 'worktree-remove-unsafe') {
       const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
-      const label = unsafeWorktreeRemoval(command, cwd);
-      if (label === null) continue;
-      if (severity !== 'block') {
+      const hit = unsafeWorktreeRemoval(command, cwd);
+      if (hit === null) continue;
+      const { label } = hit;
+      // #1881 — the profile may soften only an UNMEASURABLE target (110 of 136
+      // denials in 7 days); a measured hit keeps the policy severity.
+      const removalSeverity = hit.unmeasurable ? effectiveRuleSeverity(`${id}/unmeasurable`, rule.severity) : rule.severity;
+      if (removalSeverity !== 'block') {
         const msg = `pre-bash-destructive-guard: ${label} (rule: ${id}) — ${rationale}`;
         process.stderr.write(`⚠ ${msg}\n`);
         notices.push(msg);
@@ -1616,7 +1950,10 @@ async function main() {
       // Special: rm-rf-destructive — path exception
       if (id === 'rm-rf-destructive') {
         const ruleAllowlist = Array.isArray(rule['path-allowlist']) ? rule['path-allowlist'] : [];
-        const { targets, writeTargets } = parseRmTargets(command);
+        const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
+        const { targets, writeTargets } = parseRmTargets(command, cwd);
+        // Allowed only if allowed in every directory the shell may be in.
+        const allowed = (t) => t.dirs.every((dir) => isRmPathAllowed(t.text, { projectDir, dir, trustTmpdir: t.trustTmpdir }, ruleAllowlist));
         // Allow ONLY when there is at least one target AND every target is
         // allowlisted. An unparseable command (no targets) or any non-allowlisted
         // target → block (conservative). This makes mixed chains like
@@ -1631,13 +1968,18 @@ async function main() {
         // — two complementary layers from the two 2026-08-03 guard sessions.
         const allAllowed =
           targets.length > 0 &&
-          targets.every((t) => isRmPathAllowed(t, projectDir, ruleAllowlist)) &&
-          writeTargets.every(
-            (t) => isNullSink(t) || isRmPathAllowed(t, projectDir, ruleAllowlist)
-          );
+          targets.every(allowed) &&
+          writeTargets.every((t) => isNullSink(t.text) || allowed(t));
         if (allAllowed) {
           // Safe paths only (.orchestrator/tmp, node_modules, /tmp, $TMPDIR) — allow
           continue;
+        }
+        // #1883: an mktemp variable stays blocked, but say why and what works,
+        // so the agent stops re-spelling the removal. Measured 2026-10-31: a
+        // text-level grant proved only 1 of 94 real cleanups and had 6 bypasses
+        // (rebinding via zsh builtins, `$E` eval, PATH-hijacked mktemp, …).
+        if (/\bmktemp\b/.test(command) && targets.some((t) => BARE_VARIABLE_RE.test(t.text))) {
+          await blockCommand(pattern, id, `${rationale} ${MKTEMP_CLEANUP_HINT}`, command, sessionId);
         }
       }
       await blockCommand(pattern, id, rationale, command, sessionId);

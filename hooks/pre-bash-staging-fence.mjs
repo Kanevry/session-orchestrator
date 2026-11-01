@@ -40,7 +40,7 @@
  * regex could not see at all, because `-A` contains no path to match.
  *
  * Decision flow (G1-G6 early-return ladder):
- *   G1  tool filter — Bash only
+ *   G1  tool filter — Bash and Monitor
  *   G2  command must be a non-empty string
  *   G3  cheap regex PRE-FILTER — skip the tokenizer for plainly unrelated
  *       commands (see mayStage; it does not decide the question)
@@ -65,7 +65,7 @@
  * Worst case is a missed enforcement, not a wedged session.
  */
 
-import { readStdin, emitAllow, writeJsonAtomicSync } from '../scripts/lib/io.mjs';
+import { isShellCommandTool, readStdin, emitAllow, writeJsonAtomicSync } from '../scripts/lib/io.mjs';
 import { isWaveAgentContext } from '../scripts/lib/wave-context.mjs';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
@@ -731,8 +731,8 @@ async function main() {
   const input = await readStdin();
   if (!input) return emitAllow();
 
-  // G1 — only Bash is gated.
-  if (input.tool_name !== 'Bash') return emitAllow();
+  // G1 — Bash and Monitor are gated.
+  if (!isShellCommandTool(input.tool_name)) return emitAllow();
 
   // G2 — command must be a non-empty string.
   const command = input?.tool_input?.command;

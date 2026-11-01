@@ -260,6 +260,26 @@ your rights. Run it only against an endpoint and a source you trust, or as a
 separate OS user or in a VM. The model key is kept out of every tool call's
 environment, but a deliberate read of the key file is not prevented.
 
+**Last run: 2026-10-29, plugin 5.16.0** (macOS on Apple M4, Node 24.22.1, from
+the GitHub mirror, `--keep`). Every install step passed on all three paths:
+
+- **Claude Code 2.1.312:** `marketplace add` and `install` exited 0, readiness
+  reported 11 of 11 dependencies. Bootstrap and session were not measurable:
+  the model endpoint answered 429 (`claude-sonnet-4-6`, credentials cooling
+  down), and two other Claude model ids returned 503 and 404.
+- **Codex CLI 0.160.1, short form:** the new cache had 0 of 11 dependencies,
+  and `--repair` brought it to 11 of 11 in 3.7 s. Bootstrap passed. The
+  session failed: model `gpt-6-sol` wrote `CONTRIBUTING.md` before any plan
+  was approved. After the first `codex exec` the cache had no `node_modules`
+  again (#1878).
+- **Codex CLI 0.160.1, clone path:** 11 of 11 dependencies, and bootstrap
+  passed. The session failed: after three answered questions there was no
+  plan offering `/go` (model `gpt-6-sol`).
+
+Cursor and Pi were not re-run: Cursor needs a login, and Pi is not installed
+on the test host. The last passing model session is the 2026-10-28 run on
+5.14.0 described above and in [Codex setup](codex-setup.md).
+
 Setup guides: [Codex](codex-setup.md) · [Cursor IDE](cursor-setup.md) ·
 [Pi](pi-setup.md). Per-IDE notes on which instruction file each harness reads:
 [instruction-file-resolution](../skills/_shared/instruction-file-resolution.md).

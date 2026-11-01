@@ -17,6 +17,12 @@
  *   --ledger-root <path>     Repo root the telemetry event is pinned to (and the
  *                            root session attribution is read from). Only the
  *                            pre-push hook passes it; see the emission block below.
+ *   --receipt                full-gate only (#1897): read a receipt for the same
+ *                            content tree and gate definition instead of running
+ *                            the suite again (envelope and event carry
+ *                            `reused_from`), and write one after a green run on
+ *                            an unchanged tree. See scripts/lib/gate-receipt.mjs.
+ *                            Opt-in: the Quality wave and session-end pass it.
  *   -h, --help               Show this help and exit.
  *
  * Exit codes:
@@ -49,6 +55,7 @@ import { loadQualityGatesPolicy, resolveCommand } from './lib/quality-gates-poli
 import { emitEvent, sessionAttribution } from './lib/events.mjs';
 import {
   admitSuiteCounts,
+  collectDebugArtifacts,
   joinGateKillFields,
   publishGateOutcome,
   resolveGateTimeoutMs,
@@ -59,6 +66,7 @@ import { readProcessLocalSessionIds } from './lib/session-identity/own-session.m
 import { admitRerunSkipped, gateKillFields } from './lib/quality-gate.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { spawn } from './lib/native-command.mjs';
+import { contentTree, findReceipt, gateDefinition, writeReceipt } from './lib/gate-receipt.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,6 +74,15 @@ import { spawn } from './lib/native-command.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const GATES_DIR = join(__dirname, 'lib', 'gates');
+
+/** The plugin's own version, part of a receipt's gate definition (#1897). */
+function pluginVersion() {
+  try {
+    return String(JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).version ?? 'unknown');
+  } catch {
+    return 'unknown';
+  }
+}
 
 const VALID_VARIANTS = ['baseline', 'incremental', 'full-gate', 'per-file'];
 
@@ -359,7 +376,7 @@ async function main() {
   if (argv.includes('-h') || argv.includes('--help')) {
     process.stdout.write(
       'Usage: run-quality-gate.mjs --variant <variant> [--config <json-or-file>] ' +
-      '[--files <file1,file2,...>] [--session-start-ref <ref>] [--ledger-root <path>]\n\n' +
+      '[--files <file1,file2,...>] [--session-start-ref <ref>] [--ledger-root <path>] [--receipt]\n\n' +
       'Variants: baseline, incremental, full-gate, per-file\n\n' +
       'Exit codes:\n' +
       '  0 — pass (non-blocking variants always exit 0)\n' +
@@ -375,6 +392,7 @@ async function main() {
   let files = '';
   let sessionStartRef = '';
   let ledgerRootArg = '';
+  let receipt = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -399,6 +417,9 @@ async function main() {
         if (i + 1 >= argv.length) die('Missing value for --ledger-root');
         ledgerRootArg = argv[++i];
         break;
+      case '--receipt':
+        receipt = true;
+        break;
       default:
         die(`Unknown argument: ${arg}`);
     }
@@ -407,6 +428,10 @@ async function main() {
   if (!variant) die('Missing required argument: --variant');
   if (!VALID_VARIANTS.includes(variant)) {
     die(`Invalid variant: '${variant}' (allowed: ${VALID_VARIANTS.join(', ')})`);
+  }
+  if (receipt && variant !== 'full-gate') {
+    warn(`--receipt applies to full-gate only; ignored for '${variant}'`);
+    receipt = false;
   }
 
   // Load policy file (never throws)
@@ -546,7 +571,30 @@ async function main() {
   // the outer cap at the 900 000 default while a committed
   // `gate.timeout-path-b-ms` above it made the inner cap the later of the two.
   const gateTimeoutMs = commandTimeoutMs + GATE_OUTER_TIMEOUT_RESERVE_MS;
-  const result = await spawnInGroup(gateCommand, {
+
+  // Receipt (#1897, opt-in `--receipt`): a green Full Gate on the same content
+  // tree and gate definition stands in for this run. The stored envelope is
+  // published with `reused_from` and nothing is spawned; the event below carries
+  // the same field, so the reuse is never silent. Its debug-artifact scan is
+  // redone: it depends on `--session-start-ref`, which is not in the key.
+  const receiptDefinition = receipt
+    ? gateDefinition({ variant, typecheck: TYPECHECK_CMD, test: TEST_CMD, lint: LINT_CMD, node: process.version, plugin: pluginVersion() })
+    : null;
+  const treeBefore = receipt ? contentTree(repoRoot) : null;
+  const found = receipt ? findReceipt({ repoRoot, tree: treeBefore, definition: receiptDefinition }) : null;
+  const reusedFrom = found ? { tree: found.tree, at: found.at } : null;
+  if (reusedFrom) {
+    process.stderr.write(`ℹ Full Gate not re-run: receipt for content tree ${reusedFrom.tree.slice(0, 12)} from ${reusedFrom.at} (#1897)\n`);
+  }
+
+  const result = reusedFrom !== null ? {
+    pid: 0,
+    exitCode: 0,
+    timedOut: false,
+    survivors: [],
+    killSignals: [],
+    fullOutput: `${JSON.stringify({ ...found.envelope, debug_artifacts: collectDebugArtifacts(sessionStartRef), reused_from: reusedFrom })}\n`,
+  } : await spawnInGroup(gateCommand, {
     cwd: repoRoot,
     env,
     timeoutMs: gateTimeoutMs,
@@ -594,6 +642,18 @@ async function main() {
   if (outcome.stderr) process.stderr.write(outcome.stderr);
   if (outcome.stdout) process.stdout.write(outcome.stdout);
   for (const line of outcome.warnings) warn(line);
+
+  // Write a receipt only for a green run on a tree that did not change while
+  // the suite ran — a peer session or the gate itself writing a file in between
+  // would otherwise confirm content that was never tested.
+  if (receipt && reusedFrom === null && outcome.exitCode === 0 && !result.timedOut && treeBefore !== null) {
+    let envelope;
+    try { envelope = JSON.parse(gateStdout); } catch { envelope = null; }
+    if (envelope !== null && contentTree(repoRoot) === treeBefore) {
+      const sessionId = [...readProcessLocalSessionIds({ env: process.env, hookInput: null })][0] ?? null;
+      writeReceipt({ repoRoot, tree: treeBefore, definition: receiptDefinition, envelope, sessionId });
+    }
+  }
 
   // Quality-gate telemetry — one canonical event per gate run via emitEvent
   // (single emission path). `sessionAttribution` is the shared helper in
@@ -673,6 +733,7 @@ async function main() {
         ...(rerun ? { rerun } : {}),
         ...(rerunSkipped ? { rerun_skipped: rerunSkipped } : {}),
         ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
+        ...(reusedFrom ? { reused_from: reusedFrom } : {}),
         ...sessionAttribution(ledgerRoot ?? repoRoot),
       },
       // `{}` is byte-identical to omitting the argument (`opts.repoRoot ??

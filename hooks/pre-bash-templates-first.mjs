@@ -9,10 +9,12 @@
  * #155); both share the PreToolUse Bash matcher and run sequentially.
  *
  * Decision flow:
- *   G1 tool filter — only Bash is gated; other tools pass through.
+ *   G1 tool filter — Bash and Monitor are gated; other tools pass through.
  *   G2 command is a non-empty string.
  *   G3 regex match against /^\s*(gh|glab)\s+(pr|mr|issue)\s+(create|new)\b/.
  *      No match → exit 0 (the call is not a create/new operation).
+ *   G3a Session Config: disabled or excluded host → allow; read/parse error
+ *       → warn and continue enforcement. Parsed only after a create match.
  *   G4 policy load: .orchestrator/policy/templates-policy.json.
  *      Missing → exit 0 + stderr warning. Malformed → exit 0 + stderr warning.
  *   G5 bypass-pattern check: any entry in policy.bypass_patterns that the
@@ -37,8 +39,8 @@
  *        on exit 2, which would throw away the deny envelope entirely (#906).
  */
 
-import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
-import { resolveProjectDir, resolvePluginRoot, resolveEventsLedgerRoot } from '../scripts/lib/platform.mjs';
+import { isShellCommandTool, readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
+import { resolveProjectDir, resolveConfigFile, resolvePluginRoot, resolveEventsLedgerRoot } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
 import { readProcessLocalSessionIds } from '../scripts/lib/session-identity/own-session.mjs';
 import { hasReadInSession } from './_lib/transcript-history.mjs';
@@ -272,8 +274,8 @@ async function main() {
   const input = await readStdin();
   if (!input) return emitAllow();
 
-  // G1 — only Bash is gated.
-  if (input.tool_name !== 'Bash') return emitAllow();
+  // G1 — Bash and Monitor are gated.
+  if (!isShellCommandTool(input.tool_name)) return emitAllow();
 
   // G2 — command must be a non-empty string.
   const command = input?.tool_input?.command;
@@ -284,6 +286,20 @@ async function main() {
   if (!host) return emitAllow();
 
   const projectDir = resolveProjectDir();
+
+  // #1882: only read Session Config after a positive create match (hot path).
+  try {
+    const { _parseTemplatesFirst } = await import('../scripts/lib/config/templates-first.mjs');
+    const { readFile } = await import('node:fs/promises');
+    const config = _parseTemplatesFirst(await readFile(path.join(projectDir, resolveConfigFile()), 'utf8'));
+    if (!config.enabled) {
+      process.stderr.write('ℹ pre-bash-templates-first: templates-first.enabled is false — allowing\n');
+      return emitAllow();
+    }
+    if (!config.hosts.includes(host)) return emitAllow();
+  } catch {
+    process.stderr.write('⚠ pre-bash-templates-first: Session Config read/parse failed — enforcing templates-first\n');
+  }
 
   // G4 — policy load.
   const policyPath = resolvePolicyPath(projectDir);
@@ -426,8 +442,8 @@ async function main() {
 // Entry guard (#1393): run only as the node script the harness execs — a bare
 // `import()` must run no handler and must not exit the importing process.
 if (isMainModule(import.meta.url)) {
-  // #519: opt-in via profile/env. Default profile "full" enables this hook;
-  // minimal/off disable. SO_DISABLED_HOOKS=pre-bash-templates-first opts out
+  // #1881: only strict (including its full alias) enables this hook;
+  // the default standard profile disables it. SO_DISABLED_HOOKS=pre-bash-templates-first opts out
   // per session.
   if (!shouldRunHook('pre-bash-templates-first')) process.exit(0);
 

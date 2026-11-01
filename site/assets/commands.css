@@ -3,6 +3,17 @@
 
 .commands-page .h-display { font-size: clamp(2.25rem, 5vw, 3.5rem); }
 
+/* Tool switcher (shown by commands.js) */
+.tool-switch { margin: 0 0 var(--gap); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.tool-switch[hidden] { display: none; }
+.tool-switch-label { margin: 0; font-family: var(--font-display); font-weight: 500; }
+.tool-switch-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.tool-switch-btns button { min-height: 44px; min-width: 44px; padding: 8px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--fg-2); cursor: pointer; }
+.tool-switch-btns button:hover { border-color: var(--fg-2); color: var(--fg); }
+.tool-switch-btns button[aria-pressed="true"] { border-color: var(--fg); background: var(--code-bg); color: var(--fg); font-weight: 600; }
+.tool-status { margin: 0; flex-basis: 100%; color: var(--fg-2); font-size: var(--text-meta); }
+.forms dt[hidden], .forms dd[hidden] { display: none; }
+
 /* "I want to ..." tiles */
 .tiles { list-style: none; margin: 0 0 var(--gap); padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 1fr)); }
 .tile { display: flex; flex-direction: column; gap: 2px; min-height: 44px; height: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--fg); text-decoration: none; }

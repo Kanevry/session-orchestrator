@@ -822,6 +822,45 @@ function unformedKind(line: string, depth: number): OutwardKind | null {
   return null
 }
 
+/**
+ * Per segment of `segs` (as {@link segmentsOf} cut `text`): whether it is text, not a command — cut out of a quoted
+ * word of a {@link DATA_COMMANDS} command whose output no command that runs it reads, the reading {@link unformedKind}
+ * gives the same segment. `grep -E "a|git push|b" f` cut `git push` out of its pattern, and the walker formed a push
+ * from it (#1891). A quoted word that `eval` parses again, or one piped into a shell (`echo "a|git push|b" | sh`), stays
+ * code.
+ */
+function quotedDataSegments(text: string, segs: readonly Seg[]): boolean[] {
+  const line = joinContinuations(text)
+  const openers = quoteOpeners(line, SPAWN_API.test(line))
+  const words = segs.map(seg => readCommand(seg.text, true).words)
+  const realEnd = new Int32Array(segs.length)
+  for (let j = segs.length - 1; j >= 0; j -= 1) {
+    const cut = openers[(segs[j]?.start ?? 0) + (segs[j]?.text.length ?? 0)] ?? UNKNOWN_QUOTE
+    realEnd[j] = cut < 0 || j === segs.length - 1 ? j : (realEnd[j + 1] ?? j)
+  }
+  const segAt = (at: number): number => {
+    let lo = 0
+    let hi = segs.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if ((segs[mid]?.start ?? 0) <= at) lo = mid
+      else hi = mid - 1
+    }
+    return lo
+  }
+  return segs.map((seg, k) => {
+    const opener = openers[seg.start] ?? UNKNOWN_QUOTE
+    if (opener < 0) return false
+    const owner = segAt(opener)
+    if (owner === k || EVAL_WORD.test(segs[owner]?.text ?? '')) return false
+    const first = words[owner]?.[0]
+    if (first === undefined || !DATA_COMMANDS.has(baseName(first))) return false
+    const last = realEnd[owner] ?? owner
+    const next = words[last + 1] ?? []
+    return !(PIPE.has(segs[last]?.after ?? '') && !PIPE_DATA.has(baseName(next[0] ?? '')) && !judged(baseName(next[0] ?? ''), next.slice(1)))
+  })
+}
+
 // A command that may run a file written earlier on the line, in command position (line start or after `;`, `&`, `|`,
 // `(`, `{`, a newline, `then`/`do`): a shell or interpreter, `source`/`.`, `exec`, `xargs`, or a path like `./x`, `/tmp/x.sh`.
 const RUNS_FILE = /(?:^|[;&|(){}\n]|\b(?:then|do|else)\s)\s*(?:sudo\s+|env\s+|nohup\s+|exec\s+)*(sh|bash|zsh|dash|ksh|fish|source|\.|python3?|node|deno|bun|tsx|perl|ruby|exec|xargs|\.{0,2}\/\S+)(?=[\s;&|()]|$)/g
@@ -1184,7 +1223,12 @@ function unreadRegions(line: string): string[] {
   // `p=push; git $p origin main`: a command or git subcommand from a variable is set anywhere on the
   // line, so the whole line is read — once (once per such segment re-read the line, quadratic).
   const expanded = (word: string | undefined) => word !== undefined && word.includes('$') && !word.startsWith('$(')
-  for (const segment of splitSegments(line)) {
+  // Text cut out of a data command's quoted word is no command (#1891): `grep -E "a|git push|b" "$D/f"` left
+  // `b" "$D/f"`, whose first word held a `$`.
+  const segs = segmentsOf(line)
+  const asText = quotedDataSegments(line, segs)
+  for (const [k, { text: segment }] of segs.entries()) {
+    if (asText[k]) continue
     const [first, ...args] = readCommand(segment, true).words
     if (expanded(first) || (baseName(first ?? '') === 'git' && expanded(readGit(args, null).sub))) {
       regions.push(line)
@@ -1455,7 +1499,9 @@ function walkSegments(text: string, inners: readonly Inner[], depth: number, sta
       state.gitBefore.push(cmd === 'git-push' ? 'push' : cmd)
     } else if (runsOwnCommand(segment)) state.otherBefore = true
   }
+  const asText = quotedDataSegments(text, segs)
   segs.forEach((seg, k) => {
+    if (asText[k]) return
     walkSegment(seg, k)
     // Judged after the segment's own hit is recorded, so it counts for the pushes after it: an output
     // redirection on any segment (a git step, `cd`, `exec`, an assignment) may write .git/config or

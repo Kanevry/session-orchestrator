@@ -6,6 +6,9 @@
 <title>Commands: which one to type, and what happens next</title>
 <meta name="description" content="All 31 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
 <link rel="canonical" href="https://session-orchestrator.com/commands">
+<link rel="alternate" hreflang="en" href="https://session-orchestrator.com/commands">
+<link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de/commands">
+<link rel="alternate" hreflang="x-default" href="https://session-orchestrator.com/commands">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Session Orchestrator">
 <meta property="og:url" content="https://session-orchestrator.com/commands">
@@ -80,15 +83,15 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261026a">
-<link rel="stylesheet" href="/assets/commands.css?v=20261026a">
+<link rel="stylesheet" href="/assets/site.css?v=20261029">
+<link rel="stylesheet" href="/assets/commands.css?v=20261029">
 </head>
 <body class="guide-page commands-page">
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.16.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.17.0</span></span></a>
     <nav class="nav" aria-label="Main">
       <a href="/#how">How it works</a>
       <a href="/commands" aria-current="page">Commands</a>
@@ -97,6 +100,7 @@
       <a href="/lead">Lead</a>
       <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
     </nav>
+    <p class="lang"><a href="/commands" aria-current="page" lang="en">EN</a><a href="/de/commands" lang="de">DE</a></p>
     <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation">
       <a href="/#how">How it works</a>
       <a href="/commands" aria-current="page">Commands</a>
@@ -114,6 +118,17 @@
       <p class="eyebrow">31 commands &middot; Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
       <h1 class="h-display">Which command helps me right now?</h1>
       <p class="lede">Pick what you want to do. Each command below says when to use it, what you get, how to type it and what happens next.</p>
+
+      <div class="tool-switch" id="tool-switch" hidden>
+        <p class="tool-switch-label" id="tool-switch-h">Show commands for</p>
+        <div class="tool-switch-btns" role="group" aria-labelledby="tool-switch-h">
+          <button type="button" data-tool="claude" aria-pressed="true">Claude Code</button>
+          <button type="button" data-tool="codex" aria-pressed="false">Codex</button>
+          <button type="button" data-tool="cursor" aria-pressed="false">Cursor</button>
+          <button type="button" data-tool="pi" aria-pressed="false">Pi</button>
+        </div>
+        <p class="tool-status" id="tool-status" role="status" aria-live="polite"></p>
+      </div>
 
       <h2 class="small" id="want-h">I want to &hellip;</h2>
       <ul class="tiles" aria-labelledby="want-h">
@@ -226,6 +241,7 @@
       <dt>Touches</dt><dd><span class="touch touch-issues">Opens issues</span> <span class="asks">asks you first</span> <span class="touch-note">writes the PRD or retro; <code>new</code> also creates a repo and commits</span></dd>
       <dt>Needs</dt><dd>/bootstrap done. <code>/plan new</code> uses <code>plan-baseline-path</code> when configured, else the bundled templates; <code>feature</code> and <code>retro</code> never need it.</dd>
       <dt>Which</dt><dd>Only an idea: <code>/brainstorm</code>. Scope known: <code>/plan feature</code>. Exactly clear: <code>/session feature</code>. The PRD lands in <code>docs/prd/</code> by default (<code>plan-prd-location</code>).</dd>
+      <dt>Example</dt><dd>Type <code>/plan feature</code>. Answer the first question (what to build) with your task, for example &ldquo;Add CSV export to the invoice list&rdquo;. The PRD is written to <code>docs/prd/YYYY-MM-DD-&lt;feature-name&gt;.md</code>.</dd>
       <dt>Then</dt><dd>Optionally <code>/grill</code> the PRD, then <code>/session feature</code> to build it.</dd>
       </dl>
       <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/plan/SKILL.md">Source: skills/plan/SKILL.md</a></p>
@@ -619,7 +635,7 @@
       <dl class="cmd-facts">
       <dt>When</dt><dd>The templates-first check blocks a gh or glab create, but you already read the template.</dd>
       <dt>You get</dt><dd>Issue or MR creation passes for the rest of this session.</dd>
-      <dt>Type it</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/templates-ack [reason]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:templates-ack (has no effect on Codex)</code></dd><dt>Cursor</dt><dd><code>/templates-ack</code></dd><dt>Pi</dt><dd><code>/templates-ack</code></dd></dl></dd>
+      <dt>Type it</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/templates-ack [reason]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:templates-ack</code> (has no effect on Codex)</dd><dt>Cursor</dt><dd><code>/templates-ack</code></dd><dt>Pi</dt><dd><code>/templates-ack</code></dd></dl></dd>
       <dt>Touches</dt><dd><span class="touch touch-files">Changes files</span> <span class="touch-note">writes one acknowledgement file in .orchestrator/runtime/</span></dd>
       <dt>Needs</dt><dd>A Claude Code session. Without one it is refused.</dd>
       <dt>Then</dt><dd>Run the gh or glab create command again.</dd>
@@ -688,7 +704,7 @@
 <!-- Vercel Web Analytics, same-origin; see the comment on /guide and /datenschutz Punkt 04. -->
 <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
 <script src="/_vercel/insights/script.js" defer></script>
-<script src="/assets/commands.js?v=20261023" defer></script>
+<script src="/assets/commands.js?v=20261029" defer></script>
 <script src="/assets/ui.js?v=20260910" defer></script>
 </body>
 </html>

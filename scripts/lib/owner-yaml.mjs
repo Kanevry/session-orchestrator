@@ -60,6 +60,13 @@
  *                            store inside a listed root > store-role > writer. A non-list,
  *                            or an entry that is empty, relative, non-string or carries
  *                            NUL/CR/LF, drops the section like an invalid store-role)
+ *   hooks:                  (optional; host-local hook profile — #1881)
+ *     profile: 'strict' | 'full' | 'standard'  (absent = standard; `full` = legacy
+ *                            alias of strict. precedence env SO_HOOK_PROFILE > this >
+ *                            standard, see hooks/_lib/profile-gate.mjs. minimal/off are env-only)
+ *     disabled: string[]     (hook names switched off on this host; unioned with env
+ *                            SO_DISABLED_HOOKS; never a safety hook. An invalid value or
+ *                            any other key drops ONLY this section, see loadOwnerConfig)
  *   drift-check:            (optional; host-local path exceptions — #937)
  *     foreign-host-prefixes: string[] (narrow absolute directory prefixes;
  *                            missing matching paths warn, unmatched paths error)
@@ -76,7 +83,7 @@
  *   validateOwnerSections(obj) — pure validation, no I/O; bucketed per section (#820)
  *   validateOwnerConfig(obj)   — pure validation, no I/O; thin wrapper over validateOwnerSections
  *   loadOwnerConfig({path?})   — reads file; per-section tolerance for OPTIONAL
- *                                sections (paths/dispatcher/vault-integration/drift-check/learnings/vaults/
+ *                                sections (paths/dispatcher/vault-integration/drift-check/learnings/hooks/vaults/
  *                                baselines/vault-dirs) — #820
  *   writeOwnerConfig(config, {path?}) — validates, writes YAML, creates dir
  *   getDefaults()              — returns sensible default config object
@@ -239,9 +246,10 @@ const REQUIRED_SECTIONS = /** @type {const} */ (['owner', 'tone', 'efficiency', 
  * `vault-integration` has no `getDefaults()` entry: absent means "no host
  * override", so a dropped section simply leaves the committed gate in force.
  * `learnings` (#1516) likewise has none: absent means the `writer` role.
+ * `hooks` (#1881) has none either: absent means the default hook profile.
  */
 export const OPTIONAL_OBJECT_SECTIONS = /** @type {const} */ (
-  Object.freeze(['paths', 'dispatcher', 'vault-integration', 'drift-check', 'learnings'])
+  Object.freeze(['paths', 'dispatcher', 'vault-integration', 'drift-check', 'learnings', 'hooks'])
 );
 
 /**
@@ -261,6 +269,28 @@ const VALID_VAULT_INTEGRATION_MODES = ['off', 'warn', 'strict'];
  * on the hook import graph and must stay import-light.
  */
 const VALID_LEARNINGS_STORE_ROLES = ['writer', 'inbox'];
+
+/**
+ * Host-settable hook profiles and the hooks owner.yaml may not disable (#1881).
+ * Mirror OWNER_PROFILES / SAFETY_HOOKS in hooks/_lib/profile-gate.mjs —
+ * duplicated, not imported, because the gate loads this module;
+ * tests/hooks/profile-gate.test.mjs pins the parity. `minimal`, `off` and a
+ * safety hook stay env-only: an agent can append to this file.
+ */
+const VALID_HOOK_PROFILES = ['strict', 'full', 'standard'];
+const SAFETY_HOOKS = [
+  'pre-bash-destructive-guard',
+  'enforce-scope',
+  'enforce-commands',
+  'pre-bash-sessions-ledger-guard',
+  'pre-edit-sessions-ledger-guard',
+  'config-protection',
+  'pre-task-scope-disjoint',
+  'pre-bash-staging-fence',
+];
+
+/** A hook name as `SO_DISABLED_HOOKS` takes it: a hook file stem. */
+const HOOK_NAME_RE = /^[a-z0-9][a-z0-9-]*$/i;
 
 /** Canonical validation-order — MUST match the pre-#820 inline validation order. */
 const SECTION_ORDER = /** @type {const} */ ([
@@ -584,6 +614,46 @@ export function validateOwnerSections(obj) {
       }
     }
     sections.learnings = { valid: errors.length === 0, errors };
+  }
+
+  // ── hooks (optional; host-local hook profile — #1881) ──────────────────────
+  // STRICT like learnings: a misspelt key (`profil: strict`) must not read as
+  // "profile absent", so any key but profile/disabled invalidates the section
+  // and the default profile applies.
+  {
+    const errors = [];
+    const hk = obj.hooks;
+    if (hk !== undefined && hk !== null) {
+      if (!isPlainObject(hk)) {
+        errors.push('hooks must be an object when present');
+      } else {
+        for (const key of Object.keys(hk)) {
+          if (key !== 'profile' && key !== 'disabled') {
+            errors.push(`hooks has unknown key ${JSON.stringify(key)} (only profile and disabled are allowed)`);
+          }
+        }
+        if (hk.profile !== undefined && hk.profile !== null && !VALID_HOOK_PROFILES.includes(hk.profile)) {
+          errors.push(
+            `hooks.profile must be one of ${VALID_HOOK_PROFILES.join(', ')}, got: ${JSON.stringify(hk.profile)}`,
+          );
+        }
+        const disabled = hk.disabled;
+        if (disabled !== undefined && disabled !== null) {
+          if (!Array.isArray(disabled)) {
+            errors.push('hooks.disabled must be a list of hook names');
+          } else {
+            disabled.forEach((entry, i) => {
+              if (typeof entry !== 'string' || !HOOK_NAME_RE.test(entry)) {
+                errors.push(`hooks.disabled[${i}] must be a hook name like pre-bash-templates-first`);
+              } else if (SAFETY_HOOKS.includes(entry.toLowerCase())) {
+                errors.push(`hooks.disabled[${i}] names the safety hook ${entry}, which only SO_DISABLED_HOOKS can switch off`);
+              }
+            });
+          }
+        }
+      }
+    }
+    sections.hooks = { valid: errors.length === 0, errors };
   }
 
   // ── vaults (optional; N named vaults for walk-up resolution — #700) ──────────

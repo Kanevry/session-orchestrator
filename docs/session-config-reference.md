@@ -255,9 +255,13 @@ templates-first:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `templates-first.enabled` | boolean | `true` | Master toggle for the hook. When `false`, the hook is bypassed entirely — `gh`/`glab` create calls are never blocked on template-read state. |
-| `templates-first.hosts` | list of `"github"` \| `"gitlab"` | `[github, gitlab]` | Host allow-list the hook enforces against. A malformed or empty list falls back to the default; unrecognised entries are filtered out silently. |
+| `templates-first.hosts` | list of `"github"` \| `"gitlab"` | `[github, gitlab]` | Host allow-list the hook enforces against. An empty list disables enforcement for both hosts. Unrecognised entries are filtered out; a malformed value or a non-empty list with no recognised hosts falls back to the default. |
 
 **Used by:** `hooks/pre-bash-templates-first.mjs`, `.orchestrator/policy/templates-policy.json`, `/templates-ack` (session-scoped bypass).
+
+Session Config is read only after matching a create/new call (#1882). `gh` maps to `github`, `glab` to `gitlab`; hosts outside the list are allowed. `enabled: false` allows with one informational stderr line naming the key. Read/parse failures warn on stderr and continue the existing policy enforcement; malformed values use the parser defaults.
+
+The hook runs only under the `strict` hook profile (`full` remains an alias, #1881); the default `standard` profile leaves it off. See [§ Hook Runtime Profile Control](#hook-runtime-profile-control-211).
 
 ## Quality
 
@@ -1171,6 +1175,8 @@ Files under a test-fixture directory (`fixtures`, `__fixtures__`, `testdata`, `t
 
 **Event:** `orchestrator.security.delta` carries counts only — no package names, paths or secret material. When `security-delta.mode` is not `off`, the session-start probe `security-pulse` (probe 21, `skills/session-start/references/phase-4-ssot-environment-check.md`) reports a last close that wrote no such event inside its own time span. Its background refresher can be switched off per host or process with `SO_SECURITY_PULSE_REFRESH=off` (the probe then only reads the cache).
 
+The security pulse also reports private GitHub vulnerability reports in `triage`, including the age of the oldest report (#1902). Only the detached refresher calls `gh api --paginate` with `--jq '.[].created_at'` using the host's existing `gh` login for up to three distinct GitHub fetch remotes, in parallel after OSV with a 10-second timeout per remote; only timestamp lines enter the process. Network calls are budgeted at 15 + 30 + 10 s within the refresher's 60-second ceiling. The git steps have no deadline of their own; slow git can shorten the PVR part. It then remains due and runs at the next start. A separate repo-local-keyed cache stores counts and timestamps for six hours. If any remote is readable, its reports contribute to an `ok` result and update `last_ok_at`; failed remotes add `unreadable` only when nonzero and the banner reason `pvr-unreadable-<n>`, without an additional warning. An attempt where no remote is readable is retried after 30 minutes only if a remote was readable previously. A partial measurement with readable remotes uses the six-hour TTL. A repo whose reports were never readable (no access, as for a fork, or no `gh`) counts as settled and is checked again after six hours. Missing access or `gh` produces a banner only after a previous successful measurement; no advisory titles, bodies or IDs are persisted.
+
 **Strict block routing:** an AskUserQuestion (fix and retry / warn + carryover / override with Deviation entry and `orchestrator.finding.overridden` / abort). Headless, embedded and Lead-led runs cannot ask: they report the block and stop the close.
 
 **Used by:** `scripts/lib/config/security-delta.mjs` (`_parseSecurityDelta`), `scripts/lib/config.mjs` (key `security-delta`), `scripts/security-delta.mjs`.
@@ -1791,26 +1797,30 @@ instruction-budget:
 
 ## Hook Runtime Profile Control (#211)
 
-Control which hooks run at runtime via environment variables — no settings-file edits required.
+Control which hooks run, and how hard the destructive guard blocks, without editing a settings file. Since #1881 the profile can be set per host in `owner.yaml` as well as per process in the environment.
 
-### Environment variables
+### Sources
 
-| Variable | Values | Default | Description |
-|----------|--------|---------|-------------|
-| `SO_HOOK_PROFILE` | `full` \| `minimal` \| `off` | `full` | Preset bundle that enables/disables groups of hooks. |
-| `SO_DISABLED_HOOKS` | Comma-separated hook names | _(none)_ | Disable individual hooks regardless of profile. |
+| Source | Keys | Notes |
+|--------|------|-------|
+| Environment | `SO_HOOK_PROFILE`, `SO_DISABLED_HOOKS` (comma-separated hook names) | Highest. An unknown `SO_HOOK_PROFILE` is ignored with one stderr warning. |
+| `owner.yaml` (host-local, never committed) | `hooks.profile` (`strict`, `full`, `standard`), `hooks.disabled` (list of hook names) | See [docs/owner-config-schema.md](./owner-config-schema.md). An invalid `hooks` section is dropped. owner.yaml can relax, never disarm: `minimal`, `off` and the safety hooks below are env-only, because an agent can append to the file. |
+| Default | — | `standard` |
+
+The profile comes from the first source that names one. The disabled lists of the environment and `owner.yaml` are unioned; a listed hook is off under every profile.
+
+Safety hooks, which only `SO_DISABLED_HOOKS` / `SO_HOOK_PROFILE=minimal|off` can switch off: `pre-bash-destructive-guard`, `enforce-scope`, `enforce-commands`, `pre-bash-sessions-ledger-guard`, `pre-edit-sessions-ledger-guard`, `config-protection`, `pre-task-scope-disjoint`, `pre-bash-staging-fence`.
 
 ### Profile bundles
 
-| Profile | Enabled hooks |
-|---------|--------------|
-| `full` | All hooks (default — no behaviour change when env unset) |
-| `minimal` | `on-session-start`, `pre-bash-destructive-guard` only |
-| `off` | No hooks |
+| Profile | Enabled hooks | Destructive guard |
+|---------|---------------|-------------------|
+| `strict` | All hooks (`full` is the pre-#1881 name and stays an alias) | Every rule at its policy severity |
+| `standard` | All hooks except `pre-bash-templates-first` and `pre-tool-state-md-path-guard` (default) | `worktree-remove-unsafe` warns when it cannot measure the target; a measured hit (valuable ignored state) and `--force` still block |
+| `minimal` | `on-session-start`, `pre-bash-destructive-guard` only | as `standard` |
+| `off` | No hooks | — |
 
-### Precedence
-
-`SO_DISABLED_HOOKS` takes precedence over `SO_HOOK_PROFILE` for the listed names. Unknown `SO_HOOK_PROFILE` values fall back to `full` with a single stderr warning.
+Why `standard` is the default (#1881): over 7 days on the maintainer's host (2026-10-31, 185,316 tool calls) the hooks denied 792 calls. `pre-bash-templates-first` (146) is a quality nudge, not a protection. Of the 136 `worktree-remove-unsafe` denials, 110 had a target the guard could not measure (a variable, a missing directory); only that case now warns, while the 8 measured hits and the 18 forced removals still block. The STATE.md path guard (6) stops a STATE.md written to `.orchestrator/`, which `/close` then misses; `standard` trades that check for fewer interruptions. `strict` keeps all three.
 
 ### Examples
 
@@ -1820,6 +1830,9 @@ SO_HOOK_PROFILE=off claude ...
 
 # Keep only the safety guard active
 SO_HOOK_PROFILE=minimal claude ...
+
+# Every guard at full strength (the pre-#1881 default)
+SO_HOOK_PROFILE=strict claude ...
 
 # Disable only the typecheck-on-save hook, keep everything else
 SO_DISABLED_HOOKS=post-edit-validate claude ...

@@ -30,7 +30,7 @@
  * ## Decision flow (early-exit)
  *
  *   G1  profile gate (`SO_HOOK_PROFILE` / `SO_DISABLED_HOOKS`)
- *   G2  tool_name === 'Bash'
+ *   G2  isShellCommandTool(input.tool_name)
  *   S   SEC-008 value detector over tool_response (#1786) — runs before G3..G6
  *   G3  wave-scope.json exists (disappearance after a recorded scope → notice)
  *   G4  gates['bash-write-verify'] !== false   (absent ⇒ ENABLED)
@@ -155,7 +155,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync, statSync } from 'node:fs';
 
-import { readStdin, writeStdoutLineSync } from '../scripts/lib/io.mjs';
+import { isShellCommandTool, readStdin, writeStdoutLineSync } from '../scripts/lib/io.mjs';
 import { detectSecretOutput } from '../scripts/lib/secret-output-detector.mjs';
 import { pathMatchesPattern } from '../scripts/lib/hardening.mjs';
 // #1057 — `sessionAgeMs` and its private `clockAgeMs` helper MOVED to the lib so
@@ -1388,8 +1388,8 @@ async function main() {
   const input = await readStdin();
   if (!input) return;
 
-  // G2 — only Bash calls carry the bypass risk this hook watches.
-  if (input.tool_name !== 'Bash') return;
+  // G2 — verify writes and output from Bash and Monitor calls.
+  if (!isShellCommandTool(input.tool_name)) return;
 
   // SEC-008 runs BEFORE every G3..G6 early exit: a leak is a leak with or
   // without a wave scope.

@@ -25,6 +25,7 @@
  */
 
 import path from 'node:path';
+import { isShellCommandTool } from '../scripts/lib/io.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
@@ -90,7 +91,7 @@ function readStdinJson() {
 function deriveHints(toolName, errorSummary) {
   const err = (errorSummary ?? '').toLowerCase();
 
-  if (toolName === 'Bash') {
+  if (isShellCommandTool(toolName)) {
     if (err.includes('permission denied') || err.includes('eacces')) {
       return {
         cause: 'insufficient file permissions',

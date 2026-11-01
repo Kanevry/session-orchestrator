@@ -330,14 +330,19 @@ All hook handlers support runtime opt-out via two environment variables without 
 
 | Variable | Values | Behaviour |
 |----------|--------|-----------|
-| `SO_HOOK_PROFILE` | `full` \| `minimal` \| `off` | Preset bundle (default `full` = all on). |
+| `SO_HOOK_PROFILE` | `strict` \| `standard` \| `minimal` \| `off` (`full` = `strict`) | Preset bundle (default `standard`). |
 | `SO_DISABLED_HOOKS` | Comma-separated names | Disable individual hooks; overrides profile. |
+
+The same two settings can live per host in `owner.yaml` (`hooks.profile`, `hooks.disabled`); env wins, and owner.yaml cannot disable a safety hook (#1881).
 
 ### Profile bundles
 
-- **`full`** (default): all hooks run — identical to pre-#211 behaviour when env is unset.
+- **`strict`** (`full` is the old name): all hooks run, every destructive-guard rule at its policy severity.
+- **`standard`** (default): strict minus `STANDARD_OFF_HOOKS` in `hooks/_lib/profile-gate.mjs`; the cases in `RELAXED_WARN_RULES` warn instead of block.
 - **`minimal`**: only `on-session-start` + `pre-bash-destructive-guard`.
 - **`off`**: no hooks run.
+
+A new guard that interrupts often but protects no data belongs in `STANDARD_OFF_HOOKS`; one that stops data loss or a scope escape belongs in `SAFETY_HOOKS`.
 
 ### Wiring a new hook into the gate
 
@@ -352,9 +357,9 @@ Use the kebab-case file stem without the `.mjs` extension as the hook name (e.g.
 
 ### Failure modes
 
-- Unknown `SO_HOOK_PROFILE` value → falls back to `full` + single stderr warning.
+- Unknown `SO_HOOK_PROFILE` value → ignored with a single stderr warning; owner.yaml or the default `standard` decides.
 - `SO_DISABLED_HOOKS` with extra whitespace or mixed case is normalised automatically.
-- `defaultEnabled` param of `shouldRunHook` is for future opt-in hooks; pass `false` for any handler that should be off by default in `full` profile.
+- `defaultEnabled` param of `shouldRunHook` is for future opt-in hooks; pass `false` for any handler that should be off by default in every profile.
 
 ### Tests
 

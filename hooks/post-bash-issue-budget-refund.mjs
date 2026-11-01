@@ -11,7 +11,7 @@
  * `mode: strict` that pushes a legitimate issue into overflow parking.
  *
  * Decision flow (mirrors the pre-hook's gate numbering where it applies):
- *   G1 tool filter — only Bash.
+ *   G1 tool filter — Bash and Monitor.
  *   G2 command is a non-empty string.
  *   G2b FAILURE filter — a failure FIELD is required: a non-zero `exit_code`, a
  *      non-empty `error`, or `is_error === true` (top level or inside
@@ -54,7 +54,7 @@
  * counting them would invert exactly the numerator/denominator argument above.
  */
 
-import { readStdin } from '../scripts/lib/io.mjs';
+import { isShellCommandTool, readStdin } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
 import {
@@ -268,8 +268,8 @@ async function main() {
   const input = await readStdin();
   if (!input) return;
 
-  // G1 — only Bash is gated (the pre-hook charges only Bash).
-  if (input.tool_name !== 'Bash') return;
+  // G1 — Bash and Monitor match the tools charged by the pre-hook.
+  if (!isShellCommandTool(input.tool_name)) return;
 
   // G2 — command must be a non-empty string.
   const command = input?.tool_input?.command;

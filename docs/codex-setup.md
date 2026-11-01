@@ -70,6 +70,8 @@ Re-measured 2026-10-28 on plugin 5.14.0: the new cache again had 0 of 11 runtime
 
 Each version gets a new cache directory, so the check applies again after every update. The clone path above avoids this.
 
+Re-measured 2026-10-29 on plugin 5.16.0 (codex-cli 0.160.1): the new cache had 0 of 11 dependencies, and `--repair` brought it to 11 of 11. After the first `codex exec` the cache had no `node_modules` again, and its directory had been rewritten after the repair. Until #1878 is resolved, run the readiness check again after the first Codex start. The model sessions on both paths failed with `gpt-6-sol`: on the short form the model wrote the file without a plan, and on the clone path no `/go` plan came after three answered questions. Details: [install.md](install.md#re-running-the-install-smoke-maintainers).
+
 **Historical note:** on codex-cli 0.141.0 (2026-08-28), the identical `plugin add` command failed against this same layout with `Error: plugin session-orchestrator was not found in marketplace kanevry`; upgrading to 0.144.4+ resolves it.
 
 ### Switching Marketplace Sources

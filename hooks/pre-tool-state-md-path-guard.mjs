@@ -149,7 +149,8 @@ async function findViolations(input) {
   if (FILE_TOOLS.has(input.tool_name)) {
     return isOrchestratorStateMd(toolInput.file_path) ? [toolInput.file_path] : [];
   }
-  if (input.tool_name === 'Bash') {
+  const { isShellCommandTool } = await import('../scripts/lib/io.mjs');
+  if (isShellCommandTool(input.tool_name)) {
     const command = toolInput.command;
     if (typeof command !== 'string' || !/STATE\.md/i.test(command)) return [];
     const { extractBashWriteTargets } = await import('../scripts/lib/scope-gate.mjs');

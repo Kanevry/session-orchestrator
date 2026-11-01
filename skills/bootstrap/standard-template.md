@@ -304,7 +304,7 @@ Write `package.json`:
     "test": "vitest run"
   },
   "dependencies": {
-    "next": "^15.0.0",
+    "next": "^16.4.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -427,6 +427,106 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>{children}</body>
     </html>
+  );
+}
+```
+
+Write the three error surfaces (projects-baseline rule `frontend.md` § Error Pages). `retry()` needs Next ≥ 16.3; never `reset()`, never `error.message`, and no `pages/500.tsx` (next to `app/` it makes the navigation hooks nullable project-wide).
+
+Write `src/app/error.tsx`:
+
+```tsx
+"use client";
+
+import Link from "next/link";
+import { useEffect } from "react";
+
+export default function ErrorBoundary({
+  error,
+  retry,
+}: {
+  error: Error & { digest?: string };
+  retry: () => void;
+}) {
+  useEffect(() => {
+    // Report it: swap in your error tracker here, e.g. Sentry.captureException(error).
+    console.error(error);
+  }, [error]);
+
+  return (
+    <main style={{ maxWidth: "28rem", margin: "0 auto", padding: "4rem 1.25rem", textAlign: "center" }}>
+      <p style={{ fontWeight: 600 }}><REPO_NAME></p>
+      <h1>Something went wrong</h1>
+      <p>This part of the page could not be loaded. Trying again usually helps.</p>
+      <p style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", justifyContent: "center" }}>
+        <button type="button" onClick={retry} style={{ minHeight: 44, padding: "0 1.5rem" }}>
+          Try again
+        </button>
+        <Link href="/" style={{ display: "inline-flex", alignItems: "center", minHeight: 44 }}>
+          Back to the home page
+        </Link>
+      </p>
+      {error.digest ? <p style={{ fontSize: "0.75rem" }}>Error reference: {error.digest}</p> : null}
+    </main>
+  );
+}
+```
+
+Write `src/app/global-error.tsx` (it replaces the root layout, so own `<html>`/`<body>` and inline styles):
+
+```tsx
+"use client";
+
+import { useEffect } from "react";
+
+export default function GlobalError({
+  error,
+  retry,
+}: {
+  error: Error & { digest?: string };
+  retry: () => void;
+}) {
+  useEffect(() => {
+    // Report it: swap in your error tracker here, e.g. Sentry.captureException(error).
+    console.error(error);
+  }, [error]);
+
+  return (
+    <html lang="en" style={{ colorScheme: "light dark" }}>
+      <body style={{ margin: 0, background: "Canvas", color: "CanvasText", fontFamily: "system-ui, sans-serif" }}>
+        <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "1rem", padding: "2rem 1.25rem", textAlign: "center" }}>
+          <p style={{ margin: 0, fontWeight: 700 }}><REPO_NAME></p>
+          <h1 style={{ margin: 0, fontSize: "1.5rem" }}>Something went wrong</h1>
+          <p style={{ margin: 0 }}>The page could not be loaded. Trying again usually helps.</p>
+          <button type="button" onClick={retry} style={{ minHeight: 44, padding: "0 1.5rem" }}>
+            Try again
+          </button>
+          {/* A hard navigation on purpose: a full page load rebuilds the broken state. */}
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- see the line above */}
+          <a href="/" style={{ color: "CanvasText" }}>Back to the home page</a>
+          {error.digest ? <p style={{ margin: 0, fontSize: "0.75rem" }}>Error reference: {error.digest}</p> : null}
+        </main>
+      </body>
+    </html>
+  );
+}
+```
+
+Write `src/app/not-found.tsx`:
+
+```tsx
+import Link from "next/link";
+
+export default function NotFound() {
+  return (
+    <main style={{ maxWidth: "28rem", margin: "0 auto", padding: "4rem 1.25rem", textAlign: "center" }}>
+      <p style={{ fontWeight: 600 }}><REPO_NAME></p>
+      <h1>Page not found</h1>
+      <p>This address does not exist (any more). The home page may help.</p>
+      <Link href="/" style={{ display: "inline-flex", alignItems: "center", minHeight: 44 }}>
+        Back to the home page
+      </Link>
+    </main>
   );
 }
 ```

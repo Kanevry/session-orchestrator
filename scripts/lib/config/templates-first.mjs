@@ -12,7 +12,7 @@ import { preprocessBlockLines } from './block-preprocess.mjs';
  * Returns `{ enabled, hosts }`.
  * Tolerant parser: malformed values silently fall back to defaults.
  *
- * Consumer: `hooks/pre-bash-templates-first.mjs` (Wave 2).
+ * Consumer: `hooks/pre-bash-templates-first.mjs` (lazy-loaded after a create match, #1882).
  */
 
 const ALLOWED_HOSTS = new Set(['github', 'gitlab']);

@@ -88,7 +88,7 @@
  * `.orchestrator/metrics/sessions.jsonl` suffix closes the
  * `cd .orchestrator/metrics && echo … >> sessions.jsonl` hole. Tmp ledgers are
  * guarded too, at no cost: test fixtures write them from Node (`writeFileSync`),
- * which this Bash-only hook never sees.
+ * which this shell-command hook never sees.
  *
  * ## How the command is read (GitLab #958 follow-up, security review 2×MED)
  *
@@ -357,6 +357,7 @@ import { spawnSync } from '../scripts/lib/native-command.mjs';
 // gates whether this hook runs at all.
 // ---------------------------------------------------------------------------
 /** @type {typeof import('../scripts/lib/io.mjs').readStdin} */ let readStdin;
+/** @type {typeof import('../scripts/lib/io.mjs').isShellCommandTool} */ let isShellCommandTool;
 /** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
 /** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
 /** @type {typeof import('../scripts/lib/io.mjs').emitWarn} */ let emitWarn;
@@ -449,7 +450,7 @@ async function bootstrap() {
     }
   );
 
-  ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
+  ({ readStdin, emitAllow, emitDeny, emitWarn, isShellCommandTool } = modules.io);
   blocker = modules.blocker;
   degradedLabels = degraded;
 }
@@ -1984,8 +1985,8 @@ async function main() {
   const input = await readStdin();
   if (!input) return emitAllow();
 
-  // G1 — only Bash is gated.
-  if (input.tool_name !== 'Bash') return emitAllow();
+  // G1 — Bash and Monitor are gated.
+  if (!isShellCommandTool(input.tool_name)) return emitAllow();
 
   // G2 — command must be a non-empty string.
   const command = input?.tool_input?.command;

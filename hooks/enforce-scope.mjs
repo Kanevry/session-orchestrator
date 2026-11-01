@@ -30,6 +30,10 @@
  *       owned, lives outside the working copy, cannot collide with any wave
  *       scope. Evaluated inside G6's out-of-root branch only; a SIBLING repo's
  *       memory dir and every other out-of-repo path stay denied.
+ *   G5d (#1881) out-of-root carveout for the temp directory (`/tmp` and
+ *       `os.tmpdir()`, realpath-resolved), unless the project itself lives in
+ *       that temp root. Scratch files there cannot collide with any wave
+ *       scope; they were 71 of 792 denials in 7 days. See isTempScratch.
  *   G6  resolved path inside project root
  *   G7  relative path matches an allowedPaths pattern
  *   G8  (all passed) → allow
@@ -66,6 +70,7 @@
  * No wildcards — exact string match only.
  */
 
+import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -517,6 +522,11 @@ async function main() {
 
   // Gate 6: path must be inside the project root
   if (!isPathInside(resolvedPath, projectRoot)) {
+    // Gate 5d (#1881) — scratch in the temp directory. See isTempScratch.
+    if (await isTempScratch(resolvedPath, projectRoot)) {
+      return emitAllow();
+    }
+
     // Gate 5c (#1295) — THIS repo's harness auto-memory directory.
     //
     // Claude Code writes its own auto-memory (`MEMORY.md` + per-fact files)
@@ -908,6 +918,49 @@ function isInsideDir(candidate, dir) {
   const base = path.resolve(dir);
   const target = path.resolve(candidate);
   return target === base || target.startsWith(base + path.sep);
+}
+
+/**
+ * Gate 5d (#1881): is this out-of-root write a scratch file in the temp
+ * directory? Only when the project itself does NOT live in that temp root —
+ * for a project under /tmp (test fixtures, materialized pre-push trees) its
+ * temp siblings may be other repos or fixtures, so every gate stays as before.
+ * `resolvedPath` arrives realpath-resolved and the roots are realpaths, so
+ * `/tmp/../etc` or a symlink out of /tmp does not match.
+ *
+ * CEILING (BV-004): every tree under the temp root counts as scratch — also
+ * another session's gate or release tree there, a Discovery agent under a
+ * deny-all manifest, and a DANGLING symlink in /tmp (realpath fails, the walk
+ * resolves its parent), which a Write then follows. Accepted because Bash could
+ * write to all of these anyway; revisit if a temp tree ever holds state a wave
+ * must not touch.
+ *
+ * @param {string} resolvedPath — realpath-resolved write target, outside the project root
+ * @param {string} projectRoot
+ * @param {string[]} [roots] — temp roots; default {@link tempRoots}
+ * @returns {Promise<boolean>}
+ */
+export async function isTempScratch(resolvedPath, projectRoot, roots) {
+  const temp = roots ?? (await tempRoots());
+  const realRoot = await fs.realpath(projectRoot).catch(() => path.resolve(projectRoot));
+  const scratchRoots = temp.filter((dir) => !isInsideDir(realRoot, dir));
+  return scratchRoots.some((dir) => isInsideDir(resolvedPath, dir));
+}
+
+/**
+ * The realpaths of `/tmp` and `os.tmpdir()` that exist on this host (Gate 5d).
+ * A root that cannot be resolved is left out, never guessed.
+ *
+ * @returns {Promise<string[]>}
+ */
+async function tempRoots() {
+  const roots = [];
+  for (const dir of new Set(['/tmp', os.tmpdir()])) {
+    try {
+      roots.push(await fs.realpath(dir));
+    } catch { /* absent on this platform — not a temp root here */ }
+  }
+  return roots;
 }
 
 /**

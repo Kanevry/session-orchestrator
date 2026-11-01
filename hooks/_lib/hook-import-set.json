@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-28T14:05:57.241Z",
-  "head": "07d5e1d3f40520921225359e272c75a9db0fabbe",
+  "generated_at": "2026-10-31T09:30:33.151Z",
+  "head": "a039b5884d7ebe718c166c2d64e22756747d7bed",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -428,6 +428,7 @@
         "pre-bash-memory-propose-audit.mjs",
         "pre-bash-sessions-ledger-guard.mjs",
         "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
@@ -457,6 +458,7 @@
         "pre-bash-memory-propose-audit.mjs",
         "pre-bash-sessions-ledger-guard.mjs",
         "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
@@ -792,6 +794,7 @@
         "pre-bash-memory-propose-audit.mjs",
         "pre-bash-sessions-ledger-guard.mjs",
         "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
@@ -859,7 +862,8 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "post-edit-validate.mjs",
-        "pre-bash-sessions-ledger-guard.mjs"
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-templates-first.mjs"
       ]
     },
     {

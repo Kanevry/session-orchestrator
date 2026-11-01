@@ -10,18 +10,25 @@
 # EVERY tool call — loud, repetitive, and useless to the operator.
 #
 # Contract:
-#   sh run-node.sh <hook-script.mjs> [args...]
+#   sh run-node.sh [--fail-closed] <hook-script.mjs> [args...]
 #   - Resolution order: $SO_NODE_BIN override > PATH > well-known install dirs
 #     ($SO_NODE_SEARCH_DIRS, colon-separated, overrides the built-in list) > nvm.
 #   - Found:   exec's node — stdin/stdout/stderr and exit code pass through
 #              unchanged (PreToolUse exit-2 blocking still works).
-#   - Missing: prints ONE warning per rate-limit window (marker file in
+#   - Missing with --fail-closed: prints a diagnostic every time and exits 2.
+#   - Missing otherwise: prints ONE warning per rate-limit window (marker file in
 #              ${TMPDIR:-/tmp}, 6h TTL) and exits 0 so hooks degrade gracefully
 #              instead of spamming a shell error on every tool call.
 
+fail_closed=false
+if [ "${1-}" = "--fail-closed" ]; then
+  fail_closed=true
+  shift
+fi
+
 # 1. Explicit operator override wins.
-if [ -n "$SO_NODE_BIN" ] && [ -x "$SO_NODE_BIN" ]; then
-  exec "$SO_NODE_BIN" "$@"
+if [ -n "${SO_NODE_BIN:-}" ] && [ -x "${SO_NODE_BIN:-}" ]; then
+  exec "${SO_NODE_BIN:-}" "$@"
 fi
 
 # 2. PATH as inherited from the harness.
@@ -30,8 +37,8 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 # 3. Well-known install locations (Homebrew arm64/intel, system, volta, asdf).
-search_dirs="${SO_NODE_SEARCH_DIRS:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:${VOLTA_HOME:-$HOME/.volta}/bin:$HOME/.asdf/shims:$HOME/.local/bin}"
-old_ifs="$IFS"
+search_dirs="${SO_NODE_SEARCH_DIRS:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:${VOLTA_HOME:-${HOME:-}/.volta}/bin:${HOME:-}/.asdf/shims:${HOME:-}/.local/bin}"
+old_ifs="${IFS-}"
 IFS=:
 for dir in $search_dirs; do
   if [ -n "$dir" ] && [ -x "$dir/node" ]; then
@@ -41,13 +48,30 @@ for dir in $search_dirs; do
 done
 IFS="$old_ifs"
 
+# Windows paths are checked separately to preserve spaces and drive-letter colons.
+# An explicit search list disables these built-in locations (#1900).
+if [ "${SO_NODE_SEARCH_DIRS+x}" != x ]; then
+  for dir in "${ProgramFiles:+$ProgramFiles/nodejs}" \
+    "${PROGRAMFILES:+$PROGRAMFILES/nodejs}" \
+    "${LOCALAPPDATA:+$LOCALAPPDATA/Volta/bin}" "${NVM_SYMLINK:-}"; do
+    if [ -n "$dir" ] && [ -x "$dir/node" ]; then
+      exec "$dir/node" "$@"
+    fi
+  done
+fi
+
 # 4. nvm keeps versioned dirs; any installed version is good enough for hooks.
 #    (Glob order is lexical, not semver — acceptable for a last-resort fallback.)
-for cand in "${NVM_DIR:-$HOME/.nvm}"/versions/node/*/bin/node; do
+for cand in "${NVM_DIR:-${HOME:-}/.nvm}"/versions/node/*/bin/node; do
   if [ -x "$cand" ]; then
     exec "$cand" "$@"
   fi
 done
+
+if [ "$fail_closed" = true ]; then
+  echo "session-orchestrator: Node is missing from the hook PATH; the tool call is blocked. Fix: install Node.js 24+, expose it on the harness PATH, or set SO_NODE_BIN=/abs/path/to/node." >&2
+  exit 2
+fi
 
 # 5. Not found anywhere: degrade gracefully. Warn at most once per 6 hours so
 #    the operator gets ONE actionable diagnostic instead of per-tool-call spam.

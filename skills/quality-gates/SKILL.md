@@ -175,8 +175,8 @@ node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-qual
 # Incremental (wave-executor)
 node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.mjs" --variant incremental --config "$CONFIG" --files changed-file1.ts,changed-file2.ts
 
-# Full Gate (session-end)
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.mjs" --variant full-gate --config "$CONFIG" --session-start-ref "$SESSION_START_REF"
+# Full Gate (Quality wave, session-end) — --receipt reuses a green run on the same content tree (#1897)
+node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.mjs" --variant full-gate --config "$CONFIG" --session-start-ref "$SESSION_START_REF" --receipt
 
 # Per-File (session-reviewer)
 node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.mjs" --variant per-file --config "$CONFIG" --files specific-file.ts
@@ -206,6 +206,8 @@ Invalid reason codes: `no-record` | `session-ref-mismatch` | `dependency-changed
 **Incremental-skip condition:** `shouldSkipIncremental()` returns `skip: true` when the cache is valid AND `git diff --name-only $SESSION_START_REF..HEAD | wc -l` returns <50. Otherwise `skip: false` and Incremental runs as before. The function never throws — on any error (git failure, unreadable cache, missing dependency_hash) it fails safe by returning `skip: false`.
 
 **INVARIANT — Full Gate at session-end AND after the Quality wave is NEVER skipped**, regardless of cache state. The cache only short-circuits Incremental in the Impl waves of wave-executor. Two consumers hold this invariant: (1) **session-end** (Phase 2) always runs the complete gate before commit; (2) the **wave-executor Quality wave** (#724 C6) — `shouldSkipIncremental({ waveRole: 'Quality' })` hard-returns `skip: false` (reason `quality-wave-full-gate-mandate`) BEFORE any cache/diff logic, so the Quality-wave Full Gate is mechanically un-skippable, not merely prose-mandated. Full Gate remains the close-safety gate and always runs the complete typecheck + test + lint + debug-artifact scan. This is intentional and non-configurable.
+
+**Receipt, not a skip (#1897):** both consumers call the Full Gate with `--receipt`. When a green Full Gate already ran on the identical content tree (tracked plus untracked, non-ignored files, keyed by git tree hash) with the identical gate definition (the three commands, Node and plugin version) within 12 hours, its receipt stands in for the run: the envelope and the `orchestrator.quality_gate.passed` event carry `reused_from: {tree, at}`, so the reuse is visible, never silent. The cache above can never cause this; only a receipt for the same content can. A receipt is written only after a green run during which the content tree did not change. Store and ceilings: `scripts/lib/gate-receipt.mjs`. A receipt is a measurement, not an approval, and never replaces a CI pipeline.
 
 **Implementation:** `scripts/lib/quality-gates-cache.mjs` exports `computeDependencyHash`, `saveBaselineResult`, `loadLatestBaselineResult`, `isCacheValid`, `shouldSkipIncremental`. Stdlib-only (`node:fs`, `node:path`, `node:crypto`, `node:child_process`).
 

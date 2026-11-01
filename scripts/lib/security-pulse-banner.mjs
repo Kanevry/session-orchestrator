@@ -80,6 +80,20 @@ export function repoPart(entry) {
   };
 }
 
+/** PVR attempts use the same TTL/retry clock, independent of the repo HEAD. */
+export function pvrPart(entry) {
+  // A repo whose reports were never readable (a fork, someone else's repo, no
+  // gh) is a settled answer, not a failed one: retrying it every hour only
+  // spends gh calls and keeps the pulse from ever reading fresh. Once a read
+  // has succeeded, losing it is a real failure and retries on the short clock.
+  const settledWithoutAccess = (entry?.status === 'no-access' || entry?.status === 'gh-missing')
+    && stampMs(entry?.last_ok_at) === null;
+  return {
+    at: stampMs(entry?.fetched_at),
+    complete: entry?.status === 'ok' || entry?.status === 'not-applicable' || settledWithoutAccess,
+  };
+}
+
 /*
  * Lockfile-derived names reach the SessionStart systemMessage, so only a strict
  * charset passes (a committed lockfile can carry newlines, prompt text, ANSI).
@@ -292,6 +306,7 @@ export async function checkSecurityPulse({
     nodeBelowFloor: null,
     repoMalicious: null,
     repoCritical: null,
+    pvrOpen: null,
     kevHits: null,
     closeWithoutDelta: null,
     cacheAgeH: null,
@@ -363,6 +378,32 @@ export async function checkSecurityPulse({
       }
     }
 
+    // Private reports are repo-scoped, not tied to a commit.
+    const pvrRead = readCacheFile(paths.pvrFile);
+    const pvr = pvrRead.ok ? pvrRead.value : null;
+    const pvrMeasure = pvrPart(pvr);
+    const pvrStatus = cachePartStatus(pvrMeasure, nowMs);
+    if (pvr?.status === 'ok' && Number.isSafeInteger(pvr.count) && pvr.count >= 0) {
+      result.pvrOpen = pvr.count;
+      if (Number.isSafeInteger(pvr.unreadable) && pvr.unreadable > 0) {
+        result.reasons.push(`pvr-unreadable-${pvr.unreadable}`);
+      }
+      ages.push(pvrMeasure.at);
+      if (pvr.count > 0) {
+        const hours = ageHours(stampMs(pvr.oldest_at), nowMs);
+        const age = hours === null ? 'unbekannt' : hours < 24 ? `${hours} Stunden` : `${Math.floor(hours / 24)} Tagen`;
+        parts.push(`${pvr.count} offene private Sicherheitsmeldung${pvr.count === 1 ? '' : 'en'} auf GitHub (älteste seit ${age})`);
+      }
+    } else if (['no-access', 'gh-missing', 'error'].includes(pvr?.status)) {
+      const reason = `pvr-${pvr.status}`;
+      if (stampMs(pvr.last_ok_at) !== null) {
+        degraded.push(reason);
+        parts.push(`private Sicherheitsmeldungen auf GitHub nicht messbar (${pvr.status})`);
+      } else {
+        result.reasons.push(reason);
+      }
+    }
+
     // c. last close without a security delta (only when the delta is armed)
     const mode = config?.['security-delta']?.mode;
     if (typeof mode === 'string' && mode !== 'off') {
@@ -379,14 +420,14 @@ export async function checkSecurityPulse({
     }
 
     // State: degraded when a cached part records an incomplete measurement;
-    // fresh only when node, KEV and the repo part at HEAD are complete and inside the TTL.
+    // Fresh requires Node, KEV, OSV at HEAD and PVR inside their TTL.
     result.reasons.push(...degraded);
-    const allFresh = nodePart.fresh && kevPart.fresh && repoStatus.fresh;
-    result.state = !host.ok && !repo.ok ? 'not-measured' : degraded.length > 0 ? 'degraded' : allFresh ? 'fresh' : 'stale';
+    const allFresh = nodePart.fresh && kevPart.fresh && repoStatus.fresh && pvrStatus.fresh;
+    result.state = !host.ok && !repo.ok && !pvrRead.ok ? 'not-measured' : degraded.length > 0 ? 'degraded' : allFresh ? 'fresh' : 'stale';
     const known = ages.filter((a) => a !== null);
     result.cacheAgeH = known.length > 0 ? ageHours(Math.min(...known), nowMs) : null;
 
-    if (nodePart.due || kevPart.due || repoStatus.due) {
+    if (nodePart.due || kevPart.due || repoStatus.due || pvrStatus.due) {
       result.refresh = maybeSpawnRefresh({ repoRoot, markerPath: paths.spawnMarker, nowMs, env, spawnRefresh });
     }
 

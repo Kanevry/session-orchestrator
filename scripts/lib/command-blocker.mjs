@@ -292,11 +292,25 @@ const WORD_END_CHARS = new Set([';', '|', '&', '<', '>', '(', ')', '\n']);
 function readDelimiterWord(command, i) {
   let value = '';
   let state = 'normal';
+  let ansiNul = false;
   while (i < command.length) {
     const ch = command[i];
     if (state === 'single') {
       if (ch === "'") { state = 'normal'; i++; continue; }
       value += ch; i++; continue;
+    }
+    if (state === 'ansi') {
+      // bash decodes the escapes of a `$'…'` delimiter too: `<<$'E\x4fF'` ends at `EOF`.
+      if (ch === "'") { state = 'normal'; ansiNul = false; i++; continue; }
+      if (ch === '\\' && i + 1 < command.length) {
+        const esc = decodeAnsiCEscape(command, i);
+        if (esc.nul) ansiNul = true;
+        else if (!ansiNul) value += esc.text;
+        i = esc.end;
+        continue;
+      }
+      if (!ansiNul) value += ch;
+      i++; continue;
     }
     if (state === 'double') {
       if (ch === '"') { state = 'normal'; i++; continue; }
@@ -305,6 +319,10 @@ function readDelimiterWord(command, i) {
     }
     if (/\s/.test(ch) || WORD_END_CHARS.has(ch)) break;
     if (ch === '\\' && i + 1 < command.length) { value += command[i + 1]; i += 2; continue; }
+    // `$"EOF"` and `$'EOF'` are the delimiter `EOF` in bash (#1895): read as `$EOF`,
+    // the body ran on past the real terminator and hid the commands after it.
+    if (ch === '$' && command[i + 1] === "'") { state = 'ansi'; i += 2; continue; }
+    if (ch === '$' && command[i + 1] === '"') { i++; continue; }
     if (ch === "'") { state = 'single'; i++; continue; }
     if (ch === '"') { state = 'double'; i++; continue; }
     value += ch; i++;
@@ -493,8 +511,17 @@ function readHeredocBody(command, from, delim, stripTabs) {
  * from the token object itself — a spread copy (`{ ...tok }`) or
  * `structuredClone` drops it.
  *
+ * ## Substitution ranges (`substitutions`, #1893)
+ *
+ * A word holding the raw text of a substitution also carries
+ * `substitutions: Array<{ start, end }>` — one range of `text` per spliced
+ * substitution, in source order: `$( … )`, a backtick pair, or the `( … )` of
+ * a process substitution (its raw text starts with `(`). Parts cannot say this,
+ * since the raw text merges into the part of its outer context. Non-enumerable
+ * like `parts`, and absent on a word without a substitution.
+ *
  * @param {string} command
- * @returns {Array<{ text: string, quoted: boolean, redirect?: { fd: number|null, mode: string }, braceLead?: number, operator?: string, parts?: Array<{ text: string, quote: 'none'|'double'|'single'|'ansi-c'|'escape' }> }>}
+ * @returns {Array<{ text: string, quoted: boolean, redirect?: { fd: number|null, mode: string }, braceLead?: number, operator?: string, parts?: Array<{ text: string, quote: 'none'|'double'|'single'|'ansi-c'|'escape' }>, substitutions?: Array<{ start: number, end: number }> }>}
  */
 /** Unquoted chain-operator texts — a word after one of them is in command position. */
 const CHAIN_OPERATOR_TEXTS = new Set([';', '&&', '||', '|', '&']);
@@ -613,10 +640,14 @@ function resolveFdOperandRedirects(tokens) {
       const dashUnquoted = next.parts ? first?.quote === 'none' && first.text.startsWith('-') : !next.quoted && next.text.startsWith('-');
       if (dashUnquoted && next.text.length > 1) {
         const rest = next.parts ? [{ ...first, text: first.text.slice(1) }, ...next.parts.slice(1)] : [];
-        Object.defineProperty(plain, 'bashArgvWord', {
-          value: { text: next.text.slice(1), quoted: rest.some((p) => p.text !== '' && p.quote !== 'none') },
-          enumerable: false,
-        });
+        const argvWord = { text: next.text.slice(1), quoted: rest.some((p) => p.text !== '' && p.quote !== 'none') };
+        // #1893: parts and substitution ranges for the empty-expansion reading.
+        Object.defineProperty(argvWord, 'parts', { value: rest, enumerable: false });
+        if (next.substitutions) {
+          const subs = next.substitutions.map((s) => ({ start: s.start - 1, end: s.end - 1 }));
+          Object.defineProperty(argvWord, 'substitutions', { value: subs, enumerable: false });
+        }
+        Object.defineProperty(plain, 'bashArgvWord', { value: argvWord, enumerable: false });
       }
     }
     out.push(plain);
@@ -705,6 +736,9 @@ export function tokenizeCommand(command) {
   // characters with the same quote context share one part, so
   // `parts.map((p) => p.text).join('') === text` for every word token.
   let parts = [];
+  // Where the raw text of each `$( … )` / backtick / process substitution sits
+  // in `text` (see the @returns note on `substitutions`, #1893).
+  let subs = [];
   const addText = (s, quote) => {
     text += s;
     const last = parts[parts.length - 1];
@@ -778,9 +812,11 @@ export function tokenizeCommand(command) {
       // Non-enumerable on purpose: JSON, deep equality and `Object.keys` see the
       // exact pre-#1795 token shape; only a reader asking for `tok.parts` gets it.
       Object.defineProperty(tok, 'parts', { value: parts, enumerable: false });
+      if (subs.length > 0) Object.defineProperty(tok, 'substitutions', { value: subs, enumerable: false });
       sink.push(tok);
       text = '';
       parts = [];
+      subs = [];
       started = false;
       sawQuote = false;
       braceLead = 0;
@@ -791,8 +827,8 @@ export function tokenizeCommand(command) {
   // word in progress (`x=` in `x=$(…)`, or the double-quoted run around
   // `"$(…)"`) is parked in the frame and resumed on close.
   const openSubstitution = (kind, start) => {
-    stack.push({ kind, start, text, parts, started, sawQuote, braceLead, state, sink, arithDepth, caseStates });
-    text = ''; parts = []; started = false; sawQuote = false; braceLead = 0; state = 'normal'; arithDepth = 0; caseStates = [];
+    stack.push({ kind, start, text, parts, subs, started, sawQuote, braceLead, state, sink, arithDepth, caseStates });
+    text = ''; parts = []; subs = []; started = false; sawQuote = false; braceLead = 0; state = 'normal'; arithDepth = 0; caseStates = [];
     sink = [];
   };
 
@@ -810,9 +846,11 @@ export function tokenizeCommand(command) {
     // destructive guard's top-level catch turns into ALLOW (fail-open).
     hoisted.push({ text: ';', quoted: false, operator: 'substitution' });
     for (const t of sink) hoisted.push(t);
-    ({ text, parts, started, sawQuote, braceLead, state, sink, arithDepth, caseStates } = frame);
+    ({ text, parts, subs, started, sawQuote, braceLead, state, sink, arithDepth, caseStates } = frame);
     const raw = command.slice(frame.start, end);
+    const at = text.length;
     addText(raw, state === 'double' ? 'double' : 'none'); started = true;
+    subs.push({ start: at, end: text.length });
     if (/["']/.test(raw)) sawQuote = true;
   };
 
@@ -837,6 +875,7 @@ export function tokenizeCommand(command) {
       const name = named ? text.slice(1, -1) : null;
       text = '';
       parts = [];
+      subs = [];
       started = false;
       braceLead = 0;
       return { digits, fd: named ? null : Number.parseInt(digits, 10), name };
@@ -873,11 +912,13 @@ export function tokenizeCommand(command) {
       if (state === 'ansi' && ansiNul) continue; // bash ends the word's text at a decoded NUL
       if (ch === '\\' && i + 1 < command.length) {
         const next = command[i + 1];
-        // In double / ANSI-C quotes, backslash escapes the next char; keep it
-        // simple and take that char literally (this is what makes `$'a\'b'`
-        // one token instead of an unbalanced quote — #965).
-        addText(next, 'escape'); started = true; sawQuote = true; i++;
-        continue;
+        // Double quotes preserve backslashes except before shell-special
+        // characters; a backslash-newline pair is a line continuation.
+        if (next === '\n') { i++; continue; }
+        if ('$`"\\'.includes(next)) {
+          addText(next, 'escape'); started = true; sawQuote = true; i++;
+          continue;
+        }
       }
       // Double quotes do NOT stop command substitution (#1667): `"$(rm x)"` runs
       // `rm`. The quoted run is parked and the body is lexed as a command.
@@ -942,6 +983,10 @@ export function tokenizeCommand(command) {
     if (ch === "'") { state = 'single'; started = true; continue; }
     if (ch === '"') { state = 'double'; started = true; continue; }
     if (ch === '$' && command[i + 1] === "'") { state = 'ansi'; started = true; i++; continue; }
+    // A locale string `$"…"` keeps its `$` here (zsh's reading, `a$rb`): which
+    // text bash passes depends on a message catalog, so a consumer that resolves
+    // a path (scope-gate) must not read it as known. The pattern rules judge
+    // bash's no-catalog reading separately (#1895, readEmptyExpansion).
 
     // Arithmetic context (gate 1, #970). `$((`/`((` open a level, `))` closes
     // one. The characters are still appended verbatim — the ONLY effect is that
@@ -1785,6 +1830,14 @@ export const WRAPPER_UNWRAP = new Map([
     splitString: true,
   }],
   ['command', {}],
+  // `builtin` and zsh's precommand modifiers run the next word in the same
+  // shell. Without these rows the verb read as the modifier, so `- eval '…'`,
+  // `noglob bash -c '…'` and `nocorrect git clean -fdx` hid their payload or
+  // subcommand (#1892, measured ALLOW on 2026-10-31). None takes options.
+  ['builtin', {}],
+  ['noglob', {}],
+  ['nocorrect', {}],
+  ['-', {}],
   ['nohup', {}],
   // `exec cmd args` REPLACES the shell with `cmd` — it delegates to a real verb
   // and never executes a command STRING, so by the #982 classification it is a
@@ -2547,17 +2600,20 @@ function isCleanDryRun(flagWords) {
  * under-match). REVISIT TRIGGER: a transcript census hit of `-c alias.` or
  * of an alias-run destructive command.
  *
- * @param {string[]} words — argv texts after the `git` verb
+ * A null word is the `emptyWord` placeholder of the empty-expansion reading
+ * (#1893): skipped before the subcommand, an unknown operand after it.
+ *
+ * @param {Array<string|null>} words — argv texts after the `git` verb
  * @param {{ sub: string, flags: string[] }} spec
  * @returns {boolean}
  */
 function gitWordsMatch(words, spec) {
   let i = 0;
-  for (; i < words.length && words[i].startsWith('-'); i++) {
+  for (; i < words.length && (words[i] === null || words[i].startsWith('-')); i++) {
     if (GIT_GLOBALS_WITH_VALUE.has(words[i])) i++;
   }
   if (words[i] !== spec.sub) return false;
-  const after = words.slice(i + 1);
+  const after = words.slice(i + 1).map((w) => w ?? '');
   const end = after.indexOf('--');
   const flagWords = end === -1 ? after : after.slice(0, end);
   const longs = flagWords.filter((w) => w.startsWith('--'));
@@ -2596,11 +2652,214 @@ function gitArgvMatch(segment, resolved, spec) {
   for (const reading of readingsOf(resolved)) {
     if (reading.verb !== 'git' || reading.index < 0) continue;
     for (const bash of [true, false]) {
-      const words = argvWordsWithoutRedirects(segment, reading.index + 1, { bash }).map((t) => t.text);
+      const words = argvWordsWithoutRedirects(segment, reading.index + 1, { bash }).map((t) => (t.emptyWord ? null : t.text));
       if (gitWordsMatch(words, spec)) return true;
     }
   }
   return false;
+}
+
+/** A parameter name after `$` or `${` (`HOME`, `1`, `@`, `#`, …). */
+const PARAM_NAME_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])/;
+
+/**
+ * How deep default words inside default words are read (`${a:-${b:-…}}`).
+ * NAMED CEILING (BV-004): a deeper one is not read, and its segment counts as
+ * a match — unjudged is fail-closed here, as for an exhausted payload budget
+ * (review of !310: reading it as empty let `--ha${a:-…9 levels…r}d` pass).
+ * REVISIT TRIGGER: a real command denied for nesting this deep.
+ */
+const MAX_DEFAULT_WORD_DEPTH = 8;
+
+/** emptyExpansionText / emptyExpansionSegment result past MAX_DEFAULT_WORD_DEPTH. */
+const UNREAD = Symbol('default word nested too deep to read');
+
+/**
+ * Index of the `}` closing the `${` whose body starts at `from`, or -1. Only
+ * braces the shell sees count: quoted ones (ctx 0) and those inside a
+ * substitution are skipped.
+ *
+ * @param {string} text
+ * @param {Uint8Array} ctx — per character: 0 literal, 1 unquoted, 2 in `"…"`
+ * @param {Map<number, number>} subEnd — substitution start → end
+ * @param {number} from
+ * @param {number} to
+ * @returns {number}
+ */
+function closingBraceAt(text, ctx, subEnd, from, to) {
+  let open = 0;
+  for (let j = from; j < to; j++) {
+    const end = subEnd.get(j);
+    if (end !== undefined) { j = end - 1; continue; }
+    if (ctx[j] === 0) continue;
+    if (text[j] === '$' && text[j + 1] === '{' && ctx[j + 1] !== 0) { open++; j++; continue; }
+    if (text[j] === '}') {
+      if (open === 0) return j;
+      open--;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Read the expansion at `i` (a `$` the shell expands) as empty, or return null
+ * for a literal `$`. See emptyExpansionText. Sets `state.capped` past
+ * MAX_DEFAULT_WORD_DEPTH.
+ *
+ * An unquoted `$` right before a double-quoted run is a locale string `$"…"`
+ * (#1895): without a message catalog bash passes its text and drops the `$`
+ * (`git reset $"--hard"` is a hard reset), so this reading drops it too. The
+ * lexer keeps it (zsh's reading); the two readings together judge both shells.
+ *
+ * @returns {{ text: string, end: number } | null}
+ */
+function readEmptyExpansion(text, ctx, subEnd, i, to, depth, state) {
+  const c = ctx[i];
+  if (c === 1 && ctx[i + 1] === 2 && i + 1 < to) return { text: '', end: i + 1 };
+  const next = i + 1 < to && ctx[i + 1] === c ? text[i + 1] : '';
+  if (next === '{') {
+    const close = closingBraceAt(text, ctx, subEnd, i + 2, to);
+    if (close === -1) return { text: '', end: to };
+    const body = text.slice(i + 2, close);
+    const name = PARAM_NAME_RE.exec(body)?.[0] ?? '';
+    const op = /^:?[-=]/.exec(body.slice(name.length))?.[0];
+    if (name === '' || op === undefined) return { text: '', end: close + 1 };
+    if (depth >= MAX_DEFAULT_WORD_DEPTH) {
+      state.capped = true;
+      return { text: '', end: close + 1 };
+    }
+    const word = readEmptyExpansions(text, ctx, subEnd, i + 2 + name.length + op.length, close, depth + 1, state);
+    return { text: word, end: close + 1 };
+  }
+  if (next === '(') {
+    // `$((…))` arithmetic: the lexer keeps it as word text (a `$( … )`
+    // substitution never gets here, subEnd skipped it).
+    let open = 0;
+    for (let j = i + 1; j < to; j++) {
+      if (ctx[j] === 0) continue;
+      if (text[j] === '(') open++;
+      else if (text[j] === ')' && --open === 0) return { text: '', end: j + 1 };
+    }
+    return { text: '', end: to };
+  }
+  if (/[A-Za-z_]/.test(next)) {
+    let j = i + 2;
+    while (j < to && ctx[j] === c && /[A-Za-z0-9_]/.test(text[j])) j++;
+    return { text: '', end: j };
+  }
+  if (next !== '' && /[0-9@*#?$!-]/.test(next)) return { text: '', end: i + 2 };
+  return null;
+}
+
+/**
+ * The characters `from`..`to` of a word in the empty-expansion reading.
+ *
+ * @returns {string}
+ */
+function readEmptyExpansions(text, ctx, subEnd, from, to, depth, state) {
+  let out = '';
+  for (let i = from; i < to;) {
+    const end = subEnd.get(i);
+    if (end !== undefined) { i = end; continue; }
+    if (ctx[i] !== 0 && text[i] === '$') {
+      const exp = readEmptyExpansion(text, ctx, subEnd, i, to, depth, state);
+      if (exp !== null) { out += exp.text; i = exp.end; continue; }
+    }
+    out += text[i];
+    i++;
+  }
+  return out;
+}
+
+/**
+ * The empty-expansion reading of one word token (#1893): its text as the shell
+ * builds it when no variable is set and every command substitution prints
+ * nothing. In an expanding part (`none` / `double`, tokenizeCommand § parts)
+ * `$name`, `$1`, `$@`, `${…}`, `$((…))` and every `$( … )` / backtick
+ * substitution read as empty; `${x:-w}`, `${x-w}`, `${x:=w}` and `${x=w}` read
+ * as their word `w`, itself read the same way. A process substitution keeps its
+ * text (the shell passes a file name for it).
+ * NAMED CEILING (BV-004): the lexer splits a word at a blank inside `${…}`, so a
+ * default word with a blank (`${x:- reset}`) is not read, and a variable whose
+ * VALUE spells the flag (`git reset $MODE`) cannot be read at all. REVISIT
+ * TRIGGER: a transcript census hit of either form in a git command.
+ *
+ * @param {{ text: string, parts?: Array<{ text: string, quote: string }>, substitutions?: Array<{ start: number, end: number }> }} tok
+ * @returns {string|null|symbol} the reading, null when the word expands
+ *   nothing, or UNREAD past MAX_DEFAULT_WORD_DEPTH
+ */
+function emptyExpansionText(tok) {
+  const { text, parts } = tok;
+  if (parts === undefined || !/[$`]/.test(text)) return null;
+  const ctx = new Uint8Array(text.length);
+  let at = 0;
+  for (const p of parts) {
+    ctx.fill(p.quote === 'none' ? 1 : p.quote === 'double' ? 2 : 0, at, at + p.text.length);
+    at += p.text.length;
+  }
+  const subEnd = new Map();
+  for (const s of tok.substitutions ?? []) {
+    if (text[s.start] !== '(') subEnd.set(s.start, s.end);
+  }
+  const state = { capped: false };
+  const reading = readEmptyExpansions(text, ctx, subEnd, 0, text.length, 0, state);
+  if (state.capped) return UNREAD;
+  return reading === text ? null : reading;
+}
+
+/**
+ * The empty-expansion reading of a chain segment (#1893), or null when no word
+ * of it expands, or UNREAD (see MAX_DEFAULT_WORD_DEPTH).
+ *
+ * An unquoted word that reads empty — the shell drops it — is dropped only in
+ * front of the verb (`${x} git …`). Behind it, it stays as an `emptyWord`
+ * placeholder with text '': the git argv match skips it only before the
+ * subcommand (`git ${x} reset --hard` is a hard reset) and reads it as an
+ * unknown operand after it, so `git checkout $REF -- f` stays the ref-sourced
+ * form #1831 leaves unjudged (review of !310: dropping it everywhere denied
+ * that form). A quoted word that reads empty stays an empty argument (`"$x"`).
+ * A changed word is a copy without `parts`; so is a glued close whose bash
+ * argv word changed (`git 3>&-res${x}et`, #1832).
+ *
+ * @param {Array<object>} segment
+ * @returns {Array<object>|null|symbol}
+ */
+function emptyExpansionSegment(segment) {
+  let changed = false;
+  let verbSeen = false;
+  const out = [];
+  for (const tok of segment) {
+    const argv = tok.bashArgvWord === undefined ? null : emptyExpansionText(tok.bashArgvWord);
+    if (argv === UNREAD) return UNREAD;
+    if (argv !== null) {
+      changed = true;
+      const copy = { ...tok };
+      const empty = argv === '' && !tok.bashArgvWord.quoted;
+      if (!empty || verbSeen) {
+        const word = empty ? { text: '', quoted: false, emptyWord: true } : { text: argv, quoted: tok.bashArgvWord.quoted };
+        Object.defineProperty(copy, 'bashArgvWord', { value: word, enumerable: false });
+        verbSeen = true;
+      }
+      out.push(copy);
+      continue;
+    }
+    const text = emptyExpansionText(tok);
+    if (text === UNREAD) return UNREAD;
+    const isWord = !tok.redirect && tok.operator === undefined;
+    if (text === null) {
+      out.push(tok);
+      if (isWord && (tok.quoted || !ENV_ASSIGN_RE.test(tok.text))) verbSeen = true;
+      continue;
+    }
+    changed = true;
+    if (text === '' && !tok.quoted) {
+      if (verbSeen) out.push({ ...tok, text: '', emptyWord: true });
+      continue;
+    }
+    out.push({ ...tok, text });
+    if (isWord && (tok.quoted || !ENV_ASSIGN_RE.test(text))) verbSeen = true;
+  }
+  return changed ? out : null;
 }
 
 /**
@@ -2616,6 +2875,13 @@ function gitArgvMatch(segment, resolved, spec) {
  *      never replaces check 2 (removing 2 would LOOSEN quoted-containment
  *      cases like `bash -c 'echo "rm -rf is dangerous"'`).
  *
+ * Every segment is judged twice when a word of it expands (#1893): as written,
+ * and in its empty-expansion reading (emptyExpansionSegment), where
+ * `git res${x}et --hard` reads `git reset --hard`. Either reading matching is a
+ * match, fail-closed like the other paired readings. A payload text is judged
+ * once per call — its verdict depends only on the text, and both readings of a
+ * segment often carry the same one.
+ *
  * @param {Array<Array<{ text: string, quoted: boolean }>>} segments
  * @param {RegExp} re
  * @param {number} depth — current payload-nesting depth (entry check < MAX)
@@ -2625,7 +2891,16 @@ function gitArgvMatch(segment, resolved, spec) {
  * @returns {boolean}
  */
 function matchSegments(segments, re, depth, budget, git = null) {
-  for (const segment of segments) {
+  const judged = new Set();
+  const readings = [];
+  for (const s of segments) {
+    readings.push(s);
+    const empty = emptyExpansionSegment(s);
+    // Unread default word (MAX_DEFAULT_WORD_DEPTH): unjudged → match, fail-closed.
+    if (empty === UNREAD) return true;
+    if (empty !== null) readings.push(empty);
+  }
+  for (const segment of readings) {
     // 1) Unquoted occurrence anywhere in the segment → always a match.
     if (unquotedSegmentMatch(segment, re)) return true;
 
@@ -2652,6 +2927,8 @@ function matchSegments(segments, re, depth, budget, git = null) {
     //    so an ambiguous segment cannot double-charge the shared evaluation budget.
     if (depth < MAX_PAYLOAD_DEPTH) {
       for (const payload of dedupedSegmentPayloads(segment, resolved)) {
+        if (judged.has(payload)) continue;
+        judged.add(payload);
         // FAIL-VISIBLE cut-off (HIGH-1 remediation (b)). A silent `break` here
         // was fail-OPEN: an attacker prepends 32 inert `env -Q x sh -c 'echo N'`
         // filler segments — each charging one alt-reading payload against the
@@ -3013,7 +3290,27 @@ function relativizeAgainstRoot(absTarget, repoRoot) {
   if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
     return null;
   }
-  return path.posix.normalize(rel).replace(/^(\.\/)+/, '');
+  return path.posix.normalize(rel.split(path.sep).join('/')).replace(/^(\.\/)+/, '');
+}
+
+/**
+ * Canonicalize Windows target spellings, then translate an MSYS drive prefix.
+ * POSIX hosts keep these paths unchanged.
+ *
+ * @param {string} target
+ * @param {string} [platform]
+ * @returns {string}
+ */
+export function normalizeMsysPath(target, platform = process.platform) {
+  if (platform !== 'win32') return target;
+  target = target.replace(/^[\\/]{2}\?[\\/]UNC[\\/]/i, '\\\\')
+    .replace(/^[\\/]{2}[?.][\\/](?=[a-z]:)/i, '');
+  target = target.replace(/[^\\/]+/g, (component) => {
+    if (component === '.' || component === '..') return component;
+    return component.replace(/[. ]+$/, '') || component;
+  });
+  if (!/^\/[a-z](?:\/|$)/i.test(target)) return target;
+  return `${target[1].toUpperCase()}:\\${target.slice(3).replace(/\//g, '\\')}`;
 }
 
 /**
@@ -3035,10 +3332,10 @@ function relativizeAgainstRoot(absTarget, repoRoot) {
  * @returns {string|null}
  */
 function repoRelativeRedirectTarget(raw, repoRoot, home) {
-  const expanded = expandLeadingHome(raw, home);
+  const expanded = normalizeMsysPath(expandLeadingHome(raw, home));
 
   if (!path.isAbsolute(expanded)) {
-    const lexical = path.posix.normalize(expanded).replace(/^(\.\/)+/, '');
+    const lexical = path.posix.normalize(expanded.split(path.sep).join('/')).replace(/^(\.\/)+/, '');
     // Post-normalization, a leading `..` is the ONLY way a relative target
     // leaves the root; anything else is already the repo-relative form (this
     // also preserves the `~other/...` another-account spelling untouched).
@@ -3193,7 +3490,7 @@ function targetMatchesDenylist(rawTarget, compiled, repoRoot, home) {
   const { relRegexes, absRegexes } = compiled;
 
   if (absRegexes.length > 0) {
-    const expandedTarget = expandLeadingHome(rawTarget, home);
+    const expandedTarget = normalizeMsysPath(expandLeadingHome(rawTarget, home));
     const absTarget = path.isAbsolute(expandedTarget)
       ? expandedTarget
       : repoRoot && path.isAbsolute(repoRoot)
@@ -3448,6 +3745,12 @@ export function firstDeniedDeleteTarget(rule, entries, opts = {}) {
   return null;
 }
 
+// The hooks ask once per pattern rule with the same command (13 calls per
+// Bash command), and #1893 sends every command with a `$` to the lexer. The
+// segments do not depend on the pattern and matchSegments never changes them,
+// so commandMatchesBlocked keeps the last command's.
+let lastLexed = { command: null, segments: null };
+
 /**
  * Test whether a command string contains a blocked pattern with shell-aware
  * boundaries AND a quoted-payload guard (#641).
@@ -3500,6 +3803,9 @@ export function commandMatchesBlocked(command, pattern) {
   // `$'` skips the prefilter and always goes to the tokenizer — the smaller
   // correct change than a second `$'…'` decoder here (one grammar, in the
   // lexer); the cost is a tokenizer run for the rare commands that use it.
+  // The empty-expansion reading (#1893) REMOVES text between two pattern
+  // characters (`res${x}et` → `reset`), so a command with any `$` or backtick
+  // skips the prefilter for the same reason.
   const words = pattern.split(' ').filter(Boolean);
   // A git pattern's flags may be spelled differently (#1831: `-xfd` holds no
   // `-f`), so its prefilter asks only for `git` and the subcommand — the
@@ -3511,10 +3817,12 @@ export function commandMatchesBlocked(command, pattern) {
     const stripped = text.replace(/\\\n/g, '').replace(/[\\'"$`]/g, '');
     return required.every((w) => stripped.includes(w));
   };
-  if (!command.includes("$'") && !mayMatch(normalizedCommand) && !mayMatch(payloadNormalizedCommand)) return false;
+  if (!/[$`]/.test(command) && !mayMatch(normalizedCommand) && !mayMatch(payloadNormalizedCommand)) return false;
 
-  const segments = splitSegments(tokenizeCommand(normalizedCommand));
-  return matchSegments(segments, re, 0, { remaining: MAX_PAYLOAD_EVALUATIONS }, git);
+  if (lastLexed.command !== normalizedCommand) {
+    lastLexed = { command: normalizedCommand, segments: splitSegments(tokenizeCommand(normalizedCommand)) };
+  }
+  return matchSegments(lastLexed.segments, re, 0, { remaining: MAX_PAYLOAD_EVALUATIONS }, git);
 }
 
 /**
