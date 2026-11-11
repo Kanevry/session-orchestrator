@@ -56,7 +56,13 @@ import {
 import { parseSessionId } from '../scripts/lib/session-id.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { heartbeat, logSweepEvent } from '../scripts/lib/session-registry.mjs';
-import { readLock, updateHeartbeat } from '../scripts/lib/session-lock.mjs';
+import {
+  loadOwnerProof,
+  readLock,
+  release,
+  updateHeartbeat,
+} from '../scripts/lib/session-lock.mjs';
+import { readCodexExecMarker } from '../scripts/lib/codex/rollout-meta.mjs';
 import { maybeTriggerOrphanScan } from '../scripts/lib/orphan-reaper/trigger.mjs';
 
 // ---------------------------------------------------------------------------
@@ -396,6 +402,65 @@ function reaperTriggerField(trigger) {
 }
 
 /**
+ * Release the lock of a one-shot `codex exec` run at its Stop (#1889).
+ *
+ * Until #1919 this plugin wired no Codex SessionEnd handler, so without this a
+ * `codex exec` run left its `.orchestrator/session.lock` behind until the Codex
+ * TTL expired. Since codex-cli 0.160 hooks-codex.json also runs
+ * on-session-end.mjs at SessionEnd, which releases the same lock; this Stop
+ * release stays as the earlier, version-independent path, and the double
+ * release is benign (SessionEnd then finds the lock `absent`). A leaked lock
+ * keeps the NEXT run in the same checkout from acquiring one
+ * (measured 2026-11-02: three later starts logged `session.started` without
+ * `lock.acquired`). A one-shot run has exactly one turn, so its Stop IS its
+ * end. Releases only when ALL hold — anything else is a no-release that falls
+ * back to the heartbeat and the TTL:
+ *   - the harness is Codex and the payload names itself `Stop` (a SubagentStop
+ *     payload never reaches `handleStop`, and an unnamed one never releases);
+ *   - line 0 of `transcript_path` is a `session_meta` record whose
+ *     `payload.source` is the STRING `"exec"` (`readCodexExecMarker`);
+ *   - `release()` proves ownership against the RAW stdin `session_id` (plus
+ *     the persisted owner proof when one exists, as on-session-end.mjs does).
+ *
+ * Returns the additive record fields (Codex only — `{}` on every other
+ * harness) and whether the lock was actually deleted.
+ *
+ * @param {object|null} input
+ * @param {string} projectRoot  the root that holds this session's lock
+ * @returns {Promise<{ fields: {codex_exec?: boolean, lock_released?: boolean}, released: boolean }>}
+ */
+async function releaseCodexExecLock(input, projectRoot) {
+  if (detectPlatform() !== 'codex') return { fields: {}, released: false };
+  const marker = readCodexExecMarker(input?.transcript_path);
+  if (!marker.exec) return { fields: { codex_exec: false }, released: false };
+
+  const rawId = input?.session_id;
+  if (input?.hook_event_name !== 'Stop' || typeof rawId !== 'string' || rawId.length === 0) {
+    return { fields: { codex_exec: true, lock_released: false }, released: false };
+  }
+
+  let result;
+  try {
+    result = release({ sessionId: rawId, repoRoot: projectRoot, proof: loadOwnerProof({ repoRoot: projectRoot }) });
+  } catch (err) {
+    result = { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+  }
+  const released = result.ok === true && result.deleted === true;
+  if (!released && result.reason !== 'no-lock') {
+    process.stderr.write(`[on-stop] WARN: codex exec run did not release session.lock (${result.reason ?? 'unknown'}); it expires by TTL.\n`);
+    // Same breadcrumb and payload shape as the on-session-end.mjs call site.
+    try {
+      await emitEvent('orchestrator.session.lock.release_failed', {
+        session_id: rawId,
+        reason: result.reason ?? (result.ok ? 'not-deleted' : 'fs-error'),
+        caller: 'on-stop',
+      });
+    } catch { /* observability is best-effort */ }
+  }
+  return { fields: { codex_exec: true, lock_released: released }, released };
+}
+
+/**
  * Handle a Stop event. Reads wave from scope file + git info, appends JSONL.
  * @param {object|null} input
  * @param {{reason?: string}|null} [reaperTrigger]  `maybeTriggerOrphanScan()` result.
@@ -429,16 +494,30 @@ async function handleStop(input, reaperTrigger = null) {
   // correction. Deregistration now lives in hooks/on-session-end.mjs, which
   // fires at the real end of the session.
   //
-  // CODEX CAVEAT — stated here because THIS file runs on Codex and the file
-  // that owns deregistration does not. `hooks-codex.json` wires SessionStart +
-  // Stop but no SessionEnd (the Codex contract rejects the event), so on that
-  // bridge a session registers and never deregisters: its entry persists until
-  // sweepZombies() reaps it at the next SessionStart, up to `thresholdMin`
-  // (default 60 min). Accepted deliberately — it is the same path crash and
-  // Ctrl-C already take on every platform, and it is safe precisely BECAUSE
-  // the heartbeat below now advances, so a live session never ages into the
-  // sweep. Do NOT add a platform-detecting deregister branch here; that is the
-  // two-teardown-paths shape Epic #583 removed from the lock.
+  // CODEX NOTE — since #1919 (codex-cli 0.160 minimum) `hooks-codex.json`
+  // wires SessionEnd to on-session-end.mjs, so a Codex session now deregisters
+  // and releases its lock at its real end, like Claude Code. Before that, the
+  // entry persisted until sweepZombies() reaped it at the next SessionStart
+  // (up to `thresholdMin`, default 60 min) and an interactive session's lock
+  // leaked until the Codex lock TTL (0.5 h, set in on-session-start.mjs). That
+  // path remains what a crash or Ctrl-C takes on every platform, and it is
+  // safe precisely BECAUSE the heartbeat below advances, so a live session
+  // never ages into the sweep. Do NOT add a platform-detecting deregister
+  // branch here; that is the two-teardown-paths shape Epic #583 removed from
+  // the lock.
+  // The ONE documented exception is a one-shot `codex exec` run (#1889): its
+  // single Stop is its end, so `releaseCodexExecLock()` releases the lock it
+  // owns. The discriminator is MEASURED, not inferred (2026-11-02, codex-cli
+  // 0.160.1): no env marker reaches the hook and the Stop payload carries none,
+  // but line 0 of the rollout named by `transcript_path` is a `session_meta`
+  // record whose `payload.source` is the string "exec" — 42 of 104 rollouts on
+  // the measuring host, every one an `originator: codex_exec` run; subagent
+  // threads carry an object there, Codex Desktop "vscode". This releases the
+  // lock only, owner-proven on the raw stdin id — it is not a deregister branch.
+  // `codex exec resume` appends to the same rollout (line 0 stays "exec") and
+  // is again one process with one turn, so its Stop is still its end. CEILING:
+  // an interactive `codex resume` of an exec thread (unmeasured) would release
+  // at its first Stop; see scripts/lib/codex/rollout-meta.mjs.
   // (pi is unaffected: hooks-pi.json maps session_shutdown to on-session-end.mjs.
   //  Cursor is unaffected: it wires no SessionStart, so it never registers.)
   //
@@ -472,14 +551,6 @@ async function handleStop(input, reaperTrigger = null) {
       // informational-only.
       logSweepEvent({ event: 'heartbeat-failed', session_id: sessionId, error: err?.message ?? String(err) });
     }
-
-    // Epic #583 W5-F1c — refresh session.lock heartbeat on every turn-end.
-    // Augments PostToolBatch's heartbeat (closes W4-Q3 H2 cadence finding:
-    // a session with no PostToolBatch activity would otherwise go heartbeat-stale).
-    // Best-effort: never throws, never blocks the Stop hook.
-    try {
-      updateHeartbeat({ sessionId, repoRoot: projectRoot });
-    } catch { /* best-effort */ }
   }
 
   // K5 — `duration_ms` was literally 0 in 8.127 of 8.127 fleet
@@ -489,8 +560,23 @@ async function handleStop(input, reaperTrigger = null) {
   // `scripts/lib/telemetry/subagents-schema.mjs:20-35` documents — it reads as
   // a MEASURED zero-length session and is indistinguishable from one. So the
   // span now comes from the session.lock's `started_at`, and BOTH keys are
-  // omitted when it cannot be measured.
+  // omitted when it cannot be measured. Read BEFORE the #1889 release below,
+  // which deletes the lock this reads.
   const duration = resolveStopDuration(input, projectRoot);
+
+  // #1889 — a one-shot `codex exec` run releases its own lock here; every
+  // other Stop (and every exec Stop that could not release) refreshes it.
+  const codexExec = await releaseCodexExecLock(input, projectRoot);
+
+  // Epic #583 W5-F1c — refresh session.lock heartbeat on every turn-end.
+  // Augments PostToolBatch's heartbeat (closes W4-Q3 H2 cadence finding:
+  // a session with no PostToolBatch activity would otherwise go heartbeat-stale).
+  // Best-effort: never throws, never blocks the Stop hook.
+  if (sessionId && !codexExec.released) {
+    try {
+      updateHeartbeat({ sessionId, repoRoot: projectRoot });
+    } catch { /* best-effort */ }
+  }
 
   // Single emission path: emitEvent writes the canonical {timestamp, event, ...payload}
   // JSONL record AND fires the optional Clank webhook with the SAME event name — no
@@ -527,6 +613,7 @@ async function handleStop(input, reaperTrigger = null) {
     ...(commit !== null ? { commit } : {}),
     ...duration,
     ...reaperTriggerField(reaperTrigger),
+    ...codexExec.fields,
   };
 
   try {
@@ -858,14 +945,17 @@ async function main() {
   } else {
     // terminalSequence must be emitted even when handleStop() throws (e.g.
     // emitEvent's fs.appendFile fails on a full / read-only disk). Wrap the
-    // Stop branch in try/finally so the desktop notification is always sent.
+    // Stop branch in try/finally so the desktop notification is always sent
+    // (unless the user switched it off, #1936 — stopNotificationEnabled()).
     // SubagentStop is intentionally outside this block — it must never emit
     // terminalSequence.
     try {
       await handleStop(input, reaperTrigger);
     } finally {
       // terminalSequence is only meaningful for Stop (session-level) events.
-      process.stdout.write(buildTerminalSequenceJson(detectPlatform()));
+      if (await stopNotificationEnabled()) {
+        process.stdout.write(buildTerminalSequenceJson(detectPlatform()));
+      }
     }
   }
 }
@@ -873,6 +963,30 @@ async function main() {
 // ---------------------------------------------------------------------------
 // terminal notification
 // ---------------------------------------------------------------------------
+
+/**
+ * Whether this Stop sends the desktop notification (#1936). A per-user choice,
+ * not a repo property: env `SO_STOP_NOTIFICATION` > owner.yaml
+ * `notifications.stop` > on. Someone who runs many sessions in parallel and
+ * reads open work from an inbox gets two banners (OSC 9 + OSC 777) per Stop
+ * per session; switching the whole hook off via `hooks.disabled` would also
+ * drop the session bookkeeping above.
+ *
+ * owner-yaml.mjs is imported lazily inside try: a broken module or a missing
+ * js-yaml costs the switch, never the notification (pre-#1936 behaviour).
+ *
+ * @returns {Promise<boolean>}
+ */
+async function stopNotificationEnabled() {
+  try {
+    const { loadOwnerConfig, parseSwitch } = await import('../scripts/lib/owner-yaml.mjs');
+    const fromEnv = parseSwitch(process.env.SO_STOP_NOTIFICATION);
+    if (fromEnv !== undefined) return fromEnv;
+    return parseSwitch(loadOwnerConfig().config?.notifications?.stop) ?? true;
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Display label per harness, keyed exactly like PLATFORM_UPDATE_INSTRUCTIONS in

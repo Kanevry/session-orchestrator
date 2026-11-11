@@ -33,7 +33,7 @@
  *                    else as a binary; default `navigator` from PATH
  *
  * Exit: 0 every open point marked (or no fleet integration: nothing to do) ·
- *       3 unmarked points or info lines remain (listed on stdout) · 2 usage error ·
+ *       3 missing mandatory sections, unmarked points or info lines remain (listed on stdout) · 2 usage error ·
  *       4 --apply on a file that is not the session's own — foreign name, a
  *         symlink, or older than --since (nothing filed or written).
  */
@@ -41,7 +41,7 @@
 import { lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fleetIntegrationEnabled } from './lib/fleet-protocol.mjs';
-import { findOpenPoints, insertMarks, kindFor, refFor, unmarkedPoints } from './lib/handover-queue-marks.mjs';
+import { findOpenPoints, insertMarks, kindFor, missingHandoverSections, refFor, unmarkedPoints } from './lib/handover-queue-marks.mjs';
 import { spawnSync } from './lib/native-command.mjs';
 
 const EXIT_OK = 0;
@@ -170,6 +170,13 @@ function main() {
     return EXIT_USAGE;
   }
 
+  // #1950 became mandatory in db82140f (2026-11-05). Like --since,
+  // use mtime: untouched historical files keep their old contract.
+  // BV-004 ceiling: touching/copying an old handover requires the new headings.
+  // Revisit: drop the cutoff once no pre-cutoff handovers are read anymore.
+  const missingSections = statSync(file).mtimeMs >= Date.parse('2026-11-05T17:24:48Z')
+    ? missingHandoverSections(content)
+    : [];
   const all = unmarkedPoints(findOpenPoints(content));
   // Info lines are a hint to move them under "Vollzogen", never a queue item
   // (#1794). They stay in the report and keep exit 3: hidden, the line would
@@ -206,15 +213,17 @@ function main() {
   }
 
   const unmarked = open.map((p) => ({ line: p.line + 1, section: p.section, text: p.text }));
-  const lines = [`handover-queue-check: ${basename(file)} — ${unmarked.length} Punkt(e) ohne Queue-ID`];
+  const lines = [`handover-queue-check: ${basename(file)} — ${missingSections.length > 0
+    ? `Pflichtabschnitt fehlt: ${missingSections.join(', ')}`
+    : `${unmarked.length} Punkt(e) ohne Queue-ID`}`];
   for (const f of filed) lines.push(`  angelegt: Zeile ${f.line} → queue:#${f.id}`);
   for (const u of unmarked) lines.push(`  offen: Zeile ${u.line} [${u.section}] ${u.text}`);
   for (const f of failed) lines.push(`  Anlegen gescheitert: Zeile ${f.line} (${f.error})`);
   for (const i of info) {
     lines.push(`  Hinweis: Zeile ${i.line} [${i.section}] Infozeile unter Offen-Überschrift, nach Vollzogen verschieben: ${i.text}`);
   }
-  say({ fleet: true, file, unmarked: unmarked.length, filed, failed, points: unmarked, info }, lines.join('\n'));
-  return unmarked.length > 0 || info.length > 0 ? EXIT_UNMARKED : EXIT_OK;
+  say({ fleet: true, file, unmarked: unmarked.length, filed, failed, points: unmarked, info, missingSections }, lines.join('\n'));
+  return missingSections.length > 0 || unmarked.length > 0 || info.length > 0 ? EXIT_UNMARKED : EXIT_OK;
 }
 
 process.exitCode = main();

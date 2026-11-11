@@ -215,18 +215,30 @@ const STATUS_RE = /^[ \t*_]*STATUS:\s*(partial|blocked|failed)\b/im;
 // ---------------------------------------------------------------------------
 
 /**
- * Encode a repo path the way Claude Code names its projects directory:
- * every `/` and `.` becomes `-`.
+ * Encode a repo path the way Claude Code names its projects directory.
  *
- * Ceiling: derived from the observed encoding of paths without unusual
- * characters (`-Users-…-session-orchestrator`). Revisit if a repo path with
- * spaces or non-ASCII characters ever fails to resolve.
+ * MEASURED 2026-11-08 (Claude Code 2.1.319): every character that is not an
+ * ASCII letter or digit becomes `-` — not only `/` and `.`, also `_` (the
+ * fleet's `/Projects/_wt/<repo>/<wt>` worktrees live in `-Projects--wt-…`). A
+ * `-` in the path stays `-`. Measurement: the `"cwd"` recorded in the
+ * transcripts of 320 `~/.claude/projects/*` folders; 300 folders equal this
+ * rule's encoding of one of their cwds, 0 equal only the old `/`+`.` rule (it
+ * missed all 97 folders whose cwd contains `_`); the other 20 record no cwd
+ * equal to their launch dir. The encoding is lossy: `/x/a_b`, `/x/a.b` and
+ * `/x/a-b` share one folder.
+ *
+ * Ceiling (BV-004): no measured cwd contained a space or non-ASCII character;
+ * the rule maps them to `-` as well. Revisit if such a path fails to resolve.
+ *
+ * Byte-identical body in `scripts/lib/skill-evidence-window.mjs::encodeProjectDir`
+ * (duplicated there to keep that module's import closure small); the parity
+ * test in `tests/lib/wave-transcript-tail.test.mjs` keeps the two in step.
  *
  * @param {string} repoRoot
  * @returns {string}
  */
 export function encodeProjectDir(repoRoot) {
-  return String(repoRoot).replace(/[/.]/g, '-');
+  return String(repoRoot).replace(/[^A-Za-z0-9]/g, '-');
 }
 
 /** @param {unknown} v @returns {string} */
@@ -253,8 +265,10 @@ function trimmedString(v) {
  * Precedence for `sessionId`: the harness env var, then a LIVE session lock,
  * then the newest session directory by mtime. Precedence for
  * `semanticSessionId`: `sessionAttribution()` (the same field `report()` emits
- * as `semantic_session_id`, so the two can never disagree), then a live lock,
- * then the raw id with a stderr note.
+ * as `semantic_session_id`, so when it answers the two cannot disagree), then a
+ * live lock whose raw `session_id` equals the resolved raw id (#1874; the record
+ * then has `session` but no `semantic_session_id`, because attribution stayed
+ * empty), then the raw id with a stderr note.
  *
  * The lock tier is liveness-gated (`isLockLive`, heartbeat-based). A STALE lock
  * names a session whose transcript directory stopped growing, so trusting it
@@ -307,7 +321,13 @@ export function resolveSessionId({ repoRoot, env = process.env, projectsDir }) {
   } catch {
     // Attribution unavailable — `semanticSessionId` stays '' and the lock tier runs.
   }
-  if (!semanticSessionId && trimmedString(liveLock?.semantic_session_id)) {
+  // A live lock is not proof it is ours (#1874): during a dead holder's TTL it
+  // still reads as live, so its label is taken only for the raw id it names.
+  if (
+    !semanticSessionId &&
+    trimmedString(liveLock?.session_id) === raw.sessionId &&
+    trimmedString(liveLock?.semantic_session_id)
+  ) {
     semanticSessionId = trimmedString(liveLock.semantic_session_id);
     semanticSource = 'session.lock';
   }

@@ -7,7 +7,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { ALLOWED_MODEL_ALIASES, MODEL_ID_RE, checkAgentEffort } from '../agent-frontmatter.mjs';
 import { extractInitialFrontmatter } from './frontmatter-block.mjs';
 import { parseFrontmatterDescription } from '../description-surface.mjs';

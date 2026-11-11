@@ -10,7 +10,7 @@
     "verdict": {
       "type": "string",
       "enum": ["PROCEED", "PROCEED_WITH_FOLLOWUPS", "FIX_REQUIRED", "BLOCKED"],
-      "description": "PROCEED = 0 findings; PROCEED_WITH_FOLLOWUPS = only LOW/MEDIUM findings; FIX_REQUIRED = HIGH or CRITICAL findings present; BLOCKED = run-dir or rubric missing."
+      "description": "PROCEED = 0 findings; PROCEED_WITH_FOLLOWUPS = only LOW/MEDIUM findings; FIX_REQUIRED = HIGH or CRITICAL findings present; BLOCKED = run-dir or rubric missing, or a rubric-v2 report is incomplete (a human check without verdict)."
     },
     "run_id": {
       "type": "string",
@@ -20,12 +20,21 @@
     "rubric_version": {
       "type": "string",
       "minLength": 1,
-      "description": "Rubric version applied (e.g. 'v1')."
+      "description": "Rubric version applied (e.g. 'v1', 'v2')."
     },
     "checks_applied": {
       "type": "integer",
       "minimum": 0,
-      "description": "Number of rubric checks that were executed (max 4 for rubric-v1)."
+      "description": "Number of rubric checks that were executed (max 4 for rubric-v1, 10 for rubric-v2)."
+    },
+    "target_kind": {
+      "type": "string",
+      "enum": ["live", "production-build", "dev-server"],
+      "description": "rubric-v2: what was evaluated. A dev-server run is labelled as such in the report header."
+    },
+    "report_complete": {
+      "type": "boolean",
+      "description": "rubric-v2: false when any human check (five-second, primary-action, dead-or-locked, empty-state, density, decoration) has no verdict for a page and viewport; the verdict is then BLOCKED."
     },
     "findings_count": {
       "type": "integer",

@@ -5,7 +5,7 @@ argument-hint: "[optional-reason]"
 
 # Templates Acknowledgement
 
-Write a session-scoped acknowledgement entry to `.orchestrator/runtime/templates-acknowledged.json` (inside a linked git worktree: the main checkout's `.orchestrator/runtime/`, where the hook reads it). Once written, the `pre-bash-templates-first` hook (G6) will allow `gh`/`glab` create operations for the rest of the current session without requiring a prior template Read.
+Write a session-scoped acknowledgement entry to the policy's `acknowledgement_file` (default `.orchestrator/runtime/templates-acknowledged.json`), under the checkout root — inside a linked git worktree the main checkout, never a subdirectory — the same file the hook reads. Once written, the `pre-bash-templates-first` hook (G6) will allow `gh`/`glab` create operations for the rest of the current session without requiring a prior template Read.
 
 **Use this only when:**
 - You have already reviewed the relevant template externally (e.g. copy-paste workflow), OR
@@ -65,26 +65,28 @@ if (!pluginRoot) {
   process.stderr.write('⚠ templates-ack: plugin root unavailable — ack not written\n');
   process.exit(1);
 }
-// The ack file is runtime state: in a linked worktree it lives in the MAIN
-// checkout, the same root the pre-bash-templates-first hook reads (#1729).
+// The ack file comes from the hook's own resolver: the policy's
+// acknowledgement_file (or its default), under the checkout root — the MAIN
+// checkout for a linked worktree, never a subdirectory (#1729, #1730).
 let ackFile = null;
 try {
-  const { resolveEventsLedgerRoot } = await import(pathToFileURL(join(pluginRoot, 'scripts/lib/platform.mjs')).href);
-  ackFile = join(resolveEventsLedgerRoot(cwd), '.orchestrator', 'runtime', 'templates-acknowledged.json');
+  const { resolveTemplatesAckFile } = await import(pathToFileURL(join(pluginRoot, 'hooks/_lib/templates-ack-file.mjs')).href);
+  ackFile = await resolveTemplatesAckFile();
 } catch {
   process.stderr.write('⚠ templates-ack: root resolver unavailable — ack not written\n');
   process.exit(1);
 }
 let sessionId = null;
+let missReason = null;
 try {
   const { readInvocationSessionId } = await import(pathToFileURL(join(pluginRoot, 'scripts/lib/session-identity/own-session.mjs')).href);
-  sessionId = readInvocationSessionId();
+  sessionId = readInvocationSessionId({ onMiss: (r) => { missReason = r; } });
 } catch {
   process.stderr.write('⚠ templates-ack: process-local identity helper unavailable — ack not written\n');
   process.exit(1);
 }
 if (!sessionId) {
-  process.stderr.write('⚠ templates-ack: session id does not come from this invocation — ack not written\n');
+  process.stderr.write('⚠ templates-ack: session id does not come from this invocation — ack not written' + (missReason ? ' (reason: ' + missReason + ')' : '') + '\n');
   process.exit(1);
 }
 
@@ -139,12 +141,11 @@ if (!pluginRoot) {
   } catch { /* no plugin-root evidence */ }
 }
 if (!pluginRoot) { console.log('plugin root unavailable'); process.exit(1); }
-let root;
+let p;
 try {
-  const { resolveEventsLedgerRoot } = await import(pathToFileURL(join(pluginRoot, 'scripts/lib/platform.mjs')).href);
-  root = resolveEventsLedgerRoot(cwd);
-} catch { console.log('root resolver unavailable'); process.exit(1); }
-const p = join(root, '.orchestrator', 'runtime', 'templates-acknowledged.json');
+  const { resolveTemplatesAckFile } = await import(pathToFileURL(join(pluginRoot, 'hooks/_lib/templates-ack-file.mjs')).href);
+  p = await resolveTemplatesAckFile();
+} catch { console.log('ack path resolver unavailable'); process.exit(1); }
 if (!existsSync(p)) { console.log('NOT FOUND: ' + p); process.exit(1); }
 console.log(JSON.stringify(JSON.parse(readFileSync(p, 'utf8')), null, 2));
 "

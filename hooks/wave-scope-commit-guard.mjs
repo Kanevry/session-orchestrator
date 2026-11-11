@@ -34,10 +34,11 @@
 //     lint-staged sweep — softening it would weaken detection for the very
 //     class it exists to catch.
 //   - A path outside allowedPaths that an EARLIER wave of this session
-//     declared (`filescopes/wave-<k>.scopes.json`, k < the manifest's wave,
-//     mtime not older than the session start) passes with an info line
-//     (#1680): the coordinator commits after the last wave, when the active
-//     manifest names only that wave's paths.
+//     granted (`filescopes/wave-<k>.scopes.json`, k < the manifest's wave,
+//     mtime not older than the session start; declared files plus their test
+//     siblings when that wave's recorded role expands, #1984) passes with an
+//     info line (#1680): the coordinator commits after the last wave, when the
+//     active manifest names only that wave's paths.
 //   - EMPTY allowedPaths is no longer a silent pass: a Discovery (read-only)
 //     manifest means no agent is committing, i.e. a coordinator commit between
 //     waves → allow with a note; a manifest older than the newest session
@@ -64,7 +65,7 @@ import { pathMatchesPattern } from '../scripts/lib/hardening.mjs';
 import { withStagingFenceLock } from '../scripts/lib/session-lock.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { resolveEventsLedgerRoot, resolveSessionRoot } from '../scripts/lib/platform.mjs';
-import { classifyEmptyScope, findOwnScopeFile, sessionAgeMs, unionFileScopes } from '../scripts/lib/scope-gate.mjs';
+import { classifyEmptyScope, expandTestSiblings, findOwnScopeFile, sessionAgeMs, unionFileScopes } from '../scripts/lib/scope-gate.mjs';
 import { readTailWindow } from '../scripts/lib/tail-window.mjs';
 import {
   classifyManifestSession,
@@ -181,8 +182,26 @@ const ALLOWED_PATHS_HINT = [
  * @returns {string}
  */
 function manifestLabel(repoRoot, scopePath) {
-  const rel = relative(repoRoot, scopePath);
-  return rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? scopePath : rel;
+  const rel = relativeInside(repoRoot, scopePath);
+  return rel === null || rel === '' ? scopePath : rel;
+}
+
+/**
+ * `to` relative to `from` in POSIX form, or `null` when `to` does not lie
+ * beneath `from`. The escape checks run on the native form; only the result is
+ * re-joined with `/`, because allowedPaths patterns are POSIX — on win32 the
+ * native `sub\file.mjs` matched no pattern and blocked every subdirectory-mode
+ * commit (#1901 4c).
+ *
+ * @param {string} from
+ * @param {string} to
+ * @param {{relative: Function, isAbsolute: Function, sep: string}} [pathApi] node:path flavour (tests pass `path.win32`)
+ * @returns {string|null}
+ */
+export function relativeInside(from, to, pathApi = { relative, isAbsolute, sep }) {
+  const rel = pathApi.relative(from, to);
+  if (rel === '..' || rel.startsWith(`..${pathApi.sep}`) || pathApi.isAbsolute(rel)) return null;
+  return rel.split(pathApi.sep).join('/');
 }
 
 /** mtime of a file in ms, or `null` when it cannot be stat'ed. */
@@ -248,12 +267,37 @@ function ownGenesisMs(lockRoot, ownIds) {
 }
 
 /**
- * The declared files of every EARLIER wave of this session, read from the
+ * The role recorded for an earlier wave (`scripts/materialize-wave-scope.mjs`,
+ * #1984), or `undefined` when none of this session is on record. A leftover
+ * role file is held to the same session clock as the sidecar it qualifies.
+ * `undefined` makes `expandTestSiblings` a no-op: the guard blocks as before.
+ *
+ * @param {string} file `<manifest dir>/filescopes/wave-<k>.role.json`
+ * @param {number} sessionStartMs
+ * @returns {unknown}
+ */
+function earlierWaveRole(file, sessionStartMs) {
+  const mtime = mtimeMsOf(file);
+  if (mtime === null || mtime < sessionStartMs) return undefined;
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'))?.role;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The files every EARLIER wave of this session was granted, read from the
  * per-wave aggregate sidecars `<manifest dir>/filescopes/wave-<k>.scopes.json`
  * (`scripts/materialize-wave-scope.mjs`) for k < the manifest's `wave` (#1680).
  * The coordinator commits after the LAST wave, when the active manifest names
  * only that wave's paths; without this, a file an earlier wave of the same
  * session changed blocked the commit.
+ *
+ * A sidecar holds DECLARED paths, while that wave's agents could also write the
+ * test siblings `--union` added to its `allowedPaths` (#1984). Each wave is
+ * therefore expanded under ITS OWN recorded role, never the active manifest's:
+ * a Quality wave's files must not gain their tests because Impl-Core runs now.
  *
  * A sidecar counts only when its mtime is not older than this session's start
  * (`now - sessionAge`); an unknown session clock reads none — fail closed, the
@@ -284,12 +328,14 @@ function earlierWaveScopes(scopePath, wave, sessionAge, genesisMs = null, now = 
   if (typeof sessionAge !== 'number' || !Number.isInteger(wave) || wave < 2) return [];
   const sessionStartMs = typeof genesisMs === 'number' ? Math.min(now - sessionAge, genesisMs) : now - sessionAge;
   const out = [];
+  const filescopes = join(dirname(scopePath), 'filescopes');
   for (let k = 1; k < wave; k++) {
-    const sidecar = join(dirname(scopePath), 'filescopes', `wave-${k}.scopes.json`);
+    const sidecar = join(filescopes, `wave-${k}.scopes.json`);
     const mtime = mtimeMsOf(sidecar);
     if (mtime === null || mtime < sessionStartMs) continue;
     try {
-      const files = unionFileScopes(JSON.parse(readFileSync(sidecar, 'utf8')));
+      const role = earlierWaveRole(join(filescopes, `wave-${k}.role.json`), sessionStartMs);
+      const files = expandTestSiblings(unionFileScopes(JSON.parse(readFileSync(sidecar, 'utf8'))), { role });
       if (files.length > 0) out.push({ wave: k, files });
     } catch {
       // unreadable / malformed: grants nothing
@@ -323,8 +369,8 @@ function earlierWaveScopes(scopePath, wave, sessionAge, genesisMs = null, now = 
  * @param {Set<string>} p.ownIds this process's session ids
  * @param {number|null} p.scopeMtimeMs
  * @param {number|null} p.sessionAge ms since the newest session clock
- * @param {Array<{wave: number, files: string[]}>} [p.earlierWaves] declared
- *   files of this session's earlier waves (`earlierWaveScopes`, #1680); a
+ * @param {Array<{wave: number, files: string[]}>} [p.earlierWaves] files this
+ *   session's earlier waves were granted (`earlierWaveScopes`, #1680, #1984); a
  *   violating path one of them covers passes with an info line
  * @returns {{action: 'pass'|'report'|'block', lines: string[], hint?: string[]}}
  *   `hint` = the remediation block; `main()` prints it ONCE after every
@@ -352,7 +398,6 @@ function scopeCommitVerdict({ scope, stagedFiles, scopePathOf = (f) => f, scopeR
     for (const f of stagedFiles) {
       const scoped = scopePathOf(f);
       if (scoped !== null && allowedPaths.some((pattern) => pathMatchesPattern(scoped, pattern))) continue;
-      // #1680: declared files only — no test-sibling expansion, no widening.
       const earlier = scoped === null
         ? undefined
         : earlierWaves.find((w) => w.files.some((pattern) => pathMatchesPattern(scoped, pattern)));
@@ -485,10 +530,7 @@ async function main() {
   if (subdir !== null) {
     judgements.push({
       root: subdir.sessionRoot,
-      scopePathOf: (f) => {
-        const rel = relative(subdir.sessionRoot, join(subdir.realRepoRoot, f));
-        return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? null : rel;
-      },
+      scopePathOf: (f) => relativeInside(subdir.sessionRoot, join(subdir.realRepoRoot, f)),
     });
   }
   const fenceDir = join(repoRoot, '.orchestrator', 'staging-fence');

@@ -67,7 +67,7 @@
 import os from 'node:os';
 import { listWorktrees } from './worktree/listing.mjs';
 import { readLock, isLockLive } from './session-lock.mjs';
-import { readRegistry, repoPathHash, isRegistryEntryFresh } from './session-registry.mjs';
+import { readRegistryStrict, repoPathHash, isRegistryEntryFresh, REGISTRY_FRESHNESS_MIN } from './session-registry.mjs';
 import { stableHostname } from './host-identity.mjs';
 
 // ---------------------------------------------------------------------------
@@ -120,7 +120,10 @@ function sessionFromLock(lock, worktreePath, branch = '') {
  * `lockSuperseded` / `lockOwnerId`. `lockSuperseded: true` says a LIVE lock at
  * this repoRoot is owned by a DIFFERENT raw session_id than this entry — a
  * HINT that the entry may be a finished-but-still-fresh task (the GH#67 case:
- * Codex emits no SessionEnd, so the registry entry outlives the task by up to
+ * before #1919 this plugin wired no Codex SessionEnd handler; since then
+ * (minimum codex-cli 0.160) SessionEnd deregisters, but a crashed or killed
+ * session skips it, and an entry written by an older install still lingers, so
+ * the registry entry can outlive the task by up to
  * `freshnessMin`). It is not a verdict: the lock is advisory, so the entry may
  * equally be a live session that never acquired it (#1085). Consumers deciding
  * a worktree PROMOTION_OFFER downgrade such a peer to an advisory line;
@@ -215,7 +218,7 @@ function dedupeBySessionId(sessions) {
  * @param {object} [opts]
  * @param {number}   [opts.timeoutMs=2000]      Race timeout (ms). Default DEFAULT_DISCOVERY_TIMEOUT_MS.
  * @param {Function} [opts.listWorktreesImpl]   DI hook replacing listWorktrees() for tests.
- * @param {Function} [opts.registryReader]      DI hook replacing readRegistry() for tests.
+ * @param {Function} [opts.registryReader]      DI hook replacing readRegistryStrict() for tests.
  * @param {number}   [opts.freshnessMin=15]     Registry-entry freshness threshold in minutes.
  * @param {number}   [opts.now]                 ms-since-epoch (test seam for heartbeat freshness).
  * @returns {Promise<Array<{worktreePath:string,sessionId:string,mode:string,startedAt:string,pid:number,host:string,host_id:string,branch:string,registryOnly?:boolean,lockSuperseded?:boolean,lockOwnerId?:string|null}>>}
@@ -224,10 +227,39 @@ function dedupeBySessionId(sessions) {
  *   them entirely.
  */
 export async function discoverActiveSessions(repoRoot, opts = {}) {
+  return (await discoverActiveSessionsMeasured(repoRoot, opts)).sessions;
+}
+
+/**
+ * Same discovery as {@link discoverActiveSessions} (the ONE implementation —
+ * that function is a thin wrapper over this one), plus which sources were
+ * actually read (#1941). Both fallbacks resolve with a SUBSET, never a
+ * rejection, so a caller that turns the result into a COUNT must not report
+ * that subset as a complete measurement.
+ *
+ * - `worktreesListed: false` — `git worktree list` threw or lost its
+ *   `timeoutMs` race; only the local session.lock was read (A1 fallback). The
+ *   registry is not read on this path, so `registryRead` is false as well.
+ * - `registryRead: false` — the registry reader threw; registry-sourced
+ *   sessions, and with them every GH#67 `lockSuperseded` annotation, are
+ *   missing from `sessions`.
+ *
+ * @param {string} repoRoot  Absolute path to the main repository root.
+ * @param {object} [opts]    Same options as {@link discoverActiveSessions}.
+ * @returns {Promise<{sessions: Array<object>, registryRead: boolean, worktreesListed: boolean}>}
+ *   `sessions` has exactly the shape {@link discoverActiveSessions} returns.
+ */
+export async function discoverActiveSessionsMeasured(repoRoot, opts = {}) {
   const listWorktreesFn = opts.listWorktreesImpl ?? listWorktrees;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
-  const registryReaderFn = opts.registryReader ?? readRegistry;
-  const freshnessMin = typeof opts.freshnessMin === 'number' ? opts.freshnessMin : 15;
+  // Strict by default (#1941): readRegistry() returns [] for EVERY readdir
+  // failure, which would land below as `registryRead: true` with zero entries.
+  // readRegistryStrict() throws on anything but ENOENT, so the catch below
+  // reports the read as not done.
+  const registryReaderFn = opts.registryReader ?? readRegistryStrict;
+  // One threshold for "is this registry entry alive": the registry's own
+  // constant, shared with the SessionStart banner's liveness wording (#1850).
+  const freshnessMin = typeof opts.freshnessMin === 'number' ? opts.freshnessMin : REGISTRY_FRESHNESS_MIN;
   const nowMs = typeof opts.now === 'number' ? opts.now : Date.now();
 
   let worktrees;
@@ -245,7 +277,7 @@ export async function discoverActiveSessions(repoRoot, opts = {}) {
       ? `git worktree list timed out at ${timeoutMs}ms`
       : `git worktree list failed: ${err.message}`;
     process.stderr.write(`[session-discovery] WARN: ${reason} — falling back to single-worktree mode\n`);
-    return readLocalSession(repoRoot);
+    return { sessions: readLocalSession(repoRoot), registryRead: false, worktreesListed: false };
   }
 
   const lockSessions = [];
@@ -273,6 +305,7 @@ export async function discoverActiveSessions(repoRoot, opts = {}) {
   // Filter to entries that (a) match this repo's repo_path_hash and (b) pass
   // the freshness gate. Failures are swallowed — registry is advisory.
   let registrySessions;
+  let registryRead = false;
   try {
     const allEntries = await registryReaderFn();
     const myRepoHash = repoPathHash(repoRoot);
@@ -290,6 +323,7 @@ export async function discoverActiveSessions(repoRoot, opts = {}) {
       .filter((e) => e && e.repo_path_hash === myRepoHash)
       .filter((e) => isRegistryEntryFresh(e, { freshnessMin, now: nowMs }))
       .map((e) => sessionFromRegistryEntry(e, repoRoot, { lockOwnerId }));
+    registryRead = true;
   } catch {
     // Registry read failure → keep going with lock-only results.
     registrySessions = [];
@@ -298,7 +332,11 @@ export async function discoverActiveSessions(repoRoot, opts = {}) {
   // Merge: lock-sourced first (more detail), then registry. Dedupe by
   // sessionId so a session that has both a lock and a registry entry only
   // appears once with the richer lock detail.
-  return dedupeBySessionId([...lockSessions, ...registrySessions]);
+  return {
+    sessions: dedupeBySessionId([...lockSessions, ...registrySessions]),
+    registryRead,
+    worktreesListed: true,
+  };
 }
 
 // ---------------------------------------------------------------------------

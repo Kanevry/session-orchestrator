@@ -532,6 +532,13 @@ if (runCheck('check-learnings-shell-writes.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 if (runCheck('check-skill-child-process.mjs') !== 0) checkFailed = 1;
 
+// BLOCKING (#1865 AC 3): a NEW direct rename call under scripts/ or hooks/
+// outside the atomic writers in `scripts/lib/io.mjs` / `hooks/_lib/atomic-json.mjs`.
+// Per-file allowlist ratchet of the sites left after wave 1; it only shrinks.
+// A deliberate non-write rename carries `// direct-rename:ok <reason>`.
+process.stdout.write('\n');
+if (runCheck('check-direct-rename.mjs') !== 0) checkFailed = 1;
+
 // WARN-only: a state-mutating `git` call in tests/ that names no target resolves
 // its destination from the ambient cwd (or an inherited GIT_DIR) — the 2026-08-19
 // incident, where fixture commits, a fixture remote and a fixture identity landed

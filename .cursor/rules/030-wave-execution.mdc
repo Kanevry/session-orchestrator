@@ -64,7 +64,7 @@ Write `.cursor/wave-scope.json` before each wave. Set `enforcement: warn` unless
   "role": "<role>",
   "enforcement": "warn",
   "allowedPaths": ["<union of all task file scopes for this wave>"],
-  "blockedCommands": ["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout -- ."]
+  "blockedCommands": ["rm -rf", "git push --force", "DROP TABLE", "git reset --hard", "git checkout --"]
 }
 ```
 

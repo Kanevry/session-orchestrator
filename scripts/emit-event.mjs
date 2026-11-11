@@ -9,7 +9,7 @@
  * last such gap — compute-grounding-injection.sh (#611).
  *
  * Usage:
- *   node scripts/emit-event.mjs --type <name> --payload '<json>' [--file <path>]
+ *   node scripts/emit-event.mjs --type <name> --payload '<json>' [--file <path>] [--repo-root <path>]
  *
  * Flags:
  *   --type <name>      REQUIRED. Event type (e.g. orchestrator.grounding.injected).
@@ -17,6 +17,10 @@
  *                      Defaults to {} when omitted. Must parse to a plain object.
  *   --file <path>      Optional. Destination JSONL path override. Defaults to the
  *                      project's .orchestrator/metrics/events.jsonl (via emitEvent).
+ *   --repo-root <path> Optional. Write to <path>/.orchestrator/metrics/events.jsonl
+ *                      and attribute the record against that repo (#2020); a
+ *                      relative path resolves against the cwd. --file wins for the
+ *                      destination when both are given.
  *   --json             Optional. Emit a structured JSON result line to stdout.
  *   --help, -h         Print usage and exit 0.
  *
@@ -30,12 +34,12 @@
  */
 
 import { parseArgs } from 'node:util';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const HELP = `Usage: emit-event.mjs --type <name> [--payload '<json>'] [--file <path>] [--json]
+const HELP = `Usage: emit-event.mjs --type <name> [--payload '<json>'] [--file <path>] [--repo-root <path>] [--json]
 
 Routes a single event through emitEvent() (scripts/lib/events.mjs) — the canonical
 emission path that also fires the optional Clank Event Bus webhook.
@@ -45,6 +49,9 @@ Flags:
   --payload <json>   Optional. JSON object string, shallow-merged. Defaults to {}.
   --file <path>      Optional. Destination JSONL path override. Defaults to the
                      project's .orchestrator/metrics/events.jsonl.
+  --repo-root <path> Optional. Write to <path>/.orchestrator/metrics/events.jsonl
+                     (relative paths resolve against the cwd). --file wins for
+                     the destination when both are given.
   --json             Optional. Print a JSON result object to stdout.
   --help, -h         Print this help and exit 0.
 
@@ -105,6 +112,7 @@ try {
       type:    { type: 'string' },
       payload: { type: 'string' },
       file:    { type: 'string' },
+      'repo-root': { type: 'string' },
       json:    { type: 'boolean' },
     },
     strict: false, // tolerate unknown flags as positionals rather than throwing
@@ -116,6 +124,18 @@ try {
 const type = parsed.values['type'];
 const payloadRaw = parsed.values['payload'];
 const filePath = parsed.values['file'];
+const repoRootRaw = parsed.values['repo-root'];
+
+// --- Resolve --repo-root (exit 1 on an empty or valueless flag) ---
+// `strict: false` turns a valueless `--repo-root` into `true`; an empty string
+// would resolve to the cwd silently. Both are input errors, never a guess.
+let repoRoot;
+if (repoRootRaw !== undefined) {
+  if (typeof repoRootRaw !== 'string' || repoRootRaw.trim() === '') {
+    fail('--repo-root requires a non-empty path', 1, jsonMode);
+  }
+  repoRoot = resolve(repoRootRaw);
+}
 
 // --- Validate --type (user/input error → exit 1) ---
 if (typeof type !== 'string' || type.length === 0) {
@@ -147,7 +167,12 @@ try {
 }
 
 try {
-  await emitEvent(type, payload, filePath ? { filePath } : {});
+  // --file keeps precedence for the destination inside emitEvent(); --repo-root
+  // still pins the attribution root then.
+  await emitEvent(type, payload, {
+    ...(filePath ? { filePath } : {}),
+    ...(repoRoot ? { repoRoot } : {}),
+  });
 } catch (err) {
   // A schema-validation rejection is a USER/INPUT error (bad --type or a
   // payload key colliding with the schema) — exit 1, not 2. Nothing was
@@ -161,7 +186,12 @@ try {
 
 if (jsonMode) {
   process.stdout.write(
-    JSON.stringify({ ok: true, event: type, ...(filePath ? { file: filePath } : {}) }) + '\n',
+    JSON.stringify({
+      ok: true,
+      event: type,
+      ...(filePath ? { file: filePath } : {}),
+      ...(repoRoot ? { repo_root: repoRoot } : {}),
+    }) + '\n',
   );
 }
 

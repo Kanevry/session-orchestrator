@@ -28,7 +28,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync, lstatSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 const pluginRoot = process.argv[2];
 if (!pluginRoot) {

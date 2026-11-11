@@ -33,6 +33,7 @@ import path from 'node:path';
 
 import { emitEvent, sessionAttribution } from '../events.mjs';
 import { isPathInside } from '../path-utils.mjs';
+import { dotGitAncestor, verifiedMainCheckout } from '../platform.mjs';
 import { DEFAULT_KILL_GRACE_MS } from '../process-group.mjs';
 import {
   DEFAULT_TIMEOUT_SEC,
@@ -182,6 +183,9 @@ export function parsePatchFiles(patch) {
  * @param {object} task
  * @param {string} task.host — `offload` host alias (`-H`).
  * @param {string} task.repo — repository argument handed to `offload claude`.
+ *   A name matching the main checkout of the worktree holding `repoRoot` becomes
+ *   that worktree's absolute top; a top with a space or over 128 characters is
+ *   refused with `unsafe-repo`, never silently sent as `--main`.
  * @param {string} task.prompt — written to the child's STDIN, never to argv.
  * @param {string} task.role — checked against the `never_foreign` lock FIRST.
  * @param {string} task.runId — becomes `--job`; a path segment, hence validated.
@@ -274,18 +278,37 @@ export async function dispatchRemote(
   );
   const underTmp = tmpRoots().some((r) => patchTarget === r || isPathInside(patchTarget, r));
   const rootResolved = repoRoot ? path.resolve(String(repoRoot)) : null;
+  // #1981: the whole working copy counts, also when repoRoot is a subdirectory of it.
+  const patchBoundary = rootResolved === null ? null : dotGitAncestor(rootResolved) || rootResolved;
   const insideRepo =
-    rootResolved !== null &&
-    (patchTarget === rootResolved || isPathInside(patchTarget, rootResolved));
+    patchBoundary !== null &&
+    (patchTarget === patchBoundary || isPathInside(patchTarget, patchBoundary));
   // A patch inside the coordinator's tree is not a delivery, it is a
   // contamination: the next `git add` sweeps a remote model's output into a
   // local commit with nobody having reviewed it.
   if (!underTmp || insideRepo) return refuse('unsafe-patch-path');
 
+  let repoArg = String(repo);
+  let useMain = repoArg !== '.' && !repoArg.includes('/') && !repoArg.startsWith('~');
+  // #1751: --main snapshots the main checkout, losing the coordinator's worktree state.
+  // Only a verified matching checkout name may be redirected to the coordinator's tree.
+  if (useMain && rootResolved) {
+    const mainCheckout = verifiedMainCheckout(rootResolved);
+    if (mainCheckout && path.basename(mainCheckout) === repoArg) {
+      // #1981: the checkout itself, never a subdirectory of it: offload answers
+      // `repo not found locally` for anything below the worktree top.
+      const worktreeTop = dotGitAncestor(rootResolved);
+      if (!isSafeRepo(worktreeTop)) return refuse('unsafe-repo');
+      repoArg = worktreeTop;
+      useMain = false;
+    }
+  }
+
   const startedAt = now();
   const args = [
     'claude',
-    String(repo),
+    repoArg,
+    ...(useMain ? ['--main'] : []),
     '-H',
     String(host),
     '--job',

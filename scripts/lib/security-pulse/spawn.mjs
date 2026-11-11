@@ -18,6 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ensurePrivateDir, stampMs } from './cache.mjs';
+import { renameSyncWithRetry } from '../io.mjs';
 import { spawn } from '../native-command.mjs';
 
 /** At most one refresher spawn per repo per 10 min. */
@@ -186,7 +187,7 @@ function openClaim(claimPath) {
     // host is alive, or when CLAIM_STALE_MS is lowered.
     const tomb = `${claimPath}.${process.pid}.${Date.now()}.stale`;
     try {
-      renameSync(claimPath, tomb);
+      renameSync(claimPath, tomb); // direct-rename:ok lock-break to a unique tomb, not a write; any failure means another breaker won
     } catch {
       return { busy: true }; // another breaker won
     }
@@ -242,7 +243,7 @@ export function maybeSpawnRefresh({ repoRoot, markerPath, nowMs, env, spawnRefre
       fd = -1;
       // Publish the stamp and release the claim in one step. Stamp BEFORE
       // spawning: a spawn that throws synchronously is still throttled.
-      renameSync(claimPath, markerPath);
+      renameSyncWithRetry(claimPath, markerPath);
     } catch {
       if (fd !== -1) {
         try { closeSync(fd); } catch { /* already closed */ }

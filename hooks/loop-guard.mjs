@@ -15,7 +15,11 @@
  *   3. Session Config gate: read CLAUDE.md/AGENTS.md `loop-guard.enabled` —
  *      exit 0 when explicitly false.
  *   4. Key the ring buffer on session_id (fallback parent_session_id, then
- *      'default'). Hash tool_input via sha256 (first 16 hex chars).
+ *      'default'). The ring hashes tool_input via sha256 (first 16 hex chars;
+ *      a tmp file compared only with itself). The event carries the keyed
+ *      host-local mark `hashCommand('args:' + JSON.stringify(tool_input))`
+ *      instead: an unsalted digest of `{"command":…}` is reversible by
+ *      dictionary (#1915, same class as `command_hash` #1880).
  *   5. Read → push → truncate to `window` → atomic write. On fire, emit
  *      additionalContext + an orchestrator.loop.warning event, then reset the
  *      ring (cooldown).
@@ -34,6 +38,7 @@ import crypto from 'node:crypto';
 
 import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
+import { hashCommand } from './_lib/command-hash.mjs';
 import { writeJsonAtomicSync } from '../scripts/lib/io.mjs';
 import { _parseLoopGuard } from '../scripts/lib/config/loop-guard.mjs';
 
@@ -225,14 +230,16 @@ async function main() {
     // FIRE: reset the ring (cooldown) so a 4th identical call right after a
     // fire does NOT re-warn — the next `threshold` identical calls are needed.
     const fired = { recent: [], lastWarn: { hash: argsHash, atCount: count } };
-    writeJsonAtomicSync(filePath, fired, { tmpPrefix: '.tmp-loop-guard' });
+    // mode 0o600: the ring holds the unsalted sha256 of tool_input in the shared
+    // os.tmpdir(); keep it owner-only.
+    writeJsonAtomicSync(filePath, fired, { tmpPrefix: '.tmp-loop-guard', mode: 0o600 });
 
     // Best-effort telemetry — must never block the hook.
     try {
       await emitEvent('orchestrator.loop.warning', {
         ...(sessionKey !== 'default' ? { session_id: sessionKey } : {}),
         tool: toolName,
-        args_hash: argsHash,
+        args_hash: hashCommand(`args:${JSON.stringify(input.tool_input ?? {})}`),
         count,
       });
     } catch { /* best-effort — hook must remain non-blocking */ }
@@ -252,6 +259,7 @@ async function main() {
   // NOT warning: persist the updated ring and write nothing to stdout.
   writeJsonAtomicSync(filePath, { recent: ring.recent, lastWarn: ring.lastWarn }, {
     tmpPrefix: '.tmp-loop-guard',
+    mode: 0o600,
   });
 }
 

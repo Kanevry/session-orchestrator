@@ -76,7 +76,7 @@ playwright test \
 
 > Canonical: see https://playwright.dev/docs/test-reporters — reporter names are comma-separated; paths flow via env vars. See `scripts/lib/playwright-driver/runner.mjs` for the canonical invocation.
 
-The orchestrator provides `RUN_ID` and `RUN_DIR` via environment variables. The driver reads these, executes Playwright, and exits. Nothing else.
+The orchestrator provides `RUN_ID` and `RUN_DIR` via environment variables, plus the resolved navigation URL `TARGET_URL` and expected pages for the selected scope in driver context. The driver executes Playwright and ensures the per-page capture contract below before handing artifacts to the evaluator. `--target` still names the target repository; it is not the navigation URL.
 
 ## Artifact Layout
 
@@ -91,37 +91,56 @@ All artifacts land under `${RUN_DIR}/`. Structure:
     <test-name>/
       trace.zip         # Playwright trace bundle (open via `playwright show-trace`)
   screenshots/          # pre-created by runner.mjs; content written by test fixtures
-    <test-name>-<step>.png   # per-step screenshots (written by test fixture via page.screenshot())
+    <page-slug>-w1440.png   # desktop screenshot
+    <page-slug>-w390.png    # mobile screenshot; additional per-step captures may coexist
   ax-snapshots/         # pre-created by runner.mjs; content written by test fixtures
-    <test-name>.yaml    # Playwright AX-tree dump via page.accessibility.snapshot() (written by test fixture, NOT by driver)
+    <page-slug>-w1440.yaml  # desktop aria snapshot
+    <page-slug>-w390.yaml   # mobile aria snapshot
     axe-<route-slug>-<timestamp>.json  # axe-core JSON output (written by test fixture using @axe-core/playwright, NOT by driver)
   console.log           # NDJSON console output (written by test fixture via page.on('console', ...), NOT by driver)
 ```
 
 **Division of responsibility:**
 - **runner.mjs (driver):** spawns `playwright test`, sets reporter env vars (`PLAYWRIGHT_HTML_OUTPUT_DIR`, `PLAYWRIGHT_JSON_OUTPUT_FILE`, `PLAYWRIGHT_HTML_OPEN`), pre-creates `ax-snapshots/` and `screenshots/` directories before spawn so test fixtures can write into them without racing, captures the process exit code, and routes reporter output to `results.json` / `report/`.
-- **Test fixtures (in target repo):** navigate pages, emit AX-tree snapshots, run axe-core scans, capture screenshots, and append console NDJSON — all using the `RUN_DIR` env var provided by the driver.
+- **Driver skill:** arrange capture for every expected page at widths **1440 and 390**, using the recipe below in the target-local Playwright harness. Existing fixture output counts only if it meets this contract. The spawn wrapper alone does not produce these artifacts.
+- **Test fixtures / capture harness:** navigate the resolved `TARGET_URL`, capture the required page pairs, run axe-core scans, and append console NDJSON — all under the provided `RUN_DIR`.
 
 **Token discipline:** NEVER inline AX-tree dumps into the coordinator context — they balloon to 50–200K tokens. Always write to disk under `${RUN_DIR}/ax-snapshots/`. The `ux-evaluator` agent reads from disk, not from prompt context.
 
-## Token-Frugal AX Snapshot Pattern
+## Per-Page Capture Contract
 
-Tests that need AX-tree data write it in the fixture, not via the driver:
+For every page in the selected scope, capture **both** widths, including intermediate journey pages rather than only the final page of a test. Use exactly the rubric-v2 convention `ax-snapshots/<page-slug>-w<viewport>.yaml` and the matching `screenshots/<page-slug>-w<viewport>.png`. Assign a stable, unique slug per page (`/start` → `start`, `/` → `index`); pass the page/slug inventory to the evaluator so omitted pages cannot disappear from completeness checks.
+
+Use the target's installed Playwright in its capture harness; no new dependency is needed. At each page's settled state, apply this pattern (with `page`, its unique `pageSlug`, absolute `runDir`, and page-specific `readyLocator` supplied by the harness):
 
 ```typescript
-// playwright.config.ts fixture pattern
-test.afterEach(async ({ page }, testInfo) => {
-  const snapshot = await page.accessibility.snapshot();
-  const snapshotPath = path.join(
-    process.env.RUN_DIR ?? '.orchestrator/metrics/test-runs/default',
-    'ax-snapshots',
-    `${testInfo.title.replace(/\s+/g, '-')}.yaml`
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+await fs.mkdir(path.join(runDir, 'screenshots'), { recursive: true });
+await fs.mkdir(path.join(runDir, 'ax-snapshots'), { recursive: true });
+for (const width of [1440, 390]) {
+  await page.setViewportSize({ width, height: 900 });
+  // Wait for this page's responsive content to settle using its ready locator.
+  await readyLocator.waitFor({ state: 'visible' });
+  const stem = `${pageSlug}-w${width}`;
+  await page.screenshot({ path: path.join(runDir, 'screenshots', `${stem}.png`), fullPage: true });
+  await fs.writeFile(
+    path.join(runDir, 'ax-snapshots', `${stem}.yaml`),
+    await page.locator('body').ariaSnapshot(),
   );
-  await fs.writeFile(snapshotPath, yaml.stringify(snapshot));
-});
+  // Evidence for the target label (test-runner Phase 1): the URL actually driven, per page and viewport.
+  visited.push({ route, slug: pageSlug, viewport: width, url: page.url(), screenshot: `screenshots/${stem}.png`, ax: `ax-snapshots/${stem}.yaml` });
+}
+// After the last page: write the visited-URL record next to the artifacts.
+await fs.writeFile(path.join(runDir, 'visited-urls.json'), JSON.stringify(visited, null, 2));
 ```
 
-The driver itself never reads or forwards AX snapshots. It only controls invocation.
+`visited` is one array per capture pass (declare it before the first page) and `route` is the page's route (`/start`); test-runner grants `LIVE RUN` / `PRODUCTION-BUILD RUN` only when every recorded `url` has the origin of `TARGET_URL`, so a pass that writes no `visited-urls.json` always reports as a dev-server run.
+
+Prefer `locator.ariaSnapshot()` because it includes link targets for the dead-link check. Resize before each capture and use the same page state for its screenshot and AX snapshot. Never copy a desktop snapshot into a mobile file. Avoid parallel writers for the same page slug.
+
+Before returning, verify all four non-empty artifacts for every expected page. If existing fixtures omit them, execute a capture pass with the same navigation URL, authentication, and page-ready conditions. If a page or viewport cannot be captured, report that exact gap and retain it in the expected-page inventory; the evaluator must leave the report incomplete (`BLOCKED`). Do not treat the Playwright exit code as proof of captures. AX contents stay on disk, never in coordinator context.
 
 ## Console Capture Pattern
 
@@ -188,7 +207,7 @@ bash -c "PLAYWRIGHT_HTML_OUTPUT_DIR=${RUN_DIR}/report \
 - `${RUN_DIR}/test-results/**/trace.zip` — trace bundles, one per test
 - `${RUN_DIR}/screenshots/**/*.png` — per-step screenshots
 - `${RUN_DIR}/console.log` — captured console as NDJSON
-- `${RUN_DIR}/ax-snapshots/*.yaml` — Playwright AX-tree dumps via `page.accessibility.snapshot()` (written by test fixtures)
+- `${RUN_DIR}/ax-snapshots/<page-slug>-w<viewport>.yaml` — per-page aria snapshots at 1440 and 390, paired with matching screenshots
 - `${RUN_DIR}/ax-snapshots/axe-*.json` — axe-core violation reports from `@axe-core/playwright` (written by test fixtures; consumed by `ux-evaluator` Check 2)
 
 ## Version Pin + Upper-Bound Advisory

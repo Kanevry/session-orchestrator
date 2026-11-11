@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { resolvePluginRoot } from './plugin-root.mjs';
-import { spawnSync } from './native-command.mjs';
+import { resolveGitBash, spawnSync } from './native-command.mjs';
 
 export const PI_TO_CANONICAL_EVENT = Object.freeze({
   session_start: 'SessionStart',
@@ -334,9 +334,50 @@ export function readHookDecision(input) {
 }
 
 /**
+ * How a hook's shell line from a committed hooks manifest is launched. Unix
+ * keeps Node's `shell: true` (/bin/sh). Windows runs it through Git Bash as
+ * `bash -c <line>`: `shell: true` there is cmd.exe, which runs neither `sh`
+ * nor `"$PI_PLUGIN_ROOT/…"` expansions (#1743). No Git Bash throws (code
+ * ENOENT), never falls back to cmd.exe or the WSL launcher.
+ * @param {string} command
+ * @param {{platform?: string, env?: NodeJS.ProcessEnv, exists?: (file: string) => boolean, cwd?: string}} [nativeHost] Host overrides for platform regression tests.
+ * @returns {{ file: string, args: string[], shell: boolean }}
+ */
+export function hookShellLaunch(command, nativeHost = {}) {
+  const platform = nativeHost.platform ?? process.platform;
+  if (platform !== 'win32') return { file: command, args: [], shell: true };
+  return { file: resolveGitBash({ ...nativeHost, platform }), args: ['-c', command], shell: false };
+}
+
+/**
+ * spawnSync a hook's shell line per `hookShellLaunch`. A launch that cannot be
+ * resolved returns a spawnSync-shaped result carrying the error, so callers
+ * treat it as an infrastructure failure (PreToolUse fails closed).
+ * @param {string} command
+ * @param {import('node:child_process').SpawnSyncOptions} spawnOptions
+ * @param {Parameters<typeof hookShellLaunch>[1]} [nativeHost]
+ */
+export function spawnHookShell(command, spawnOptions, nativeHost = {}) {
+  let launch;
+  try {
+    launch = hookShellLaunch(command, { cwd: spawnOptions.cwd, env: spawnOptions.env, ...nativeHost });
+  } catch (error) {
+    return { error, status: null, stdout: '', stderr: '' };
+  }
+  if (launch.shell) {
+    // The one shell spawn for hook lines (Cursor and Pi): kept literal so the
+    // semgrep rule unsafe-shell-spawn still sees it (#1743 review). The line
+    // comes from a committed hooks manifest; the payload travels on stdin.
+    // nosemgrep: unsafe-shell-spawn
+    return spawnSync(command, { ...spawnOptions, shell: true });
+  }
+  return spawnSync(launch.file, launch.args, spawnOptions);
+}
+
+/**
  * @param {Record<string, unknown>} hook
  * @param {Record<string, unknown>} payload
- * @param {{ pluginRoot: string, cwd?: string, env?: NodeJS.ProcessEnv }} options
+ * @param {{ pluginRoot: string, cwd?: string, env?: NodeJS.ProcessEnv, nativeHost?: Parameters<typeof hookShellLaunch>[1] }} options
  * @returns {{ command: string, status: number|null, stdout: string, stderr: string, blocked: boolean, reason: string|null }}
  */
 export function runPiHookCommand(hook, payload, options) {
@@ -362,14 +403,13 @@ export function runPiHookCommand(hook, payload, options) {
   env.SO_PLATFORM = 'pi';
   if (typeof payload.cwd === 'string') env.PI_PROJECT_DIR = payload.cwd;
 
-  const result = spawnSync(command, {
-    shell: true,
+  const result = spawnHookShell(command, {
     cwd,
     env,
     input: JSON.stringify(payload) + '\n',
     encoding: 'utf8',
     timeout: timeoutSeconds * 1000,
-  });
+  }, options.nativeHost);
 
   const stdout = result.stdout ?? '';
   const stderr = result.stderr ?? '';

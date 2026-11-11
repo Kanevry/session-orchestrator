@@ -52,7 +52,9 @@
  *
  * Exports: WORK_EVENTS, LEGACY_TURN_STOP_EVENT, LIFECYCLE_EVENTS,
  *          FRESH_START_SOURCES, TURN_STOP_PLATFORMS, emptyWorkCounts,
- *          countWorkEvent, addSkillCalls, tallyWorkEvents, workEvidenceFor
+ *          countWorkEvent, addSkillCalls, tallyWorkEvents, workEvidenceFor,
+ *          SO_RUN_EVENT, BACKFILL_COMPLETED_EVENT, NO_RUN_ACTION, NO_RUN_SINCE,
+ *          SO_RUN_SKILLS, SKILL_HOOK_PLATFORMS, isNoRunEvidence
  */
 
 /** Counter key → the event it counts. */
@@ -193,4 +195,85 @@ export function workEvidenceFor({ platform, counts, complete, firstStartSource }
     wave_completions: counts.wave_completions,
     activity_events: counts.activity_events,
   };
+}
+
+/**
+ * The event that marks a session as an SO run (#1975): `/session` emits it the
+ * moment its mode became an execution plan. Same string as `SESSION_SHAPE_EVENT`
+ * in `scripts/lib/session-shape.mjs` (not imported: that module is not part of
+ * this zero-import submodule's closure).
+ * `session.lock.acquired` is NOT such a mark — the SessionStart hook takes the
+ * lock mechanically for every session (`hooks/_lib/lock-bootstrap.mjs`).
+ */
+export const SO_RUN_EVENT = 'orchestrator.session.shape_resolved';
+
+/** The event every backfill outcome is emitted as (SessionEnd hook, SessionStart path). */
+export const BACKFILL_COMPLETED_EVENT = 'orchestrator.session.backfill_completed';
+
+/** The backfill outcome for a session that ended without ever running SO (#1975). */
+export const NO_RUN_ACTION = 'skipped-no-run';
+
+/**
+ * The day #1975 changed what the census rates count: from then on a session
+ * that never ran SO gets no record, so it leaves `abort_rate_all`, while the
+ * historical `conversation` / `empty` stubs of such sessions stay in it.
+ */
+export const NO_RUN_SINCE = '2026-11-08';
+
+/**
+ * Skills whose `selected` row in `skill-invocations.jsonl` marks an SO run
+ * (#1975): `/session` and session-start. The PreToolUse Skill hook
+ * (`hooks/skill-invocation-telemetry.mjs`) stamps the raw session id on them.
+ * Measured 2026-11-08 over the last 3000 rows of this repo's ledger:
+ * session-start 298 rows (39 with `session_id: null` — the skill's own
+ * Phase 1.05 self-report, which joins nothing), `session` 106 rows, all with a
+ * raw id.
+ */
+export const SO_RUN_SKILLS = Object.freeze(['session-orchestrator:session', 'session-orchestrator:session-start']);
+
+/**
+ * Platforms that register the skill-invocation hook, so that the ABSENCE of a
+ * {@link SO_RUN_SKILLS} row is a measurement. Measured 2026-11-08:
+ * `hooks/hooks.json` (Claude Code) registers `skill-invocation-telemetry.mjs`,
+ * `hooks/hooks-codex.json` does not. On any other platform the skill signal is
+ * unknown (`null`), never `false`. Revisit when another platform's hook file
+ * registers the Skill telemetry hook.
+ */
+export const SKILL_HOOK_PLATFORMS = Object.freeze(['claude']);
+
+/**
+ * True when a session that ended without its own record never ran SO (#1975):
+ * its evidence is MEASURED (a well-formed {@link workEvidenceFor} result), it
+ * shows no agent stop and no wave completion, no {@link SO_RUN_EVENT} of it
+ * was read, and no {@link SO_RUN_SKILLS} call of it was read. A lead tab, a
+ * pure conversation, a tab the inbox closes via `/exit` — none of them is an
+ * aborted run, so no `abandoned` stub is written; a `/session` that ended in
+ * session-start or plan is one, and keeps its stub. The single predicate for
+ * the SessionEnd hook and the SessionStart backfill (both call
+ * `backfillAbandonedSession`).
+ *
+ * Fails toward recording: every signal must be an explicit `false`, and
+ * unmeasured evidence (`null`) is never no-run. The skill signal is `false`
+ * only when a skill ledger EXISTS and was read on a {@link SKILL_HOOK_PLATFORMS}
+ * platform. A missing ledger (ENOENT in every root) is `null`: the hook creates
+ * the file on the first Skill call of the repo, so a missing file means either
+ * no skill ever ran there or the hook is off (`SO_HOOK_PROFILE` /
+ * `SO_DISABLED_HOOKS`) — the second case would drop a real `/session` run.
+ * Cost: in a repo where no Skill was ever called, no-run sessions keep their
+ * `abandoned` stub until the first call creates the ledger.
+ * Ceiling (BV-004): a ledger that exists but whose hook was switched off later
+ * still reads as measured. Revisit when a no-run verdict is found for a session
+ * whose transcript shows a `/session` call.
+ *
+ * @param {unknown} evidence — the stub's `work_evidence` (or null/undefined)
+ * @param {{shapeResolved?: unknown, soRunSkill?: unknown}} [signals]
+ *   `shapeResolved` — an SO_RUN_EVENT of the session was read;
+ *   `soRunSkill` — a SO_RUN_SKILLS row of its raw id was read (`null` = unknown)
+ * @returns {boolean}
+ */
+export function isNoRunEvidence(evidence, { shapeResolved, soRunSkill } = {}) {
+  if (shapeResolved !== false || soRunSkill !== false) return false;
+  if (evidence === null || typeof evidence !== 'object' || Array.isArray(evidence)) return false;
+  if (!Number.isSafeInteger(evidence.agent_stops) || !Number.isSafeInteger(evidence.wave_completions)) return false;
+  return evidence.agent_stops === 0 && evidence.wave_completions === 0;
 }

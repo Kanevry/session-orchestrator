@@ -31,10 +31,9 @@
 import { readdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
-import { getConfinementRoot, getCrossRepoProjects } from '../config/cross-repo.mjs';
+import { getConfinementRoot, getCrossRepoProjects, resolveCrossRepoEntry } from '../config/cross-repo.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { readLock, isLockLive } from '../session-lock.mjs';
-import { expandTilde } from '../common.mjs';
 
 /**
  * @typedef {Object} Candidate
@@ -169,7 +168,9 @@ function isGitRepo(childAbs, existsSyncFn) {
  *      on EVERY node BEFORE it is emitted AND before it is opened — see the
  *      security notes on the walk body below.
  *   3. OPTIONAL secondary source: union with `getCrossRepoProjects()`
- *      config-declared paths (leading `~/` expanded, then confinement-filtered),
+ *      config-declared entries, resolved by the one `cross-repos` rule
+ *      (`resolveCrossRepoEntry`, #1922: `/…` or `~/…` is a path, a bare name is
+ *      `<scan root>/<name>`), confinement-filtered, missing folders skipped,
  *      deduped by `path.resolve()`. Additive, applied AFTER the FS scan.
  *   4. Resolve free/busy per repo from its `session.lock` lease.
  *
@@ -306,12 +307,19 @@ export async function enumerateCandidates({ startDir, now, deps } = {}) {
   }
   if (Array.isArray(declared)) {
     for (const raw of declared) {
-      if (typeof raw !== 'string' || raw.length === 0) continue;
-      const expanded = expandTilde(raw);
-      const abs = path.resolve(expanded);
+      if (typeof raw !== 'string' || raw.trim() === '') continue;
+      // One `cross-repos` rule (#1922): names resolve under the SAME root that
+      // confines the FS scan, never against process.cwd(). Existence goes
+      // through the injected existsSync seam.
+      const resolved = resolveCrossRepoEntry(raw, { projectsRoot: root, exists: existsSyncFn });
+      const abs = path.resolve(resolved.path);
       // Confinement-filter against the same root as the FS scan.
       const guard = validatePathInsideProjectFn(abs, root);
       if (!guard || guard.ok !== true) continue;
+      // A missing folder is a hint, never an abort. enumerateCandidates has no
+      // diagnostics channel (it returns Candidate[] only), so `resolved.hint`
+      // is dropped here rather than printed on the dispatcher's hot path.
+      if (!resolved.exists) continue;
       addRepo(abs);
     }
   }

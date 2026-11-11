@@ -28,15 +28,7 @@ rm -f <state-dir>/wave-scope.json
 
 This should have been cleaned up by wave-executor after the final wave, but crashed sessions or interrupted executions may leave it behind. A stale scope manifest from a previous session could incorrectly restrict the next session's enforcement hooks.
 
-Delete THIS session's dispatch ledger the same way (`hooks/pre-task-scope-disjoint.mjs`, one file per session since #1493 — `skills/wave-executor/references/wave-loop-scope-manifest.md` step 7). Never a file named after another session id: that is a peer's live state.
-
-```bash
-SID="${CLAUDE_CODE_SESSION_ID:-}"
-case "$SID" in
-  ''|*[!A-Za-z0-9._-]*) ;;  # no id on this harness, or not path-safe: leave the file (inert)
-  *) rm -f ".orchestrator/wave-dispatch-scopes.$SID.json" ".orchestrator/wave-dispatch-scopes.$SID.lock" ;;
-esac
-```
+The dispatch ledger of `hooks/pre-task-scope-disjoint.mjs` (`.orchestrator/wave-dispatch-scopes.<session-id>.json` plus `.lock`) is not deleted here: `hooks/on-session-end.mjs` removes this session's pair at SessionEnd and sweeps other sessions' files older than 7 days (#2020). Never delete a file named after another session id by hand — it may be a peer's live state.
 
 ### 3.1 SSOT Files
 - Update `STATUS.md` / `STATE.md` if they exist (metrics, dates, status)

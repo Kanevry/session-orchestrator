@@ -20,6 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { validateCodexPluginContract } from './lib/codex/plugin-contract.mjs';
+import { compareVersions, MIN_CODEX_VERSION, parseCodexVersion } from './lib/codex/version.mjs';
 import { resolveStageDir, stagePackage } from './lib/plugin-package-stage.mjs';
 import { spawnSync } from './lib/native-command.mjs';
 
@@ -28,7 +29,6 @@ const SCRIPT_DIR = path.dirname(__filename);
 const SO_ROOT = path.dirname(SCRIPT_DIR);
 const STAGE_DIR = resolveStageDir();
 
-const MIN_CODEX_VERSION = [0, 144, 4];
 const MARKETPLACE_NAME = 'kanevry';
 const PLUGIN_NAME = 'session-orchestrator';
 const PLUGIN_ID = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
@@ -133,20 +133,12 @@ function runCodexJson(args, label) {
   }
 }
 
-function parseCodexVersion(output) {
-  const match = output.match(/\b(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?\b/);
-  if (!match) {
+function requireCodexVersion(output) {
+  const version = parseCodexVersion(output);
+  if (!version) {
     throw new InstallerError(`Cannot parse Codex version from: ${output.trim() || '<empty output>'}`);
   }
-  return match.slice(1, 4).map(Number);
-}
-
-function compareVersions(left, right) {
-  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-    const delta = (left[index] ?? 0) - (right[index] ?? 0);
-    if (delta !== 0) return Math.sign(delta);
-  }
-  return 0;
+  return version;
 }
 
 function formatVersion(version) {
@@ -387,7 +379,7 @@ function install({ json }) {
   progress(json, 'Session Orchestrator — Codex Setup');
   progress(json, '=================================');
 
-  const version = parseCodexVersion(runCodex(['--version']));
+  const version = requireCodexVersion(runCodex(['--version']));
   if (compareVersions(version, MIN_CODEX_VERSION) < 0) {
     throw new InstallerError(
       `Codex ${formatVersion(version)} is unsupported; install Codex ${formatVersion(MIN_CODEX_VERSION)} or newer.`,

@@ -6,7 +6,7 @@ Generated on 2026-09-10 with the built-in Codex image tool. The tool did not exp
 
 `agent-production-1536.webp`, `agent-production-800.webp` and `agent-production-480.webp` derive from the same 1536 × 1024 source. The earlier `robotics-studio-*` comparison assets were removed on 2026-10-26 (#1765); no page used them.
 
-Editable desktop, mobile and social layouts live together in the canonical `session-orchestrator.pen` in the main project checkout. That native source is a local handoff and is not versioned in this repository; the exported artwork and layout specifications are versioned here. The social frame is exported at 1200 × 630 to `site/og.png`. Regenerate exports after editing the design; do not edit the .pen file outside Pen.
+Editable desktop, mobile and social layouts live together in the canonical `session-orchestrator.pen` in the main project checkout. That native source is a local handoff and is not versioned in this repository; the exported artwork and layout specifications are versioned here. Since 2026-11-06 the frames `03b Social · Open Graph · 2026-11-06` (EN) and `03c Social · Open Graph DE · 2026-11-06` carry the site's current headline and the real command flow `/session → /go → /close`; they are exported at scale 1 to `site/og.png` and `site/de/og.png`. The older frame `03 Social · Open Graph · Current` ("Give your agents a working rhythm.", "PLAN / GO / CLOSE") stays in the file unchanged as the previous version. Regenerate exports after editing the design; do not edit the .pen file outside Pen.
 
 ## Hero motion (2026-10-25)
 

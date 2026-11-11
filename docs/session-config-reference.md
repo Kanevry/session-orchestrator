@@ -36,7 +36,7 @@ Bypass via `SO_SKIP_CONFIG_VALIDATION=1`. Missing fields can be patched into an 
 
 ## Parser Gotcha: No-Inline-Comment Block Headers
 
-**General contract, applies to every nested (block-shaped) Session Config key, not just the handful annotated below.** A top-level block key like `eval:`, `custom-phases:`, `moc-staleness:`, `context-coverage:`, or `worktree-orphans:` is opened by the shared bold-tolerant matcher `matchBlockHeader(line, key)` (`scripts/lib/config/block-header.mjs`) rather than by a per-key regex. As of the #830 generalisation, **38 files** under `scripts/lib/config/` import it — 37 block-shaped parsers (`auto-dream`, `broken-window`, `cold-start`, `config-protection`, `context-coverage`, `cross-repo`, `custom-phases`, `dialectic`, `discovery-validator`, `dispatcher-autonomy`, `dispatcher-autonomy-capture`, `docs-orchestrator`, `docs-staleness`, `drift-check`, `eval`, `events-rotation`, `evolve`, `frontend-slop-hook`, `gitlab-portfolio`, `handover-gate`, `loop-guard`, `memory`, `moc-staleness`, `persona-gate-wave`, `reconcile`, `skill-evolution`, `slopcheck`, `state-md-lock`, `templates-first`, `test`, `vault-integration`, `vault-mirror-quality`, `vault-staleness`, `vault-sync`, `verification-auto-fix`, `wave-reviewers`, `worktree-orphans`) plus `block-header.mjs` itself — confirmed via `grep -rln "matchBlockHeader" scripts/lib/config/ | wc -l` → `38`.
+**General contract, applies to every nested (block-shaped) Session Config key, not just the handful annotated below.** A top-level block key like `eval:`, `custom-phases:`, `moc-staleness:`, `context-coverage:`, or `worktree-orphans:` is opened by the shared bold-tolerant matcher `matchBlockHeader(line, key)` (`scripts/lib/config/block-header.mjs`) rather than by a per-key regex. As measured on 2026-11-08, `grep -rln matchBlockHeader scripts/lib/config/ | wc -l` → `45` files contain the matcher name (including `block-header.mjs` itself); rerun that command for the current inventory.
 
 **The matcher's accept/reject contract** (`matchBlockHeader(line, key)`, equivalent to the regex `^(?:-\s+)?(?:\*\*)?<key>:(?:\*\*)?\s*$`):
 
@@ -178,8 +178,8 @@ agent-mapping: { impl: cursor:composer-2.5, test: cursor:cursor-grok-4.6-high, s
 | `vault` | object | none | Product-vault registration (`path`, `product-domain`, `persona-db`) that `/bootstrap` appends for repos with product data (`skills/bootstrap/_shared-template.md`). Its presence is the marker `hasVaultConfig()` (`scripts/lib/product-repo-detect.mjs`) reads so bootstrap does not ask again; `parseSessionConfig()` does not emit it. Distinct from `vault-integration`. |
 | `gitlab-host` | string | from remote | Custom GitLab hostname. Only needed if the host cannot be inferred from the git remote URL. |
 | `mirror` | string | absent (`null`) | GitHub mirror push at session-end Phase 4.4 (`skills/session-end/SKILL.md` § 4.4, read via `parse-config.mjs`). `github` or **absent** → push `HEAD` to the `github` remote when one exists (absent keeps the pre-#1034 remote-based behaviour, so keyless repos keep mirroring). `none` → never push, even with a `github` remote; unlike other string keys an explicit `none` parses to the string `'none'`, not `null`. `curated` (#1631, #1594) → never push `HEAD`. Only when `HEAD` is on branch `main` AND equals `git ls-remote origin refs/heads/main` (any other state skips with exit 0, nothing pushed — GitHub main deploys production), `node scripts/github-export.mjs --source <that sha>` builds ONE squash commit on `refs/heads/github-export`: source tree minus the paths in `.orchestrator/policy/public-export.json`, parent ALWAYS the public GitHub main (`refs/remotes/github/main`, required to equal `git ls-remote github refs/heads/main`), trailer `Source-Commit: <sha>`, strict leakage scan plus excluded-path citation guard on the snapshot. Export exit 3 = nothing to publish (no push); exit 1 (refused) → WARN, nothing pushed, exit 1. The push is bound to the scanned sha (read from the export's stdout only): the push URL of `github` must equal its fetch URL, then `github-export.mjs --verify <sha> --source <origin main>` re-checks it right before the push (one commit on the `ls-remote`-verified github main, trailer == origin's main, no excluded path in its tree), and a plain fast-forward `git push github <sha>:refs/heads/main` sends exactly that sha. Details: `docs/github-mirror-protection.md` § Curated public mirror. The private history is never reachable from the public ref. Any other value → WARN, nothing pushed, exit 1 (plugin copies that predate `curated` treat it the same way). Only `none` switches the push off: `mirror: null` parses as an absent key and therefore pushes when a `github` remote exists. Without a `github` remote the key is not read at all — the block skips with exit 0 before it. Not a per-commit hook: the push happens once per `/close`. |
-| `cross-repos` | list | none | Related repositories under `~/Projects/`. The orchestrator checks their git state and critical issues during session start. |
-| `cross-repo.projects` | list | `[]` | Repos to process when running cross-repo maintenance scripts (`run-migrate-v2-cross-repo.mjs`, `vault-integration-watcher.mjs`, `promote-vault-strict.mjs`). Each entry is a path (absolute, `~`-prefixed, or bare name resolved under `~/Projects/`). When this list is empty or absent, those scripts emit a one-line notice and exit 0 — they never error on an empty list. Example: `[~/Projects/my-app, ~/Projects/another-app]`. |
+| `cross-repos` | list | none | Related repositories whose git state and critical issues the orchestrator checks during session start (Phase 5) and whose folders `/plan new` research reads. **Resolving a `cross-repos` entry.** An entry that starts with `/` or `~/`, or is an absolute Windows path such as `C:\…`, is a path and is used as written (a leading `~` expands to the home directory). Any other entry is a bare repository name and resolves to `~/Projects/<name>`. A resolved folder that does not exist is a hint, never an error: print `cross-repos: <entry> — no folder at <resolved path>, skipped` and continue with the remaining entries, never abort and never search a parent directory. Resolver: `resolveCrossRepoEntry()` in `scripts/lib/config/cross-repo.mjs`. Examples: `my-app` → `~/Projects/my-app`; `/srv/projects/my-app` → `/srv/projects/my-app`; `~/work/my-app` → `<home>/work/my-app`. See `skills/plan/mode-new.md` § Cross-repo resolution for the same rule used by `/plan new`. |
+| `cross-repo.projects` | list | `[]` | Repos to process when running cross-repo maintenance scripts (`run-migrate-v2-cross-repo.mjs`, `vault-integration-watcher.mjs`, `promote-vault-strict.mjs`). Each entry resolves by the `cross-repos` rule above. The dispatcher (`scripts/lib/dispatcher/enumerate.mjs`) resolves these entries by the same rule, with bare names under its confinement root (`SO_PROJECTS_ROOT` > `owner.yaml` `paths.projects-root` > `~/Projects`), and skips a missing folder silently. When this list is empty or absent, those scripts emit a one-line notice and exit 0 — they never error on an empty list. Example: `[~/Projects/my-app, ~/Projects/another-app]`. |
 | `pencil` | string | none | Path to a `.pen` design file (relative to project root). Enables design-code alignment reviews after Impl-Core and Impl-Polish waves. |
 | `ecosystem-health` | boolean | `false` | Enable service health checks at session start. Requires `health-endpoints` to be configured. Accepts the SCALAR form (`ecosystem-health: true`) read off the flat key/value map, or a BLOCK form (`ecosystem-health:` with no value, followed by an indented body — the wizard's output) read via `_parseEcosystemHealthBlockEnabled()`; the scalar wins when both are present (#1174). |
 | `health-endpoints` | list | none | Service URLs to check health. Each entry is an object with `name` and `url` fields. Parsed by `scripts/lib/config/health-endpoints.mjs`, which accepts THREE forms (#1174) — see below. |
@@ -213,7 +213,7 @@ down session-start.
 | `stale-branch-days` | integer | `7` | Days of inactivity before a branch is flagged as stale. |
 | `stale-issue-days` | integer | `30` | Days without progress before an issue is flagged for triage. |
 
-**`cross-repo.projects` block form (#469, #478).** Not to be confused with the flat `cross-repos` list above. The dotted name is only how `parseSessionConfig()` returns it (`scripts/lib/config.mjs:446`); in the config file it is a `projects:` sub-key under a top-level `cross-repo:` block:
+**`cross-repo.projects` block form (#469, #478).** Not to be confused with the flat `cross-repos` list above. The dotted name is only how `parseSessionConfig()` returns it (`scripts/lib/config.mjs:530`); in the config file it is a `projects:` sub-key under a top-level `cross-repo:` block:
 
 ```yaml
 cross-repo:
@@ -374,8 +374,9 @@ slopcheck:
 | `auto-commit-per-wave` | boolean | `false` | **Planned, currently a no-op (#1219).** Intended to commit each wave's work after the Quality-Lite gate passes, as checkpoints against data loss from `git stash` collisions in parallel sessions; when `false`, all work is committed at session-end via `/close`. Today no code reads the flag for a commit: the procedural sequence (`scripts/lib/auto-commit.mjs`) does not exist, and the only consumer is the contract prose in `skills/wave-executor/references/wave-loop-review.md`. Setting it to `true` changes nothing — no commit per wave, and no session-start warning is emitted by any script or hook (measured 2026-10-05: `rg "not yet active" skills scripts hooks` hits only that prose file). The key is declared in `docs/session-config-template.md` and allowlisted in `check-unwired-features.mjs`; `parse-config` drops it. <!-- path-check: planned #1219 --> |
 
 **Guard coverage (moved from CLAUDE.md Critical Gotchas, 2026-09-25).** **Destructive-Command Guard is active in main + subagent waves on harnesses with a compatible command hook.** On Claude Code, and through the supported Cursor and Pi bridges, `hooks/pre-bash-destructive-guard.mjs` applies `.orchestrator/policy/blocked-commands.json`:
-**13 of its 17 rules are `severity: block`, the other 4 only warn** (measured 2026-10-22: `jq '[.rules[].severity]|group_by(.)|map({(.[0]):length})|add' .orchestrator/policy/blocked-commands.json`).
+**14 of its 18 rules are `severity: block`, the other 4 only warn** (measured 2026-11-02: `jq '[.rules[].severity]|group_by(.)|map({(.[0]):length})|add' .orchestrator/policy/blocked-commands.json`).
 The 17th is `git-hooks-missing-in-worktree` (#1732): `git commit`/`git push` in a linked worktree whose relative `core.hooksPath` (husky: `.husky/_`) is missing there while the main checkout has it — such a worktree runs no hook at all, silently. The fix, each step as its own command: install the dependencies from the lockfile (`npm ci` / `pnpm install --frozen-lockfile` — a bare `npx husky` without them would fetch husky from the public registry past SEC-020 and leave hooks that fail on missing tools), then `npx husky`. Not judged, and on purpose not named in the deny message: a directory the guard cannot read (variable, `cd -`, a `cd` inside a subshell or command substitution, `--git-dir`/`--work-tree`, `-c core.hooksPath=…`) and an explicit skip (`--no-verify`, `commit -n`/`-nm`, `HUSKY=0`). The 16th is `ledger-delete-protected` (#1401): `rm`/`mv`/`unlink` on `.orchestrator/metrics/**` — added after a wave agent deleted a rotated 53.896-line ledger archive that no rule covered, because `rm` existed only as the pattern `rm -rf` and the redirect denylist's `*.jsonl` did not match `events.jsonl.1`.
+Path resets are judged by measurement, not by word pattern (#1834): `git checkout [HEAD] -- <path>` and `git restore` without a foreign `--source` are checked with a read-only `git status` (uncommitted changes or unmeasurable → deny, clean → allow with notice), while ref-sourced forms only warn; see [ADR-0017](adr/0017-destructive-guard-scope.md) § Path reset.
 On Codex the guard is wired in `hooks/hooks-codex.json` too: Codex sends shell calls as `tool_name: "Bash"` (#1669) and honours the deny — measured 2026-10-20 on codex-cli 0.160.1, a `printf x > CLAUDE.md` was blocked and the file stayed unchanged (#1691). Rule source of truth: [`.claude/rules/parallel-sessions.md`](../.claude/rules/parallel-sessions.md) (PSA-003). Per-session bypass via Session Config: `allow-destructive-ops: true` (intentional maintenance only).
 
 ### enforcement-gates: the five gate keys (#800/#915)
@@ -1062,6 +1063,71 @@ handover-gate:
 
 **Used by:** `scripts/lib/config/handover-gate.mjs`, session-end Phase 1.65.
 
+## Context Threshold (#1960)
+
+Always-on `PostToolUse` hook (`hooks/post-tool-context-threshold.mjs`) that gives every session the context limit the Lead already has. It reads the session's OWN transcript (`transcript_path` of the hook payload — never derived from the repo path, because the transcript directory follows the cwd) and measures the context as `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` of the LAST valid assistant line of the main chain. Sidechain lines (`isSidechain: true`) and zero-token lines are not counted. The read is a bounded tail-read (64 KB, widening to 512 KB and 2 MB only while no valid line was found), never the whole file.
+
+Each level fires ONCE per session as `additionalContext`, with the measured value:
+
+- `prepare-k`: „Kontext 700k: Übergabe-Datei vorbereiten, keine neue Welle mehr beginnen.“
+- `handover-k`: „Kontext 800k: am nächsten MR-Schnitt übergeben.“
+
+The once-marker lives in `os.tmpdir()` as `so-context-threshold-<session id>.json` (mode 0600) and counts only when it names the session's own id AND transcript path and belongs to the same uid, so a file pre-created for another session cannot silence it. A measured value below `prepare-k` after a hint (e.g. after `/compact`) re-arms both levels. When the context is not measurable (no transcript, unreadable, no usage line in the tail) the hook stays silent for that call and writes NO marker; reports say „nicht messbar“, never „unter der Schwelle“. Fail-open: its own errors exit 0 with one stderr line. The Hook Runtime Profile Control gate applies (`SO_DISABLED_HOOKS=post-tool-context-threshold`). Not wired on Codex, Cursor or Pi: none of them delivers a Claude-shaped transcript (`scripts/lib/validate/check-hooks-symmetry.mjs`).
+
+```yaml
+context-threshold:
+  enabled: true                        # on by default; warn-only, non-blocking
+  prepare-k: 700                       # thousand tokens
+  handover-k: 800                      # thousand tokens; must exceed prepare-k
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `context-threshold.enabled` | boolean | `true` | Master toggle. Only an explicit `enabled: false` disables the hook. |
+| `context-threshold.prepare-k` | integer (> 0) | `700` | Context in thousand tokens at which the prepare hint fires. Malformed values fall back to the default. |
+| `context-threshold.handover-k` | integer (> 0) | `800` | Context in thousand tokens at which the handover hint fires. If it does not exceed `prepare-k`, both fall back to 700/800 with a stderr WARN. |
+
+The fleet check-in carries the same measurement as the optional field `kontext_k` (whole thousands, or the string `nicht messbar`; `scripts/lib/fleet-protocol.mjs` `validateCheckin()`).
+
+**Used by:** `hooks/post-tool-context-threshold.mjs`, `scripts/lib/context-threshold.mjs`, `scripts/lib/config/context-threshold.mjs` (`_parseContextThreshold`).
+
+## Agent Caps
+
+`hooks/pre-agent-cap.mjs` checks every `Agent` start. It stops a start when too many agents already run, or when the machine is short of memory. Both limits are yours to set.
+
+```yaml
+agent-caps:
+  process-starting: 6      # agents that can edit files
+  reading: 6               # read-only agents
+  brake-engage-pct: 15     # no new process-starting agent below this % free memory
+  brake-release-pct: 20    # the brake lets go above this %
+```
+
+| Field | Env | Default | Allowed |
+|-------|-----|---------|---------|
+| `agent-caps.process-starting` | `SO_AGENT_CAP_PROCESS_STARTING` | `6` | Whole number from 1, or `off` for no limit. |
+| `agent-caps.reading` | `SO_AGENT_CAP_READING` | `6` | Whole number from 1, or `off` for no limit. |
+| `agent-caps.brake-engage-pct` | `SO_AGENT_BRAKE_ENGAGE_PCT` | `15` | Whole number from 1 to 99, or `off` to switch the brake off. |
+| `agent-caps.brake-release-pct` | `SO_AGENT_BRAKE_RELEASE_PCT` | `20` | Whole number from 1 to 99, not below the engage value. Unset while the engage value is set: engage + 5. |
+
+**Which value counts.** Each field on its own: env, then `agent-caps:` in `owner.yaml` (only this machine), then this block in the repo, then the default. A bad value prints a warning and the next source counts; a dispatch never fails because of it. If the release value lies below the engage value, the one from the lower-ranked source is dropped; if both come from the same source, the brake goes back to 15/20.
+
+**When a cap applies.**
+
+- Without fleet integration the default binds nobody. A number you set yourself does bind.
+- Fleet integration means several sessions coordinated by the `navigator` tool. Its limit file for one session (the "Auflagen file") comes first, even before `off`. A class missing from that file uses your value.
+- The session leading the fleet has no cap unless that limit file sets one. A session that has just checked in with the navigator has none either for up to 10 minutes, while the navigator may still write its file. After that the limits in the table apply.
+
+**Memory brake.** It stays on by default: it exists because a host went 14.3 GB into swap on 2026-11-05. It stops only new process-starting agents, never reading ones, and it stops nothing that already runs. With `off` the hook does not measure memory at all.
+
+**Switching everything off.** `process-starting: off`, `reading: off` and `brake-engage-pct: off` remove all limits except an Auflagen file. `SO_DISABLED_HOOKS=pre-agent-cap` stops the hook entirely, Auflagen file included.
+
+A refused start names the current value, where it comes from, and the setting that changes it. Changing it is up to you, not the agent.
+
+**Repo settings that weaken a limit.** A repo you only cloned can carry `agent-caps:` too. If its values are looser than the defaults, the session shows one notice with the repo name and the values. It blocks nothing. Your own `owner.yaml` or an environment variable overrides the repo.
+
+**Used by:** `hooks/pre-agent-cap.mjs`, `scripts/lib/agent-cap.mjs`, `scripts/lib/config/agent-caps.mjs` (`_parseAgentCaps`, `resolveAgentCapSettings`).
+
 ## Broken-Window Budget (#730/H5)
 
 Opt-in configuration for the Broken-Window Budget in `/close`. When enabled, session-end Phase 2.6 aggregates THIS session's "knowingly-broken shipments" — echo-stub findings that shipped under `enforcement: warn`, "Override and close" choices in Phase 2.3 / 2.5, MED/LOW review findings routed to "Unresolved Review Findings" (#617), and wave-level reviewer findings overridden without a fix task — and files ONE hard-terminated closure issue per item (labels `broken-window` + `priority::high`, with a hard due-date). It also emits `orchestrator.finding.overridden` events feeding the `effectiveness.override_ratio` metric. Non-blocking and idempotent: a filing failure is a WARN and re-running a close never duplicates issues.
@@ -1502,7 +1568,7 @@ Read by: `scripts/lib/config.mjs` (parser), `scripts/lib/config-schema.mjs` (cro
 
 ## Evolve Extra Sources (#638)
 
-Opt-in EXTRA learning sources for `/evolve`. A domain measurement (e.g. an eval-learn regression harness) runs OUT-OF-BAND and writes a sidecar JSON of regression flags; `/evolve` then READS each declared sidecar and emits a `domain-regression` learning candidate per flag that has persisted across ≥2 consecutive sessions. This is a strict **read-only consumption contract**: `/evolve` never runs the domain measurement — it only consumes the sidecar output. Absent/empty ⇒ `[]` ⇒ no extra sources are read; existing `/evolve` runs are unaffected.
+Opt-in EXTRA learning sources for `/evolve`. A domain measurement (e.g. an eval-learn regression harness) runs OUT-OF-BAND and writes a sidecar JSON of regression flags or owner decisions; `/evolve` then READS each declared sidecar and emits `domain-regression` candidates for persistent regressions or `owner-preference` candidates for qualifying owner decision patterns. This is a strict **read-only consumption contract**: `/evolve` never runs the domain measurement — it only consumes the sidecar output. Absent/empty ⇒ `[]` ⇒ no extra sources are read; existing `/evolve` runs are unaffected.
 
 The block is a nested YAML list under a top-level `evolve` key with an `extra-sources` sub-key. The returned config value is exposed as the dotted key `evolve.extra-sources` (mirroring the `cross-repo.projects` precedent), defaulting to `[]`:
 
@@ -1510,15 +1576,30 @@ The block is a nested YAML list under a top-level `evolve` key with an `extra-so
 evolve:
   extra-sources:
     - path: eval/learn/reports/latest.json   # required; SAFE path
-      kind: regression-flags                  # enum: regression-flags
-      learning-type: domain-regression        # enum: domain-regression
+      kind: regression-flags
+      learning-type: domain-regression
+    - path: reports/owner-decisions.json
+      kind: owner-decisions
+      learning-type: owner-preference
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `path` | string | — (required) | Repo-relative or absolute path to the sidecar JSON. SAFE-path validated (`^[A-Za-z0-9._~/-]+$`); a record missing `path` or carrying a shell-metacharacter in `path` is dropped with a stderr WARN. The sidecar is schema-gated by `/evolve` against `{ flags: [{ metric, baseline, recent, delta }] }`; an unknown/missing schema ⇒ skip + WARN. |
-| `kind` | string (`regression-flags`) | `regression-flags` | Selects the sidecar parser. Only `regression-flags` is defined; an unknown value DROPS the entry with a stderr WARN (schema gate — `/evolve` never guesses a parser). |
-| `learning-type` | string (`domain-regression`) | `domain-regression` | Stamps the emitted learning candidate's `type`. Only `domain-regression` is registered (in `LEARNING_TTL_DAYS` and `PROPOSAL_TYPES`); an unknown value DROPS the entry with a stderr WARN. |
+| `path` | string | — (required) | Repo-relative path to the sidecar JSON (absolute paths and `..` segments are rejected). SAFE-path validated (`^[A-Za-z0-9._~/-]+$`); a record missing `path` or carrying a shell-metacharacter in `path` is dropped with a stderr WARN. The sidecar is schema-gated by `/evolve` against the selected kind's shape below; an unknown/missing schema ⇒ skip + WARN. |
+| `kind` | string (`regression-flags`, `owner-decisions`) | `regression-flags` | Selects the sidecar schema; an unknown value DROPS the entry with a stderr WARN. |
+| `learning-type` | string (`domain-regression`, `owner-preference`) | `domain-regression` | Must pair `regression-flags` with `domain-regression`, or `owner-decisions` with `owner-preference`. Unknown values and crossed combinations DROP the entry with a stderr WARN. Both types have a 60-day TTL; `owner-preference` is analyzer-only and excluded from `PROPOSAL_TYPES`. |
+
+**Sidecar schema gates and candidates.** `regression-flags` requires `{ flags: [{ metric, baseline, recent, delta }] }` and emits a candidate only for a regression persisting across ≥2 consecutive sessions. `owner-decisions` requires the producer's unchanged schema:
+
+```json
+{ "schema_version": 1, "erzeugt_am": "<ISO>", "seit": "<ISO|null>",
+  "population": { "abschluesse_gelesen": 0, "owner_entscheide": 0, "nicht_bestimmbar": 0 },
+  "muster": [ { "klasse": "<string>", "repo": "<name>", "entscheide": 0, "empfehlung_gefolgt": 0, "empfehlung_abgewichen": 0, "nicht_bestimmbar": 0, "wartezeit_median_s": 0 } ] }
+```
+
+All fields are required: version `1`, an ISO timestamp for `erzeugt_am`, an ISO timestamp or JSON `null` for `seit`, nonnegative integer population and decision counters, string `klasse` / `repo`, and finite nonnegative numeric `wartezeit_median_s`. `muster` is an array; `ohne-klasse` is a valid class. Invalid JSON or a schema mismatch skips the source with WARN.
+
+For each pattern, emit one `owner-preference` candidate only when `y = empfehlung_gefolgt + empfehlung_abgewichen >= 10` and `x / y >= 30%`, with `x = empfehlung_abgewichen`; `nicht_bestimmbar` never counts toward `y`. Set `subject` to `<klasse>/<repo>` and `insight` to "Bei <klasse> in <repo> wich der Owner in x von y bestimmbaren Entscheiden von der Empfehlung ab", substituting the concrete values. Evidence includes all pattern numbers, the determinable count and deviation rate, the full `population`, and `erzeugt_am`. Candidates use the same confirmation and write path as other learnings. An `owner-preference` learning only recommends future recommendation logic and never authorizes an action or changes an approval requirement.
 
 **Security note.** `path` is a read-only file path consumed by `/evolve`; it rejects shell metacharacters as a defense-in-depth layer. Confinement at the read sink is the actual path-traversal guard. Changes are commit-gated under the same **VCS-trust-anchor** model as the other path/command-bearing keys.
 
@@ -1770,9 +1851,21 @@ Always-on directive-budget banner. At session-start Phase 4 the probe (`scripts/
 | Key | Default | Meaning |
 |---|---|---|
 | `instruction-budget.ceiling` | `480` | Structural-directive ceiling. Baseline ~457, i.e. +5% headroom. |
-| `instruction-budget.byte-ceiling` | `114000` | Byte ceiling over the same always-on corpus. Baseline 108,589 measured 2026-07-30, i.e. the same +5% headroom — the two axes are calibrated alike so neither is accidentally the stricter one. |
+| `instruction-budget.byte-ceiling` | `121000` | Byte ceiling over the same always-on corpus. Re-baselined 2026-08-22 at 115,730 B + 5% (first calibration 2026-07-30: 114000 over 108,589 B) — the two axes are calibrated alike so neither is accidentally the stricter one. |
+| `instruction-budget.generated-byte-ceiling` | `95000` | Byte ceiling over the machine-generated rules (#1308 replay). |
+| `instruction-budget.path-scoped-byte-ceiling` | `124000` | Byte ceiling over all path-scoped rules; the `/reconcile` writer's budget pre-flight reads the same value (#1316, #1419). |
+
+These are the module defaults and stay unchanged. This repo's own block sets `273 / 72000 / 81000 / 124000` since 2026-11-10 (#2000): the always-on corpus halved on 2026-10-12, so the defaults no longer fire on its growth. Derivation and firing rates: the RE-CALIBRATED 2026-11-10 paragraph in `scripts/lib/instruction-budget-guard.mjs`.
 
 Why both: a 9 KB prose rule carrying three bullets is nearly invisible to the directive count while consuming real prompt payload. Why the headroom rather than the measured value: a ceiling that reddens the current state is switched off within a session and then measures nothing.
+
+**The defaults are this plugin's own ratchet — calibrate per repo (#1995).** All four defaults were derived from the session-orchestrator repo's own rule corpus. Measured 2026-11-09 over 32 consumer repos with `.claude/rules/`, none of which set an `instruction-budget:` block, the "over budget" line fired in 15 (47 %) at every start, 12 of them on the path-scoped axis alone, where "consolidate generated rules" cannot help. An axis therefore counts as **calibrated** only when the repo's own block sets its key explicitly. A calibrated axis over its ceiling warns as before. An uncalibrated axis over a plugin default — or the path-scoped axis near it — prints one `⚠ Instruction budget not calibrated for this repo` line naming the measured values and the command that prints a matching block:
+
+```bash
+node "<plugin>/scripts/instruction-budget-calibrate.mjs" [--repo-root <dir>] [--json]
+```
+
+The CLI only reads. Each printed value is the measured value plus max(5 %, one medium always-on rule — 6,113 B / 32 directives, `verification-before-completion.md`), and the path-scoped value additionally keeps the corpus under the 90 % near-threshold. The block goes into the `## Session Config` of the file the loader reads — `CLAUDE.md` whenever it exists, else `AGENTS.md` (a `CLAUDE.md` stub shadows a block kept only in `AGENTS.md`); the CLI names that file on stderr and as `hostFile` in `--json`. The loader reads only the **first** `instruction-budget:` block, so pasting a second one below an existing block changes nothing: when the file already has one, the CLI, the banner line and the `/reconcile` refusal all say to **replace** it and list the keys the existing block sets (`--json`: `existingBlock: { keys }`, else `null`). From then on the guard measures this repo's own growth, and the `/reconcile` writer budgets against the same values. The writer still refuses a batch that grows an uncalibrated axis over its default, but its `hint` then names the calibrate CLI instead of "never raise the ceiling", and the refusal carries `calibrated: false`. `computeInstructionBudget()` and its `over*` flags are unchanged.
 
 All fields live under a top-level `instruction-budget` object inside the `## Session Config` block of your host file (`CLAUDE.md` or `AGENTS.md`):
 
@@ -1789,7 +1882,7 @@ instruction-budget:
 | `instruction-budget.ceiling` | integer | `480` | Structural-directive ceiling. The banner fires only when the always-on count **strictly exceeds** this. The default `480` is an operator-chosen ratchet just above the ~457 baseline, leaving headroom for normal edits while catching unchecked growth. A config value `≤ 0` falls back to the default. |
 | `instruction-budget.mode` | `warn` \| `off` | `warn` | `warn` surfaces the banner alongside the other Phase 4 banners; `off` is a silent no-op (equivalent to `enabled: false`). Any value other than `off` resolves to `warn`. |
 
-**Behaviour on config-load failure:** if no instruction file is found (or it is unreadable), the probe falls back to `{ enabled: true, ceiling: 480, mode: warn }` and still computes — graceful, like the other session-start probes. The wrapper never throws.
+**Behaviour on config-load failure:** if no instruction file is found (or it is unreadable), the probe falls back to `{ enabled: true, ceiling: 480, 'byte-ceiling': 121000, mode: warn }` with no axis calibrated, and still computes — graceful, like the other session-start probes. The wrapper never throws.
 
 **Why a ratchet, not in-repo glob-respecting injection:** the Claude Code harness injects ALL `.claude/rules/*.md` into the coordinator context regardless of each rule's `globs:` frontmatter (`rule-loader.mjs` governs only the PER-WAVE surface). The repo cannot make the harness respect `globs:` for coordinator injection — see "Instruction-Budget Mechanism — Coordinator-Injection Verdict" (#687; archived in the private Meta-Vault). The directive-budget ratchet is therefore the one in-repo, mechanism-over-discipline lever; physically trimming/merging rule files is tracked separately in #688.
 
@@ -1804,7 +1897,7 @@ Control which hooks run, and how hard the destructive guard blocks, without edit
 | Source | Keys | Notes |
 |--------|------|-------|
 | Environment | `SO_HOOK_PROFILE`, `SO_DISABLED_HOOKS` (comma-separated hook names) | Highest. An unknown `SO_HOOK_PROFILE` is ignored with one stderr warning. |
-| `owner.yaml` (host-local, never committed) | `hooks.profile` (`strict`, `full`, `standard`), `hooks.disabled` (list of hook names) | See [docs/owner-config-schema.md](./owner-config-schema.md). An invalid `hooks` section is dropped. owner.yaml can relax, never disarm: `minimal`, `off` and the safety hooks below are env-only, because an agent can append to the file. |
+| `owner.yaml` (host-local, never committed) | `hooks.profile` (`strict`, `full`, `standard`), `hooks.disabled` (list of hook names) | See [docs/owner-config-schema.md](./owner-config-schema.md). An invalid `hooks` section is dropped. Under profile `standard` the Codex shell route (`apply_patch` heredoc) also runs only the guards that are switched on (measured 2026-11-02, see [codex-setup.md](codex-setup.md) § apply_patch). owner.yaml can relax, never disarm: `minimal`, `off` and the safety hooks below are env-only, because an agent can append to the file. |
 | Default | — | `standard` |
 
 The profile comes from the first source that names one. The disabled lists of the environment and `owner.yaml` are unioned; a listed hook is off under every profile.

@@ -350,23 +350,10 @@ export function isLockLive(lock, nowMs = Date.now()) {
  * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string }}
  */
 function writeLockAtomic(lockFile, lock) {
-  try {
-    const dir = path.dirname(lockFile);
-    // Ensure .orchestrator/ directory exists.
-    fs.mkdirSync(dir, { recursive: true });
-
-    // Write to a uniquely-named temp file in the same directory so rename()
-    // is guaranteed to be an atomic same-filesystem operation on POSIX.
-    const tmpSuffix = crypto.randomBytes(6).toString('hex');
-    const tmpFile = path.join(dir, `.session.lock.tmp.${tmpSuffix}`);
-
-    fs.writeFileSync(tmpFile, JSON.stringify(lock, null, 2) + '\n', { encoding: 'utf8' });
-    fs.renameSync(tmpFile, lockFile);
-
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
+  // Shared writer (#1865): same `<dir>/.session.lock.tmp.<12 hex>` sibling tmp,
+  // plus the win32 rename retry and tmp cleanup on failure. Envelope is a
+  // superset of the old one (adds `code`).
+  return writeJsonAtomicSync(lockFile, lock, { tmpPrefix: '.session.lock.tmp' });
 }
 
 /**
@@ -970,6 +957,9 @@ function reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSession
   const tomb = path.join(path.dirname(lockFile), `.session.lock.reclaim.${crypto.randomBytes(8).toString('hex')}`);
 
   try {
+    // Kept raw (#1865): a tombstone MOVE of the live lock, not a tmp+rename write;
+    // ENOENT means "lost the race" and must not be retried or masked.
+    // direct-rename:ok tombstone move of the live lock, not a tmp+rename write
     fs.renameSync(lockFile, tomb);
   } catch (err) {
     if (err && err.code === 'ENOENT') return reacquire();
@@ -988,6 +978,8 @@ function reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSession
       // the path is taken by then, it stays under the tombstone name.
       keepTomb = true;
       try {
+        // Kept raw (#1865): best-effort put-back of a directory, never a write.
+        // direct-rename:ok best-effort put-back of a directory, never a write
         if (fs.lstatSync(tomb).isDirectory()) fs.renameSync(tomb, lockFile);
         else { fs.linkSync(tomb, lockFile); keepTomb = false; }
       } catch { /* stays at the tombstone name */ }

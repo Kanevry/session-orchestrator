@@ -385,6 +385,17 @@ function lineOf(node) {
 }
 
 /**
+ * Repo-relative label of a hook file for findings and contracts: `/` on every
+ * host (#1742). Paths used to read files stay native.
+ * @param {string} pluginRoot
+ * @param {string} hookPath
+ * @returns {string}
+ */
+function hookLabel(pluginRoot, hookPath) {
+  return path.relative(pluginRoot, hookPath).split(path.sep).join('/');
+}
+
+/**
  * @param {string} pluginRoot
  * @param {string} hookPath
  * @param {string} contract
@@ -396,7 +407,7 @@ function lineOf(node) {
 function finding(pluginRoot, hookPath, contract, kind, message, node) {
   return {
     kind,
-    hook: path.relative(pluginRoot, hookPath),
+    hook: hookLabel(pluginRoot, hookPath),
     line: lineOf(node),
     contract,
     message,
@@ -946,9 +957,9 @@ export function inspectGuardRequiresParity(pluginRoot) {
   for (const symlinkPath of symlinkedHookEntries) {
     result.findings.push({
       kind: 'symlink-handler',
-      hook: path.relative(pluginRoot, symlinkPath),
+      hook: hookLabel(pluginRoot, symlinkPath),
       line: 1,
-      contract: path.relative(pluginRoot, symlinkPath),
+      contract: hookLabel(pluginRoot, symlinkPath),
       message: 'symlinked hook entries are unsupported; refusing to follow a handler outside the plugin root',
     });
   }
@@ -962,7 +973,7 @@ export function inspectGuardRequiresParity(pluginRoot) {
       result.toolError = true;
       result.findings.push({
         kind: 'tool-error',
-        hook: path.relative(pluginRoot, hookPath),
+        hook: hookLabel(pluginRoot, hookPath),
         line: 1,
         contract: '',
         message: `cannot parse hook: ${error instanceof Error ? error.message : String(error)}`,
@@ -974,9 +985,9 @@ export function inspectGuardRequiresParity(pluginRoot) {
     for (const invalidCall of invalidCalls) {
       result.findings.push({
         kind: 'invalid-armguard-provenance',
-        hook: path.relative(pluginRoot, hookPath),
+        hook: hookLabel(pluginRoot, hookPath),
         line: lineOf(invalidCall),
-        contract: path.relative(pluginRoot, hookPath),
+        contract: hookLabel(pluginRoot, hookPath),
         message: `armGuard call must use the unaliased named import from ./_lib/guard-source-loader.mjs; indirect, shadowed, aliased, or member calls are unsupported`,
       });
     }
@@ -1040,7 +1051,7 @@ export function inspectGuardRequiresParity(pluginRoot) {
 
         const { aliases, bindingNodes, shadowedModulesNodes } = findDirectBindings(ast, namespace, node);
         const contract = {
-          hook: path.relative(pluginRoot, hookPath),
+          hook: hookLabel(pluginRoot, hookPath),
           line: lineOf(contractStart),
           namespace,
           binding: aliases.length === 1 ? aliases[0] : aliases.length > 1 ? aliases.join(',') : null,
@@ -1102,7 +1113,7 @@ export function inspectGuardRequiresParity(pluginRoot) {
       }
 
       for (const item of contractFindings) {
-        if (!item.contract) item.contract = path.relative(pluginRoot, hookPath);
+        if (!item.contract) item.contract = hookLabel(pluginRoot, hookPath);
         result.findings.push(item);
       }
     }

@@ -1264,6 +1264,45 @@ async function _renameWithRetry(renameFn, from, to, platform) {
   }
 }
 
+/**
+ * Rename an already-written file onto `to` with the bounded win32 retry of the
+ * shared atomic writers (GH#79 / #1865). For callers that must stage the tmp
+ * file themselves (e.g. a `wx`/0600 create plus a pre-rename safety check, as
+ * `fleet-checkin.mjs` does) and therefore cannot use {@link atomicWriteText}.
+ * Tmp cleanup on failure stays with the caller, who owns the tmp path.
+ *
+ * @param {string} from  Existing source path (sibling of `to`).
+ * @param {string} to    Target path.
+ * @param {object} [opts]
+ * @param {string} [opts.platform=process.platform]  Platform seam (tests).
+ * @param {{ rename?: Function }} [opts.fs]  fs/promises seam (tests).
+ * @returns {Promise<void>}  Rejects with the last rename error, unchanged.
+ */
+export async function renameWithRetry(from, to, opts = {}) {
+  const { platform = process.platform, fs: injectedFs } = opts;
+  await _renameWithRetry(injectedFs?.rename ?? rename, from, to, platform);
+}
+
+/**
+ * Synchronous twin of {@link renameWithRetry} (#1865): rename an already-written
+ * file onto `to` with the same bounded win32 retry (10+20+30+40 ms; EPERM/EBUSY,
+ * plus EACCES which `renameSync` reports for the same lock). For sync callers
+ * that stage the tmp file themselves (`wx`/0600 create, fsync, a pre-rename
+ * check) and so cannot use {@link writeJsonAtomicSync}. POSIX never retries.
+ * Tmp cleanup on failure stays with the caller, who owns the tmp path.
+ *
+ * @param {string} from  Existing source path (sibling of `to`).
+ * @param {string} to    Target path.
+ * @param {object} [opts]
+ * @param {string} [opts.platform=process.platform]  Platform seam (tests).
+ * @param {{ renameSync?: Function }} [opts.fs]  node:fs seam (tests).
+ * @returns {void}  Throws the last rename error, unchanged.
+ */
+export function renameSyncWithRetry(from, to, opts = {}) {
+  const { platform = process.platform, fs: injectedFs } = opts;
+  _renameSyncWithRetry(injectedFs?.renameSync ?? renameSync, from, to, platform);
+}
+
 /** Sync twin of {@link _renameWithRetry}; sleeps via `Atomics.wait` (bounded, no spin). */
 function _renameSyncWithRetry(renameFn, from, to, platform) {
   for (let attempt = 0; ; attempt++) {

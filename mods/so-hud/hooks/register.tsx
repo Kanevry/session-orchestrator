@@ -83,6 +83,9 @@ export const register: Register = (on, options) => {
   // What the gate read off a call before anything could fail, for its `.catch` (dropped once the call settles).
   const classes = new Map<string, { outward: boolean; sec008: boolean }>()
   const profile: SoProfile = profileOf(options.strictness)
+  // Opt-in (#1817): only the exact value `deny` refuses outward actions in a run with no surface; anything else,
+  // the default `allow` included, keeps today's receipt-and-run.
+  const headlessDeny = options.outwardHeadless === 'deny'
   // Profile band (#1552). Closure state, because $.state refuses writes while a render hook draws. `chosen` stays
   // null until session.start has read it, so a chosen profile never flashes the band; `opened` is /profile's.
   let chosen: boolean | null = null
@@ -351,7 +354,7 @@ export const register: Register = (on, options) => {
     return [head, `Ausgehende Commits nach ${remote}/${dsts[0]}: ${lines.length === 0 ? 'keine' : lines.length}`, ...lines.map(line => `  ${displayText(line)}`)]
   }
   /** Appends one receipt; false when it could not be written. Never throws: a write failure must not deny or re-run. */
-  const receipt = async (io: IO, r: Receipt, ergebnis: 'ausgefuehrt' | 'abgelehnt' | 'verfallen' | 'ohne-zeichenflaeche' | 'fehler', exit: number | null): Promise<boolean> => {
+  const receipt = async (io: IO, r: Receipt, ergebnis: 'ausgefuehrt' | 'abgelehnt' | 'verfallen' | 'ohne-zeichenflaeche' | 'ohne-zeichenflaeche-abgelehnt' | 'fehler', exit: number | null): Promise<boolean> => {
     try {
       const sessionId = await io.sessionId()
       await helper(io, 'aktion', sessionId, { zeit: new Date(await io.now()).toISOString(), session_id: sessionId, vorgang: 'pane-aktion',
@@ -503,6 +506,12 @@ export const register: Register = (on, options) => {
       const { needing, effects, key } = await measure()
       const receipts = needing.map(a => ({ aktion: 'aussenwirkung' as const, tool: e.tool, text: command, art: a.hit.kind }))
       if (needing.length > 0 && !await canAsk()) {
+        if (headlessDeny) {
+          // Opt-in (#1817): with nobody to ask, refuse instead of passing it to the CLI's own gates.
+          await record(receipts, 'ohne-zeichenflaeche-abgelehnt', null)
+          const labels = [...new Set(needing.map(a => KIND_LABEL[a.hit.kind]))].join(' + ')
+          return done({ deny: `[so-hud] ${labels} abgelehnt: kein Owner erreichbar (Lauf ohne Oberfläche, outwardHeadless: deny); nichts ausgeführt. Freigeben: denselben Schritt in einer Sitzung mit Oberfläche ausführen, oder in /config den Eintrag outwardHeadless von so-hud auf allow stellen.` })
+        }
         // No surface to confirm on: the CLI's own gates decide; the mod only records.
         await record(receipts, 'ohne-zeichenflaeche', null)
       } else if (needing.length > 0) {

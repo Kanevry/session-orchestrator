@@ -90,6 +90,11 @@ Verweigerung, dann Exit 1). Die CLI setzt `session_uuid` aus der prozesslokalen 
 wenn eine geerbte ID der anderen widerspricht), wenn das eine native UUID ist; dieser Wert überschreibt
 eine Eingabe. Grund: der Navigator schrieb Auflagen einer Session unter der nativen UUID, während sie
 sich unter der semantischen ID eingecheckt hatte.
+Die CLI setzt `session_uuid` aus der prozesslokalen nativen ID nur für die Plattform, die `SO_PLATFORM`
+nennt (`claude` → `CLAUDE_CODE_SESSION_ID`, `codex` → `CODEX_THREAD_ID`, `cursor`/`pi` → keine); ohne
+`SO_PLATFORM` nimmt sie die einzige vorhandene ID und keine, wenn sich beide widersprechen (#1845). Eine
+native ID überschreibt ein per stdin gegebenes `session_uuid`; ohne native ID bleibt der stdin-Wert und
+wird validiert.
 Vor dem `rename` lehnt der Schreiber ein vorhandenes String-`repo` ungleich dem eigenen ab;
 gleiches `repo`, unlesbare Dateien und ungültiges JSON dürfen überschrieben werden.
 Die Prüfung folgt keinen Symlinks, öffnet nichtblockierend und liest nur reguläre Dateien
@@ -112,6 +117,7 @@ gelten für diese Prüfung als unlesbar (fail-open zum `rename`).
 | `bedarf` | Objekt: geplante volle Pipelines, Remote-Offload-Jobs, prozessstartende Agents |
 | `vorab_geschrieben` | Liste der Ausnahmen nach der Definition oben |
 | `rueckfall` | Verhalten ohne Auflagen (unten), nicht leer (Pflicht) |
+| `kontext_k` | optional: Kontext der Session in ganzen Tausend Tokens (input + cache_read + cache_creation der letzten Hauptketten-Assistant-Zeile des eigenen Transkripts, `measureContext()` in `scripts/lib/context-threshold.mjs`), Zahl 0..100000, oder der String „nicht messbar“ — nie 0 oder „unter der Schwelle“ für einen nicht gemessenen Kontext (#1960); fehlt das Feld auf stdin, füllt die CLI `scripts/fleet-checkin.mjs` es selbst aus |
 | `zeit` | von der CLI gesetzt |
 
 Eine `SendMessage` an den Navigator ist optional und nur ein Hinweis auf die Datei: höchstens eine,
@@ -242,10 +248,28 @@ und hat keine andere Arbeit:
    älter als `--since` (Vorgänger gleichen Namens) lehnt es unverändert ab (Exit 4), nie in einer
    Schleife über den Flotten-Ordner aufrufen. Hat es Vorgänge
    angelegt, die Datei danach lesen und mit dem Datei-Werkzeug unverändert neu schreiben: der
-   Koordinator erkennt nur eine selbst geschriebene Datei. Exit 3 heißt, Punkte bleiben ohne Marke
-   (die Liste steht in der Ausgabe): dann nennen Meldung und Antwort „Übergabe ohne Queue-IDs: <n>
+   Koordinator erkennt nur eine selbst geschriebene Datei. Exit 3 mit `Pflichtabschnitt fehlt`:
+   fehlende Abschnitte ergänzen (`keine` ist erlaubt), Prüfung erneut ausführen.
+   Nur bei verbleibenden Punkten ohne Marke (die Liste steht in der Ausgabe) nennen Meldung und Antwort „Übergabe ohne Queue-IDs: <n>
    Punkte“, und die Antwort endet mit `Ich warte auf den nächsten Auftrag.`, nicht mit dem Satz aus
    Schritt 3. Ohne Flottenintegration prüft das Skript nichts (Exit 0).
+1b. **Pflichtabschnitte jeder Übergabe (#1950).** Neben Vollzogen und den offenen Punkten trägt die
+   Übergabe (und das Zug-Manifest) immer diese zwei Überschriften, je höchstens fünf Punkte, `keine`
+   ist erlaubt, Weglassen nicht:
+
+   ```markdown
+   ## Entscheidungen für dich
+   - <was die Session an Stelle des Owners entschieden hat: Default gewählt, Umfang gekürzt,
+     widersprüchliche Anforderung umgedeutet> — <warum> — <wie umkehrbar>
+
+   ## Nicht geprüft
+   - <was keine Prüfung abdeckt: ein grüner Lauf belegt eine Eigenschaft, nicht alle>
+   ```
+
+   Trug der Plan eine `Erwartung` je Aufgabe, steht unter Vollzogen das Ergebnis dagegen
+   (`<Aufgabe>: Erwartung … — Ergebnis …`). Beide Überschriften beginnen nicht mit „Offen“,
+   „Nachkontrolle“, „Folge“ oder „Danach“: ihre Punkte brauchen deshalb keine Vorgangsmarke (1a).
+   Ein Punkt, der eine Owner-Antwort braucht, gehört zusätzlich als Entscheid in die Queue.
 2. Mit jeder weiteren Warte-Antwort schreibt sie die Datei neu, auch wenn sie aus einem früheren Zug
    schon dasteht, so wie sie in jedem Warte-Zug neu meldet.
 3. Sie meldet „bereit zum Schließen“ (in der Meldung dieses Zugs) und beendet
@@ -278,6 +302,10 @@ Session **liest** die Datei; sie wartet auf keine Nachricht. Keine Auflage ist e
 **Pflichtfeld `repo`** (#1520, navigator#190): absoluter Pfad auf Toplevel oder git-common-dir des
 Ziel-Repos. Der Dateiname ist die semantische Session-ID oder die native UUID, je nachdem, was der
 Navigator gewählt hat (#1839); die semantische ID kollidiert über Repos hinweg.
+`hooks/pre-agent-cap.mjs` findet die Datei auch ohne eigenen `session.lock`: Liefern die bekannten
+Schlüssel weder Auflagen noch Check-in, nimmt der Hook die Schlüssel aus den Check-ins, deren
+`session_uuid` genau zur nativen ID passt (`findCheckinSessionKeys()`, nur die jüngsten 256 Dateien, #1979).
+
 Gelesen wird über `node scripts/fleet-auflagen.mjs <session_id> [<session_id>...] --render` (Code:
 `readAuflagen()`). Der Leser probiert zuerst die prozesslokale native ID (wie beim Check-in, nur wenn
 eine native UUID), dann die übergebenen IDs der Reihe nach; unter den angenommenen Dateien gewinnt die
@@ -298,7 +326,16 @@ Check-in-CLI), wenn bis dahin keine Auflagen-Datei liegt. Die Frist rechnet `fal
 `CHECKIN_FALLBACK_MIN` = 10 Minuten nach `checkin.zeit`, solange ein Navigator aktiv ist; ohne
 aktiven Navigator ist `fallback_due_at` gleich `zeit`, die Auflagen gelten also sofort:
 
-- Caps: 2 prozessstartende + 2 lesende Agents, solange der lokale Host ≥ 50 % Speicher frei hat.
+- Caps: 6 prozessstartende + 6 lesende Agents (Standardwert, einstellbar über `agent-caps`,
+  `docs/session-config-reference.md` § Agent Caps). Der Speicher spielt für die Caps keine Rolle, er
+  zählt nur für die Notbremse unten.
+  Mechanisch durchgesetzt von `hooks/pre-agent-cap.mjs` (#1959): er zählt die laufenden Agents der
+  Session, nimmt die Caps aus `caps.prozessstartend` / `caps.lesend` einer angenommenen Auflagen-Datei;
+  ohne sie bleibt die Lead-Session ohne Cap (die aktive Navigator-Lease nennt ihre native Session-ID,
+  #1971), jede andere Session bekommt nach `fallback_due_at` (ohne Check-in sofort) diese
+  Standard-Caps, und er verweigert einen Dispatch darüber. Eine angenommene Auflagen-Datei geht der
+  Konfiguration vor, auch einem `off`. Unabhängig von der Flotte startet unter 15 % freiem Speicher kein neuer
+  prozessstartender Agent (Freigabe erst über 20 %; beide Werte einstellbar, `off` schaltet die Notbremse ab).
 - Pipelines: ≤ 2 volle je Repo; Nachzug-Pushes vorher im Check-in (`bedarf`) benennen.
 - Offload: Heavy-Rollen (test, build, lint, audit) nur auf einen deklarierten Remote-Host, der
   unmittelbar davor als bereit belegt ist (`skills/remote-offload/SKILL.md`); ohne Beleg kein neues
@@ -316,6 +353,18 @@ aktiven Navigator ist `fallback_due_at` gleich `zeit`, die Auflagen gelten also 
 
 Lesende Arbeit und Schreiben im eigenen Worktree laufen währenddessen weiter; der Rückfall ist ein
 Dateistand mit Frist, kein Warten auf eine Antwort.
+
+**Haupt-Checkout einer Plugin-Quelle (gilt immer, mit und ohne Auflagen; #1996).** Nennt
+`~/.claude/plugins/known_marketplaces.json` ein Repo als `directory`-Quelle (session-orchestrator,
+die navigator-Mods), laden alle Sessions des Hosts Hooks und Skills aus dessen Haupt-Checkout. Ein
+`git pull` oder `merge --ff-only` dort wirkt sofort auf jede laufende Session: geänderter Hook-Code
+ab dem nächsten Tool-Aufruf, neuer Skill-Text ab dem nächsten Skill-Aufruf, ohne Plugin-Update (ein
+neuer Eintrag in `hooks/hooks.json` greift erst ab dem nächsten Session-Start; nicht gemessen). Diesen
+Checkout zieht nur der Lead weiter, mit Ansage an die Worker; ohne Flotte die Session des Owners
+selbst. Proben und Tests laufen in einem
+eigenen Worktree oder Export (`scripts/snapshot-probe.mjs` exportiert ohnehin). Eine Merge-Ansage
+für ein solches Repo nennt unter „was main auslöst“ auch, was beim Weiterziehen des Checkouts
+sofort live wird.
 
 ## Verhalten ohne Flotte
 

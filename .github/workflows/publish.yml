@@ -1,0 +1,142 @@
+# npm publish via Trusted Publishing (OIDC), #1906, ADR-0018 Route B.
+#
+# Trigger: a pushed tag `v*` on this mirror. The release tail pushes the
+# release tag onto the snapshot commit; there is no manual dispatch. A failed
+# run is retried with "Re-run jobs".
+#
+# Two jobs:
+#   guard   — no environment, so it never asks for a review. Fails unless the
+#             ref is a tag equal to `v` + package.json version, then asks the
+#             registry whether that version exists: 200 → publish=false (the
+#             version is already on npm, e.g. released via `npm stage publish`
+#             or `--direct`; the run is a no-op and succeeds), 404 →
+#             publish=true, anything else → the job fails.
+#   publish — only when guard says publish=true. Bound to the environment
+#             `npm-publish`, whose required reviewer approves the run: that is
+#             the human gate. npm trusts the OIDC identity GitHub issues to
+#             this repository, this workflow file and that environment, so no
+#             npm token or secret exists here.
+#
+# `scripts/release.mjs --publish --trusted` hands the publish
+# to this workflow and verifies the result, provenance included, on the
+# registry.
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.registry.outputs.publish }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node 24
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: '24'
+
+      - name: Tag matches package.json version
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::ref type is $GITHUB_REF_TYPE, expected tag"
+            exit 1
+          fi
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, package.json expects $expected"
+            exit 1
+          fi
+
+      - name: Is the version already on npm
+        id: registry
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          url="https://registry.npmjs.org/session-orchestrator/$version"
+          # No -f: the HTTP status is the answer. A curl error (network, DNS,
+          # timeout) fails the job; an unreadable registry is never "absent".
+          if ! status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 --retry 3 "$url")"; then
+            echo "::error::registry request failed for $url"
+            exit 1
+          fi
+          case "$status" in
+            200)
+              echo "session-orchestrator@$version is already on npm; nothing to publish"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              echo "session-orchestrator@$version is not on npm; publish job runs"
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::registry answered HTTP $status for $url"
+              exit 1
+              ;;
+          esac
+
+  publish:
+    needs: guard
+    if: needs.guard.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node 24
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs npm >= 11.5.1. Check the npm bundled with
+      # Node 24 instead of `npm install -g npm@…`: an upgrade would fetch and
+      # run registry code inside the job that holds id-token: write. If the
+      # bundled npm is too old, the run fails here and names the version.
+      - name: npm supports trusted publishing
+        run: |
+          npm_version="$(npm --version)"
+          if ! node -e '
+            const [a, b, c] = process.argv[1].split(".").map(Number);
+            const ok = a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1)));
+            process.exit(ok ? 0 : 1);
+          ' "$npm_version"; then
+            echo "::error::npm $npm_version is below 11.5.1, the trusted publishing minimum"
+            exit 1
+          fi
+          echo "npm $npm_version"
+
+      - name: Tag matches package.json version
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_TYPE" != "tag" ] || [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "::error::ref $GITHUB_REF_TYPE $GITHUB_REF_NAME, package.json expects tag $expected"
+            exit 1
+          fi
+
+      - name: Install
+        run: npm ci
+
+      - name: Verify registry signatures
+        run: npm audit signatures
+
+      - name: Publish with provenance
+        run: npm publish --provenance --access public

@@ -90,14 +90,16 @@ function detectOomKill(events) {
 }
 
 function detectHeartbeatGap(sweepLogEntries, thresholdMin) {
-  // sweepLogEntries expected shape: {host_class, session_id, gap_minutes, swept_at}
+  // lead report 2026-11-10: consume sweepZombies' fields, not a detector-only mock shape.
   return sweepLogEntries
-    .filter((e) => typeof e.gap_minutes === 'number' && e.gap_minutes >= thresholdMin)
+    .filter((e) => e.reason === 'stale-heartbeat'
+      && typeof (e.age_minutes ?? e.gap_minutes) === 'number'
+      && (e.age_minutes ?? e.gap_minutes) >= thresholdMin)
     .map((e) => ({
       signal: 'heartbeat-gap',
       host_class: e.host_class ?? null,
-      timestamp: e.swept_at,
-      raw: { gap_minutes: e.gap_minutes, session_id: e.session_id },
+      timestamp: e.timestamp ?? e.swept_at,
+      raw: { gap_minutes: e.age_minutes ?? e.gap_minutes, session_id: e.session_id },
     }));
 }
 
@@ -229,8 +231,8 @@ function detectThermalThrottle(events, thresholdPct) {
 
 /**
  * Group hits by (signal, host_class), count occurrences, and emit candidates
- * whose count meets the minOccurrences threshold. Hits missing host_class
- * are dropped (a hardware-pattern with no host anchor is meaningless).
+ * whose count meets the minOccurrences threshold. Historical heartbeat sweep
+ * records lack host_class; retain them together under an unknown host.
  *
  * @param {object[]} hits — per-signal hit objects from detectors
  * @param {number} minOccurrences
@@ -239,13 +241,14 @@ function detectThermalThrottle(events, thresholdPct) {
 export function aggregateCandidates(hits, minOccurrences) {
   const buckets = new Map();
   for (const h of hits) {
-    if (!h.host_class) continue;
+    // lead report 2026-11-10: old sweep logs had no host anchor at all.
+    if (!h.host_class && h.signal !== 'heartbeat-gap') continue;
     const key = `${h.signal}::${h.host_class}`;
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = {
         signal: h.signal,
-        host_class: h.host_class,
+        host_class: h.host_class ?? null,
         occurrences: 0,
         first_seen: h.timestamp,
         last_seen: h.timestamp,

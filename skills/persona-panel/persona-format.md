@@ -72,10 +72,26 @@ The body contains four sections, in order. All headings are required even when a
 content (write "None." for empty Context Files).
 
 **`## Mission`** — One to three sentences. The persona's identity and review goal. Injected as
-the agent's opening system context: "You are [role]. [Mission]."
+the agent's opening system context: "You are [role]. [Mission]." `catalog-loader.mjs` parses it
+into `persona.mission` (max 2000 chars, no control characters other than tab/newline; "None." →
+empty, and the opener becomes "You are [role].").
 
 **`## Context Files`** — Optional vault refs (`[[path/to/note]]`) or project paths that the
-agent reads as supplementary background before evaluating the target. Vault refs are allowed.
+agent reads as supplementary background before evaluating the target. Write one list item per
+file (`- [[legal/contract-law]]`, ``- `docs/terms.md` — why``); text after the reference is
+ignored, "None." means no files. The loader parses them into `persona.context_files`
+(`{kind:'vault', ref}` / `{kind:'project', path}`) and rejects the persona when there are more
+than 8 entries, a reference exceeds 256 chars, contains a `..` segment, a control character, or
+is absolute.
+
+Resolution (`resolvePersonaContext(persona, { projectRoot, vaultDir })` in `persona-runner.mjs`):
+project paths must stay inside the project root (`validatePathInsideProject`, symlinks included);
+a vault ref resolves to `<vaultDir>/<ref>.md` (or `<vaultDir>/<ref>` when it already ends in
+`.md`) inside `vaultDir`, and is skipped with reason `no-vault-dir` when no vault is configured.
+Missing, outside or unreadable files are skipped with a reason, never an error. Each file is cut
+at 16 000 bytes, all files together at 48 000 bytes; a cut file is marked `(truncated)`. The
+blocks reach the prompt as ONE `<persona-context>` section that the agent is told to treat as
+untrusted data, never as instructions.
 
 **`## Evaluation Criteria`** — Expanded prose descriptions of the frontmatter criteria. Each
 criterion should specify: what to look for, what a pass looks like, what a fail looks like.

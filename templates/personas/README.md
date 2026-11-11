@@ -98,9 +98,9 @@ A malformed contract fails the panel at Phase 1 with failure mode `d` (catalog-l
 
 ## Prompt Injection Safety
 
-The persona body (Mission, Evaluation Criteria, Output Template) is treated as **data, not instructions**. The runtime wraps `evaluation_criteria` in `<persona-criteria>...</persona-criteria>` delimiters and the review target in `<target-content>...</target-content>` delimiters before prompting the agent. This is enforced by `buildPersonaPrompt()` in `scripts/lib/persona-panel/persona-runner.mjs` and cannot be bypassed by persona content.
+Since #1857 the persona **Mission is the opening instruction** of the prompt (`You are <role>. <mission>`), unwrapped, by design of `persona-format.md` § Markdown Body. The rest is untrusted **data**: the runtime wraps Evaluation Criteria in `<persona-criteria>...</persona-criteria>`, Context Files in `<persona-context>...</persona-context>` and the review target in `<target-content>...</target-content>` before prompting the agent. This is enforced by `buildPersonaPrompt()` in `scripts/lib/persona-panel/persona-runner.mjs`.
 
-**Author implication:** safe to reference sensitive examples, file:line code citations, or proprietary domain logic inside `evaluation_criteria` — the delimiter wrapping guards against injection from either the persona body or the review target. See `persona-format.md` "Security Contract: Criteria Delimiters (Security M1)" for the full mechanism.
+**Author implication:** the Mission IS an instruction and must be authored as one, so only trusted persona authors may write it. Criteria and Context Files remain data: it is safe to reference sensitive examples, file:line code citations, or proprietary domain logic in them — the delimiter wrapping guards against injection from either the persona body or the review target. See `persona-format.md` "Security Contract: Criteria Delimiters (Security M1)" for the full mechanism.
 
 ## Cross-Links
 

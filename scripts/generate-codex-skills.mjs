@@ -7,7 +7,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { toPortableFrontmatter } from './generate-agents-skills.mjs';
 import { isUserInvocableSkill } from './lib/user-invocable-skills.mjs';
 import { isHiddenSourceName } from './lib/plugin-surface.mjs';

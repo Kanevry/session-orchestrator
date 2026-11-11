@@ -59,7 +59,7 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import YAML from 'js-yaml';
+import * as YAML from 'js-yaml';
 
 import { expandTilde } from './common.mjs';
 
@@ -136,10 +136,8 @@ function _readMocStalenessDays(filePath, nowMs) {
 
   if (!fm || typeof fm !== 'object' || Array.isArray(fm)) return NaN;
 
-  // js-yaml's default schema auto-resolves an ISO-8601-shaped scalar (the
-  // canonical `updated:` form) into a native `Date`, NOT a string — verified:
-  // `YAML.load('updated: 2026-01-01T00:00:00Z').updated instanceof Date`.
-  // Accept both shapes; anything else (missing, number, array, …) excludes.
+  // js-yaml 5 loads an ISO-8601-shaped `updated:` as a string (v4 gave a
+  // `Date`; CORE_SCHEMA has no timestamp type). A `Date` is still accepted; anything else (missing, number, array, …) excludes.
   const rawUpdated = fm.updated;
   let updatedMs;
   if (rawUpdated instanceof Date) {

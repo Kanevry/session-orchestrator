@@ -56,6 +56,7 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { kontextK, measureContext } from './lib/context-threshold.mjs';
 import { emitEvent } from './lib/events.mjs';
 import {
   checkinPath,
@@ -67,9 +68,11 @@ import {
   utcSecondsTimestamp,
   validateCheckin,
 } from './lib/fleet-protocol.mjs';
+import { renameWithRetry } from './lib/io.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { openNoFollow } from './lib/no-follow-open.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
+import { encodeProjectDir } from './lib/skill-evidence-window.mjs';
 
 const PREFIX = 'fleet-checkin:';
 
@@ -101,7 +104,8 @@ export async function writeCheckinFile(target, record, { open = openNoFollow, on
   await fs.mkdir(navigatorDir(), { recursive: true, mode: 0o700 });
   await fs.mkdir(checkinDir, { recursive: true, mode: 0o700 });
   const st = await fs.lstat(checkinDir);
-  if (!st.isDirectory()) throw new Error(`${checkinDir} is not a directory`);
+  // A code, not a path: main() reports only `code` + basename (stderr lands in transcripts).
+  if (!st.isDirectory()) throw Object.assign(new Error('checkin/ is not a directory'), { code: 'ENOTDIR' });
   // mkdir's mode does not apply to a directory that already existed.
   await fs.chmod(checkinDir, 0o700);
 
@@ -150,14 +154,16 @@ export async function writeCheckinFile(target, record, { open = openNoFollow, on
     }
     if (typeof existing?.repo === 'string' && existing.repo !== record.repo) {
       await fs.rm(tmp, { force: true });
-      process.stderr.write(`${PREFIX} check-in key ${path.basename(target, '.json')} (session ${record.session}) is already occupied by another repo: ${JSON.stringify(existing.repo)}\n`);
+      process.stderr.write(`${PREFIX} check-in key ${path.basename(target, '.json')} (session ${record.session}) is already occupied by another repo: ${JSON.stringify(path.basename(existing.repo))}\n`);
       onRefused?.('occupied');
       return false;
     }
     // BV-004 ceiling: protects an already-visible foreign check-in, not concurrent
     // writers between read and rename; revisit with atomic coordination when a
     // simultaneous cross-repo collision is observed.
-    await fs.rename(tmp, target);
+    // Shared primitive (#1865): win32 rename retry; the tmp is staged above
+    // (`wx`, 0600, pre-rename guard), so no whole-file writer fits here.
+    await renameWithRetry(tmp, target);
     return true;
   } catch (err) {
     await fs.rm(tmp, { force: true }).catch(() => {});
@@ -180,13 +186,33 @@ async function main() {
   }
 
   const record = { ...input, zeit: utcSecondsTimestamp() };
-  // A process-local witness replaces a shared one (#1839). The platform-selected
-  // reader yields nothing when an inherited Claude id contradicts a Codex one.
-  // BV-004 ceiling: a non-harness child that inherits ONLY CLAUDE_CODE_SESSION_ID
-  // still stamps its parent's UUID (the repo check confines any mix-up to one
-  // repo); revisit when a harness without its own id env runs this CLI.
+  // A process-local witness replaces a shared one (#1839, #1845). Precedence:
+  // the native id from readProcessLocalSessionIds() overrides an input
+  // `session_uuid`; with no native id the input value is kept and validated.
+  // The reader confirms the platform: SO_PLATFORM=claude reads only
+  // CLAUDE_CODE_SESSION_ID, =codex only CODEX_THREAD_ID, =cursor/pi neither — so
+  // a declared Codex child that inherited the parent's Claude id stamps nothing.
+  // Unset SO_PLATFORM still stamps the single id present (none when the two
+  // contradict): no Claude hook command sets SO_PLATFORM (hooks/hooks.json),
+  // and hook env never reaches the Bash shell this CLI runs in, so requiring it
+  // would drop the UUID from every Claude Code check-in.
+  // BV-004 ceiling: a child with unset SO_PLATFORM that inherits ONLY
+  // CLAUDE_CODE_SESSION_ID still stamps its parent's UUID (the repo check
+  // confines any mix-up to one repo); revisit when harness shells export SO_PLATFORM.
   const [nativeId] = readProcessLocalSessionIds();
   if (isNativeUuid(nativeId)) record.session_uuid = nativeId;
+  if (!Object.hasOwn(input, 'kontext_k')) {
+    const ownClaudeSession = isNativeUuid(nativeId)
+      && nativeId === process.env.CLAUDE_CODE_SESSION_ID?.trim()
+      && !['codex', 'cursor', 'pi'].includes(process.env.SO_PLATFORM?.trim());
+    // BV-004 ceiling: Claude's standard transcript layout only; revisit if the
+    // harness relocates it. Use cwd (including worktrees), never a peer's lock
+    // or newest transcript as a fallback when this session cannot be measured.
+    const transcript = ownClaudeSession
+      ? path.join(os.homedir(), '.claude', 'projects', encodeProjectDir(process.cwd()), `${nativeId}.jsonl`)
+      : undefined;
+    record.kontext_k = kontextK(measureContext(transcript));
+  }
   const errors = validateCheckin(record);
   if (errors.length > 0) {
     for (const e of errors) process.stderr.write(`${PREFIX} ${e}\n`);
@@ -219,7 +245,7 @@ async function main() {
       );
     } catch (err) {
       process.stderr.write(
-        `${PREFIX} WARN: checkin_rejected event emission failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        `${PREFIX} WARN: checkin_rejected event emission failed: ${err?.code ?? 'EUNKNOWN'} (${path.basename(repoRoot)})\n`,
       );
     }
   };
@@ -244,7 +270,9 @@ async function main() {
   } catch (err) {
     // A retry that throws after a refusal still counts the refusal.
     if (refused) await emitRejected(refused, 'none');
-    process.stderr.write(`${PREFIX} write failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    // Code + basename only: err.message carries absolute paths (home dir) into transcripts.
+    const code = err && typeof err === 'object' && typeof err.code === 'string' ? err.code : 'EUNKNOWN';
+    process.stderr.write(`${PREFIX} write failed: ${code} (${path.basename(target)})\n`);
     return 1;
   }
 
@@ -271,7 +299,7 @@ async function main() {
   } catch (err) {
     event = false;
     process.stderr.write(
-      `${PREFIX} WARN: check-in written but event emission failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      `${PREFIX} WARN: check-in written but event emission failed: ${err?.code ?? 'EUNKNOWN'} (${path.basename(repoRoot)})\n`,
     );
   }
 
@@ -297,7 +325,7 @@ if (isMainModule(import.meta.url)) {
   main().then(
     (code) => { process.exitCode = code; },
     (err) => {
-      process.stderr.write(`${PREFIX} ${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(`${PREFIX} ${err?.code ?? 'EUNKNOWN'} (${path.basename(err?.path ?? 'fleet-checkin.mjs')})\n`);
       process.exitCode = 1;
     },
   );

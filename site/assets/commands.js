@@ -1,6 +1,6 @@
 /* /commands: tool switcher and filter. Progressive enhancement: without JS
-   both controls stay hidden, every card shows the forms for all four tools
-   and all 31 cards are visible.
+   both controls stay hidden, every card shows the forms for all four tools,
+   all 31 cards are visible and every card is fully open.
 
    Tool switcher: the buttons pick Claude Code, Codex, Cursor or Pi. Each
    card's "Type it" list then shows only that tool's form. Command mentions
@@ -14,6 +14,12 @@
 
    Filter: every search term must appear somewhere in a card's text for the
    card to stay visible. The index is rebuilt after each tool switch.
+
+   Collapsed cards: cards outside "Start here" shrink to their title and
+   first fact (.is-collapsed, set only here; the hiding lives in
+   commands.css). Each gets a real button. A link or hash to a card opens it,
+   an active search opens the matches, and clearing the search restores what
+   the reader had open. The form rows keep their own hidden attribute.
 
    Language: every string this script writes comes from UI below, German
    when <html lang> starts with "de" (/de/commands), English otherwise. The
@@ -30,6 +36,10 @@
       count: function (shown, total) {
         return shown + ' of ' + total + ' commands';
       },
+      toggle: 'Details',
+      toggleName: function (name) {
+        return 'Details for /' + name;
+      },
     },
     de: {
       showing: function (tool) {
@@ -37,6 +47,10 @@
       },
       count: function (shown, total) {
         return shown + ' von ' + total + ' Befehlen';
+      },
+      toggle: 'Details',
+      toggleName: function (name) {
+        return 'Details zu /' + name;
       },
     },
   };
@@ -165,6 +179,66 @@
     });
   }
 
+  /* ---------- Collapsed cards ---------- */
+  // open: the reader's own state. searchClosed: closed by hand during the
+  // current search only, so a search never changes what open remembers.
+  const collapsible = [];
+  const collapsibleById = {};
+  let searching = false;
+
+  function renderCollapse() {
+    collapsible.forEach(function (item) {
+      const expanded = searching ? !item.searchClosed : item.open;
+      item.card.classList.toggle('is-collapsed', !expanded);
+      item.button.setAttribute('aria-expanded', String(expanded));
+    });
+  }
+
+  function setSearching(on) {
+    if (on === searching) return;
+    searching = on;
+    if (!on) {
+      collapsible.forEach(function (item) {
+        item.searchClosed = false;
+      });
+    }
+    renderCollapse();
+  }
+
+  function revealCard(id) {
+    const item = Object.prototype.hasOwnProperty.call(collapsibleById, id) ? collapsibleById[id] : null;
+    if (!item) return;
+    item.open = true;
+    item.searchClosed = false;
+    renderCollapse();
+  }
+
+  cards.forEach(function (card) {
+    if (card.closest('#start-here')) return;
+    const title = card.querySelector('h3');
+    const facts = card.querySelector('dl.cmd-facts');
+    if (!title || !facts) return;
+    const name = card.getAttribute('data-command');
+    facts.id = card.id + '-facts';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'cmd-toggle';
+    button.textContent = ui.toggle;
+    button.setAttribute('aria-label', ui.toggleName(name));
+    button.setAttribute('aria-controls', facts.id);
+    const item = { card: card, button: button, open: false, searchClosed: false };
+    button.addEventListener('click', function () {
+      if (searching) item.searchClosed = !item.searchClosed;
+      else item.open = !item.open;
+      renderCollapse();
+    });
+    title.insertAdjacentElement('afterend', button);
+    card.classList.add('has-toggle');
+    collapsible.push(item);
+    collapsibleById[card.id] = item;
+  });
+  renderCollapse();
+
   /* ---------- Filter ---------- */
   const box = document.getElementById('cmd-filter-box');
   const input = document.getElementById('cmd-filter');
@@ -182,6 +256,7 @@
 
     const apply = function () {
       const terms = input.value.toLowerCase().trim().split(/\s+/).filter(Boolean);
+      setSearching(terms.length > 0);
       let shown = 0;
       cards.forEach(function (card, i) {
         const hit = terms.every(function (t) {
@@ -197,10 +272,18 @@
       if (empty) empty.hidden = shown !== 0;
     };
 
-    // textContent includes hidden forms, so every tool's form stays findable.
+    // textContent includes hidden forms and collapsed facts, so all of it stays
+    // findable. The toggle is left out: its label would match every card.
+    const searchText = function (card) {
+      const copy = card.cloneNode(true);
+      const toggle = copy.querySelector('.cmd-toggle');
+      if (toggle) toggle.remove();
+      return copy.textContent;
+    };
+
     reindex = function () {
       texts = cards.map(function (c) {
-        return c.textContent.toLowerCase().replace(/\s+/g, ' ');
+        return searchText(c).toLowerCase().replace(/\s+/g, ' ');
       });
       apply();
     };
@@ -221,4 +304,38 @@
     if (status) status.textContent = ui.showing(TOOLS[initialTool]);
     switcher.hidden = false;
   }
+
+  /* ---------- Links to collapsed cards ---------- */
+  if (collapsible.length) {
+    const hashId = function () {
+      return window.location.hash.slice(1);
+    };
+
+    // Runs before the browser follows the link, so the card is open when it
+    // scrolls; also covers a link to the hash that is already current.
+    document.addEventListener('click', function (e) {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const link = e.target.closest('a[href^="#"]');
+      if (link) revealCard(link.getAttribute('href').slice(1));
+    });
+
+    window.addEventListener('hashchange', function () {
+      const id = hashId();
+      revealCard(id);
+      const el = document.getElementById(id);
+      if (el) el.scrollIntoView();
+    });
+
+    // Collapsing moved everything below the fold, so the position the browser
+    // computed for the fragment on load is stale whatever the target is.
+    const initial = hashId();
+    if (initial) {
+      revealCard(initial);
+      const el = document.getElementById(initial);
+      if (el) el.scrollIntoView({ behavior: 'instant' });
+    }
+  }
+
+  // Test seam (tests/site/commands-rewrite.test.mjs, #1879): inert in the browser.
+  if (typeof window.__soTest === 'function') window.__soTest({ MENTION, rewrite, prefixes });
 })();

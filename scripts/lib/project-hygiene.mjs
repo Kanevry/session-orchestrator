@@ -43,12 +43,12 @@
 
 import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './command-blocker.mjs';
 import { parsePorcelainEntries } from './git-porcelain.mjs';
 import { execFileSync } from './native-command.mjs';
 
-/** Commits past the newest tag before release hygiene is worth mentioning. */
+/** Commits on HEAD past its nearest reachable tag before release hygiene is worth mentioning. */
 export const DEFAULT_RELEASE_DRIFT_COMMITS = 50;
 /** Megabytes of ignored working-tree mass before it is worth mentioning. */
 export const DEFAULT_BALLAST_MB = 500;
@@ -81,7 +81,7 @@ function git(args, cwd) {
  * Measured 6/6. The severe real-world case: 980 commits, live in production,
  * zero release tags, CHANGELOG frozen 460 commits back — no rollback anchor.
  * Distinguishes "no tags at all" from "tags exist but HEAD has run far past
- * the newest one", because the remedies differ.
+ * the nearest reachable one", because the remedies differ.
  *
  * @param {string} repoRoot
  * @param {number} driftCommits
@@ -105,7 +105,7 @@ export function checkReleaseHygiene(repoRoot, driftCommits = DEFAULT_RELEASE_DRI
     };
   }
 
-  // `describe` fails when no ANNOTATED tag is reachable; fall back to any tag.
+  // `--tags` includes lightweight tags; describe measures only local HEAD history.
   const described = git(['describe', '--tags', '--abbrev=0'], repoRoot);
   if (!described) {
     return {
@@ -118,10 +118,15 @@ export function checkReleaseHygiene(repoRoot, driftCommits = DEFAULT_RELEASE_DRI
   const since = Number(git(['rev-list', '--count', `${described}..HEAD`], repoRoot));
   if (!Number.isFinite(since) || since < driftCommits) return null;
 
+  // lead report 2026-11-10: cached upstream distance qualifies a stale local HEAD.
+  const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], repoRoot);
+  const behind = upstream ? Number(git(['rev-list', '--count', 'HEAD..@{upstream}'], repoRoot)) : 0;
+  const staleHead = behind > 0
+    ? ` (HEAD is behind ${upstream} by ${behind}; fetch tags/pull before judging)` : '';
   return {
     check: 'release-hygiene',
     fixable: false,
-    message: `${since} commits since the newest tag (${described}) — release identity is ${since} commits stale`,
+    message: `${since} commits on HEAD since the nearest reachable tag ${described}${staleHead}`,
   };
 }
 
@@ -560,13 +565,28 @@ export function checkCiConfig(repoRoot) {
     }
   }
 
-  if (ciConfigs.some(({ text }) => text) && !ciConfigs.some(hasAuditStep)) {
+  if (ciConfigs.some(({ text }) => text) && !ciConfigs.some((config) => hasAuditStep(config))) {
+    // lead report 2026-11-10: an audit wrapper is evidence to verify, not a missing job to add.
+    let auditHint;
+    ciConfigs.some((config) => hasAuditStep(config, (command, job) => {
+      if (!/\baudit\b/i.test(job) && !/\baudit\b/i.test(command)) return false;
+      auditHint = { command, job };
+      return true;
+    }));
+    if (auditHint) {
+      findings.push({
+        check: 'ci-audit-job',
+        fixable: false,
+        message: `CI audit step not recognised (job ${auditHint.job} runs ${auditHint.command}) — verify it audits dependencies`,
+      });
+      return findings;
+    }
     // Jobs supplied via include: (component/local/project/remote/template) are
     // never resolved, so an audit may exist there — report it as unverifiable.
     let includes = 0;
     try {
       const gitlabText = hasGitlab ? ciConfigs[0].text : '';
-      const include = yaml.loadAll(gitlabText, undefined, { schema: GITLAB_SCHEMA }).filter(isConfigMap).at(-1)?.include;
+      const include = yaml.loadAll(gitlabText, { schema: GITLAB_SCHEMA }).filter(isConfigMap).at(-1)?.include;
       includes = Array.isArray(include) ? include.length : include ? 1 : 0;
     } catch {
       /* unparseable config — keep the plain missing-audit finding */
@@ -595,12 +615,17 @@ const GITLAB_GLOBAL_FIELDS = new Set([
   'image', 'services', 'cache', 'before_script', 'after_script', 'spec',
 ]);
 const GITLAB_REFERENCE = Symbol('gitlab-reference');
-const GITLAB_SCHEMA = yaml.DEFAULT_SCHEMA.extend([
-  new yaml.Type('!reference', {
-    kind: 'sequence',
-    construct: (path) => ({ [GITLAB_REFERENCE]: path }),
+// js-yaml 5 (#2015): the loader default is CORE_SCHEMA without `<<` merge keys
+// (v4's DEFAULT_SCHEMA had them), and `Type` became `defineSequenceTag`.
+const GITLAB_SCHEMA = yaml.CORE_SCHEMA.withTags(
+  yaml.mergeTag,
+  yaml.defineSequenceTag('!reference', {
+    create: () => [],
+    addItem: (path, item) => { path.push(item); },
+    finalize: (path) => ({ [GITLAB_REFERENCE]: path }),
+    identify: () => false,
   }),
-]);
+);
 const AUDIT_VALUE_FLAGS = new Set([
   '--filter', '-F', '--dir', '-C', '--prefix', '--cwd', '--registry',
   '--userconfig', '--globalconfig', '--workspace', '-w', '--cache', '--pm-on-fail',
@@ -614,11 +639,11 @@ const RUNNER_SUBCOMMANDS = { uvx: [], pipx: ['run'], uv: ['tool', 'run'] };
 const RUNNER_VALUE_FLAGS = new Set(['--from', '--spec', '--python', '-p', '--with']);
 
 /** Inspect executable job/step locations, never arbitrary keys named run/script. */
-function hasAuditStep({ text, platform }) {
+function hasAuditStep({ text, platform }, recognise = hasAuditCommand) {
   let config;
   try {
     if (platform === 'gitlab') {
-      const documents = yaml.loadAll(text, undefined, { schema: GITLAB_SCHEMA });
+      const documents = yaml.loadAll(text, { schema: GITLAB_SCHEMA });
       if (documents.length === 1) {
         [config] = documents;
       } else if (documents.length === 2 && isConfigMap(documents[0])
@@ -638,10 +663,10 @@ function hasAuditStep({ text, platform }) {
   if (!isConfigMap(config)) return false;
   if (platform === 'github') {
     if (!isConfigMap(config.jobs)) return false;
-    return Object.values(config.jobs).some((job) => isConfigMap(job)
+    return Object.entries(config.jobs).some(([name, job]) => isConfigMap(job)
       && job.if !== false && Array.isArray(job.steps)
       && job.steps.some((step) => isConfigMap(step) && step.if !== false
-        && typeof step.run === 'string' && hasAuditCommand(step.run)));
+        && typeof step.run === 'string' && recognise(step.run, name)));
   }
 
   return Object.keys(config).some((name) => {
@@ -655,7 +680,7 @@ function hasAuditStep({ text, platform }) {
         if (inherit === false || (Array.isArray(inherit) && !inherit.includes(field))) return false;
         commands = Object.hasOwn(config.default ?? {}, field) ? config.default[field] : config[field];
       }
-      return hasGitlabAuditCommands(commands, config);
+      return hasGitlabAuditCommands(commands, config, (command) => recognise(command, name));
     });
   });
 }
@@ -694,10 +719,10 @@ function mergeGitlabJob(parent, child) {
 }
 
 /** Resolve only command strings/arrays and local !reference paths, with cycle guards. */
-function hasGitlabAuditCommands(commands, config) {
+function hasGitlabAuditCommands(commands, config, recognise) {
   const seen = new WeakSet();
   function visit(value) {
-    if (typeof value === 'string') return hasAuditCommand(value);
+    if (typeof value === 'string') return recognise(value);
     if (!value || typeof value !== 'object' || seen.has(value)) return false;
     seen.add(value);
     let found = false;
@@ -853,6 +878,13 @@ export function checkEnvDocumentation(repoRoot) {
 const SESSIONS_LEDGER_REL = '.orchestrator/metrics/sessions.jsonl';
 
 /**
+ * The projects-baseline `.gitignore` block that keeps the ledgers tracked on
+ * purpose: a comment line carrying the `baseline:orchestrator` block marker, or
+ * the block's own sentence. Either one documents the consumer decision (#1851).
+ */
+const BASELINE_LEDGER_DECISION_RE = /^\s*#.*\bbaseline:orchestrator\b|Persistent records stay TRACKED/m;
+
+/**
  * H6 — Tracked session ledger (#1666).
  *
  * A repo that TRACKS `.orchestrator/metrics/sessions.jsonl` gets one commit-worthy
@@ -861,12 +893,19 @@ const SESSIONS_LEDGER_REL = '.orchestrator/metrics/sessions.jsonl';
  * runs it. `fixable: false`: untracking changes what the repo shares with
  * every clone, an owner decision, not batch work.
  *
+ * Returns `null` when the repo's `.gitignore` carries the projects-baseline
+ * `baseline:orchestrator` block: that block states the ledgers stay tracked as
+ * session history, so the consumer decision is explicit and the hint must not
+ * recommend an index write that contradicts it (#1851). Only the root
+ * `.gitignore` is read — the block lives there, never in `.git/info/exclude`.
+ *
  * @param {string} repoRoot
  * @returns {object|null}
  */
 export function checkTrackedSessionsLedger(repoRoot) {
   // `--error-unmatch` exits non-zero (→ null) when the path is not tracked.
   if (git(['ls-files', '--error-unmatch', '--', SESSIONS_LEDGER_REL], repoRoot) === null) return null;
+  if (BASELINE_LEDGER_DECISION_RE.test(safeRead(join(repoRoot, '.gitignore')))) return null;
   return {
     check: 'tracked-sessions-ledger',
     fixable: false,

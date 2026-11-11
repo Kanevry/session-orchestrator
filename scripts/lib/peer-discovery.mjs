@@ -40,7 +40,10 @@
  * open independently:
  *   - discoverActiveSessions rejects/throws  → contribute empty discovered list.
  *   - checkPeerStateMd throws (it shouldn't)  → contribute no state-md entry.
- *   - Worst case returns `{ peers: [] }`.
+ *   - Worst case returns `{ peers: [], discoveryGap: 'discovery-failed' }`.
+ * Fail-open is not silence (#1946): when the lock+registry surface did not
+ * read everything, the result carries `discoveryGap` (see findPeers JSDoc);
+ * the key is ABSENT only after a complete read.
  *
  * ---------------------------------------------------------------------------
  * Second export: checkLiveForeignSession (Issue #908)
@@ -63,7 +66,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-import { discoverActiveSessions } from './session-discovery.mjs';
+import { discoverActiveSessionsMeasured } from './session-discovery.mjs';
 import { readLock, isLockLive, LOCK_PATH } from './session-lock.mjs';
 import { checkPeerStateMd } from './state-md-peer-guard.mjs';
 import { listWorktreesChecked } from './worktree/listing.mjs';
@@ -198,7 +201,12 @@ function _discoveredSelfSessionId(mySessionId, repoRoot) {
  * @param {number}      [opts.maxAgeHours]      STATE.md abandonment threshold (hours).
  * @param {Function}    [opts.listWorktreesImpl] DI seam for discoverActiveSessions.
  * @param {Function}    [opts.registryReader]    DI seam for discoverActiveSessions.
- * @returns {Promise<{ peers: Array<object> }>} Each peer carries `source` +
+ * @returns {Promise<{ peers: Array<object>, discoveryGap?: 'worktrees-unlisted'|'registry-unread'|'discovery-failed' }>}
+ *   `discoveryGap` (#1946) names a lock+registry read that did NOT complete —
+ *   the peer list is then a subset, never a measured "nobody else": the
+ *   worktree listing failed or lost its race (only the local lock read, the
+ *   registry not at all), the registry directory could not be listed, or
+ *   discovery itself threw. ABSENT after a complete read. Each peer carries `source` +
  *   `sessionId` + (when parseable) `ageHours`. The remaining fields are
  *   per-source — only the fields the originating surface can supply are emitted
  *   (no field is advertised that the implementation does not set):
@@ -218,19 +226,24 @@ export async function findPeers(repoRoot, opts = {}) {
   const discoveredSelfSessionId = _discoveredSelfSessionId(mySessionId, repoRoot);
 
   const peers = [];
+  /** @type {null|'worktrees-unlisted'|'registry-unread'|'discovery-failed'} */
+  let discoveryGap = null;
 
   // ------------------------------------------------------------------
   // Surface A+B — lock + registry (already unioned by discoverActiveSessions).
-  // Fail open: a throw/reject contributes nothing.
+  // Fail open: a throw/reject contributes nothing, but the gap is reported.
   // ------------------------------------------------------------------
   try {
-    const discovered = await discoverActiveSessions(repoRoot, {
+    const measured = await discoverActiveSessionsMeasured(repoRoot, {
       now: nowMs,
       freshnessMin: opts.freshnessMin,
       maxAgeHours: opts.maxAgeHours,
       listWorktreesImpl: opts.listWorktreesImpl,
       registryReader: opts.registryReader,
     });
+    const discovered = measured?.sessions;
+    if (measured?.worktreesListed === false) discoveryGap = 'worktrees-unlisted';
+    else if (measured?.registryRead === false) discoveryGap = 'registry-unread';
     if (Array.isArray(discovered)) {
       for (const s of discovered) {
         // Self-exclusion (#798, #1085): discovered entries carry raw ids. A
@@ -258,6 +271,7 @@ export async function findPeers(repoRoot, opts = {}) {
   } catch {
     // discoverActiveSessions is internally fail-open, but we defend against an
     // unexpected reject (e.g. a throwing DI seam) so findPeers never rejects.
+    discoveryGap = 'discovery-failed';
   }
 
   // ------------------------------------------------------------------
@@ -286,7 +300,7 @@ export async function findPeers(repoRoot, opts = {}) {
     // state-md entry on the off chance it regresses.
   }
 
-  return { peers };
+  return discoveryGap === null ? { peers } : { peers, discoveryGap };
 }
 
 // ===========================================================================
@@ -599,12 +613,14 @@ async function _confirmWorktreeListRan(opts) {
  * `live: false` after measuring nothing, i.e. exactly the invariant above
  * inverted on the branch that runs most often.
  *
- * Decision (#908 F3): do NOT plumb a degraded flag through findPeers. The
- * fail-open behaviour that hides the failure lives one and two layers further
- * down (`discoverActiveSessions` catches and falls back; `listWorktrees`
- * returns `[]` on git failure), so a flag on findPeers would only ever report
- * failures injected through a test seam — green tests, zero production effect.
- * Instead the verdict is validated against a signal this function already
+ * Decision (#908 F3), revised by #1946: #908 declined a degraded flag on
+ * findPeers because the failures it would carry were then only reachable
+ * through a test seam. That no longer holds: `discoverActiveSessionsMeasured()`
+ * reports a lost worktree race and an unlistable registry (EACCES, ENOTDIR,
+ * EMFILE — `readRegistryStrict()`) in production, and findPeers passes them on
+ * as `discoveryGap`. A negative verdict over a gapped read is degraded (see
+ * the branch below). The canary stays for the case the gap cannot name — a
+ * git failure `listWorktrees` turns into `[]`. The verdict is validated against a signal this function already
  * holds: **when our own lock is live, the discovered surface MUST have returned
  * our own entry.** `discoverActiveSessions` reads this worktree's lock either
  * via `git worktree list` or, when that throws/times out, via its A1
@@ -746,6 +762,14 @@ export async function checkLiveForeignSession(repoRoot, opts = {}) {
     const livePeers = discoveredAll.filter((p) => !selfIds.has(p.sessionId));
 
     if (livePeers.length === 0) {
+      // #1946 — the discovered surface itself reports an incomplete read
+      // (worktree race lost → registry and sibling worktrees unread, or the
+      // registry directory unlistable). "No peers" over a subset is not a
+      // measurement → fail safe, before the canary below could vouch for it
+      // with our own lock (which the A1 fallback still reads).
+      if (result?.discoveryGap) {
+        return _verdict(true, 'probe-degraded', PROBE_FULL_DEGRADED);
+      }
       // Falle 4 — the full path's negative verdict needs a liveness proof of
       // its own. findPeers fails open per surface and returns ONLY `{ peers }`,
       // so "both surfaces broke" and "measured, nobody home" are the same

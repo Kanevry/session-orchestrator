@@ -111,10 +111,11 @@ function readLockIds(repoRoot) {
  *     `parent_session_id` is in tier 1 too, but a payload that carries only
  *     `session_id` still hid the coordinator's env/lock ids behind the gate.
  *   - **Peer-owned lock.** A second session that failed to acquire the lock
- *     (`bootstrapLock()` reason `active`, the lock keeps the PEER's id) writes
- *     that peer id into its OWN manifest via `sessionAttribution()`. Its own
- *     hook then read the payload tier, never reached the lock, and disarmed
- *     itself against the manifest it had just written.
+ *     (`bootstrapLock()` reason `active`, the lock keeps the PEER's id) wrote
+ *     that peer id into its OWN manifest, taken from the lock without a
+ *     process-local check. Its own hook then read the payload tier, never
+ *     reached the lock, and disarmed itself against the manifest it had just
+ *     written.
  *
  * **The security direction is unchanged: the union only ADDS ids this process
  * actually carries.** A manifest whose id appears in NO tier — not the
@@ -232,17 +233,49 @@ export function readProcessLocalSessionIds({ env = process.env, hookInput = null
 }
 
 /**
+ * Wall-clock budget for ONE `ps` hop of the ancestry walk (#1951). The old
+ * 1000 ms timed out on a loaded host and refused a valid acknowledgement:
+ * a hop normally costs 3–16 ms, but the first exec of a newly written
+ * executable paid 50–548 ms on an M4 at load ~8 (2026-11-05), only ~2x
+ * short of the old budget. A timeout still fails closed, so the budget only
+ * decides how long a slow host is given; it never accepts weaker evidence.
+ * Ceiling: only the operator-invoked /templates-ack CLI walks (no hook), so a
+ * stalled hop costs at most 5 s once. Revisit if a hook ever calls the walk.
+ */
+const PS_HOP_TIMEOUT_MS = 5000;
+
+/**
  * Read only process parent/name metadata, never command arguments or env.
  * @param {number} pid
+ * @param {(why: string) => void} [note] — told WHY a null came back (#1951);
+ *   carries a class only, never the output itself.
+ * @param {number} [timeoutMs] — per-hop budget; tests shorten it.
  * @returns {{ ppid: number, comm: string } | null}
  */
-function readProcessParent(pid) {
+function readProcessParent(pid, note, timeoutMs = PS_HOP_TIMEOUT_MS) {
   const output = execFileSync('ps', ['-p', String(pid), '-o', 'ppid=,comm='], {
-    encoding: 'utf8', timeout: 1000, maxBuffer: 2048,
+    encoding: 'utf8', timeout: timeoutMs, maxBuffer: 2048,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const match = /^\s*(\d+)\s+(\S+)\s*$/.exec(output);
+  if (!match) note?.(output.trim() ? 'ps unparsable output' : 'ps empty output');
   return match ? { ppid: Number(match[1]), comm: match[2] } : null;
+}
+
+/**
+ * Name the failure class of a thrown `ps` / session read without echoing its
+ * message, output or path (SEC-008): ETIMEDOUT, signal, exit status, errno.
+ * @param {unknown} error
+ * @returns {string}
+ */
+function describeReadError(error) {
+  const err = /** @type {{ code?: unknown, signal?: unknown, status?: unknown, name?: unknown }} */ (error ?? {});
+  if (err.code === 'ETIMEDOUT') return 'timeout';
+  if (typeof err.signal === 'string' && err.signal) return `killed by ${err.signal}`;
+  if (typeof err.status === 'number') return `exit ${err.status}`;
+  if (typeof err.code === 'string' && err.code) return `error ${err.code}`;
+  if (err.name === 'SyntaxError') return 'unparsable';
+  return 'error';
 }
 
 /**
@@ -277,49 +310,80 @@ function createWindowsProcessReader(readTable) {
  * never proof here. Stop at the nearest Claude even when its session is unreadable.
  * Missing, contradictory or unmeasurable evidence returns null; never throws.
  * Reader injection permits deterministic fixtures when native ps is unavailable.
+ * `onMiss(reason)` is told WHY a null came back (#1951) — the hop/pid reached
+ * and a failure class, never env values or file contents. It is diagnostic
+ * only: it cannot change the result, and a throwing callback is ignored.
  *
  * @param {{ env?: object, pid?: number, homeDir?: string, platform?: string,
  *   readTable?: () => Array<object>,
- *   readProcess?: (pid: number) => { ppid: number, comm: string } | null,
- *   readSession?: (pid: number) => unknown }} [opts]
+ *   readProcess?: (pid: number, note?: (why: string) => void) => { ppid: number, comm: string } | null,
+ *   readSession?: (pid: number) => unknown,
+ *   onMiss?: (reason: string) => void, psTimeoutMs?: number }} [opts]
+ *   `psTimeoutMs` bounds each default-reader `ps` hop (default 5000 ms, #1951).
  * @returns {string|null}
  */
 export function readInvocationSessionId({
   env = process.env, pid = process.pid, homeDir = homedir(), platform = process.platform,
+  psTimeoutMs = PS_HOP_TIMEOUT_MS,
   readTable = () => readWindowsProcessTable({ env }),
-  readProcess = platform === 'win32' ? createWindowsProcessReader(readTable) : readProcessParent,
+  readProcess = platform === 'win32'
+    ? createWindowsProcessReader(readTable)
+    : (hopPid, note) => readProcessParent(hopPid, note, psTimeoutMs),
   readSession = (ancestorPid) => JSON.parse(readFileSync(
     path.join(homeDir, '.claude', 'sessions', `${ancestorPid}.json`), 'utf8',
   )),
+  onMiss = null,
 } = {}) {
   const seen = new Set();
+  let depth = 0;
+  let stage = 'ps';
+  const miss = (reason) => {
+    try { onMiss?.(reason); } catch { /* diagnostics never change the decision */ }
+    return null;
+  };
+  const at = () => `at pid ${pid}, hop ${depth}`;
   try {
-    for (let depth = 0; depth < 64; depth++) {
-      if (!Number.isSafeInteger(pid) || pid <= 0 || seen.has(pid)) return null;
+    for (; depth < 64; depth++) {
+      if (!Number.isSafeInteger(pid) || pid <= 0) return miss(`no claude ancestor (walk ended ${at()})`);
+      if (seen.has(pid)) return miss(`ancestry cycle ${at()}`);
       seen.add(pid);
-      const processInfo = readProcess(pid);
-      if (!processInfo || !Number.isSafeInteger(processInfo.ppid) || processInfo.ppid < 0 ||
-          seen.has(processInfo.ppid) || typeof processInfo.comm !== 'string' || !processInfo.comm.trim()) return null;
+      stage = 'ps';
+      let processNote = null;
+      const processInfo = readProcess(pid, (why) => { processNote = why; });
+      if (!processInfo) return miss(`${processNote ?? 'ps returned no process'} ${at()}`);
+      if (!Number.isSafeInteger(processInfo.ppid) || processInfo.ppid < 0 ||
+          typeof processInfo.comm !== 'string' || !processInfo.comm.trim()) return miss(`ps unusable entry ${at()}`);
+      if (seen.has(processInfo.ppid)) return miss(`ancestry cycle ${at()}`);
       // macOS reports comm as argv[0]; a Claude started by absolute path must still count.
       // Windows reports the image name, e.g. claude.exe.
       const image = path.basename(processInfo.comm);
       if (image === 'claude' || (platform === 'win32' && image.toLowerCase() === 'claude.exe')) {
+        stage = 'session';
         const session = readSession(pid);
         const sessionId = typeof session?.sessionId === 'string' ? session.sessionId.trim() : '';
-        if (!sessionId) return null;
+        if (!sessionId) return miss(`session file has no sessionId ${at()}`);
         // Every present native ID must agree; platform selection cannot hide
         // a contradictory inherited ID from a nested harness.
         for (const key of ['CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID']) {
           const value = env?.[key];
           if (value !== undefined && value !== null &&
-              (typeof value !== 'string' || (value.trim() && value.trim() !== sessionId))) return null;
+              (typeof value !== 'string' || (value.trim() && value.trim() !== sessionId))) {
+            return miss(`${key} disagrees with the claude ancestor session ${at()}`);
+          }
         }
         return sessionId;
       }
       pid = processInfo.ppid;
     }
-  } catch { /* Missing process/session evidence must fail closed. */ }
-  return null;
+  } catch (error) {
+    // Missing process/session evidence must fail closed.
+    const why = describeReadError(error);
+    if (stage === 'session') {
+      return miss(`session file ${why === 'error ENOENT' ? 'missing' : why === 'unparsable' ? 'unparsable' : `unreadable (${why})`} ${at()}`);
+    }
+    return miss(`ps ${why} ${at()}`);
+  }
+  return miss(`no claude ancestor within ${depth} hops`);
 }
 
 /**

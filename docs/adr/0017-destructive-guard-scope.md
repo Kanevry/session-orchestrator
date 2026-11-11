@@ -1,0 +1,367 @@
+# ADR 0017: Scope of the destructive-command guard — what it protects and where it ends
+
+> Status: Accepted · 2026-11-02 (owner decision queue #5975, Option 1; #1834 decided 2026-11-02) · proposed 2026-11-01 · issue #1854
+> Guard family: [`scripts/lib/command-blocker.mjs`](../../scripts/lib/command-blocker.mjs) · [`hooks/pre-bash-destructive-guard.mjs`](../../hooks/pre-bash-destructive-guard.mjs) · [`hooks/pre-bash-sessions-ledger-guard.mjs`](../../hooks/pre-bash-sessions-ledger-guard.mjs) · [`scripts/lib/scope-gate.mjs`](../../scripts/lib/scope-gate.mjs) · policy [`.orchestrator/policy/blocked-commands.json`](../../.orchestrator/policy/blocked-commands.json)
+> Related: [ADR-0011](0011-guard-degradation-semantics.md) decides how the guards degrade on error; this ADR decides what they are for. It does not change ADR-0011.
+> Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md).
+
+## Context
+
+Every closed bypass of the destructive-command guard has produced new follow-up
+issues, and nothing in the repo says which command class the guard is meant to
+cover or where it officially stops. Without a stated boundary each report is
+judged on its own, and the default answer has been "close this one too".
+
+Measured on this working tree (HEAD `308f26fe`, 2026-11-01T21:19Z):
+
+| Measurement | Command | Result |
+|---|---|---|
+| Size of the guard family | `wc -l scripts/lib/command-blocker.mjs hooks/pre-bash-destructive-guard.mjs hooks/pre-bash-sessions-ledger-guard.mjs scripts/lib/scope-gate.mjs` | 3,848 + 2,053 + 2,184 + 2,857 = **10,942 lines** (issue #1854 measured 9,566 on 2026-10-28: +1,376 lines in four days) |
+| Commits on blocker, guard hook and policy | `git log --since=2026-09-28 --oneline HEAD -- scripts/lib/command-blocker.mjs hooks/pre-bash-destructive-guard.mjs .orchestrator/policy/blocked-commands.json \| wc -l` | **55** (issue #1854: 27 against `origin/main` on 2026-10-28) |
+| Same, all four modules plus policy | as above, plus `hooks/pre-bash-sessions-ledger-guard.mjs scripts/lib/scope-gate.mjs` | **82** |
+| October issues with `area:hooks` + `area:security` | `glab api "projects/:id/issues?labels=area:hooks,area:security&per_page=100&created_after=2026-10-01T00:00:00Z&created_before=2026-11-01T00:00:00Z"`, counted with `node` | **25** issues, **18** labelled `follow-up`, 18 closed |
+
+The issue's own counter-finding stands: frequent forms with real damage were
+uncovered until recently — `git clean -fdx` and `git push origin main --force`
+went through the literal word-sequence patterns until #1831 (closed) taught the
+git patterns equivalent flag spellings (`scripts/lib/command-blocker.mjs`, the
+#1831 argv match of git patterns, docblocks at lines 2484–2641 on `308f26fe`). Ending the bypass chase
+must not mean giving up that class.
+
+The other end is just as measured. #1797 records that two fix cycles on the
+worktree guard went from 3 to 5 findings — no strict decrease, so RCR-008
+stopped a third cycle — and that the remaining forms (a payload held in a
+variable, `python -c`, `node -e`, `xargs`, `find -exec`, script files) are not
+read by any guard. They are not bugs in the lexer; a static reader of one
+command string structurally cannot see a payload that only exists at run time.
+
+The structural limits are explicit constants in the code:
+
+- `MAX_PAYLOAD_DEPTH = 3` and `MAX_PAYLOAD_EVALUATIONS = 32` (`scripts/lib/command-blocker.mjs`) bound nested `-c` / `env -S` payload evaluation;
+- `MAX_TOKENIZER_NESTING = 256` (`scripts/lib/command-blocker.mjs`) and `MAX_SCAN_NESTING = 256` (`hooks/pre-bash-sessions-ledger-guard.mjs`) bound lexer nesting;
+- `MAX_DEFAULT_WORD_DEPTH = 8` (`scripts/lib/command-blocker.mjs`) bounds `${x:-…}` default-word expansion; past it the segment is judged as a match (fail-closed).
+
+## Decision
+
+**Option 1: consolidate the existing boundary, close frequent and damaging gaps on purpose, and write the rest down as non-goals.**
+
+### Target class — what the guard protects
+
+The guard protects against **irreversible loss of uncommitted or untracked work,
+and of shared state, in a working copy** — the loss PSA-003 describes ("never
+destroy what you didn't create"). Concretely, by policy rule id in
+`.orchestrator/policy/blocked-commands.json`:
+
+| Damage | Rule ids | Severity |
+|---|---|---|
+| Discarding uncommitted changes | `git-reset-hard`, `git-checkout-discard` | block |
+| Moving HEAD / the index under a parallel session | `git-reset-mixed`, `git-reset-soft` | warn |
+| Deleting untracked (and with `-x`, ignored) files | `git-clean-force`, `git-clean-force-d` | block |
+| Recursive force-removal outside the safe paths (`.orchestrator/tmp`, `node_modules`, `/tmp`, `$TMPDIR`) | `rm-rf-destructive` | block |
+| Rewriting shared remote history | `git-push-force`, `git-push-force-short` (block), `git-push-force-with-lease` (warn) | block / warn |
+| Hiding another session's changes in the shared stash | `git-stash-any` | warn, only when the stash is non-empty (`hooks/pre-bash-destructive-guard.mjs`) |
+| Truncating protected artefacts and the harness memory | `redirect-truncate-protected`, `redirect-harness-memory` | block |
+| Deleting or renaming the append-only ledger under `.orchestrator/` | `ledger-delete-protected` | block |
+| Removing a worktree that holds valuable ignored files, or any forced removal | `worktree-remove-unsafe` | block |
+| Committing or pushing from a worktree whose git hooks are missing (the gitleaks / owner-leakage chain silently does not run) | `git-hooks-missing-in-worktree` | block |
+| Irreversible DDL issued through a shell (`psql -c`) | `sql-drop-table-upper`, `sql-drop-table-lower` | block |
+
+The subagent ban on `git stash` (PSA-007) is a rule, not a mechanism of this
+guard: the guard warns on a non-empty stash for every caller. The DDL rules are
+a legacy baseline outside the working-copy class; they stay, and only their
+literal shell form is in goal.
+
+In goal, for each command above: every **lexical variant the tokenizer can
+read** — quoting and quote removal, brace expansion, `git -C <dir>` and other
+global options, flag grouping and order, long and short spellings (#1831),
+`$"…"` / `$'…'` strings, `bash -c` / `+c` / `-ce` / `-c --` payloads up to the
+depth cap — and every form measured as frequent in real transcripts.
+
+### Non-goals — where the guard ends
+
+The guard does **not** judge payloads it structurally cannot see from the one
+command string it receives:
+
+- a payload held in a variable or produced by a substitution (`p='…'; bash -c "$p"`, `eval "$x"`, a command word assembled from `${x}`);
+- other interpreters (`node -e`, `python -c`, `perl -e`, `ruby -e`);
+- `xargs` and `find -exec` / `-execdir`, and `parallel` (#1925);
+- script files (`bash ./cleanup.sh`, `npm run <script>`, Makefiles);
+- nesting deeper than the measured caps above (3 payload levels, 32 evaluations, 256 lexer levels, 8 default-word levels).
+
+**The guard is a hurdle, not the authority** — the same framing as
+`mods/so-hud/README.md` ("The gates are a hurdle, not the authority"). It stops
+the common and the careless form of a destructive command. The authorities
+remain the harness permission system, the pre-push hook and CI, and they are
+where a hard guarantee must live if one is ever required.
+
+### Decision rule for future bypass reports
+
+A reported bypass is **in goal** when it is
+
+- **(a)** a lexical variant of an in-goal command that the tokenizer can read (quoting, brace expansion, `-C`, flag order or grouping, long/short spelling, `$""`/`$''`, a `-c` payload form), or
+- **(b)** a form measured as frequent in real transcripts (a replay census such as the 316,873-command replay in #1834), or one to which real data loss has been traced.
+
+Everything else is **out of goal**: close the issue as „Nicht-Ziel" with a
+pointer to this ADR. A false deny (the guard refusing a harmless command) is
+not a bypass; it is judged under HR-101 and fixed when it fires measurably.
+
+## Consequences
+
+- **Triage of follow-up issues.** Every guard follow-up is classified once against the decision rule above. In-goal items keep their issue; out-of-goal items are closed „Nicht-Ziel — ADR-0017" in the same pass. A follow-up that mixes both is narrowed to its in-goal part. The first such pass is #1797, #1833, #1834, #1908 and #1915.
+- **The two-cycle stop rule binds here.** After two fix cycles on a guard diff without a strict decrease in findings, the remaining findings are reclassified (RCR-008); out-of-goal findings end the chase rather than open a third cycle. #1797 (3 → 5) is the precedent.
+- **Named ceilings stay named.** Each non-goal form that a rule's rationale or a walker's JSDoc already names as a ceiling (BV-004) points to this ADR instead of carrying its own revisit trigger. The revisit triggers that remain are (b): a census hit at command position, or traced data loss.
+- **Growth should slow, not stop.** In-goal lexical variants will still arrive. The measurable expectation: the share of `follow-up` among October's `area:hooks` + `area:security` issues (18 of 25) falls once out-of-goal reports are closed at triage instead of spawning fix cycles. Revisit trigger: re-measure at the end of 2026-11 with the `glab api` query above; if the follow-up share does not fall, this decision did not take.
+- **Nothing changes for ADR-0011.** Degradation on error (fail-open by protocol, the visible degradation notice) is unchanged; a non-goal is not a degradation.
+- **Status is `accepted`** (2026-11-02): the classification comments are posted and the owner raised no objection; #1834 below is the first in-goal follow-up decided under this ADR.
+
+## Path reset (#1834)
+
+`git checkout <ref> -- <path>` and `git restore` reset paths with the same effect as `git checkout -- <path>`, which rule `git-checkout-discard` blocked alone. The #1834 replay (316,873 commands, 30 days to 2026-10-27) counted 175 × `git checkout <ref> -- <path>`, 6 × `--ours`/`--theirs`/`-m -- <path>`, 7 × in nested payloads; `git restore` hit no rule. Decided 2026-11-02:
+
+- **Same ref — block only on measured damage (Option 2).** `git checkout -- <path>`, `git checkout HEAD -- <path>` (also a ref that resolves to HEAD's commit) and `git restore [--staged] <path>` without a foreign `--source`: the guard runs read-only `git status --porcelain=v1 -z -- <path…>` in the call's directory. A path with uncommitted changes (index or working tree) → deny, naming the safe way (save first, then `git show HEAD:<path> > <path>`, or the operator commits/stashes). Every path clean → allow with a notice. Not measurable (path from a variable or substitution, unknown directory, no repo, status error or timeout) → deny, fail-closed, as the worktree-removal check of #1789.
+- **Foreign ref — warn, no stop (Option 1).** `git checkout <other ref> -- <path>`, `--ours`/`--theirs`/`-m -- <path>` and `git restore --source=<ref> <path>`: a notice that the path is set to another state.
+- **Rejected:** doing nothing (Option 3 — `restore` stays an open spelling of the blocked discard), and a hard block on foreign refs (about 6 denials per day from the 175 replay hits, beyond the HR-101 ceiling).
+
+The rule stays untyped, so wave manifests keep `git checkout --` as a command pattern (#1509, PSA-007).
+
+Since #1917 point 2 the command blocker reads `git restore` path resets for wave manifests too: its pure argv reader `readPathReset` (`scripts/lib/command-blocker.mjs`) makes the `git checkout --` pattern also match a `git restore` that resets the worktree without a source ref (`git restore a.txt`, `-- .`, `--worktree`, `--staged --worktree`, a merge side such as `--ours`). An index-only `--staged` does not match (git 2.56.0, 2026-11-02: it leaves the worktree file alone). Ref-sourced forms (`--source`/`-s`) stay unjudged, the same as `git checkout <ref> -- <path>` (#1831). The measurement (`git status`, ref and conflict checks, time budget) stays in the hook. The hook now reads with `readPathReset` itself. Its `worktree` field does not decide the measured verdict, so an index-only `--staged` reset is still measured (a named ceiling; revisit on a replay of `git restore --staged` denied on a dirty worktree path). The field only tells whether a readable restore on the line is one the manifest rule matches (no source ref, touches the worktree): only such a restore lifts the "form not readable" deny that a wrapper restore (`xargs git restore`, `git bisect run git restore a`) gets like its checkout twin. A merge-side reset (`--ours`, `--theirs`, `-m`, `--conflict=`) warns only when every file it would overwrite, i.e. every worktree-dirty file under its pathspecs, is unmerged (`git ls-files -u`); one dirty, non-conflicted file under the same pathspec, which git 2.56.0 overwrote on 2026-11-03, makes it measured and denied.
+
+Since #1925 (93bdad8c) the reader consumes the separate value of `--conflict <style>`, `--unified`/`-U <n>` and `--inter-hunk-context <n>` (git 2.56.0, 2026-11-03: git takes them as separate words), and reads `-2`/`-3`, also grouped (`-q2`), as the merge side like `--ours`/`--theirs`. Before, `git checkout --conflict merge -- a` read `merge` as a ref and only warned while git discarded the work, and `-2`/`-3` were denied on a real conflict. The matcher also reads quoted payloads under `parallel` (it runs its argument as a shell line) and under `git submodule foreach` / `git bisect run` (check 2/2b, the same reading as `xargs` / `find -exec` since #1925 point 1); the hook gets them through its matcher fallback, and the past-cap fallback in check 2b matches `checkout` as well as `restore`. Classification under the decision rule: `git submodule foreach '…'` and `git bisect run sh -c '…'` are in goal under (a); `parallel` is out of goal for the hook, like `xargs`, and is denied only through the shared matcher. Accepted false denies: a quoted literal under `echo`/`grep` (e.g. `parallel grep 'git restore a' ::: f`), the class `xargs` already has.
+
+**Named ceilings (#1925)**, measured 2026-11-03, each with the revisit trigger "a replay hit" unless stated:
+
+- Git globals inside a wrapper, `xargs git -C . restore a`: matcher no match, hook allow (non-goal `xargs`).
+- An index-only `git restore --staged a` on a dirty path stays denied (see above); loosening it needs a replay of that deny.
+- A git alias payload, `git -c alias.x='!git restore a' x`: allow.
+- A command fed to a shell on stdin (`echo … | sh`, `printf … | bash -s`) and a ref-sourced reset in a here-string (`sh <<< 'git restore -s HEAD a'`): allow; the bare here-string form is denied.
+- `$0` and substitution payloads: non-goal (variable/substitution).
+- `git restore -U 3 a` without `-p` is over-blocked although git itself refuses it (rc 128); harmless.
+
+**Forced discards (#1939).** A REFUTE review on 2026-11-03 (git 2.56.0, throwaway repo with a modified tracked `a.txt`) found `git checkout -f [<ref>]`, `git switch -f|--discard-changes <branch>`, `git checkout-index -f <path>|-a|--stdin` and `git rm -f <path>|--pathspec-from-file=<f>` allowed while git discarded or deleted the uncommitted file; none was a named ceiling. They get the verdict of rule `git-checkout-discard`, with no new policy rule: the blocker's pure argv reader `readForcedDiscard` reads them, the hook measures them in `findPathResets` / `measurePathReset` like a same-ref reset.
+
+- No pathspec (`git checkout -f`, `git checkout -f <branch>`, `git switch -f <branch>`, `git checkout-index -f -a`) → `git status --porcelain=v1 -z --untracked-files=no` over the whole tree, because a forced switch overwrites every local change. `git checkout -f <ref> <path…>` (only quiet/force options) and `git checkout -f [<ref>] -- <path…>` measure the named words, the ref word included (a superset; git alone knows which word is the ref). Any other option (`-b x`, `--orphan x`, `-m`) keeps the whole-tree measurement.
+- `git checkout-index -f <path…>` and `git rm -f <path…>` measure the named paths. The measurement counts an entry in either porcelain column (index or worktree), so a staged-only change, which `git rm -f` also drops, denies as well.
+- Dirty → deny, naming the safe way of #1834; clean → allow with a notice; not measurable (`--stdin`, `--pathspec-from-file`, a path from a variable or expansion, unknown directory, a `bash -c`/`eval` payload, spent time budget) → deny. A forced discard behind a command runner (`xargs`, `find -exec`, `parallel`, `watch`, `flock`, `git bisect run`, `git submodule foreach`, a quoted runner payload) is denied as unmeasurable, bound to its own segment (`unreadForcedDiscard` in the hook). A dry run (`git rm -n -f`) and a force cleared by `--no-force`/`--no-discard-changes` are not discards.
+- Wave manifests are unchanged: `commandMatchesBlocked` does not read the new forms.
+
+**Named ceilings (#1939)**, each with the revisit trigger "a replay hit" unless stated:
+
+- `git checkout -f <other>` can also overwrite an untracked file that `<other>` tracks; untracked files stay out of the measurement, as for every path reset. Revisit trigger: a session losing an untracked file to a forced switch.
+- `git checkout-index --prefix=`/`--temp` write elsewhere and `git rm --cached -f` keeps the worktree file; they are measured like the plain form (an over-deny).
+- A forced discard in a quoted word of a non-runner verb stays data: `git commit -m "git rm -f x"`. An unquoted one under any non-git verb (`echo git checkout -f`) is denied, the class the checkout twin already has. Data piped into a stdin shell (`echo 'git checkout -f' | sh`) is read since #1940 (below).
+
+**Payload readings (#1940).** Measured 2026-11-03 against e7dc9373 with the real hook (strict profile, throwaway repo with a modified tracked `a.txt`); each form was allowed or only warned while git discarded:
+
+- `env -S <string>` (also `-iS`, `--split-string[=]`, abbreviated `--split`): the hook's `walkGitSegments` takes the split string as a payload, like a `bash -c` string. The blocker now reads a short group ending in `S` behind `-i`/`-0`/`-v`; before, `env -iS '…'` resolved the quoted string itself as the verb.
+- `watch [options] command…`: payloads from `watchPayloads` in the hook. Semantics relied on, from the procps-ng watch(1) manual (not measured: `watch` is absent on the M4): options end at the first non-option word, the rest is joined by blanks and run through `sh -c`, and `-x/--exec` runs it as argv. Both joins are read, and an unknown option is read with and without a value word.
+- The ref `-` is read as `@{-1}`. That is not resolvable read-only, so a reset from it is denied. Before, it was `foreign` (a warning); after `git checkout -b x` on the same line it discarded.
+- Data piped into a stdin shell reaches the path-reset and forced-discard verdicts through the blocker's `pipedShellData`. It also passes through `tee <file>` and `cat` without a file operand, and comes from a subshell, group or loop (`( echo … ) | sh`, `for …; do echo …; done | sh`). For a compound, every statement written before it on the line is read (a deny-side over-read; revisit on a real command denied by it).
+- `bash -c` nested four to six levels around `git clean -fdx` already denies at e7dc9373 (a1c064da); no change.
+
+**Named ceilings (#1940)**, revisit trigger "a reported or replayed discard through the form". A loose text census of the 22,905 replay commands (2026-11-03) matched 8 `-c alias.` lines, 5 `xargs git checkout|restore` and 0 `| su`:
+
+- Git aliases are not expanded, inline (`git -c alias.co=checkout co -- a`) or configured. The inline form could be read, but a reader for it alone would leave configured aliases, the common form, unread. (Inline aliases are read since #1957, see below.)
+- Options from a variable or substitution (`O=--pathspec-from-file=l; git checkout $O`, `$( )`, backticks) and options appended by xargs (`echo -- a | xargs git checkout`).
+- Data piped into `su` (`echo … | sudo su`): `su` is not read as a stdin shell because it reads a password; started by root it does not.
+- `script -q /dev/null grep -c 'git checkout -- .' f` is denied, because script's own `-c` scan also takes grep's `-c` (an over-deny, named in `resolveCore`; 0 replay commands).
+
+**Fix cycle 1 (#1939/#1940).** Two independent reviews on 2026-11-03 (an Opus REFUTE review and a Codex review) found ten forms inside the classes above that were allowed or warned at 2d89b7e8 while git discarded the dirty `a.txt`. Each now denies over a dirty tree:
+
+- switch's `--force` and `--discard-changes` are two switches, each with its own negation; either one discards (`git switch --force --no-discard-changes other`).
+- The operand superset of `git checkout -f <ref> <path…>` holds only for plain paths. A magic pathspec (`:!b.txt`, `:(exclude)…`, `:/`) subtracts or re-roots, so `git status -- HEAD ':!b.txt'` measured nothing; any operand starting with `:` now measures the whole tree.
+- A here-document is stdin data: the lexer links the body to its `<<` token, `cat <<'E' | sh` reads it through `cat`, and the body word that lands behind the shell is not read as a script file. `sh <<'E'` straight into a shell is read the same way, as a side effect.
+- Pass-through filters no longer stop at a depth cap: past 16 levels the walk goes on iteratively over every reachable statement (fail-closed, order not judged), and the walk is memoized per statement — 32 nested `( … ) | cat` took 4.5 s at 2d89b7e8 and take about 1 ms now.
+- `env -S` strings are also split with env's own grammar (macOS env(1); `\_` separator, `\c` end, `#` comment, the one-character escapes, `${NAME}`), as a second reading next to the shell reading. A `${NAME}` substitution beside a discard subcommand is denied in the hook (`unreadForcedDiscard`, narrowed in fix cycle 2 below); an unterminated quote or unknown escape is an env error and runs nothing.
+- A short option group is read up to its first value letter, and the rest of the word is the value whatever its characters (`-fBtopic-name`, `-fcfix/x`).
+- `watch`'s options are read to the first non-option word without a limit; each word index is visited once, so ONE call is linear in the word count. (Corrected in fix cycle 2: every start yields the rest of the line as a payload that is read again, so `watch -Z watch …` nests — 80 repetitions ran past 60 s. The reading is bounded by the hook's read budget below.)
+- A compound's data includes the concatenation of its statements' output in order (echo with its newline, printf without), leaving out statements whose output another statement of the body reads through a pipe: `( printf 'git '; printf 'checkout -f' ) | sh`.
+- Redirections behind the compound's closer are skipped when the closer is found (`( echo … ) 2>/dev/null | sh`). (Corrected in fix cycle 2: a stdout redirect stops the data ONLY when it targets a plain file path and the tail carries no dup (`N>&M`, `>&N`), no `&>` and no `/dev/fd/*`, `/dev/stdout`, `/dev/stderr` target; otherwise the data is read as reaching the pipe — `( echo … ) 2>&1 >/dev/fd/2 | sh` was allowed.)
+
+**Named ceilings (fix cycle 1)**, revisit trigger "a reported or replayed discard through the form" unless stated:
+
+- The concatenated output is cut at 1 MiB per statement; every statement's own data is still read. Revisit trigger: a real line whose literal output exceeds it.
+- Statements with non-literal output (`date`, `cat f`) add nothing to the concatenation, so a command assembled from a literal and a file or command output stays unread, like the file ceiling of #1933.
+- `env -S` with `${NAME}` is denied only in the hook's forced-discard verdict; the pattern matcher reads it as the shell reads `"${NAME}"` in a `bash -c` string, with that string's ceilings.
+- Process substitution into a shell (`bash <(echo …)`) stays unread, the older #1933 class.
+
+**Fix cycle 2 (#1939/#1940, GitLab #1939 note 266635).** The second review measured what made c4b17f09 worse than 2d89b7e8, plus bounds that failed open. Fixed, each denied over a dirty tree:
+
+- A here-string or here-doc on the redirect-only tail behind a compound closer (`{ cat; } <<<'S' | sh`, `( tee ) <<<'S' 2>/dev/null | sh`, `while read -r l; do echo "$l"; done <<<'S' | sh`) is the compound's stdin and is read as data again (DENY at 2d89b7e8, ALLOW at c4b17f09); the here-doc twin `{ cat; } <<'E' | sh` too.
+- The dup-chain correction above.
+- A here-doc body is no file operand of `cat`/`tee` inside a compound (`( printf 'git '; cat <<'E' … ) | sh`).
+- **One read budget per hook call.** The blocker charges every pipe-data visit of a line to one budget and memo shared by all its pipes (4,096 units or 400 ms); past it, or past a nesting level the lexer capped (more than 256 nested `( … ) | cat`), the data is `unreadable` and the matcher counts it as a match. The hook charges its payload readers (watch, walkGitSegments, the unread-segment scans) to a budget of 2,000,000 word units or 2.5 s; when it is spent, the line is denied as not readable, whatever it names (review round 3: allowing a line that named no guarded form skipped every later rule, so `watch -Z`×50 before `g''it checkout -- x` or `psql -c 'DROP TABLE x'` was allowed). The harness kills the hook after 5 s and a killed hook lets the command through, so both bounds fail closed instead. Measured hook times (2026-11-03, c4b17f09 → this tree): `watch` + `-Z watch`×80 + `git status` 60.0 s (killed) → 0.41 s; `( printf a ) | sh; `×1000 + discard 6.6 s → 0.12 s; 150 nested compound groups 13.6 s → 0.11 s.
+- Fix cycle 1's `${NAME}` rule is narrowed to `env -S` payloads (env expands the name itself) and to the git SUBCOMMAND word `checkout`, `switch`, `checkout-index` or `rm` with any `${…}` argument — it can hold the force flag (`F=-f env -S 'git checkout ${F}'`, review round 3), so a lone `git checkout ${BR}` branch switch stays denied (fail-closed). Substrings (`checkout.mjs`, `--grep=switch`) and `script -c` payloads are no longer denied.
+
+**Named ceilings (fix cycle 2)**, allowed at 2d89b7e8 AND at this tree, routed to a follow-up issue, revisit trigger "a reported or replayed discard through the form":
+
+- Variables as command words: `G=git env -S '${G} checkout -f'`, `S=switch; git $S -f`, `env -S 'git ${SUB} -f other'`.
+- An unterminated here-doc body fed to a stdin shell (`bash <<'E'` + `git checkout -f` and no `E`): bash and zsh run it to the end of input, while the lexer keeps the #970/#999 shape (the rest stays in the `<<` statement, no phantom separator). A fix cycle 2 attempt broke those pins and was taken back.
+- Filters other than `cat`/`tee` between the data and the shell (`head`, `grep`, `sed`, `awk`, `tr`, `sort`, `dd`, `perl`, `xargs -0`).
+- A shell in a subshell on the right of the pipe (`… | ( sh )`), and `xargs -I{} sh -c '{}'`.
+- Process substitution into a compound.
+- The read budgets themselves: a harmless line past them is denied. Revisit trigger: a real command denied as unreadable (0 of 6,565 replayed real commands came near it).
+- A single very long word (a 5,000,000-character comment) takes about 5.5 s outside the read budgets (review round 3, LOW), so the harness timeout decides. Revisit trigger: #1944.
+
+**#1944 points 5–7 (2026-11-04).** Three forms that were ALLOW at 13c442e6 over a dirty `a.txt` (replayed through the hook's stdin, never executed) are read and measured like their siblings: DENY over uncommitted changes, ALLOW with a "measured clean" notice over a clean tree.
+
+- **Brace expansion (rule (a)).** The path-reset and forced-discard readers read the words after bash brace expansion: comma lists, nesting, preamble/postscript and plain `{a..b}` sequences; a quoted or escaped `{` or `,` stays literal, `${…}` is a parameter. So `git rm {-f,a.txt}`, `git rm -{f,q} a.txt`, `{git,rm,-f,a.txt}`, `git checkout {--,a.txt}` and the `switch`/`checkout-index` twins are the calls they expand to. Every other rule still reads the unexpanded words.
+- **`trap '<action>' <signal>…`.** The action is a command line the shell runs on the signal or EXIT, read like a `bash -c` payload, nested runners included (`trap 'xargs git rm -f < l' EXIT`).
+- **`git read-tree -u --reset <tree>`.** It rewrites the index and the worktree and, per git-read-tree(1), does not stop for local changes: measured over the whole tracked tree like a forced switch. `-m -u` aborts on a dirty entry and `-n` writes nothing, so neither counts.
+
+**Named ceilings (#1944 points 5–7)**, revisit trigger "a reported or replayed discard through the form" unless stated:
+
+- A word that expands past 64 words, or a brace word that also holds a substitution or a parameter (`{-f,a.txt}$(true)`, `{-f,a.txt}"$X"`), keeps its text. After a discard verb, or as the subcommand, it is denied as not measurable, even over a clean tree; anywhere in a segment whose command word is not a plain command that never runs its arguments (`echo`, `printf`, `cp`, `mv`, `mkdir`, `touch`, `ls`, `cat`, …; `git` is read by the path-reset reader), it is denied whatever its text says, since the words it builds can spell any command behind any prefix (`{git,rm,-f,a.txt,{1..70}}`, `env {g\it,rm,-f,a.txt}"$E"`, `caffeinate {g{i..i}t,…}"$E"`; reviews W3, 2026-11-04). A harmless such word there is denied too (`sudo cp conf{,.$USER}`). Revisit trigger: a real command denied this way.
+- Sequences are read the way zsh reads them, the shell the Claude Code Bash tool runs here: any single-character range counts (`{-..-}f` is `-f`; bash keeps a non-letter range literal), so the reading is the union of both shells. zsh also keeps empty brace words (`{,-f}` gives `''` and `-f`); dropping them only costs a deny.
+- Brace expansion is read only in those two readers. Other rules (`rm -rf`, `git clean -f`, pattern rules such as `git reset --hard`) still match the unexpanded words. Revisit trigger: a replayed bypass of one of them through braces. (Superseded by #1956, see below.)
+- Like a `bash -c` payload, a trap action runs in a directory the hook does not know. So a measured form in it is denied as not measurable over a clean tree too. The pattern matcher does not read trap actions, so `trap '<hard reset>' EXIT` reaches no pattern rule. Revisit trigger: a replay hit of either.
+- The brace expander lives in the hook, not in `command-blocker.mjs`. No wave-manifest rule reads it, and the guard-requires-parity check would otherwise require the export in HEAD first. (Superseded by #1956: it moved to the blocker.)
+
+**#1956 / #1957 (2026-11-06).** Every pattern rule allowed its brace form (`{git,reset,--hard}`, `git {reset,--hard}`, `{rm,-rf,src}`) and an inline non-shell alias (`git -c alias.z='reset --hard' z`, `alias.z='checkout -f'`, `-c alias.co=checkout co -- a.txt`) at ad340af5. `expandBraces` moved into `command-blocker.mjs` (one grammar), and the pattern matcher judges every line also in its brace-expanded reading; git calls are also read with an inline alias resolved (`gitInlineAliasWords`), in the matcher, the path-reset reader and the forced-discard reader. Both are additional readings: nothing read before is read less.
+
+**Named ceilings (#1956/#1957)**, revisit trigger "a reported or replayed bypass through the form" unless stated:
+
+- The matcher reads a brace word beside a substitution or parameter with every `$…` and backtick span read as empty (bash expands braces first; the span is cut by a plain-text scan, so a nested quote or parenthesis inside `$( )` can cut it wrong), and a word past 64 words up to 4,096 words. A word past 4,096 words matches a pattern rule only when the segment holds each needed word (`git` and the subcommand, or the pattern's words) or the word holds all its characters, its `{x..y}` ranges included; behind a plain command that never runs its arguments it does not match. The hook's forced-discard reader still denies every brace word past 64 words or beside a substitution outside those commands, as before. Replay at the cutoff 2026-11-06T19:39:52Z (442,905 Bash commands, 30 days): 56 lines gain a pattern match, all 56 already denied by that reader at ad340af5; 0 lines lose one.
+- Aliases from a config file, `GIT_CONFIG_PARAMETERS`, `--config-env` or a `GIT_CONFIG_*` variable exported by an earlier statement (`export GIT_CONFIG_COUNT=1 …; git z`) are not resolved (`--config-env=alias.*` stays the #1955 shell-alias candidate). An inline alias is resolved even when its name is a builtin, which git would run instead — a deny-side over-read.
+
+**Fix cycle 1 (#1956/#1957 REFUTE review, #1970).** Closed: (1) the brace reading had no total bound — each word could expand to 4,096 words, with no limit on the number of words, so `echo` plus 800 × `{1..4000}` before `git push --force` ran the hook 5.3 s, past the 5 s harness kill that lets a command through. (2) The lexer split a brace word at an unquoted `$IFS` before brace expansion (`{git,checkout,$IFS--,a.txt}`); bash expands the braces first. (3) The rm-rf flag variants (`{rm,-fr,src}`, `rm {-r,-f} src`, `bash -c '{rm,-fr,src}'`) were read unexpanded, and a `bash -c` payload with `-fr` was not followed at all. (4) An alias from leading `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` assignments (also behind `env`) was not resolved. (5) #1970: the delete-target and redirect-target readers (`ledger-delete-protected`, `redirect-truncate-*`) read braces unexpanded.
+
+- **Brace word budget.** One command reading may make at most 65,536 brace words in total (`BRACE_WORD_BUDGET`: every expanded word and every word read past the 64-word cap, across all words of the line and every payload one match call reads). Past it the reading stops and the line counts as a match; the hook denies it as "not readable within its read budget (its brace expansion makes more words than the guard reads)". The hook's rule loop also checks the hook deadline (4 s from process start) before each rule and denies when it is spent. Measured on the M4 (stress lines of the review): 800 × `{1..4000}` + `git push --force` 5,232 ms → 110 ms; `bash -c "echo 200 × {0..4095}$X"` + `git push --force` 6,085 ms → 115 ms; 600 × `{1..4000}` + `psql -c "DROP TABLE x"` 4,478 ms → 111 ms (all DENY). Ceiling: a harmless line past 65,536 brace words (`echo` + 20 × `{1..4000}`) is denied. Revisit trigger: a real command denied for the brace budget.
+- **`$IFS` beside a brace.** The lexer marks the words it split at an unquoted `$IFS` (`ifsSplit`); `expandBraces` reads such a word that holds an open brace as unread, so the readers fail closed on it (the matcher by its characters, the forced-discard reader as an unread brace word). Ceiling: the brace word is not expanded and split precisely; a harmless split brace word behind a command that runs its words is denied.
+- **rm readers.** Both rm readers read the words also after brace expansion; `commandHasRecursiveForceRm` follows `bash -c` / `eval` payloads (depth 3). `parseRmTargets` reads the expanded words, so `{rm,-rf,/tmp/x}` is allowed like `rm -rf /tmp/x` (denied at 0cad6ddf, allowed at ad340af5), and a segment that carries the removal without an rm verb to read (a payload, an unread brace word) is an unread target that no allowlist lifts: `bash -c 'rm -rf src'; rm -rf /tmp/x` was allowed on the strength of the `/tmp` target.
+- **Target readers (#1970).** `extractDeleteTargets` and `extractRedirectTargets` also read the brace-expanded words (each word of a brace redirect operand, as zsh writes them all: `>{CLAUDE.md,y}`). Entries the extra reading adds are appended only when not already reported. A brace word they cannot expand (past the budget, cut at `$IFS`) behind a delete verb, a command that runs its words, or as a redirect operand matches when its characters can spell a denylist entry (glob characters dropped) — fail-closed by superset.
+- Replay at the cutoff 2026-11-06T20:34:52Z (442,757 Bash commands, 30 days, readers only, nothing executed) against 0cad6ddf: the pattern rules gain and lose 0 lines (no line comes near the brace budget; 0 lines hold `$IFS`); the two redirect rules gain 0; `ledger-delete-protected` gains 46 lines, all through an unread brace word behind a command that runs its words, which the 0cad6ddf forced-discard reader already denies on every line; 0 lines lose a match. The rm readers' new payload step matches 0 corpus lines, and 0 lines carry a payload removal beside an rm segment.
+- **Fix cycle 3 (env aliases a reader does not follow).** At c9dd059b the env alias reached only a git word directly behind the assignments, so `E bash -c 'git z'`, `E sh -c "git z"`, `E eval 'git z'`, `E xargs git z` (E = `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.z GIT_CONFIG_VALUE_0='reset --hard'`; git 2.56 runs the alias through each), `env -- E git z` and `env - E git z` were allowed. Two changes: (a) the wrapper reader takes `NAME=VALUE` words after a bare `--` (env, sudo) and reads env's bare `-` like `-i`; before, the first assignment was read as the verb, which also hid `env -- X=1 bash -c '<reset>'`. (b) `gitEnvAliasUnfollowed`: a segment whose leading assignments (also behind `env` and its options) hold `GIT_CONFIG_KEY_<n>=alias.<name>` (key and `alias.` case-insensitive) and that has no git reading with every such assignment in front of its `git` word counts as a match for every git pattern rule its line passes the prefilter for; the hook adds the reason "git alias defined in the environment for a command the guard cannot follow". Ceiling: an env alias defined for any other command (a runner, or one that runs no git at all) is denied — an over-deny; the 30-day replay holds 15 lines with `GIT_CONFIG_KEY_`, none defines an alias and none changes verdict. Revisit trigger: a real command denied by it.
+- Remaining named ceilings: `GIT_CONFIG_PARAMETERS`, `--config-env` (beyond the shell-alias candidate), config files, earlier `export GIT_CONFIG_*` statements and env assignments behind a wrapper other than `env` (`sudo E …`); every `GIT_CONFIG_KEY_<n>` counts whatever `GIT_CONFIG_COUNT` says (deny side).
+
+## xargs readings after #1944 (#1999, 2026-11-10)
+
+Two security reviews of #1944 (`cac06c9f`, `e609891a`) replayed xargs forms through the real hook against the parent commit. They found 26 forms that ran a blocked discard and passed, all older than #1944. One of them was a fail-open: `-I` substitution grew quadratically, and 3,000 lines × 1,000 `{}` took 5.7 s, past the 5 s harness kill. All 26 are now read, as one more reading beside the base readings, so nothing read before is read less.
+- **`-I` budget.** The substituted length is charged to the line's pipe-read budget before the string is built (`XARGS_REPLACE_CHARS_PER_UNIT`, about 1 MiB of substituted text per line). Exhaustion is the existing fail-closed deny.
+- **Data sources.** Data comes from a pipe, a here-string, a here-doc or `<(…)` behind `<`, `-a` or `--arg-file`, all read through the existing literal readers.
+- **Long options.** GNU long options resolve by unambiguous prefix; an unknown or ambiguous one makes the reading unreadable (deny).
+- **Data under `-c`.** The data under a `-c` string is always judged, also with `-I` (a deny-side over-read), never only when the string names `$@`. BSD `-J`, and GNU `-L`/`-n` given after `-I`, append the items, so argv targets get them too.
+- **Substitution and batches.** The `-c` string is also judged with `"$@"`, `$*`, `$N` and `${N}` substituted. `-n`/`-L`/`-s` batches are read as windows from every item index. The real split is never counted (see the #2006 ceiling below). Every window iteration is charged before it is built, duplicates included, and repeated batch options collapse to one, so a flood fails closed. A session review found that this was missing at first: 2,000 × `-sx`, or a 1 KB `printf` line making 40,000 items, ran the hook past the harness kill. The reading of a line is memoized per segment, so it is charged once, not once per policy rule.
+- **Argv targets.** `xargs su|runuser|sg|xargs|git` is read as the argv xargs builds. Since #2003 so are a program whose wrappers resolve to no verb (`xargs env`, `nice`, `nohup`, `timeout 9`, `command`, `stdbuf -o0`, `sudo [-u me]`: the data is the whole command line) and a shell without a fixed `-c` (`printf '%s\n' -c 'S' | xargs -d '\n' sh` runs `sh -c S`).
+- **Delimiters.** `-d X` splits the items at X (#2003): one literal character, or GNU's escapes `\n`, `\t`, `\\`, octal and hex. Delimited items are judged one by one like quoted ones. Octal and hex escapes are read like GNU's `strtoul`, with any number of digits (#2011): `\0054`, `\054`, `\x2c` and `\x02c` all split at `,`, measured on GNU findutils 4.9.0 (win-wsl, 2026-11-10, harmless `echo` forms).
+- **Other hooks.** The sessions-ledger guard and the staging fence read `pipedShellData`.
+
+Replay of 4,651 real Bash commands (30 days, readers only), `418773a7` against `6399d569`: 0 verdict changes, 0 timeouts.
+
+**Named ceilings (#1999)**, revisit trigger "a reported or replayed discard through the form" unless stated:
+
+- Programs behind xargs other than `su`, `runuser`, `sg`, `xargs` and `git` (`xargs rm`, `xargs perl -e`) are not read as argv.
+- `-a file` and `< file` data stays unread: only literal data is read. Every `<(…)` in an xargs segment is read, also one that is a plain argument (a deny-side over-read).
+- A `-d` value the reader cannot decode makes the reading unreadable, so the line is denied (#2011). That covers a value GNU refuses (`-d ab`, `-d '\q'`, a value over 255), on which GNU runs nothing, and the lenient `strtoul` edges (`\x` alone, a blank or sign after `\x`, a `0x` prefix). REVISIT TRIGGER: a real xargs line denied for its `-d` value. A batch limit that is not a positive number is read as unknown, so every start index is read to the end.
+- **Batch alignment withdrawn (#2006, open).** The #2006 change read `-n N`/`-L N` windows only at multiples of N when it judged the item split certain, so that short path lists stayed under the build cap. Four security-review rounds on that change each found a real bypass that DENY at `7e39b3b0` and ALLOW after it. In each case the split xargs really runs differs from the items the reader holds:
+  - run-time expansion: `echo $X <sub> <flag> | xargs -n 2 git` (`$X` is 0..k items), globs, substitutions, an inexact `printf` render;
+  - zsh glob qualifiers: `nofile(N)` expands to no word;
+  - a producer redefined on the line: `echo() { … }`, `eval '…'`, zsh `function x echo`, `alias -g`;
+  - zsh MULTIOS: a pipe plus a here-string or here-document on xargs (or on `cat`/`tee` in the chain), or two here-strings, feed xargs as ONE stream, while the reader aligned each source on its own.
+
+  Every fix-cycle patch covered the forms found so far, and the next round found a new class. Following RCR-008 the alignment was removed entirely: every start index is read again, as at `7e39b3b0`. As a result, a short literal path list under `-n`/`-L` (`echo <100 paths> | xargs -n50 sh -c 'wc -l "$@"' _`) is denied fail-closed under the pipe read budget. REVISIT TRIGGER: an approach that judges the batches without rebuilding the real split, or a real command denied this way (0 of 4,651 replayed).
+- An unknown or ambiguous GNU long option (`xargs --bogus sh -c 'wc -l "$@"' _`) still denies the line, also in the sessions-ledger guard (#2003 point 7). xargs refuses such an option itself and runs nothing, so the deny is harmless; it stays fail-closed because the option table can lag a newer xargs. REVISIT TRIGGER: a real xargs line denied for its option.
+- `-L` cuts at every newline. GNU's continuation of a line that ends in a blank is not modelled.
+- `${1:-x}`, `${@:2}`, `${!#}` and `shift` are not substituted. The data itself is still judged under `-c`, and an unquoted `$1` or a substituted `;` errs toward deny.
+- The staging fence does not record `echo b.txt | xargs git add`: the pipe-data reader is internal to the blocker. REVISIT TRIGGER: the blocker exports it, or a wave agent is seen staging through xargs.
+- The read budget denies a harmless line past it (`echo <3000 words> | xargs -n1 git show`). REVISIT TRIGGER: a real xargs line denied as unreadable (0 of 4,651 replayed).
+- **One budget per line, and a cap on what the readings build.** Every segment of a command line shares one pipe-read context, piped or not, and the 400 ms limit counts reading time. Every line the xargs readings build is charged against `XARGS_BUILT_CHARS_MAX` (64 KB per command line) before it is kept. Past the cap the reading is unreadable and is denied. Two review rounds measured why this is needed:
+  - Without the shared context, 24 here-string segments plus a later-read discard (about 38 KB) ran the hook past the harness kill.
+  - Without the cap, about 38 KB of data built about 1 MB of payload, which the hook re-lexed in three more readers: up to 3.2 s under load.
+  - With both, these lines are denied in 96 to 142 ms when four probes run at once.
+  - The largest line any of the 4,651 replayed real commands builds is 8,783 characters. A contrived harmless line past the cap is denied, e.g. `xargs -n20 sh -c 'wc -l "$@"' _ <<< '<160 items of 240 chars>'`, which builds 978,835 characters. REVISIT TRIGGER: a real xargs line denied as unreadable.
+  - Windows from every item index make a list of n items with `-nK` build about n × K × item length × 2 characters, so a 1.5 KB path list passes the cap (`echo <100 paths> | xargs -n50 sh -c 'wc -l "$@"' _`, allowed at `418773a7`). The #2006 alignment that allowed it is withdrawn (see above), so the list is denied. A line that two windows build is still charged to the cap only once. That is safe because duplicate text gets the same verdict, and every window iteration is still charged to the work budget.
+  - Unread pipe data used to match every pattern, so the deny named the first rule asked (`git-reset-hard`). Since #2006 it is a match only when no rule matched the rest of the line, and `commandMatchesBlocked` reports it through `onBudgetSpent('pipe')`; the hook turns it into its read-budget deny. A line with both a flood and a real discard is denied under the budget reason when the hook asks a non-matching rule first.
+  - Replay after withdrawing the alignment (payload only, the reviewer’s 212 forms in c1–c9 and 4,651 real commands): against `7e39b3b0`, 0 DENY→ALLOW and 0 verdict changes among the real commands, and 20 ALLOW→DENY among the review forms (the #2003 readings and the #2011 `-d` decoding). Against `923e9986`, 0 DENY→ALLOW; every form the alignment had allowed is denied again, among them all MULTIOS forms.
+
+**Two more readings (#2012).** Both gaps were older than the alignment: at `7e39b3b0` and at `cb7d23cc` every form below passed all four readers of `pipedShellData` (destructive guard, sessions-ledger guard, staging fence, Codex `apply_patch` guard), measured by payload replay. The fix is in the shared reading, so all four gain it.
+
+- **zsh MULTIOS.** zsh joins a pipe and the redirects that feed stdin (here-string, here-document, `< <(…)`) into ONE stream: the pipe first, then the redirects in source order. Two such redirects are joined the same way. `echo aa | xargs -n 2 echo RUN <<< bb` prints `RUN aa bb` in zsh and `RUN bb` in bash (measured 2026-11-10, harmless `echo`). The joined stream is one more reading beside the bash reading, which reads each source alone, so it can only add a deny. The join is exact: a pipe without a trailing newline glues onto the here-string (`printf aa | xargs echo RUN <<< bb` prints `RUN aabb`). That glue removes text between two pattern characters, so a line with a stdin here-source and a second source (a pipe or another here-source) skips the matcher's prefilter, like `$`. The same stream is read for a stdin shell (`printf 'S1 ' | sh <<< 'S2'`) and for `cat`/`tee`/line filters in the chain that read the pipe and a here-string. Each joined stream is charged to the line's pipe-read budget before it is kept.
+- **An item that expands to nothing.** A data item that is not plain (`$X`, `"$X"`, `$(…)`, a glob such as `*.zz(N)`) is 0..k words at run time. For k ≥ 1 the windows from every start index already hold the word in its place. Its content stays the "only literal data" ceiling. For k = 0 they do not: `echo w0 w1 <sub> $X <flag> | xargs -n 2 git` runs `git <sub> <flag>` with X empty, in zsh and bash. The windows are therefore also built with every subset of those items removed. For `-L`, a line left blank is dropped, because GNU counts nonblank lines. That is 2^m variants. Each is charged before it is built. The variants are built when anything can shift: a batch option, a positional in the `-c` string (`sh -c 'git $1 $2' _`), or an argv target (`git`, `sh` without `-c`, `env` …).
+- Census before the fix (4,651 real commands, readers only, 2026-11-10): 0 commands have a pipe and a here-string or here-document on one stage. 23 xargs segments carry literal data. 21 of them have exactly one item that is not plain, 2 have none, and none has more than one.
+
+**Named ceilings (#2012):**
+
+- More than four items that may vanish in one data blob make the reading unreadable, so the line is denied (`XARGS_VANISHING_ITEMS_MAX`, 16 variants at most). That includes a harmless line (`echo a $A $B $C $D $E b | xargs -n 2 git diff`). REVISIT TRIGGER: a real xargs line denied as unreadable through this limit (0 of 4,651 replayed).
+- A `< file` source in a MULTIOS join is read as empty, because its content is unknown. REVISIT TRIGGER: a reported discard whose second half comes from a file.
+- Past `PASS_THROUGH_DEPTH` nested filters (`flatLiteralOutput`) the MULTIOS order of a `cat`/`tee` fed by a pipe and a here-string is not built. REVISIT TRIGGER: a reported discard through more than 16 nested filters.
+- The Codex `apply_patch` guard and the sessions-ledger guard first test the command text for the name (`apply_patch`, `.orchestrator/metrics/`). A name that only the glue builds (`printf 'apply_' | xargs sh -c <<< 'patch'`) passes those tests, as `printf 'apply_%s' patch | sh` and `{ printf 'apply_'; printf 'patch'; } | sh` did before (ALLOW at `cb7d23cc`). Those prefilters belong to the hooks, not to the shared reading; rebuilding them was rejected in #2014, because they are why these hooks allow a harmless command without parsing it, and a rebuild changes the run time of every Bash call. REVISIT TRIGGER: a real command, or a report, that writes the ledger or runs `apply_patch` through a name only the glue builds.
+- The MULTIOS join and the vanishing variants read the stdin sources of ONE segment. The compound-statement, `0<<<` and `cat < <(…)` gaps the refute review found are read since #2014 (next section); its ceilings are listed there.
+
+Replay `cb7d23cc` against the fix (payload only, 2026-11-10): the 212 review forms in c1–c9 show 0 verdict changes. The 4,651 real commands show 0 verdict changes in the destructive guard (37 DENY, 4,614 ALLOW on both sides) and 0 in the sessions-ledger guard, with no timeouts. The largest hook time was 234 ms against 251 ms at the base.
+
+## stdin sources on compound statements (#2014, 2026-11-10)
+
+Found by the #2012 refute review, older than #2012 (ALLOW at `cb7d23cc`). Read now, in the shared reading, so all four readers of `pipedShellData` gain it:
+
+- **A compound's stdin redirects feed its body.** In bash `{ xargs -n 2 git; } <<< '…'`, `( … ) <<< '…'` and an `if`/`while` body with the redirect behind `fi`/`done` are discards without any MULTIOS; in zsh the redirect joins a pipe into the compound. The redirect-only statement behind the closer hangs on the statements before it as `stdinView` (`attachCompoundStdin`), read on the reader side (`pipedShellData`) and on the writer side (`literalOutput`: `echo <sub> | { cat; } <<< '<flag>' | xargs -n 2 git`).
+- **A pipe into a compound feeds every statement of its body**, not only the first one, which for `if`/`while` is the condition (`echo … | if true; then xargs -n 2 git; fi`, `| { true; sh; }`, `| ( true; … )`, `for`, nested). The splitter keeps one entry per open compound.
+- **`0<<<`** is a here-string on stdin: the lexer takes the fd prefix, so `0` is no argv word any more (`git 0<<< x <sub> <flag>` was read as verb `git 0`). The reading of stdin sources stays fd-agnostic, as at the base: a here-string, here-document or `< <(…)` on any fd (none, 0, a number, a named `{fd}`) counts as feeding stdin, with or without a dup. Two refute cycles showed that judging which fd reaches stdin lets discards through (`3<<'E' <&3`, chained `4<<'E' 3<&4 <&3`, `{fd}<<'E' <&$fd`), so it was dropped (RCR-008).
+- **`cat`, `tee` and line filters hand on `< <(…)`**, alone, after a here-string or twice (zsh joins them in order).
+
+**Named ceilings (#2014):**
+
+- The body of a compound is not delimited for its stdin redirects: every statement written before the redirect on the line reads it (`xargs git diff; { cat; } <<< '…'` lets the first xargs read it). A deny-side over-read. REVISIT TRIGGER: a real command denied by it.
+- A glued closer (`{ xargs git}` in zsh) closes nothing in the splitter, so the statements after it on the line read the pipe into the compound too. A deny-side over-read. REVISIT TRIGGER: a real command denied by it.
+- A value that `read` assigns is not followed: `echo <sub> | while read l; do echo $l; done <<< '<flag>' | xargs -n 2 git` (zsh) stays ALLOW, because `$l` is not literal data. REVISIT TRIGGER: a real command or a report with a discard through a `read` variable.
+- The positionals `$1…`/`$@` of an `sh -c` string are not filled from the argv words after it, neither directly (`sh -c 'git $1 $2' _ <sub> <flag>`, also with `"$@"`) nor through xargs when a non-literal word sits in the fixed argv (`… | xargs sh -c 'git $1 $2' _ $Y`). The substitution of #1999 reads only the xargs DATA items. REVISIT TRIGGER: a real command or a report with a discard through `sh -c '… $1'`.
+- Which fd a source feeds is not judged: `xargs -n 2 git 3<<< '…'`, `{fd}<<'E'` and `1<<'E'` without any dup are read as if they fed stdin, a deny-side over-read equal to the base verdict. REVISIT TRIGGER: a real command denied by it.
+- `exec` across statements, a zsh closer `}` after a blank without `;`, a function body reading its caller's stdin, and data piped into `sh -c 'xargs …'` were not followed here; they are read since #2027 (next section).
+- zsh MULTIOS on a shell without a pipe (`sh <<< 'S1' <<< 'S2'`) is outside #2014. REVISIT TRIGGER: a report with a discard that only the joined here-strings of one shell spell.
+
+Replay `21fd80bd` against the fix (payload only, 2026-11-10): the 4,651 real commands show 0 verdict changes in all four hooks (destructive guard 37 DENY / 4,614 ALLOW on both sides; sessions-ledger guard, staging fence and Codex `apply_patch` guard all ALLOW on both sides), with no timeouts; the reader time of the slowest lines is the same in process (about 1–3 ms). The review case files (c1–c7 and the #2014 work cases, some forms repeated across files) show 0 DENY→ALLOW and 60 ALLOW→DENY of 231 rows in the destructive guard and 7 of 22 in the sessions-ledger guard, each a discard in zsh, bash or both. The staging fence never denies, so its verdicts compare nothing; it records `git add` behind the new readings only under `SO_WAVE_AGENT=1`.
+
+## Brace closers, function calls, `-c` scripts and `exec` (#2027, 2026-11-10)
+
+Four stdin forms older than 5.18.0 (ALLOW at `0b894e12`), found by the #2012/#2014 refute reviews. Each is read in the shared reading, so all four readers of `splitChainSegments`/`pipedShellData` gain it, and each is a reading NEXT TO the existing ones (a union, never a replacement):
+
+- **zsh closes a brace group at a bare `}` word** (`echo <sub> <flag> | { xargs -n 2 git }`, `{ xargs -n 2 git } <<< '…'`, `for x (1) { … }`, `{ cat } < <(…) | xargs …`, `| { sh }`, `| { true; sh }`). Measured with `echo` only: zsh 5.9 prints `a` for `{ echo a }` and rejects an unquoted `}` word outside a group as a parse error; bash reports a syntax error for the group and passes `}` as a word elsewhere. `splitSegments` runs one more reading (`bareClose`) only when the default reading sees a word ending in `}` inside an open group, or a one-word group `{X}` in command position (`bareSeen`; fix cycle 1 — at `5e7c53cc` any closing `}` of `{ …; }` started it); such a word ends the statement and closes the group there. Its statements are added to the others; a plain statement with the same words is not added twice, one that reads a pipe or a stdin view always is.
+- **A function body reads the stdin of its call** (`f() { xargs -n 2 git; }; f <<< '…'`, `… | f`, `function f { … }`, `f() ( … )`, the zsh short body `f() cmd`). Since fix cycle 1 also the spaced heads `f () …`, `function f () …` and `f ()⏎{` (the lexer gives the empty pair as two subshell separators). A statement headed by the name of a function defined earlier on the line, with a pipe or a stdin source, adds each body statement once more with the call's stdin (`functionCallViews`); a pipeline inside the body is re-pointed to the view of its left statement.
+- **A `-c` script reads the shell's stdin** (`… | sh -c 'xargs -n 2 git'`, `… | bash -c 'sh'`, `sh -c '…' <<< '…'`). For a script that names a stdin runner (xargs, a word containing `sh`, `source`, `script`, `parallel`, `.`), `pipedShellData` returns `{ <script>⏎} <<'D'⏎<data>⏎D` per data reading, which the payload recursion reads like any group with a here-document (#2014).
+- **`exec` without a command opens its stdin sources for the rest of the line** (`exec 3<<< '…'; xargs -n 2 git <&3`, `exec <<< '…'; xargs …`, `exec 3<<< '…'; sh <&3`). Every later statement gets them as its stdin view, fd-agnostic like every other stdin source since #2014.
+
+**Named ceilings (#2027):**
+
+- Statements only an extra reading adds (the bare-`}` reading's, a call's views) carry `extraReading`; the issue-budget matcher skips them, so one create counts once. The target extractors drop exact repeats (`uniqueEntries`). REVISIT TRIGGER: a real line counted twice by the issue budget.
+- A function call is recognised as the head word of a statement after its definition, also behind assignments, `time`, `eval`, zsh's `noglob`/`nocorrect`, and with a quoted name (fix cycle 1). `command f`, `builtin f` and `nice f` do not run a function (measured in zsh 5.9 and bash) and are rightly not read. Not read: a call inside another body's view (a function calling a function), a call with the stdin of a compound around it (`{ f; } <<< '…'`), and a call spelled inside an `eval` string (`eval 'f <<< …'`). The views of one line are capped at 4,096 tokens; past it every stdin reader of the line fails closed (`viewsCut`). REVISIT TRIGGER: a reported discard through one of these call forms, or a real command denied by the cap.
+- A `-c` script without quotes, escapes or `$` that names no stdin runner gets no composed line (a superset test on its text); one with any of them is always composed (fix cycle 1: `xar""gs`, `xa\rgs`). The composed lines count against the xargs output cap (64 KiB); past it the line is denied, a harmless one too (a large here-document into `bash -c '… sh …'`). REVISIT TRIGGER: a real command denied as unreadable through this reading.
+- `exec` sources are not scoped: an `exec` inside a subshell or a pipeline element, and an fd closed again (`exec 3<&-`), still feed every later statement, a deny-side over-read. More than 64 source tokens on one line fail closed. REVISIT TRIGGER: a real command denied by it.
+- The stdin views of a line (compound tails, #2014) cost at most 65,536 units (statements visited plus tokens copied, `VIEW_TOKENS_MAX`); past it the line is `viewsCut` and every statement that may read stdin is unreadable, so a line with one is denied, a harmless one too. Before fix cycle 1 every tail copied every earlier view (cubic: `{ :; } <<< x; ` × 1,100 took 3 s at `0b894e12`, 6 s at `5e7c53cc`, past the harness's 5 s kill that lets a command through). REVISIT TRIGGER: a real command denied as unreadable through this cut.
+- Glued closers in the bare pass: a word ending in `}` inside an open group is read as the word without it plus a close, and `{X}` in command position as a group of `X` (`| { sh}`, `| {sh}`, zsh only). Without a stdin link that statement is not added, because the #1707 glued-close reading already judges its words. REVISIT TRIGGER: a reported discard through a glued close.
+- Fix cycle 2 (Codex check of `97c5dffa`): the command word is read dequoted (`{ "sh"}`, `'eval' f`, `'noglob' f`, `'exec'`, `$'exec'`, a quoted function name before `()`), behind leading redirections (`<<< '…' f`, `<<< '…' exec`, `0< <(…) exec`), and `exec` behind assignments, `command`, `builtin`, `noglob`, `nocorrect` and `time`, with `--`, `-c`, `-l` and `-a NAME` (`execArgvStart`). A function head followed by a newline before its `{` (`f()⏎{`, `function f⏎{`, also with a comment) opens the body. Measured with `echo` only, 2026-11-11: `exec -a name`, `command exec`, `exec --`/`-c`/`-l` keep the redirect in bash only (zsh rejects them), `builtin exec` and `noglob exec` in zsh only, `time exec`, `A=1 exec`, `'exec'` and a leading redirect in both; every one is read, so the shell that rejects a form is over-read (deny side). A quoted word ending in `}` closes the group in the bare pass, because `"sh"}` and `"sh}"` lex alike (an extra reading); one that holds a `{` does not (`awk '{print $2}'` inside a group closed it falsely in the census, and no stdin runner's name holds a `{`).
+- Consumed stdin is not judged: `… | sh -c 'cat; sh'` and `… | { cat; sh; }` read the pipe for `sh` although `cat` has drained it. A deny-side over-read, accepted. REVISIT TRIGGER: a real command denied by it.
+- Very long lines: `{ :; } | cat; ` × 16,000 before a discard exhausted the hook's memory, the process aborted and the command was let through — older than #2027 and equal at `0b894e12` (a resource class). Fixed in #2032, see the next section.
+- Read by no reader, older than #2027 and of another class (follow-up issue): a function as a pipe SOURCE (`f() { echo <sub> <flag>; }; f | xargs -n 2 git`), a function's positionals (`f() { git "$@"; }; f <sub> <flag>`), values assigned by `read` loops, `… | eval "$(cat)"`, `… | $SHELL`, and `parallel` reading stdin. REVISIT TRIGGER: the follow-up issue, or a report with a discard through one of them.
+
+Replay `0b894e12` against the fix (payload only, 2026-11-10T23:35Z): of 533,720 Bash calls in 30 days, 104,886 unique commands hold a brace, `exec`, `-c`, a function head or xargs, and 52,427 of them can reach a #2027 reading (an unquoted `}` word, a function definition, `exec`, or a `-c` shell with a pipe or here-source). In process, over all 52,427, no pattern verdict and no Codex `apply_patch` verdict changes; 4,349 differ only because the target extractors drop repeats the base already collected, and 31 only in segments or stdin lines with no verdict change. The hooks, spawned on those 4,380 and on a fixed sample of 600 more (4,980 commands): 0 DENY→ALLOW and 0 ALLOW→DENY in the destructive guard (678 DENY on both sides) and in the sessions-ledger guard (3 DENY), no timeouts. The staging fence records one path more for one command: a function body `git add "$f"` called with a here-document now also yields `<<`, because the fence reads every word after `git add` as a path, redirects included (`git add a.txt <<'E'` records `<<` at the base too).
+
+Fix cycle 1 replay (payload only, nice 15, at most two hook processes, 2026-11-11T00:52Z), the fixed tree against `0b894e12` and against `5e7c53cc`: 534,344 Bash calls, 104,953 unique in the broad filter, 52,449 in the population. In process over all 52,449: no pattern verdict changes against either tree, no `apply_patch` change, no line cut by the view cap (the largest line costs 615 of 65,536 units). The hooks on 4,999 commands (every signature difference plus 600 sampled): 0 DENY→ALLOW and 0 ALLOW→DENY in the destructive guard (675 DENY) and the sessions-ledger guard (3 DENY) against both trees, no timeouts; the staging fence record above is unchanged. Hook time of the review payloads: `{ :; } <<< x; ` × 1,100 plus a discard tail 2.9 s / 5.9 s / 0.09 s (`0b894e12` / `5e7c53cc` / fix, all DENY), × 1,400 with a hidden group 6.8 / 14.2 / 0.10 s, zsh `{ : } <<< x; ` × 2,000 plus a tail 0.11 / 23.4 / 0.10 s; the harmless zsh flood × 800 / × 2,000 stays ALLOW at 0.13 / 0.18 s and 0.22 / 0.28 s (base / fix), linear (cost ratio t(4n)/t(n) about 3, `5e7c53cc` about 80).
+
+**Fence redirects (#2031 item 6).** The staging fence no longer records redirect tokens as paths: it reads the operands of `git add` through the blocker's `argvWordsWithoutRedirects` (a redirect operator plus the word it owns; here-doc bodies dropped), so `git add a.txt <<'E'`, `>/dev/null`, `2>&1`, `&>log` and `< in` record `a.txt` only, and a quoted `'>'` stays a path. Replay of the `git add` commands in three transcript folders (2026-11-11): 1,379 unique commands, 17 change, 41 entries removed (all `/dev/null`, `>`, `2>&1` or `2>`), 0 added.
+
+## Very long command lines (#2032, 2026-11-11)
+
+`{ :; } | cat; ` × 16,000 before a discard piped into `sh` aborted the destructive guard (SIGABRT, no verdict, heap about 3.9 GB) at `0b894e12` and `97c5dffa`; a hook without a verdict lets the command through. × 8,000 and × 16,000 before a harmless `echo` were denied as unreadable after 3.2 s and 5.2 s, at the harness's 5 s kill.
+
+- **Cause.** A CPU profile of the hook (× 8,000) put 2.0 s of 3.5 s in `splitSegments`/`splitSegmentsReading` plus 1.1 s of garbage collection. At a `|` behind a compound closer the reading set the next statement's `compoundBody` to a fresh copy of every non-empty statement written so far, so the split held N²/2 references. Measured in process (`splitChainSegments`, heap after GC): 11 / 30 / 120 / 469 / 1,871 MB retained at 1,000 / 2,000 / 4,000 / 8,000 / 16,000 repeats, split time 14 / 35 / 78 / 300 / 1,529 ms.
+- **Fix.** The reading keeps one append-only list of written statements, and `compoundBody` is a prefix view of it (`{ of, length }`); the two readers of bodies (`literalOutput`, `flatLiteralOutput`) index the view. Every reading is the same, no statement is read less. After the fix: 2 / 3 / 6 / 14 / 26 MB allocated, 3 / 3 / 4 / 9 / 18 ms. The split's cost ratio t(4n)/t(n) at n = 1,000 is about 14.5 before and 4.4 after.
+- **Bound.** `oversizedCommand` (command-blocker) returns a reason when a line is longer than `MAX_COMMAND_CHARS` (131,072) or has more than `MAX_SEGMENTS` (8,192) statements, counted as unquoted separator tokens of one lexer pass plus one. It runs before any split. The destructive guard denies such a line before policy load (`blocked this command for safety (fail-closed): command too long to read safely (N statements > 8192)`); the sessions-ledger guard denies it after its ledger prefilter; the Codex `apply_patch` guard denies it after its `apply_patch` prefilter; the staging fence records it as `paths: ["*"]` (overlaps every staged path) and records no work tree. Measured hook times (destructive guard, nice 15): just below the statement bound 0.27 s, just below the character bound (a 524 KB here-document) 0.45 s, above either bound 0.07–0.10 s; × 16,000 with the discard is denied in 0.11 s.
+- **Ceiling (BV-004).** A harmless line past a bound is denied, e.g. `{ :; } | cat; ` × 4,000 (12,001 statements). The values come from hook time (below 1 s at the bound) and are checked against a census of 2026-11-11 over this repo's session transcripts (13 literal folders, 30 days, 32,635 unique Bash commands, readers only): the longest command has 14,702 characters and the most statements are 54, so no real command reaches either bound (margins ×8.9 and ×150; the character bound is set by hook time: a quoted inner script piped to a shell costs about 1.7 s per 128 KiB, 4.1 s at 512 KiB, so 128 KiB keeps the slowest form near 1.7 s). The population is session-orchestrator sessions only; the directory-scope filter refuses a listing across all projects. The bound is in `requires` of the destructive and ledger guards. REVISIT TRIGGER: a real command denied as too long to read safely.
+
+## Windows path aliases (#1953)
+
+Four Windows spellings name a protected file without spelling its path; each could carry a truncating redirect or an `rm`/`mv`/`unlink` past `redirect-truncate-protected`, `redirect-harness-memory` and `ledger-delete-protected`. Decided 2026-11-06, win32 only (`normalizeMsysPath` and the 8.3 check run only when `process.platform` is `win32`; POSIX verdicts are unchanged):
+
+- **Drive-relative `C:CLAUDE.md` — map.** The drive prefix is dropped and the rest is judged repo-root-relative, like every relative target (#994 R1). Ceiling: a different drive (`D:CLAUDE.md` while the repo is on C:) is also denied — an over-deny.
+- **NTFS stream `CLAUDE.md::$DATA`, `CLAUDE.md:x` — map.** The part before the first colon is the file; a named stream counts as the file (fail-closed). A `$` in the stream part leaves the operand unresolved for the readers, so the extractors keep its text as `win32Text` and the matchers judge it on win32: whatever the stream name expands to, the file is fixed.
+- **Administrative share `\\<host>\C$\…` (also `//…`, `\\?\UNC\…`, `\\.\UNC\…`) — map** to `C:\…` for every host: the machine's own name and its loopback spellings are not knowable without I/O, and a remote host with the same path only over-denies. The `$` before a separator is literal for bash and kept the same way as a stream `$`. Ceiling: a non-administrative share that points into the repo (`\\host\myshare\CLAUDE.md`), a volume GUID path (`\\?\Volume{…}\`) and `\\?\GLOBALROOT\…` are not resolvable without the filesystem and stay open.
+- **8.3 short names `CLAUDE~1.MD`, `ORCHES~1\…` — fail closed.** The long name needs the filesystem. A target with a component `<1–6 chars>~<digits>[.<1–3 chars>]` is denied when that alias could abbreviate a denylisted component (leading dots dropped, spaces and inner dots removed, upper case; first up to 6 characters or 2 characters plus a 4-hex hash; first 3 extension characters; a wildcard compares its literal prefix; a wildcard after the glob's last dot may hide the real last dot, so any extension counts there — `.orchestrator/metrics/*.jsonl*` denies `EVENTS~1.1` for the rotated `events.jsonl.1`), with the repo root in front of repo-relative entries so a short name in the root's own path is read too. `NOTES~1.MD` and `ORCHES~1\tmp\…` stay allowed. Ceilings: a long target under a root spelled in short form is not matched; a real long name that has the shape of an alias (`CLAUDE~1.MD` as a file) is denied — an over-deny.
+
+Replay at the cutoff 2026-11-06T22:13:14Z (442,838 Bash commands, 30 days, readers only, nothing executed) against a23ac9f9: 0 lines gained, 0 lost on darwin, and 0 / 0 with the matchers loaded with `path.win32` and `process.platform` `win32` (M4 corpus, repo root a POSIX path, so this bounds the over-deny on this corpus only). Revisit trigger: the native Win-PC run (Git Bash and PowerShell, real hook) contradicting one of these mappings, or a short-name deny on a real command.
+
+## Alternatives considered
+
+**Option 2 — tripwire with a fixed boundary, hard guarantees through harness permissions or a sandbox.** Rejected. The precondition named in #1854 ("check first whether the deployed harness configurations actually provide this") does not hold: the committed `.claude/settings.json` carries 9 `permissions.deny` entries, literal or trailing-wildcard prefixes (`Bash(git reset --hard)`, `Bash(git push --force)`, `Bash(supabase *)`, …), and no `sandbox` block (measured with `jq '.permissions.deny' .claude/settings.json`, 2026-11-01: 6 literal, 3 ending in `*`). Prefix patterns have exactly the weakness #1831 closed in the guard, and the guard runs on Claude Code, Cursor/Pi and Codex, whose permission systems differ — a guarantee would have to be built and maintained per harness. Cost: a new configuration surface per harness, for a guarantee nobody has measured to exist.
+
+**Option 3 — keep closing every reported bypass.** Rejected. It is the status quo the measurements describe: +1,376 lines in four days, 55 commits on blocker/hook/policy since 2026-09-28, 18 follow-ups in one month, and #1797 showing a fix cycle that raised the finding count (3 → 5). The non-goal forms cannot be closed by lexing at all; chasing them only grows the lexer.
+
+**Option 4 — allowlist instead of denylist.** Rejected. An allowlist must enumerate every legitimate command agents run. The #1834 replay counted 316,873 distinct Bash commands in 30 days (2026-10-27); a hard block on only one extra form, `git checkout <ref> -- <path>`, would have added 175 denials in that window (about 6 per day, beyond the HR-101 ceiling). An allowlist multiplies that false-deny rate across every command shape, and the payload-blindness of the non-goals applies to it equally — an allowed `node -e` still runs whatever it carries.

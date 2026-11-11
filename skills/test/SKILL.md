@@ -2,7 +2,7 @@
 name: test
 description: Agentic end-to-end test orchestrator — drive web/macOS flows, evaluate UX rubric, reconcile issues
 user-invocable: true
-argument-hint: "[scope|profile-name] [--since <git-ref>] [--full]"
+argument-hint: "[scope|profile-name] [--target-kind live|production-build|dev-server] [--target-url <url>] [--since <git-ref>] [--full]"
 model: inherit
 ---
 # Test
@@ -13,7 +13,9 @@ This skill resolves a test target and profile, dispatches the appropriate driver
 
 ## Invocation
 
-`$ARGUMENTS` carries the recognised flags (`--target`, `--profile`, `--dry-run`, `--since`, `--full`) and an optional bare scope token. Parse it per § Argument Validation, resolve per § Argument Precedence Resolution, and only then hand the six-argument § Handoff Contract to `skills/test-runner/SKILL.md`, which owns all further resolution, driver dispatch, evaluation, and issue reconciliation.
+`$ARGUMENTS` carries the recognised flags (`--target`, `--target-kind`, `--target-url`, `--profile`, `--dry-run`, `--since`, `--full`) and an optional bare scope token. Parse it per § Argument Validation, resolve per § Argument Precedence Resolution, and only then hand the eight-argument § Handoff Contract to `skills/test-runner/SKILL.md`, which owns all further resolution, driver dispatch, evaluation, and issue reconciliation.
+
+Example: `/test --profile smoke --target-kind live --target-url https://example.com` requests a live run at that URL; `LIVE RUN` is granted only when per-page visited-URL evidence confirms it was driven. Missing evidence or a different visited origin yields the dev-server header and a report explaining the mismatch.
 
 ## Argument Validation
 
@@ -22,6 +24,8 @@ Parse `$ARGUMENTS` before doing anything else.
 Recognized flags and positional arguments:
 
 - `--target <name>` — explicit target name (e.g. `your-target-app`, `your-mobile-app`). Sets `explicit_target = true`.
+- `--target-kind live|production-build|dev-server` — requested run kind; pass as `target_kind`. Capture evidence grants the final kind and header. Only these three values are recognized. An unrecognized value (or a missing value) resolves to `dev-server unknown`; do not consume a following flag as its value. With no flag, preserve an explicit operator statement for this run; otherwise use `dev-server`.
+- `--target-url <url>` — requested navigation URL; pass as `target_url`. Takes precedence over a URL in the request or Playwright config. A missing value is `unknown`; do not consume a following flag as its value. The test-runner applies its localhost/preview and unknown safety rules before dispatch, then verifies actual visited URLs before granting the report label; the flag alone does not configure Playwright's base URL.
 - `--profile <name>` — explicit profile name (e.g. `smoke`, `full`, `a11y`, `onboarding`). Sets `explicit_profile = true`.
 - `--dry-run` — resolve target and profile, print the dispatch plan, but do NOT invoke any driver or create any issues. Sets `dry_run = true`.
 - `--since <git-ref>` — restrict test execution to files changed since the given git ref. Sets `since_ref = <git-ref>`.
@@ -39,7 +43,7 @@ Do NOT proceed with test execution when this conflict is present.
 If `$ARGUMENTS` contains an unrecognized flag (i.e. starts with `--` but is not one of the above), inform the user:
 
 ```
-Unknown flag '<flag>'. Recognized flags: --target <name>, --profile <name>, --dry-run, --since <git-ref>, --full.
+Unknown flag '<flag>'. Recognized flags: --target <name>, --target-kind live|production-build|dev-server, --target-url <url>, --profile <name>, --dry-run, --since <git-ref>, --full.
 ```
 
 Then continue with the remaining valid arguments.
@@ -89,11 +93,13 @@ Pass the following handoff contract to the skill entry point.
 
 ## Handoff Contract
 
-The six named arguments below are the canonical contract between this skill and `skills/test-runner/SKILL.md`. The skill reads them from context; do NOT reconstruct them inside the skill.
+The eight named arguments below are the canonical contract between this skill and `skills/test-runner/SKILL.md`. The skill reads them from context; do NOT reconstruct them inside the skill.
 
 | Argument | Type | Value |
 |---|---|---|
 | `target` | `string \| undefined` | Resolved target name, or `undefined` if not yet known (skill resolves via convention) |
+| `target_kind` | `string \| undefined` | Requested recognized `--target-kind` value (subject to capture evidence); `undefined` if absent. Invalid/missing flag value forces `dev-server` with `target_url = "unknown"` |
+| `target_url` | `string \| undefined` | URL from `--target-url`, or `undefined` if absent; `unknown` for a missing value or invalid target kind |
 | `profile` | `string \| undefined` | Resolved profile name, or `undefined` if not yet known (skill applies `test-runner.default-profile` or `smoke`) |
 | `dry_run` | `boolean` | `true` if `--dry-run` was passed; `false` otherwise |
 | `explicit_target` | `boolean` | `true` if `--target` was present in `$ARGUMENTS`; `false` otherwise |

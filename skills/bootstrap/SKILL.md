@@ -2,7 +2,7 @@
 name: bootstrap
 user-invocable: true
 disable-model-invocation: true
-argument-hint: "[--upgrade <tier>]"
+argument-hint: "[--fast|--standard|--deep] [--no-interview] [--upgrade <tier>]"
 tags: [bootstrap, setup, scaffold, init]
 model: sonnet
 model-preference: sonnet
@@ -62,6 +62,7 @@ skill without dispatching to a tier template.
 | `--sync-rules` | Pull canonical rules from the plugin's `rules/` library into `.claude/rules/`. Preserves local rules (files without the plugin source header). Standalone — does not touch `bootstrap.lock`. |
 | `--ecosystem-health` | Run the ecosystem-health wizard: detects CI provider + package manager, prompts for health endpoints, pipelines, and critical issue labels. Writes the config block + `.orchestrator/policy/ecosystem.json`. No scaffolding, no auto-commit. |
 | `--fast` / `--standard` / `--deep` | Skip the tier confirmation question (e.g., for scripted runs). Equivalent to running `/bootstrap` and selecting that option. |
+| `--no-interview` | Non-interactive run (scripted or headless). No `AskUserQuestion` and no numbered-list question anywhere — tier, archetype, vault, owner interview, dispatcher autonomy. This row is the contract; the phase sites below only point here. Defaults: tier = `RECOMMENDED_TIER` (a tier flag wins); archetype: public path → detected or `node-minimal`, private path → detected or abort with a one-line error (`private-contract.md` § Select) — never the public default on the private path; vault registration skipped; dispatcher autonomy = `off` without asking; `owner.yaml` not written. Never end a turn on a question: if a required value cannot be defaulted, abort with a one-line error. |
 
 All flag-driven flows are idempotent — running twice with no upstream change is a no-op.
 
@@ -69,14 +70,14 @@ All flag-driven flows are idempotent — running twice with no upstream change i
 
 This skill runs when the Bootstrap Gate is closed (missing CLAUDE.md, Session Config, or `.orchestrator/bootstrap.lock`) or when the user invokes `/bootstrap` directly. It scaffolds the minimum structure required by all session-orchestrator skills, commits it, and writes the lock file that opens the gate for all future invocations.
 
-**Anti-bureaucracy contract:** On a first-time full bootstrap (no tier flags, no `--no-interview`), expect **7–9** `AskUserQuestion` prompts in three fixed blocks — not an open-ended wizard. (1) **Tier/stack** (Phase 2): one tier-confirmation question, plus an optional second archetype question when `PATH_TYPE = public` and archetype confidence is low (Standard/Deep only). (2) **Owner persona** (Phase 3.5): five questions from `scripts/lib/owner-interview.mjs` (first-run only). (3) **Dispatcher autonomy** (Phase 3.5.1): one question from `scripts/lib/config/dispatcher-autonomy-capture.mjs`. Flagged flows (`--upgrade`, `--retroactive`, `--sync-rules`, `--ecosystem-health`) and `--no-interview` skip some or all of these blocks.
+**Anti-bureaucracy contract:** On a first-time full bootstrap (no tier flags, no `--no-interview`), expect **7–9** `AskUserQuestion` prompts in three fixed blocks — not an open-ended wizard. (1) **Tier/stack** (Phase 2): one tier-confirmation question, plus an optional second archetype question when `PATH_TYPE = public` and archetype confidence is low (Standard/Deep only). (2) **Owner persona** (Phase 3.5): five questions from `scripts/lib/owner-interview.mjs` (first-run only). (3) **Dispatcher autonomy** (Phase 3.5.1): one question from `scripts/lib/config/dispatcher-autonomy-capture.mjs`. Flagged flows (`--upgrade`, `--retroactive`, `--sync-rules`, `--ecosystem-health`) and `--no-interview` skip some or all of these blocks. In a headless run (`codex exec`, `claude -p`) a question is a failed bootstrap, not a pause: measured 2026-11-02 under `codex exec`, 2 of 4 `--fast --no-interview` runs stopped on the tier question and wrote no `bootstrap.lock`.
 
 ## Invocation Context
 
 Before starting, determine how this skill was invoked:
 
 - **Transitive (gate-closed):** Invoked from another skill's Phase 0. The user's original intent (their first prompt) is available in context. After bootstrap completes, execution must return to the original skill's Phase 1.
-- **Direct (`/bootstrap`):** User invoked manually. Parse `$ARGUMENTS` for flags: `--fast`, `--standard`, `--deep`, `--upgrade <tier>`, `--retroactive`. See § Invocation above for flag semantics.
+- **Direct (`/bootstrap`):** User invoked manually. Parse `$ARGUMENTS` for flags: `--fast`, `--standard`, `--deep`, `--no-interview`, `--upgrade <tier>`, `--retroactive`. See § Invocation above for flag semantics.
 
 Store `INVOCATION_MODE = transitive | direct`.
 
@@ -122,6 +123,7 @@ Output from Phase 1:
 
 Present exactly one `AskUserQuestion` unless:
 - `$ARGUMENTS` includes `--fast`, `--standard`, or `--deep` (tier pre-selected, skip question)
+- `$ARGUMENTS` includes `--no-interview` → `CONFIRMED_TIER = RECOMMENDED_TIER`, a tier flag wins (contract: SKILL.md § Invocation flag table)
 - `--retroactive` flag (no scaffolding at all, skip to Phase 4)
 
 **Language (#1562).** The question texts in this skill are written in German. Render every question, option description and report line in the operator's language: `owner.language` from `~/.config/session-orchestrator/owner.yaml` when that file exists (`de` or `en`), otherwise the language the operator writes in this session. Tier labels (`fast`, `standard`, `deep`) and archetype ids stay verbatim, because they are values; `(Empfohlen)` and `Abbrechen` follow the language (`(Recommended)`, `Cancel`).
@@ -154,6 +156,7 @@ If ALL of the following are true:
 1. `PATH_TYPE = public`
 2. `CONFIRMED_TIER` is `standard` or `deep`
 3. `intensity-heuristic.md` returned `ARCHETYPE_CONFIDENCE = low` (truly ambiguous)
+4. `--no-interview` was NOT passed — under `--no-interview` on this public path: `RECOMMENDED_ARCHETYPE` when detected, else `node-minimal` (contract: SKILL.md § Invocation flag table)
 
 Then ask one more question — and only then:
 
@@ -178,11 +181,13 @@ Store as `CONFIRMED_ARCHETYPE`.
 For `PATH_TYPE = private` and Standard/Deep, execute `private-contract.md`'s
 Select section now. Reuse a valid detected or explicit ID; when evidence is
 insufficient, select from the returned catalog before scaffolding. Tier flags
-skip tier confirmation, not required private archetype selection. Never pass a
-null private ID into the public default. On upgrades, validate the lock's ID
+skip tier confirmation, not required private archetype selection. Under
+`--no-interview`: insufficient evidence aborts with a one-line error (contract:
+SKILL.md § Invocation flag table). Never pass a null private ID into the public
+default. On upgrades, validate the lock's ID
 against the currently configured contract before generating any files.
 
-The tier/stack block contributes **1–2** questions; a first-run full bootstrap adds **6 more** from the owner interview (Phase 3.5, five questions) and dispatcher-autonomy capture (Phase 3.5.1, one question) — **7–9 total**.
+The tier/stack block contributes **1–2** questions; a first-run full bootstrap adds **6 more** from the owner interview (Phase 3.5, five questions) and dispatcher-autonomy capture (Phase 3.5.1, one question) — **7–9 total** (0 under `--no-interview`).
 
 ## Upgrade Flow (`--upgrade <tier>`)
 
@@ -335,7 +340,7 @@ When `PATH_TYPE = public`, read `skills/bootstrap/public-fallback.md` for the fu
 
 ## Phase 3.4: Vault-Registration Prompt (#190)
 
-Standard and Deep tier templates include Step 5.5 (standard) / D6.6 (deep) which runs `scripts/lib/product-repo-detect.mjs` to check for product-repo signals (framework dep, content dir, product env vars). When signals are detected and no `vault:` key exists in Session Config, the template prompts the user to register a vault entry. Idempotency via `hasVaultConfig`. Fast tier skips this step.
+Standard and Deep tier templates include Step 5.5 (standard) / D6.6 (deep) which runs `scripts/lib/product-repo-detect.mjs` to check for product-repo signals (framework dep, content dir, product env vars). When signals are detected and no `vault:` key exists in Session Config, the template prompts the user to register a vault entry. Idempotency via `hasVaultConfig`. Fast tier skips this step; `--no-interview` skips the prompt on every tier.
 
 ## Phase 3.5: Owner Persona Interview (first-run only)
 
@@ -371,7 +376,7 @@ if (probe.status === 'pending') {
 
 > Closes session-orchestrator issue #681 (Epic #673 P3 — one-time per-repo dispatcher-autonomy capture). Cross-reference `.claude/rules/ask-via-tool.md` (AUQ via tool, not prose).
 
-**WHEN:** Runs after Phase 3.5 (Owner Persona Interview) and after the tier template has scaffolded `CLAUDE.md` (Phase 3 / Phase 3.3). A new project's CLAUDE.md never contains the committed `dispatcher-autonomy:` block, so bootstrap **always asks** — the presence guard below is belt-and-suspenders for re-runs.
+**WHEN:** Runs after Phase 3.5 (Owner Persona Interview) and after the tier template has scaffolded `CLAUDE.md` (Phase 3 / Phase 3.3). A new project's CLAUDE.md never contains the committed `dispatcher-autonomy:` block, so bootstrap **always asks unless `--no-interview` is set**; then it writes `autonomy: off` without asking — the presence guard below is belt-and-suspenders for re-runs.
 
 **WHY (one-time guard):** The committed `## Dispatcher Autonomy` block is the never-re-ask marker. Detect "block absent" via `isDispatcherAutonomyBlockPresent($CLAUDE_MD_CONTENT)` — a raw `/^dispatcher-autonomy:\s*$/m` presence check on the file content. Do NOT use the resolved autonomy value from `$CONFIG` (it returns `'off'` for BOTH "absent" AND "present-with-off" and cannot distinguish first-run from a deliberate `off`).
 
@@ -385,7 +390,7 @@ On **any** answer (including `off`) the committed block is written, presented, a
 
 > **Capture writes the committed default; the runtime value flows through `resolveDispatcherAutonomy`.** This phase only persists the operator's one-time choice as the committed baseline. The EFFECTIVE autonomy at run time is resolved separately by `resolveDispatcherAutonomy()` in `scripts/lib/config/dispatcher-autonomy.mjs` with host-local precedence `SO_DISPATCHER_AUTONOMY` env > `owner.yaml` `dispatcher.autonomy` > committed > `off` (#653 pattern). Capture never reads or writes those override tiers — it writes the committed tier only.
 
-**AUQ (mandatory — use the tool, not prose):** On Claude Code / Cursor IDE, dispatch this via the **`AskUserQuestion` tool** per `.claude/rules/ask-via-tool.md` (AUQ-001) — never an inline markdown "choose 1/2/3" list. Option 1 (`off`) is the recommended, fail-closed default. Only Codex CLI (no `AskUserQuestion`) falls back to a numbered-list prose prompt (AUQ-004 exception 1).
+**AUQ (mandatory — use the tool, not prose):** On Claude Code / Cursor IDE, dispatch this via the **`AskUserQuestion` tool** per `.claude/rules/ask-via-tool.md` (AUQ-001) — never an inline markdown "choose 1/2/3" list. Option 1 (`off`) is the recommended, fail-closed default. Only Codex CLI (no `AskUserQuestion`) falls back to a numbered-list prose prompt (AUQ-004 exception 1). Under `--no-interview` neither the tool nor the numbered-list fallback applies.
 
 **HOW (coordinator steps):**
 
@@ -491,7 +496,7 @@ If invoked directly via `/bootstrap`: report the created files list and stop.
 
 - **NEVER create application code during bootstrap** — only structural files (CLAUDE.md, .gitignore, README.md, manifests, CI). The feature that follows brings its own implementation.
 - **NEVER skip the lock file write** — `.orchestrator/bootstrap.lock` is the gate's mechanical truth. Bootstrap without a lock file is incomplete.
-- **Fixed question budget, no ad-hoc prompts** — tier/stack (1–2), owner interview (5, Phase 3.5), dispatcher-autonomy capture (1, Phase 3.5.1) sum to **7–9** on a first-run full bootstrap; `--no-interview` and flag short-circuits reduce this. Make a best-effort tier recommendation and let the user correct via `/bootstrap --upgrade` later — do not add prompts beyond these blocks.
+- **Fixed question budget, no ad-hoc prompts** — tier/stack (1–2), owner interview (5, Phase 3.5), dispatcher-autonomy capture (1, Phase 3.5.1) sum to **7–9** on a first-run full bootstrap; flag short-circuits reduce this, and `--no-interview` reduces the budget to 0 questions. A headless run (`codex exec`, `claude -p`) that cannot ask must default or abort and must never end its turn on a question. Make a best-effort tier recommendation and let the user correct via `/bootstrap --upgrade` later — do not add prompts beyond these blocks.
 - **ALWAYS commit** — bootstrap ends with a git commit. The lock file is part of that commit.
 - **ALWAYS check for retroactive flag** — if `--retroactive` is in `$ARGUMENTS`, skip all scaffolding and jump directly to writing `bootstrap.lock` (tier inferred from existing file inventory, fallback: `fast`).
 - **NEVER abort bootstrap on rules-fetch failure** — rules-fetch is opt-in and best-effort. The legacy Clank sync path is the safety net.

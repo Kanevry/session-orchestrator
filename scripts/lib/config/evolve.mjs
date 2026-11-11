@@ -3,7 +3,8 @@
  *
  * Lets a repo declare opt-in EXTRA learning sources for /evolve: sidecar JSON
  * files produced OUT-OF-BAND by a domain measurement (e.g. an eval-learn harness
- * regression report). /evolve READS these sidecars and emits `domain-regression`
+ * regression report) or owner decisions. /evolve READS these sidecars and emits
+ * `domain-regression` or `owner-preference`
  * learning candidates — it NEVER runs the measurement itself (read-only contract).
  *
  * Exports:
@@ -19,8 +20,8 @@
  *   evolve:
  *     extra-sources:
  *       - path: eval/learn/reports/latest.json   # required; SAFE_PATH_RE-validated
- *         kind: regression-flags                  # enum: regression-flags (only value)
- *         learning-type: domain-regression        # enum: domain-regression (only value)
+ *         kind: regression-flags                  # enum: regression-flags | owner-decisions
+ *         learning-type: domain-regression        # enum: domain-regression | owner-preference
  *     decay-enabled: true                          # #670 — gate the recency factor
  *     decay-half-life-days: 90                      # #670 — half-life (conservative)
  *     decay-floor-factor: 0.1                       # #670 — catastrophic-loss floor
@@ -37,18 +38,20 @@ import pathModule from 'node:path';
 import { matchBlockHeader } from './block-header.mjs';
 import { preprocessBlockLines, preprocessBlockLinesNoDash } from './block-preprocess.mjs';
 
-/** Per-entry defaults (none beyond the required field-set; documented for symmetry). */
+/** Default kind and its learning type; other kinds derive their type from the table below. */
 export const EVOLVE_EXTRA_SOURCE_DEFAULTS = Object.freeze({
   kind: 'regression-flags',
   'learning-type': 'domain-regression',
 });
 
-// Enum allow-lists. Each currently has a single legal value; unknown values DROP
+// Kind-to-learning-type mapping. Unknown values and mismatched kind/type pairs DROP
 // the entry (schema gate) rather than silently defaulting — the consumer reads the
 // `kind` to pick a sidecar schema and the `learning-type` to stamp the candidate,
 // so a guessed value would produce a wrong-shaped learning.
-const VALID_KIND = new Set(['regression-flags']);
-const VALID_LEARNING_TYPE = new Set(['domain-regression']);
+const LEARNING_TYPE_BY_KIND = Object.freeze({
+  'regression-flags': 'domain-regression',
+  'owner-decisions': 'owner-preference',
+});
 
 // Allowlist: a sidecar `path` is a repo-relative file path — no spaces, no shell
 // metacharacters, and no `..` scope escape. Mirrors cross-repo.mjs /
@@ -172,7 +175,7 @@ function _assignKv(record, key, rawValue) {
 /**
  * Validate + normalise a raw extra-source record. Returns the record, or null
  * (with a stderr WARN) when `path` is missing / SAFE_PATH_RE-failing, or when
- * `kind` / `learning-type` carries an unknown enum value.
+ * `kind` / `learning-type` carries an unknown enum value or a mismatched pair.
  *
  * @param {Record<string, string>} raw
  * @returns {{path: string, kind: string, 'learning-type': string}|null}
@@ -198,20 +201,20 @@ function _validateRecord(raw) {
 
   // kind: enum gate — unknown value DROPS the record (never guess).
   const kind = (raw.kind ?? EVOLVE_EXTRA_SOURCE_DEFAULTS.kind).trim();
-  if (!VALID_KIND.has(kind)) {
+  if (!Object.hasOwn(LEARNING_TYPE_BY_KIND, kind)) {
     process.stderr.write(
       `evolve: dropped extra-source '${path}' with unknown kind: ${JSON.stringify(kind)} ` +
-        `(allowed: ${[...VALID_KIND].join(', ')})\n`,
+        `(allowed: ${Object.keys(LEARNING_TYPE_BY_KIND).join(', ')})\n`,
     );
     return null;
   }
 
-  // learning-type: enum gate — unknown value DROPS the record (never guess).
-  const learningType = (raw['learning-type'] ?? EVOLVE_EXTRA_SOURCE_DEFAULTS['learning-type']).trim();
-  if (!VALID_LEARNING_TYPE.has(learningType)) {
+  // learning-type: enum + pair gate — unknown or mismatched values DROP the record.
+  const learningType = (raw['learning-type'] ?? LEARNING_TYPE_BY_KIND[kind]).trim();
+  if (learningType !== LEARNING_TYPE_BY_KIND[kind]) {
     process.stderr.write(
       `evolve: dropped extra-source '${path}' with unknown learning-type: ${JSON.stringify(learningType)} ` +
-        `(allowed: ${[...VALID_LEARNING_TYPE].join(', ')})\n`,
+        `(allowed for ${kind}: ${LEARNING_TYPE_BY_KIND[kind]})\n`,
     );
     return null;
   }

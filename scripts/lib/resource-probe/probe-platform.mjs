@@ -271,12 +271,13 @@ export async function swapUsedMb() {
 
 /**
  * Probe macOS memory_pressure free percentage. Returns integer 0..100, or null.
+ * @param {number} [timeoutMs=1500]
  * @returns {Promise<number|null>}
  */
-export async function memoryPressurePctFree() {
+export async function memoryPressurePctFree(timeoutMs = 1500) {
   if (process.platform !== 'darwin') return null;
 
-  const output = await runCommand('memory_pressure', []);
+  const output = await runCommand('memory_pressure', [], timeoutMs);
   return parseMemoryPressureOutput(output);
 }
 
@@ -290,12 +291,13 @@ export async function memoryPressurePctFree() {
  * Darwin-only — returns null on Linux/Windows/unknown (those platforms already
  * surface an accurate `os.freemem()`, so no override is needed) or on
  * spawn/parse failure.
+ * @param {number} [timeoutMs=1500]
  * @returns {Promise<number|null>} available GB rounded to 1 decimal, or null
  */
-export async function ramAvailableGb() {
+export async function ramAvailableGb(timeoutMs = 1500) {
   if (process.platform !== 'darwin') return null;
 
-  const output = await runCommand('vm_stat', []);
+  const output = await runCommand('vm_stat', [], timeoutMs);
   return parseVmStatAvailableGb(output);
 }
 
@@ -316,10 +318,11 @@ export async function ramAvailableGb() {
  * `orchestrator.session.started` events, so historical telemetry and live
  * probes are denominated identically.
  *
- * Best-effort: returns null when the registry is unreadable (sandboxed test
- * environments, a foreign `SO_SESSION_REGISTRY_DIR`, first run before any
- * registration). Consumers treat null as "unknown" and fall back to the
- * rescaled process count.
+ * Best-effort: returns null when the registry directory cannot be listed
+ * (EACCES, ENOTDIR, EMFILE — sandboxed test environments, a foreign
+ * `SO_SESSION_REGISTRY_DIR`). A registry that was never created (ENOENT, first
+ * run before any registration) is a measured 0. Consumers treat null as
+ * "unknown" and fall back to the rescaled process count.
  *
  * @param {object} [opts]
  * @param {string|null} [opts.sessionId] — own session id, excluded from the count
@@ -329,7 +332,9 @@ export async function ramAvailableGb() {
 export async function peerSessionsCount({ sessionId = null, freshnessMin = 15 } = {}) {
   try {
     const { detectPeers } = await import('../session-registry.mjs');
-    const peers = await detectPeers({ sessionId, freshnessMin });
+    // strict (#1946): an unlistable registry (EACCES, ENOTDIR, EMFILE) must
+    // land in the catch below as null, never as a measured 0 peers.
+    const peers = await detectPeers({ sessionId, freshnessMin, strict: true });
     return Array.isArray(peers) ? peers.length : null;
   } catch {
     return null;

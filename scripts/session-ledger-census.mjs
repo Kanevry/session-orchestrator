@@ -49,7 +49,7 @@ import { getProjectDir, resolveEventsLedgerRoot } from './lib/platform.mjs';
 import { countSkillInvocationsAcrossFiles, isUuid } from './lib/session-close-backfill.mjs';
 import { DEFAULT_TTL_HOURS } from './lib/session-lock.mjs';
 import { STUB_WORK_CLASSES, classifyStubWork } from './lib/session-schema/filters.mjs';
-import { addSkillCalls, countWorkEvent, emptyWorkCounts, FRESH_START_SOURCES, workEvidenceFor } from './lib/session-schema/work-evidence.mjs';
+import { addSkillCalls, BACKFILL_COMPLETED_EVENT, countWorkEvent, emptyWorkCounts, FRESH_START_SOURCES, NO_RUN_ACTION, NO_RUN_SINCE, workEvidenceFor } from './lib/session-schema/work-evidence.mjs';
 import { DEFAULT_SKILL_INVOCATIONS_PATH, defaultSkillInvocationsPath } from './lib/skill-invocations-schema.mjs';
 import { canonicalizeSessions, isMeasuredSession } from './lib/sessions-canonical.mjs';
 
@@ -98,6 +98,15 @@ DESCRIPTION
                   without turn stops, no session.started, earliest surviving
                   start not a fresh startup/clear, start without native_source,
                   unreadable skill ledger) — NOT zero work
+
+  No-run sessions (#1975) ended without ever running SO (no shape_resolved, no
+  agent stop, no wave completion; measured) and get NO record: they are counted
+  separately from the skipped-no-run backfill outcomes in events.jsonl and are
+  in no rate's numerator or denominator.
+  DEFINITION CHANGE ${NO_RUN_SINCE} (#1975): before that day such sessions got an
+  abandoned stub and still sit in the rates as conversation/empty stubs; after
+  it they leave abort_rate_all. A falling abort rate across that day is the
+  definition change, not an improvement.
 
   A stub is classified from its own work_evidence field when present, else by
   joining events.jsonl, its rotated archives and skill-invocations.jsonl. Placeholder total_* zeros are
@@ -406,6 +415,13 @@ export function runCensus({ repoRoot, stubs: listStubs = false } = {}) {
 
   const ev = readEventsWithRotations(ledgerRoot);
   const index = indexEvents(ev.events);
+  // #1975: sessions the backfill judged no-run leave no record, only this
+  // outcome event (SessionEnd hook and SessionStart path alike). Distinct raw ids.
+  const noRunIds = new Set();
+  for (const e of ev.events) {
+    if (e?.event === BACKFILL_COMPLETED_EVENT && e.action === NO_RUN_ACTION
+      && typeof e.session_id === 'string' && e.session_id !== '') noRunIds.add(e.session_id);
+  }
   const gapInfo = splitGaps(ev.gaps);
   // Read ONCE per root: the ledger root of sessions/events and, from a linked
   // worktree, the given root too — the skill hook stays in a worktree whose
@@ -465,6 +481,7 @@ export function runCensus({ repoRoot, stubs: listStubs = false } = {}) {
       unmeasured_reasons: unmeasuredReasons,
       ...(listStubs ? { stubs: stubList } : {}),
     },
+    no_run: { sessions: noRunIds.size },
     skill_ledger: skillLedger,
     events: {
       complete: ev.complete,
@@ -506,6 +523,8 @@ function renderHuman(r) {
   const reasons = Object.entries(r.abandoned.unmeasured_reasons);
   if (reasons.length > 0) L.push(`    unmeasured because: ${reasons.map(([k, n]) => `${k} ${n}`).join(', ')}`);
   L.push('    note: unmeasured is NOT zero work — nobody could measure it.');
+  L.push(`  no-run sessions (no record, not in any rate): ${r.no_run.sessions}`);
+  L.push(`    note: since ${NO_RUN_SINCE} (#1975) no-run sessions get no stub; older ones stay in the rates as conversation/empty — a falling abort rate across that day is the definition change.`);
   const e = r.events;
   L.push(`  skill ledger:      ${r.skill_ledger}`);
   L.push(`  events history:    complete=${e.complete} sources=${e.sources} gaps=${e.gaps} (dated ${e.gaps_dated}, undatable ${e.gaps_undatable}) malformed=${e.malformed_lines}`);

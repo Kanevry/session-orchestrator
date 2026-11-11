@@ -40,6 +40,7 @@
  *   2 — usage error (no positional session id)
  */
 
+import path from 'node:path';
 import { isNativeUuid, readAuflagen, renderAuflagenNotice, terminalSafeJson } from './lib/fleet-protocol.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
@@ -61,6 +62,8 @@ async function main() {
     process.stderr.write(`${PREFIX} usage: fleet-auflagen.mjs <session_id> [<session_id>...] [--render]\n`);
     return 2;
   }
+  // Same platform confirmation as fleet-checkin (#1845): SO_PLATFORM=codex never
+  // adopts an inherited CLAUDE_CODE_SESSION_ID; unset SO_PLATFORM keeps the single id.
   const [nativeId] = readProcessLocalSessionIds();
   const keys = [...new Set([...(isNativeUuid(nativeId) ? [nativeId] : []), ...positional])];
   const repoRoot = (process.env.CLAUDE_PROJECT_DIR || '').trim() || process.cwd();
@@ -100,7 +103,7 @@ if (isMainModule(import.meta.url)) {
   main().then(
     (code) => { process.exitCode = code; },
     (err) => {
-      process.stderr.write(`${PREFIX} ${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(`${PREFIX} ${err?.code ?? 'EUNKNOWN'} (${path.basename(err?.path ?? 'fleet-auflagen.mjs')})\n`);
       process.exitCode = 1;
     },
   );

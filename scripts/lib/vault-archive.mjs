@@ -26,9 +26,10 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, posix, relative, sep } from 'node:path';
-import YAML from 'js-yaml';
+import * as YAML from 'js-yaml';
 
 import { expandTilde } from './common.mjs';
+import { yamlHasDocument } from './yaml-has-document.mjs';
 
 /**
  * Repo-/vault-relative paths are OUTPUT (frontmatter `source`, manifest
@@ -175,7 +176,8 @@ export function splitFrontmatter(raw) {
   let fm;
   let parseError = false;
   try {
-    fm = YAML.load(m[1]);
+    // js-yaml 5 (#2015): a source without a document throws; keep the v4 'not a mapping' path.
+    fm = yamlHasDocument(m[1]) ? YAML.load(m[1]) : undefined;
   } catch {
     fm = null;
     parseError = true;
@@ -249,17 +251,16 @@ export function buildArchiveFields({
 
   // created: keep a valid existing date (original creation), else today.
   //
-  // js-yaml's default schema auto-resolves an unquoted ISO-8601-shaped scalar
-  // (the canonical `created: 2026-01-01` form) into a native `Date`, NOT a
-  // string — same quirk as moc-staleness-banner.mjs's `_readMocStalenessDays`
-  // (verified: `YAML.load('created: 2026-01-01').created instanceof Date`).
-  // Without this branch, an unquoted existing `created:` silently fails the
-  // `typeof === 'string'` check below and gets clobbered with today's date
-  // (#837). Accept both shapes; anything else (missing, number, array, an
-  // invalid Date, …) falls back to `dateStr` as before.
+  // js-yaml 5's CORE_SCHEMA has no timestamp type, so an unquoted
+  // `created: 2026-01-01` loads as the string '2026-01-01' (js-yaml 4 gave a
+  // `Date`; #837 was that Date being clobbered with today's date). The same
+  // holds for the space-separated `2026-01-01 10:00:00` form, which must be
+  // cut to its date part (#2015). A `Date` is still accepted (a caller may pass
+  // a frontmatter object built elsewhere); anything else (missing, number,
+  // array, an invalid Date, …) falls back to `dateStr`.
   let created;
-  if (typeof base.created === 'string' && ISO_DATE_RE.test(base.created)) {
-    created = base.created;
+  if (typeof base.created === 'string' && /^\d{4}-\d{2}-\d{2}(?:[Tt ]|$)/.test(base.created)) {
+    created = base.created.slice(0, 10);
   } else if (base.created instanceof Date && !Number.isNaN(base.created.getTime())) {
     created = base.created.toISOString().slice(0, 10);
   } else {

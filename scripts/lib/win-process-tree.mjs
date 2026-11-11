@@ -6,11 +6,23 @@ import { spawnSync } from './native-command.mjs';
 // Ceiling per native call: 5 s. Revisit if measured CIM startup exceeds this;
 // a hung PowerShell must never hang gate cleanup (including the exit handler).
 const OPTIONS = { encoding: 'utf8', shell: false, windowsHide: true, timeout: 5000, maxBuffer: 16 * 1024 * 1024 };
-// One snapshot never spends more than the old single-call ceiling, whichever
-// shells it tries (#1859). pwsh 7 measured 1.3–1.4 s on the reporting host, so
-// 3 s leaves 5.1 a real fallback window; revisit if pwsh 7 is measured slower.
-const SNAPSHOT_BUDGET_MS = OPTIONS.timeout;
-const PWSH7_TIMEOUT_MS = 3000;
+// One snapshot spends at most 4 s, whichever shells it tries (#1859, #1920).
+// The hook budget is 10 s (hooks.json) and the reporter measured the smoke
+// killing a hook after 5 s and the before-snapshot alone eating another ~5 s,
+// so a snapshot must leave room for taskkill and the read-back. pwsh 7
+// measured 1.3–1.4 s on the reporting host, so 2.5 s still leaves 5.1 a real
+// fallback window after a crash; revisit if pwsh 7 is measured slower.
+const SNAPSHOT_BUDGET_MS = 4000;
+const PWSH7_TIMEOUT_MS = 2500;
+// Budget for one kill (#1920): before-snapshot + ONE taskkill + after-snapshot
+// stays under 6 s — every step is a blocking spawnSync, so no outer timer can
+// cut it, and only the after-snapshot is budget-gated. CEILING: the per-target
+// taskkill loops (root exited / stale targets) are NOT budget-gated, so N
+// targets on a hung host can take 4 s + N × 2 s; a skipped kill would be a
+// behaviour change, so the read-back is what gets cut. Revisit if a measured
+// run shows the loop, not the snapshot, overrunning the hook budget.
+const KILL_TREE_BUDGET_MS = 6000;
+const TASKKILL_TIMEOUT_MS = Math.min(OPTIONS.timeout, 2000);
 const system32 = (env = process.env) => path.join(env.SystemRoot || 'C:\\Windows', 'System32');
 
 /** Both shells print CreationDate as the same explicit /Date(ms)/ string;
@@ -57,16 +69,23 @@ function parseSnapshot(result) {
 /**
  * Read the Windows process table (ProcessId, ParentProcessId, Name, CreationDate).
  * Tries pwsh 7, then Windows PowerShell 5.1; a failed candidate (error, exit,
- * signal, timeout, unparseable output) falls through to the next. All failing
- * throws — callers must report "not measurable", never an empty table.
- * @param {{ env?: object, existsSyncFn?: (p: string) => boolean, spawnSyncFn?: Function }} [opts]
+ * signal, unparseable output) falls through to the next; a TIMEOUT ends the
+ * snapshot (#1920). All failing throws an Error whose `unmeasurable` field
+ * carries the reason — callers must report "not measurable", never an empty table.
+ * @param {{ env?: object, existsSyncFn?: (p: string) => boolean, spawnSyncFn?: Function, budgetMs?: number }} [opts]
  * @returns {Array<{ ProcessId: number, ParentProcessId: number, Name?: string, CreationDate?: string|null }>}
  */
-export function readWindowsProcessTable({ env = process.env, existsSyncFn = existsSync, spawnSyncFn = spawnSync } = {}) {
+export function readWindowsProcessTable({ env = process.env, existsSyncFn = existsSync, spawnSyncFn = spawnSync,
+  budgetMs = SNAPSHOT_BUDGET_MS } = {}) {
   const reasons = [];
+  const total = Math.min(SNAPSHOT_BUDGET_MS, budgetMs);
   let spent = 0;
+  let hostTimedOut = false;
   for (const { file, timeout } of shellCandidates(env, existsSyncFn)) {
-    const budget = Math.min(timeout, SNAPSHOT_BUDGET_MS - spent);
+    // A shell that timed out has already told us the host is overloaded; a
+    // second shell would only repeat that statement on the caller's budget.
+    if (hostTimedOut) { reasons.push(`${path.win32.basename(file)}: skipped after timeout (host overloaded)`); continue; }
+    const budget = Math.min(timeout, total - spent);
     if (budget <= 0) { reasons.push(`${path.win32.basename(file)}: no budget left`); continue; }
     const started = Date.now();
     try {
@@ -76,10 +95,12 @@ export function readWindowsProcessTable({ env = process.env, existsSyncFn = exis
       // A timed-out call consumes its whole budget even if the clock reads less.
       const timedOut = err.message === 'ETIMEDOUT';
       spent += timedOut ? budget : Math.max(Date.now() - started, 0);
+      hostTimedOut ||= timedOut;
       reasons.push(`${path.win32.basename(file)}: ${err.message}`);
     }
   }
-  throw new Error(`CIM snapshot failed (${reasons.join('; ')})`);
+  const msg = `CIM snapshot failed (${reasons.join('; ')})`;
+  throw Object.assign(new Error(msg), { unmeasurable: msg });
 }
 
 // Primary form: the explicit /Date(epoch ms)/ the query emits. Tolerant
@@ -115,20 +136,23 @@ export function killWindowsProcessTree(pid, {
   spawnSyncFn = spawnSync,
   env = process.env,
   existsSyncFn = existsSync,
-  snapshotFn = () => readWindowsProcessTable({ env, existsSyncFn, spawnSyncFn }),
+  snapshotFn = ({ budgetMs } = {}) => readWindowsProcessTable({ env, existsSyncFn, spawnSyncFn, budgetMs }),
   child,
   spawnedAtMs,
   verifyTree = true,
 } = {}) {
   const base = { signalsSent: [], aborted: null };
+  const startedAt = Date.now();
   const unknown = reason => ({ ...base, ok: false, survivors: null, error: `nicht messbar auf win32: ${reason}` });
+  // The reason text, without `Error:` noise, prefixed with the step that failed.
+  const failedAt = (step, err) => `${step}: ${err?.unmeasurable ?? err?.message ?? String(err)}`;
   const rootHeld = child?.exitCode === null && child?.signalCode === null;
   let killError = null;
   const kill = (target, tree = true) => {
     base.signalsSent.push('taskkill');
     try {
       const args = tree ? ['/PID', String(target), '/T', '/F'] : ['/PID', String(target), '/F'];
-      const result = spawnSyncFn(path.join(system32(env), 'taskkill.exe'), args, OPTIONS);
+      const result = spawnSyncFn(path.join(system32(env), 'taskkill.exe'), args, { ...OPTIONS, timeout: TASKKILL_TIMEOUT_MS });
       if (result.error || result.status !== 0) killError = result.error?.message ?? `taskkill exit ${result.status}`;
     } catch (err) { killError = String(err); }
   };
@@ -145,7 +169,7 @@ export function killWindowsProcessTree(pid, {
   } catch (err) { measurementError = err; }
   if (measurementError) {
     if (rootHeld) kill(pid);
-    return unknown(measurementError);
+    return unknown(failedAt('cim-snapshot-before', measurementError));
   }
   const ids = descendantIds(before, [pid]);
   const floor = Number.isFinite(spawnedAtMs) ? spawnedAtMs - 2000 : null;
@@ -172,15 +196,26 @@ export function killWindowsProcessTree(pid, {
     }
   }
 
+  // The kill itself was attempted above; only the read-back is skipped when the
+  // whole-kill budget is spent, and that reads as unmeasurable, never as 0.
+  const left = KILL_TREE_BUDGET_MS - (Date.now() - startedAt);
+  if (left <= 0) return unknown('post-kill snapshot skipped: no budget left (step: cim-snapshot-after)');
   let after;
   try {
-    after = snapshotFn();
+    after = snapshotFn({ budgetMs: left });
     if (!Array.isArray(after)) throw Error('invalid snapshot');
-  } catch (err) { return unknown(err); }
-  if ((rootHeld && !targets.some(p => p.ProcessId === pid))
-    || targets.some(p => creationMs(p) === null)
-    || after.some(p => targets.some(q => q.ProcessId === p.ProcessId) && creationMs(p) === null)) {
-    return unknown('missing tree identity');
+  } catch (err) { return unknown(failedAt('cim-snapshot-after', err)); }
+  if (rootHeld && !targets.some(p => p.ProcessId === pid)) {
+    return unknown(`missing tree identity: snapshot returned no row for pid ${pid} (step: cim-snapshot-before)`);
+  }
+  const undatedBefore = targets.filter(p => creationMs(p) === null).map(p => p.ProcessId);
+  const undatedAfter = after.filter(p => targets.some(q => q.ProcessId === p.ProcessId) && creationMs(p) === null)
+    .map(p => p.ProcessId);
+  if (undatedBefore.length) {
+    return unknown(`missing tree identity: no CreationDate for pid ${undatedBefore.join(', ')} (step: cim-snapshot-before)`);
+  }
+  if (undatedAfter.length) {
+    return unknown(`missing tree identity: no CreationDate for pid ${undatedAfter.join(', ')} (step: cim-snapshot-after)`);
   }
   const survivors = new Set(targets.filter(p => after.some(q =>
     q.ProcessId === p.ProcessId && creationMs(q) === creationMs(p))).map(p => p.ProcessId));

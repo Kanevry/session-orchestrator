@@ -3,8 +3,8 @@
 > Per-user configuration for the session-orchestrator plugin. Lives at
 > `~/.config/session-orchestrator/owner.yaml`. Never committed to a project repo.
 >
-> Issue [#174](../../../-/issues/174) — D1 of Sub-Epic [#161](../../../-/issues/161) (Owner Persona Layer).
-> Parent epic: [#157](../../../-/issues/157) (v3.1.0 Environment-Aware Sessions).
+> Issue #174 — D1 of Sub-Epic #161 (Owner Persona Layer).
+> Parent epic: #157 (v3.1.0 Environment-Aware Sessions).
 >
 > **SSOT is code, not this file:** `scripts/lib/owner-yaml.mjs` (schema,
 > validator, loader, writer) + `scripts/lib/config/private-config-dir.mjs`
@@ -56,6 +56,9 @@ section is replaced by its default and reported via `droppedSections`
 | `learnings.inbox-repos`             | list of strings                      | no       | absent    | Repo-root paths whose stores are `inbox` on this host (#1754). Each entry must be non-empty, absolute or `~/`-prefixed (`HOME`, else OS home), with no leading/trailing whitespace or NUL/CR/LF. Precedence: trimmed non-empty env `SO_LEARNINGS_STORE_ROLE` > store inside a listed root > `learnings.store-role` > `writer`. Paths resolve symlinks of the deepest existing ancestor and follow the filesystem’s own spelling for existing components via `realpathSync.native` (on case-insensitive filesystems those existing components match regardless of case); components that do not exist yet retain their written spelling and compare exactly; linked worktrees need their own entry. A `learnings` section that fails validation in any YAML form, including a non-list or any invalid entry, is `invalid` for every store; canonical-store writes refuse, never fall back to `writer` (null is treated as absent). |
 | `hooks.profile`                     | `strict` \| `full` \| `standard`   | no       | absent    | Host hook profile (#1881); absent = `standard`, `full` = `strict`. Env `SO_HOOK_PROFILE` wins; `minimal` and `off` are env-only, because an agent can append to this file. Profiles: [session-config-reference § Hook Runtime Profile Control](./session-config-reference.md#hook-runtime-profile-control-211). |
 | `hooks.disabled`                    | list of hook names                   | no       | absent    | Hooks switched off on this host, unioned with env `SO_DISABLED_HOOKS`. A safety hook (`pre-bash-destructive-guard`, `enforce-scope`, `enforce-commands`, both sessions-ledger guards, `config-protection`, `pre-task-scope-disjoint`, `pre-bash-staging-fence`) is refused. Any other key in `hooks`, or an invalid value, drops the section and the default profile applies. |
+| `notifications.stop`                | boolean (`on`/`off`/`1`/`0` accepted) | no      | absent    | `false` = `hooks/on-stop.mjs` sends no desktop notification (OSC 9 + OSC 777, "Session stopped — your turn") when a session stops (#1936); absent = on. Env `SO_STOP_NOTIFICATION` (`on`/`off`) wins. A per-user choice, so it lives here and not in the repo's Session Config. Any other key in `notifications`, or an unreadable value, drops the section and the notification stays on. Plugin versions before the switch ignore the section. |
+| `agent-caps.process-starting`, `agent-caps.reading` | integer from 1, or `off` | no | absent | Agent caps on this host, per class. Env `SO_AGENT_CAP_PROCESS_STARTING` / `SO_AGENT_CAP_READING` win; this beats the Session Config. Details: [Agent Caps](./session-config-reference.md#agent-caps). |
+| `agent-caps.brake-engage-pct`, `agent-caps.brake-release-pct` | integer 1 to 99; engage also `off` | no | absent | Memory brake on this host. Env `SO_AGENT_BRAKE_ENGAGE_PCT` / `SO_AGENT_BRAKE_RELEASE_PCT` win. A bad value warns and is skipped; any other key in `agent-caps` drops the section. |
 | `vaults`, `baselines`               | lists                                | no       | absent    | Passed through untouched; parsed leniently at point of use. |
 
 ### Privacy Contract
@@ -107,7 +110,8 @@ Also exported: `validateOwnerSections()` (per-section buckets),
 session-start owner-config banner (`scripts/lib/owner-config-banner.mjs`), the
 host-path + dispatcher-autonomy resolvers (`scripts/lib/config/host-paths.mjs`,
 `scripts/lib/config/dispatcher-autonomy.mjs`), the named-vault resolver, the
-owner-leakage scanner, telemetry, and vault-mirror. For the behavioural
+owner-leakage scanner, telemetry, and vault-mirror. Since #1936 `hooks/on-stop.mjs`
+also reads it, lazily and only on the Stop path, for `notifications.stop`. For the behavioural
 contract of the persona layer itself see
 [`.claude/rules/owner-persona.md`](../.claude/rules/owner-persona.md).
 

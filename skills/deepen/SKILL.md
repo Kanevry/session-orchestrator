@@ -49,10 +49,20 @@ Then emit this block:
 
 ## Stage 3 — Stop
 
-Execute nothing yet. Ask the operator:
+Execute nothing yet. Ask the operator (a lead-guided run takes the recommendation instead, § Lead-guided runs):
 
 - Interactive session: `AskUserQuestion`, header `Deepen`, 2–3 options, recommendation first, each with reason, cost and consequence: run the rewrite (Recommended) / run the original as asked / narrow the rewrite.
-- No `AskUserQuestion` (lead-led session, headless run, tool unavailable): end the turn with the block and wait for the instruction.
+- No `AskUserQuestion`, but a person answers (an interactive harness without the tool): end the turn with the block and the same options as a numbered list, recommendation first, and wait for the reply.
+- Nobody answers (lead-guided or headless run): see § Lead-guided runs. Never end the turn waiting.
+
+## Lead-guided runs
+
+A run is lead-guided when any one of these holds: the system prompt carries a section headed `Steuerung dieser Session: Lead-geführt`; a question-tool call was refused because the session is lead-guided; the run is headless (`claude -p`, `codex exec`, a scheduled job); or the task brief says the session decides on its own. Then Stage 3 takes the recommendation instead of asking:
+
+1. Run the rewrite, in Stage 4, without stopping. When its cost names an owner-class effect (external effect, money, deletion of something this run did not create, security, a critical product decision), narrow the rewrite until it carries none, and list the cut part as an open owner question; if no such narrowing exists, run the original as asked.
+2. Record the decision as one line in the issue the run works on, or else in the report:
+   `Entscheidung (autonom, Lead-geführt): Deepen → Ambition Rewrite ausgeführt; verworfen: Original wie gestellt (<verbatim request>), engere Fassung; Grund: <one sentence>`
+3. The final output carries that line under `### Autonome Entscheidungen`, next to the judge's output from Stage 4. It ends as a report, never with a question or a wait.
 
 ## Stage 4 — Execute and judge
 

@@ -70,7 +70,10 @@ The budgets above set *how much* you say. This sets *how*. It binds at every
 level and is not itself a budget: applying it changes word order and word
 choice, not line count. It is the canonical statement for this repo — the
 other three souls (`plan`, `brainstorm`, `grill`) point here rather than
-copying it.
+copying it. One exception: `grill` ships alone in the skills-only package
+(#1931), so its soul carries a three-point core of this section and defers to
+it wherever the full plugin is installed. Change the core together with this
+section.
 
 **Write for someone who knows this project but has not seen what you just saw.**
 What he needs to decide stands in the text, not in the file it points at — in

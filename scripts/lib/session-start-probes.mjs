@@ -866,6 +866,11 @@ export const PROBES = [
     network: false,
     // Host-wide `owner.yaml`, deliberately NOT repo-scoped — no repoRoot arg.
     args: () => ({}),
+    // A loose-mode warning and a load-health warning both complete as `warn`,
+    // so without this the loose-mode check's firing rate is unmeasurable
+    // (HR-105). 0/1, not a boolean: `probeMeasure` keeps only snake_case keys
+    // with finite-number or null values. No measure on a clean (null) answer.
+    telemetry: (r) => (r ? { loose_mode: r.looseMode === true ? 1 : 0 } : undefined),
   },
   {
     // #1848: do the runtime deps of the plugin install THIS code runs from

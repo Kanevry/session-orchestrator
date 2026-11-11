@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 const SKILL_ROOT = '.codex-plugin/skills';
 const FRONTMATTER_KEYS = new Set([

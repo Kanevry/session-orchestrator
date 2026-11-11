@@ -434,7 +434,7 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `agents-per-wave` | integer | `6` | Maximum number of parallel subagents per wave. Higher values increase parallelism but use more resources. Supports the per-type override syntax `6 (deep: 18)` — see [§ 4 Session Types](#4-session-types). |
 | `waves` | integer | `5` | Base wave count. The wave count actually used is resolved per session type by `scripts/session-shape.mjs` (see [§ 4 Session Types](#4-session-types)) — `feature` and `deep` each have one natural shape and ignore a disagreeing `waves` value; the `ultradeep` profile ignores it outright. |
 | `pencil` | string | none | Path to a `.pen` design file (relative to project root). Enables design-code alignment reviews after Impl-Core and Impl-Polish waves. |
-| `cross-repos` | list | none | Related repositories under `~/Projects/`. The orchestrator checks their git state and critical issues during session start. |
+| `cross-repos` | list | none | Related repositories; the orchestrator checks their git state and critical issues during session start. A bare name resolves to `~/Projects/<name>`, an entry starting with `/` or `~/` is a path, a missing folder is skipped with a hint. Full rule: [Session Config Reference](session-config-reference.md), `cross-repos` row. |
 | `ssot-files` | list | none | Single Source of Truth files to track for freshness (e.g., `STATUS.md`, `STATE.md`). Flagged if older than 5 days. |
 | `mirror` | string | `none` | Mirror target after push. Set to `github` to automatically push to a GitHub remote after every session commit. |
 | `ecosystem-health` | boolean | `false` | Enable service health checks at session start. Requires `health-endpoints` to be configured. |
@@ -1364,7 +1364,7 @@ During `/close`, any work that was planned but not completed is documented. The 
 
 ### Can I use this across multiple repos?
 
-Yes. Configure `cross-repos` in your Session Config with the names of related repositories (located under `~/Projects/`). The orchestrator checks their git state and critical issues at session start, giving you ecosystem-wide awareness.
+Yes. Configure `cross-repos` in your Session Config with related repositories: a bare name resolves to `~/Projects/<name>`, an entry starting with `/` or `~/` is used as a path, and a missing folder is skipped with a hint (full rule: [Session Config Reference](session-config-reference.md), `cross-repos` row). The orchestrator checks their git state and critical issues at session start, giving you ecosystem-wide awareness.
 
 ### When should I use `/plan` vs creating issues manually?
 

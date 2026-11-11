@@ -76,6 +76,21 @@ const CLI_REF_RE = /^[A-Za-z0-9._-]{1,100}[!#][1-9]\d{0,8}$/;
  * @property {boolean} info    unmarked evidence line, see isInfoLine (#1794)
  */
 
+/** Missing mandatory handover headings (#1950); fenced examples are not body sections. */
+export function missingHandoverSections(content) {
+  const titles = [];
+  let inFence = false;
+  for (const line of content.split(/\r?\n/)) {
+    if (FENCE_RE.test(line)) inFence = !inFence;
+    if (inFence) continue;
+    const heading = HEADING_RE.exec(line);
+    if (heading) titles.push(heading[2].trim());
+  }
+  return ['Entscheidungen für dich', 'Nicht geprüft'].filter(
+    (title) => !titles.some((heading) => new RegExp(`^${title}(?:$|\\s|:)`, 'i').test(heading)),
+  );
+}
+
 /**
  * Lists every top-level list item in an open-point section.
  *

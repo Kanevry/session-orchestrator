@@ -27,10 +27,9 @@
  * hang off the telemetry consent layer.
  */
 
-import { dirname, join } from 'node:path';
-import { mkdirSync, writeFileSync, renameSync, existsSync, statSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
-import { readJsonlFile } from '../io.mjs';
+import { dirname } from 'node:path';
+import { mkdirSync, existsSync, statSync } from 'node:fs';
+import { atomicWriteWithBackup, envelopeToError, readJsonlFile } from '../io.mjs';
 import { TELEMETRY_QUEUE_PATH } from './paths.mjs';
 
 /** Host-local NDJSON offline queue path — single-sourced from ./paths.mjs (a constants-only leaf module; two independently computed copies can silently drift). */
@@ -88,10 +87,10 @@ function _serializedByteLength(entries) {
 
 /**
  * Atomically replace `filePath` with the NDJSON serialization of `entries`
- * via tmp-file + `renameSync` in the SAME directory (same-filesystem rename
- * is atomic on POSIX — mirrors `writeJsonAtomicSync` in `scripts/lib/io.mjs`,
- * which has no NDJSON-array variant). Creates the parent directory with
- * `mkdirSync(dir, { recursive: true, mode: 0o700 })` first.
+ * via `atomicWriteWithBackup` (`scripts/lib/io.mjs`): sibling `.tmp.<12 hex>`
+ * file + rename, win32 rename retry (GH#79 / #1865), tmp unlinked on failure.
+ * Creates the parent directory with `mkdirSync(dir, { recursive: true, mode: 0o700 })`
+ * first — the helper's own mkdir carries no mode.
  *
  * @param {string} filePath
  * @param {Array<object>} entries
@@ -100,12 +99,9 @@ function _serializedByteLength(entries) {
  *         the public-API layer).
  */
 function _writeEntriesAtomicSync(filePath, entries) {
-  const dir = dirname(filePath);
-  mkdirSync(dir, { recursive: true, mode: 0o700 }); // private config dir; 0777 under umask 000 otherwise (#1629)
-  const tmpSuffix = randomBytes(6).toString('hex');
-  const tmpFile = join(dir, `.tmp.${tmpSuffix}`);
-  writeFileSync(tmpFile, _toNdjson(entries), { encoding: 'utf8', mode: 0o600 }); // rename keeps this mode (#1632)
-  renameSync(tmpFile, filePath);
+  mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 }); // private config dir; 0777 under umask 000 otherwise (#1629)
+  const res = atomicWriteWithBackup(filePath, _toNdjson(entries), { mode: 0o600 }); // rename keeps this mode (#1632)
+  if (!res.ok) throw envelopeToError(res);
 }
 
 /**

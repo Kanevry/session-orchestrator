@@ -30,11 +30,11 @@
  * separate helpers. No external deps — Node 20+ stdlib only.
  */
 
-import { readFile, rename, unlink, mkdir, readdir, stat, lstat } from 'node:fs/promises';
+import { readFile, unlink, mkdir, readdir, stat, lstat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { atomicWriteText, envelopeToError } from './io.mjs';
+import { atomicWriteText, envelopeToError, renameWithRetry } from './io.mjs';
 
 import { canonicalizeSessions, isMeasuredSession } from './sessions-canonical.mjs';
 import { resolveEventsLedgerRoot } from './platform.mjs';
@@ -591,7 +591,7 @@ export async function consumeDialecticPending({ repoRoot } = {}) {
       };
     }
     await mkdir(dir, { recursive: true });
-    await rename(target, archivedTo);
+    await renameWithRetry(target, archivedTo);
   } catch (err) {
     if (err?.code === 'ENOENT') return { ok: true, consumed: false, path: target };
     return { ok: false, error: err.message };

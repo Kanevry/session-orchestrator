@@ -45,7 +45,9 @@
  *      sentence that forbids exactly that correction (GH#70, reported from a
  *      German-language consumer corpus 2026-09-20). Recognising a second
  *      spelling ({@link COUNTER_FORMS}) is the narrow half of that fix; the
- *      refusal is the half that holds for the third language too.
+ *      refusal is the half that holds for the third language too. A file
+ *      with NO counter sentence is not refused (#1875): with nothing in the
+ *      body to restate the header, no write can contradict it.
  *   2. **Ambiguous file → `action: 'keep'` + a `skipped` record.** The
  *      entry↔pair mapping is POSITIONAL: the k-th `### ` heading belongs to the
  *      k-th non-`markers only` pair. That 1:1 mapping holds in only 3 of the 7
@@ -196,9 +198,36 @@ const PAIR_ID_RE = /^- learning-id:\s*`([^`]+)`(.*)$/;
  * @type {readonly RegExp[]}
  */
 const COUNTER_FORMS = Object.freeze([
-  /^\*\*`expires-at` (\S+) = the EARLIEST of the (\d+) absorbed dates\*\*/d,
+  // English, tolerant (#1875): `EARLIEST` / `Earliest` / `earliest`, both
+  // `the` optional — this repo's `= the EARLIEST of the N absorbed dates` and a
+  // consumer repo's hand-consolidated `= earliest of N absorbed dates` say the
+  // same thing. An explicit alternation rather than an `(?i:…)` modifier group:
+  // Node accepts the modifier, the repo's ESLint parser rejects it.
+  /^\*\*`expires-at` (\S+) = (?:the )?(?:EARLIEST|[Ee]arliest) of (?:the )?(\d+) absorbed dates\*\*/d,
   /^\*\*`expires-at` (\S+) = das FR(?:UE|Ü)HESTE der (\d+) aufgenommenen Daten\*\*/d,
 ]);
+
+/**
+ * Detects a line that IS a counter sentence, recognised or not: a line opening
+ * with bold `` **`expires-at` `` and carrying an `=` before the bold closes.
+ *
+ * This is what separates the two cases #1875 found behind one refusal: a file
+ * with NO counter sentence (frontmatter `expires-at:` is its only restatement,
+ * so a header write cannot contradict any body line) versus a file whose
+ * sentence is PRESENT in a spelling {@link COUNTER_FORMS} cannot read (GH#70 —
+ * a header write would contradict it, so the file is refused). Scanned over the
+ * body only, outside the frontmatter and above `## Provenance`; the provenance
+ * comment's plain-text "expires-at is the EARLIEST …" note and its
+ * `- expires-at:` bullet are not bold-led and never match.
+ *
+ * Ceiling (BV-004): a counter sentence that does NOT open its line with that
+ * bold token — inside a list item, a blockquote, or in plain text — reads as
+ * ABSENT, so its file is processed and a header write could leave that line
+ * stale. Every counter sentence measured so far (this repo's consolidated files
+ * and a consumer repo's, 2026-11-01) is bold-led at line start. Revisit trigger:
+ * the first consolidated file whose counter sentence is not.
+ */
+const COUNTER_PRESENT_RE = /^\*\*`expires-at`[^*]*=/;
 
 const HEADING_PREFIX = '### ';
 const PROVENANCE_HEADING = '## Provenance';
@@ -259,10 +288,14 @@ function spliceCounterLine(line, date, count) {
  *   counterLine: number,
  *   counterDate: string|null,
  *   counterCount: number|null,
+ *   counterUnrecognisedLine: number,
  *   entries: Array<{heading: string, start: number, end: number}>,
  *   provenanceLine: number,
  *   pairs: Array<{key: string, id: string, keyLine: number, idLine: number, markersOnly: boolean}>
- * }} `expiresAtLine` / `counterLine` / `provenanceLine` are `-1` when absent.
+ * }} Line indices are `-1` when absent.
+ *   `counterUnrecognisedLine` is the first body line above `## Provenance` that
+ *   {@link COUNTER_PRESENT_RE} reads as a counter sentence but no
+ *   {@link COUNTER_FORMS} entry recognises, `-1` when there is none.
  */
 export function parseConsolidatedRule(content) {
   const lines = String(content ?? '').split('\n');
@@ -272,6 +305,7 @@ export function parseConsolidatedRule(content) {
   let counterLine = -1;
   let counterDate = null;
   let counterCount = null;
+  let counterUnrecognisedLine = -1;
   let provenanceLine = -1;
   let untrustedEndLine = -1;
 
@@ -309,14 +343,21 @@ export function parseConsolidatedRule(content) {
 
   const bodyStart = frontmatterEnd >= 0 ? frontmatterEnd + 1 : 0;
   for (let i = bodyStart; i < lines.length; i += 1) {
-    if (counterLine === -1) {
-      const hit = matchCounterLine(lines[i]);
-      if (hit) {
+    const hit = matchCounterLine(lines[i]);
+    if (hit) {
+      if (counterLine === -1) {
         counterLine = i;
         counterDate = hit.date;
         counterCount = hit.count;
-        continue;
       }
+      continue;
+    }
+    if (
+      counterUnrecognisedLine === -1 &&
+      provenanceLine === -1 &&
+      COUNTER_PRESENT_RE.test(lines[i])
+    ) {
+      counterUnrecognisedLine = i;
     }
     if (untrustedEndLine === -1 && isUntrustedEndLine(lines[i])) untrustedEndLine = i;
     if (provenanceLine === -1 && lines[i] === PROVENANCE_HEADING) provenanceLine = i;
@@ -367,6 +408,7 @@ export function parseConsolidatedRule(content) {
     counterLine,
     counterDate,
     counterCount,
+    counterUnrecognisedLine,
     entries,
     provenanceLine,
     pairs,
@@ -532,6 +574,28 @@ function headerAdvisory(parsed, expiryById, cutoffMs) {
 }
 
 /**
+ * Update the frontmatter `expires-at:` and the `COUNTER_RE` sentence together,
+ * shared by both rewrite paths. The `## Provenance` `- expires-at:` bullet is
+ * deliberately NOT touched: it records the value AT GENERATION (renderer.mjs,
+ * docs/rule-authoring.md § Provenance) and `backfill-learnings-from-vault.mjs`
+ * reads it as such.
+ *
+ * @param {string[]} lines
+ * @param {ReturnType<typeof parseConsolidatedRule>} parsed
+ * @param {string} target
+ */
+function rewriteExpiryLines(lines, parsed, target) {
+  if (parsed.expiresAtLine >= 0) lines[parsed.expiresAtLine] = `expires-at: ${target}`;
+  if (parsed.counterLine >= 0) {
+    lines[parsed.counterLine] = spliceCounterLine(
+      lines[parsed.counterLine],
+      target,
+      parsed.pairs.length,
+    );
+  }
+}
+
+/**
  * Rewrite ONLY the two dated header lines — the frontmatter `expires-at:` and
  * the `COUNTER_RE` body sentence. Every other byte of the file is carried over
  * untouched; that byte-identity is the whole safety argument for making a raise
@@ -543,14 +607,7 @@ function headerAdvisory(parsed, expiryById, cutoffMs) {
  */
 function rewriteHeaderOnly(parsed, target) {
   const lines = [...parsed.lines];
-  if (parsed.expiresAtLine >= 0) lines[parsed.expiresAtLine] = `expires-at: ${target}`;
-  if (parsed.counterLine >= 0) {
-    lines[parsed.counterLine] = spliceCounterLine(
-      lines[parsed.counterLine],
-      target,
-      parsed.pairs.length,
-    );
-  }
+  rewriteExpiryLines(lines, parsed, target);
   return lines.join('\n');
 }
 
@@ -676,6 +733,7 @@ export async function planRuleExpirySweep(opts = {}) {
 
     if (
       parsed.counterLine === -1 &&
+      parsed.counterUnrecognisedLine === -1 &&
       parsed.entries.length === 0 &&
       parsed.pairs.length === 1 &&
       substantive.length === 1 &&
@@ -694,6 +752,14 @@ export async function planRuleExpirySweep(opts = {}) {
       // re-stamped learning never loses its rule. Expired → the same `delete`
       // as a fully expired consolidated file: the pair is stamped terminal
       // before the unlink, so `/reconcile` does not re-propose it.
+      //
+      // A counter sentence that is PRESENT but unreadable is excluded here
+      // (GH#70, #1910): `counterLine === -1` alone also holds for a garbled
+      // spelling, and this branch ends in `continue`, so keying on it let such
+      // a file skip the fail-closed block below and reach `delete`. Such a file
+      // falls through to that block, which refuses delete: a single-entry file
+      // with a garbled counter and an expired date stays on disk until its
+      // counter sentence is fixed or a COUNTER_FORMS entry recognises it.
       const pair = substantive[0];
       const storeAt = expiryById.has(pair.id) ? Date.parse(expiryById.get(pair.id)) : Number.NaN;
       // The file's own `expires-at` goes through the loader's predicate: a bare
@@ -724,15 +790,22 @@ export async function planRuleExpirySweep(opts = {}) {
           stampKeys: [pair.key],
         });
       } else {
-        plans.push({ ...base, action: 'keep', newExpiresAt: null, newAbsorbedCount: 1, bytesAfter: base.bytesBefore });
+        // #2021: keeping the file is insufficient when the loader still sees
+        // its old, expired header. A re-stamped learning must raise it too.
+        plans.push(keepOrRaisePlan(base, parsed, advisory, raiseTo));
       }
       continue;
     }
 
-    if (parsed.counterLine === -1) {
-      // FAIL-CLOSED (GH#70). Every write this module performs moves the
-      // frontmatter `expires-at` AND the body sentence that restates it. When
-      // the sentence is in a spelling {@link COUNTER_FORMS} does not recognise,
+    if (parsed.counterUnrecognisedLine >= 0) {
+      // FAIL-CLOSED (GH#70). Keyed on a counter sentence that is PRESENT but
+      // unreadable, not on a recognised one being absent (#1875): a file with
+      // no counter sentence at all has no body line a header write could
+      // contradict, so it is swept like any other (see COUNTER_PRESENT_RE).
+      //
+      // Every write this module performs moves the frontmatter `expires-at`
+      // AND the body sentence that restates it. When the sentence is in a
+      // spelling {@link COUNTER_FORMS} does not recognise,
       // the header still moves and the sentence does not — and that sentence
       // literally says the date must not be corrected upward, so the file ships
       // a header contradicting its own body to every agent that loads it
@@ -874,19 +947,17 @@ function rewriteContent({ parsed, expired, earliest, nowMs }) {
   // Annotate the pairs FIRST (line indices are still the parsed ones), then
   // splice prose out back-to-front so earlier indices stay valid.
   for (const { pair, expiresAt } of expired) {
+    // lead report 2026-11-10: the cutoff includes the horizon, so removal
+    // before that cutoff does not prove the substance has already expired.
+    const substance = Date.parse(expiresAt) > nowMs
+      ? `expires ${dateOnly(expiresAt)} (within sweep horizon)`
+      : `expired ${dateOnly(expiresAt)}`;
     lines[pair.idLine] =
-      `${lines[pair.idLine]}  <!-- markers only (substance: expired ${dateOnly(expiresAt)}, prose swept ${sweptOn}) -->`;
+      `${lines[pair.idLine]}  <!-- markers only (substance: ${substance}, prose swept ${sweptOn}) -->`;
   }
 
   if (earliest !== null) {
-    if (parsed.expiresAtLine >= 0) lines[parsed.expiresAtLine] = `expires-at: ${earliest}`;
-    if (parsed.counterLine >= 0) {
-      lines[parsed.counterLine] = spliceCounterLine(
-        lines[parsed.counterLine],
-        earliest,
-        parsed.pairs.length,
-      );
-    }
+    rewriteExpiryLines(lines, parsed, earliest);
   }
 
   const blocks = expired.map((e) => e.entry).sort((a, b) => b.start - a.start);

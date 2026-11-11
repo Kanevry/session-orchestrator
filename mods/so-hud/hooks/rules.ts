@@ -746,6 +746,33 @@ function judged(cmd: string, args: string[]): boolean {
   return cmd === 'vercel' || pm || isDryRun(args, PM_VALUED, false)
 }
 
+// A process substitution writing into a command (`tee >(sh)`): bash reads `<>(`, `&>(` and `>>(` as syntax errors.
+const WRITES_INTO = /(?<![<>&])>\(\s*([^\s)]*)/g
+
+/**
+ * Per segment `j` of `segs`: whether the output of the command ending at `j` reaches a command that may run it —
+ * through any run of {@link PIPE_DATA} stages (`| cat | sh`, `| tee x | bash`) to the first stage outside it that
+ * the classifier did not judge, or into a process substitution of such a stage whose command is outside
+ * {@link PIPE_DATA} (`| tee >(sh)`). `realEnd` is where each segment's command ends (its last cut outside quotes).
+ * Filled from the end, so a long `| cat | cat …` chain is read once, not once per stage (#1898). Ceiling: a `>(`
+ * looked for only in the stage's first segment, not in quoted pieces cut off behind it.
+ */
+function pipedIntoCode(segs: readonly Seg[], words: readonly string[][], realEnd: Int32Array): Uint8Array {
+  const code = new Uint8Array(segs.length)
+  for (let j = segs.length - 2; j >= 0; j -= 1) {
+    if (!PIPE.has(segs[j]?.after ?? '')) continue
+    const [first, ...args] = words[j + 1] ?? []
+    const cmd = baseName(first ?? '')
+    if (!PIPE_DATA.has(cmd)) {
+      code[j] = judged(cmd, args) ? 0 : 1
+      continue
+    }
+    const writesIntoCode = [...(segs[j + 1]?.text ?? '').matchAll(WRITES_INTO)].some(m => !PIPE_DATA.has(baseName(m[1] ?? '')))
+    code[j] = writesIntoCode ? 1 : (code[realEnd[j + 1] ?? j + 1] ?? 0)
+  }
+  return code
+}
+
 /** The segment with each inner command line put back where its placeholder stands. */
 function withInners(text: string, inners: readonly Inner[]): string {
   return text.replace(/__SOHUD_INNER_(\d+)__/g, (m: string, n: string) => inners[Number(n)]?.command ?? m)
@@ -787,6 +814,7 @@ function unformedKind(line: string, depth: number): OutwardKind | null {
     }
     return lo
   }
+  const intoCode = pipedIntoCode(segs, words, realEnd)
   for (let k = 0; k < segs.length; k += 1) {
     const seg = segs[k]
     if (seg === undefined) continue
@@ -809,10 +837,7 @@ function unformedKind(line: string, depth: number): OutwardKind | null {
     if (owner === k && cmd === 'git' && (readGit(args, null).sub ?? '').includes('$')) return 'push'
     if (judged(cmd, args)) continue
     // The command ends at the first cut outside its quotes: a `|` inside `grep -E "a|b"` is no pipe.
-    const last = realEnd[owner] ?? owner
-    const next = words[last + 1] ?? []
-    const piped = PIPE.has(segs[last]?.after ?? '') && !PIPE_DATA.has(baseName(next[0] ?? '')) && !judged(baseName(next[0] ?? ''), next.slice(1))
-    if (DATA_COMMANDS.has(cmd) && !piped) continue
+    if (DATA_COMMANDS.has(cmd) && intoCode[realEnd[owner] ?? owner] !== 1) continue
     if (GATED_INTERPRETERS.has(cmd) && !spawns && !(BACKTICK_RUNNERS.has(cmd) && joined.includes('`'))) continue
     const code = withInners(seg.text, inners)
     const kind = classKindIn(code)
@@ -848,6 +873,7 @@ function quotedDataSegments(text: string, segs: readonly Seg[]): boolean[] {
     }
     return lo
   }
+  const intoCode = pipedIntoCode(segs, words, realEnd)
   return segs.map((seg, k) => {
     const opener = openers[seg.start] ?? UNKNOWN_QUOTE
     if (opener < 0) return false
@@ -855,9 +881,7 @@ function quotedDataSegments(text: string, segs: readonly Seg[]): boolean[] {
     if (owner === k || EVAL_WORD.test(segs[owner]?.text ?? '')) return false
     const first = words[owner]?.[0]
     if (first === undefined || !DATA_COMMANDS.has(baseName(first))) return false
-    const last = realEnd[owner] ?? owner
-    const next = words[last + 1] ?? []
-    return !(PIPE.has(segs[last]?.after ?? '') && !PIPE_DATA.has(baseName(next[0] ?? '')) && !judged(baseName(next[0] ?? ''), next.slice(1)))
+    return intoCode[realEnd[owner] ?? owner] !== 1
   })
 }
 
@@ -1068,18 +1092,41 @@ function spanIndexAt(spans: readonly Span[], index: number): number {
 }
 
 /**
- * The `[start, end)` body of every `$(…)` (parentheses balanced, quotes not honoured) and after every
- * backtick (to the next one), each to the end of the line when unclosed. One pass with a stack, so a
- * line of 25,000 unclosed `$(` costs no more than one of plain words.
+ * The `[start, end)` body of every `$(…)`, `<(…)` and `>(…)` (parentheses balanced, quotes not honoured)
+ * and after every backtick (to the next one), each to the end of the line when unclosed. A `<(`/`>(` right
+ * after `<`, `>` or `&` opens none: bash refuses `<<(`, `>>(`, `<>(` and `&>(` as syntax errors (#1898).
+ * Nor does a `<(`/`>(` inside single or double quotes, where bash reads it as text (`echo '<(git push)'`) — but
+ * only while the quote tracking is certain, as in {@link scanLine}: from the first newline inside a quote (a
+ * heredoc body's apostrophe), the first `$(`, `${`, `$'`, backtick or `<<`, or the first opened `<(`/`>(`, every
+ * `<(`/`>(` opens again; over-reading only asks. `$(` and backticks open inside quotes as before.
+ * One pass with a stack, so a line of 25,000 unclosed `$(` costs no more than one of plain words.
  */
 function substitutionSpans(line: string): Span[] {
   const spans: Span[] = []
-  // Per open parenthesis: the index in `spans` of the `$(` it opened, or -1 for a plain `(`.
+  // Per open parenthesis: the index in `spans` of the substitution it opened, or -1 for a plain `(`.
   const open: number[] = []
   let lastTick = -1
+  let quote: '"' | "'" | null = null
+  let doubt = false
+  let escaped = false
   for (let i = 0; i < line.length; i += 1) {
     const ch = line[i]
-    if (ch === '$' && line[i + 1] === '(') {
+    const next = line[i + 1]
+    const wasEscaped = escaped
+    escaped = false
+    if (!doubt && ((ch === '$' && (next === '(' || next === '{' || next === "'")) || ch === '`' || (ch === '<' && next === '<') || (ch === '\n' && quote !== null))) doubt = true
+    if (quote === "'") {
+      if (ch === "'") quote = null
+    } else if (!wasEscaped) {
+      // An escaped character is no quote.
+      if (ch === '\\') escaped = true
+      else if (quote === '"') {
+        if (ch === '"') quote = null
+      } else if (ch === '"' || ch === "'") quote = ch
+    }
+    const procSub = (ch === '<' || ch === '>') && next === '(' && !/[<>&]/.test(line[i - 1] ?? '') && (quote === null || doubt)
+    if (procSub) doubt = true
+    if ((ch === '$' && next === '(') || procSub) {
       open.push(spans.push([i + 2, line.length]) - 1)
       i += 1
     } else if (ch === '(') open.push(-1)
@@ -1213,7 +1260,9 @@ function unreadRegions(line: string): string[] {
   }
   const bodies = substitutionSpans(line)
   const owners = new Set<number>()
-  for (const [start] of bodies) owners.add(spanIndexAt(segments, start - 1))
+  // A `<(…)`/`>(…)` body is read alone: its output becomes a file name, never a word of its segment's command, so
+  // the segment's own words (`grep -c push <(git log)`) are read by the walker, not joined with the body as `$(…)` is.
+  for (const [start] of bodies) if (!(line[start - 1] === '(' && line[start - 2] !== '$')) owners.add(spanIndexAt(segments, start - 1))
   const pieces = [...bodies]
   for (const k of owners) {
     const span = segments[k]
@@ -1239,6 +1288,29 @@ function unreadRegions(line: string): string[] {
 }
 
 /**
+ * The kind a substitution body's command from a variable may hide, read as {@link unformedKind} reads a top-level
+ * one: a git subcommand from a variable (`echo $(git $p origin main)`) and a command word from one with an outward
+ * subcommand (`` x=`$t push` ``) ask as a push; null otherwise (#1898). Nested bodies too: the line with each body's
+ * opening `(` or backtick made a `;` (same length) is cut once, so every body starts a segment — linear. A body runs
+ * inside double quotes as well, so no quoted-data reading applies to it.
+ */
+function substitutedVariableKind(line: string): OutwardKind | null {
+  const bodies = substitutionSpans(line)
+  if (bodies.length === 0) return null
+  const flat = line.split('')
+  for (const [start] of bodies) flat[start - 1] = ';'
+  const starts = new Set(bodies.map(([start]) => start))
+  for (const seg of segmentsOf(flat.join(''))) {
+    if (!starts.has(seg.start)) continue
+    const [first, ...args] = readCommand(seg.text, true).words
+    if (first === undefined) continue
+    if (baseName(first) === 'git' && (readGit(args, null).sub ?? '').includes('$')) return 'push'
+    if (first.includes('$') && args.slice(0, 2).some(word => OUTWARD_SUBWORDS.has(word))) return 'push'
+  }
+  return null
+}
+
+/**
  * One fail-closed hit for a line holding a construct this parser does not read (`$(…)`, a backtick,
  * `xargs`, `find -exec`, `ssh`, `env -S`, `watch`, a function, `case`, a shell by path or one `-c`
  * cannot be cut from, `$'…'`, a git alias, a command from a variable) whose unread part names an
@@ -1255,7 +1327,7 @@ function unreadKind(line: string): OutwardKind | null {
     const kind = outwardWordIn(region)
     if (kind !== null) return kind
   }
-  return null
+  return substitutedVariableKind(line)
 }
 
 function walkOutward(line: string, depth: number, state: WalkState, hits: Outward[]): void {

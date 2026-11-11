@@ -142,18 +142,21 @@ const DOCUMENTED_ASYMMETRIES = {
         // tests/hooks/pre-auq-clarity-wiring.test.mjs, which goes red then.
         'pre-auq-clarity.mjs',
         'pre-task-scope-disjoint.mjs',
+        'pre-agent-cap.mjs', // #1959: same reason — matches the `Agent` dispatch tool
         'skill-invocation-telemetry.mjs',
+        // enforce-scope, config-protection, pre-edit-sessions-ledger-guard (#1443)
+        // and the EDIT side of pre-tool-state-md-path-guard (#1790): their NAMES stay
+        // absent from the Codex set, because Codex writes files through `apply_patch`,
+        // a tool name these Edit/Write/MultiEdit-gated hooks never match; wired
+        // directly they would allow everything. Since #1913 they ARE enforced on
+        // Codex through the adapter hooks/codex-apply-patch-guard.mjs (matcher
+        // `apply_patch`), which runs each of them as a child process on a
+        // synthesized Edit/Write payload per touched file; enforcing rows in
+        // tests/hooks/codex-apply-patch-guards-wiring.test.mjs. The Bash side of the
+        // STATE.md guard is wired directly (tests/hooks/codex-bash-guards-wiring.test.mjs).
         'enforce-scope.mjs',
         'config-protection.mjs',
-        // pre-edit-sessions-ledger-guard (#1443): same Edit/Write/MultiEdit tool-name
-        // gate as enforce-scope/config-protection above — Codex writes files through
-        // `apply_patch`, a name this hook never matches. Wired, it would run and allow
-        // everything: a silent no-op, not enforcement. Gap registered, not faked.
         'pre-edit-sessions-ledger-guard.mjs',
-        // pre-tool-state-md-path-guard (#1790): EDIT side only. Same `apply_patch`
-        // gap as the ledger guard above — wired on the edit matcher, it would allow
-        // everything. The Bash side IS wired in hooks-codex.json, with its
-        // enforcing row in tests/hooks/codex-bash-guards-wiring.test.mjs.
         'pre-tool-state-md-path-guard.mjs',
         // pre-bash-templates-first (#1691): runs on the Codex payload but can
         // only DENY. Both allow routes are unreachable there: the template-Read
@@ -174,6 +177,12 @@ const DOCUMENTED_ASYMMETRIES = {
         // tool_input.file_path, neither of which any Codex bridge delivers.
         // A manifest entry would be a silent no-op, not enforcement.
         'post-edit-import-probe.mjs',
+        // post-tool-context-threshold (#1960): NOT ported. It measures the
+        // context from the Claude Code transcript (`transcript_path` + Claude
+        // `message.usage` lines). Codex sends `transcript_path: null`
+        // (codex-cli 0.160.1, see pre-bash-templates-first above) and its rollout
+        // files carry no such lines — the hook would stay "nicht messbar" forever.
+        'post-tool-context-threshold.mjs',
       ],
       SubagentStart: ['subagent-telemetry.mjs'],
       SubagentStop: ['subagent-telemetry.mjs', 'post-subagent-discovery-validator.mjs'],
@@ -206,10 +215,18 @@ const DOCUMENTED_ASYMMETRIES = {
         // tests/hooks/pre-auq-clarity-wiring.test.mjs, which goes red then.
         'pre-auq-clarity.mjs',
         'pre-task-scope-disjoint.mjs',
+        'pre-agent-cap.mjs', // #1959: same reason — matches the `Agent` dispatch tool
         'skill-invocation-telemetry.mjs',
         'pre-bash-sessions-ledger-guard.mjs', // #958
         'pre-bash-templates-first.mjs', // #946
         'pre-bash-issue-budget.mjs',    // #946
+      ],
+      PostToolUse: [
+        // post-tool-context-threshold (#1960): NOT ported. It measures the
+        // context from the Claude Code transcript (`transcript_path` + Claude
+        // `message.usage` lines). pi-hook-bridge delivers no `transcript_path`
+        // and Pi writes no Claude-shaped transcript — a silent no-op, not a limit.
+        'post-tool-context-threshold.mjs',
       ],
     },
     // Cursor is wired through scripts/lib/cursor-hook-bridge.mjs (#919 closed).
@@ -232,9 +249,17 @@ const DOCUMENTED_ASYMMETRIES = {
         // tests/hooks/pre-auq-clarity-wiring.test.mjs, which goes red then.
         'pre-auq-clarity.mjs',
         'pre-task-scope-disjoint.mjs',
+        'pre-agent-cap.mjs', // #1959: same reason — matches the `Agent` dispatch tool
         // skill-invocation-telemetry: Cursor has no Skill tool — the matcher
         // can never fire. Commands Read skills/*/SKILL.md instead.
         'skill-invocation-telemetry.mjs',
+      ],
+      PostToolUse: [
+        // post-tool-context-threshold (#1960): NOT ported. It measures the
+        // context from the Claude Code transcript (`transcript_path` + Claude
+        // `message.usage` lines). cursor-hook-bridge delivers no `transcript_path`
+        // and Cursor writes no Claude-shaped transcript — a silent no-op, not a limit.
+        'post-tool-context-threshold.mjs',
       ],
     },
   },
@@ -247,9 +272,10 @@ const REQUIRED_CODEX_EVENTS = [
   'SubagentStart',
   'SubagentStop',
   'Stop',
+  // Wired since #1919 (codex-cli 0.160.1 fires it; 0.144.4 rejected the key).
+  'SessionEnd',
 ];
 const FORBIDDEN_CODEX_EVENTS = [
-  'SessionEnd',
   'PostToolUseFailure',
   'PostToolBatch',
   'CwdChanged',

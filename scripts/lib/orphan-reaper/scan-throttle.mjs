@@ -121,7 +121,7 @@ export function touchScanMarker(markerPath, { writeFn } = {}) {
       return false;
     }
     try {
-      renameSync(tmp, markerPath);
+      renameSync(tmp, markerPath); // direct-rename:ok wx (O_EXCL) tmp in a 50 ms hook budget; a lost stamp only re-runs one scan
       return true;
     } catch {
       removeOwnTmp(tmp);

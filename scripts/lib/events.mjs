@@ -182,11 +182,24 @@ export function eventsFilePath(repoRoot) {
  * `orchestrator.session.lock.acquired` so gate events join against the same keys
  * existing consumers already read (see `session-close-backfill.mjs`).
  *
- * Without a lock (CI runs have none) BOTH keys are OMITTED rather than filled
- * with a placeholder: a fabricated id would silently collide across every
- * unattributed run and read as a real session; an empty string would satisfy a
- * truthiness check while attributing to nothing. An absent key is the only
- * honest encoding of "not attributable".
+ * Contract (#1874, rule 3 of the module header): the lock's ids are returned
+ * only when a confirmed native PROCESS-LOCAL id (see
+ * `readProcessLocalSessionIds()`) equals the lock's raw `session_id`; both keys
+ * are then copied verbatim. The lock alone proves nothing — it is one
+ * working-copy file, and a dead or foreign holder's id used to reach every
+ * caller that spreads this result into a payload, where it also suppresses
+ * `emitEvent()`'s own fill.
+ *
+ * BOTH keys are OMITTED rather than filled with a placeholder when there is no
+ * lock (CI runs have none), when the process carries no confirmed id, and when
+ * its id disagrees with the lock: a fabricated id would silently collide across
+ * every unattributed run and read as a real session; an empty string would
+ * satisfy a truthiness check while attributing to nothing. An absent key is the
+ * only honest encoding of "not attributable".
+ *
+ * CEILING (BV-004): a harness with no native id (Cursor and Pi, by
+ * `readProcessLocalSessionIds()`) gets no attribution from here, even on its
+ * own lock. REVISIT when one of them exports a process-scoped session id.
  *
  * @param {string} [repoRoot] — repo whose `session.lock` is read for attribution.
  * @returns {{session_id?: string, semantic_session_id?: string}}
@@ -195,10 +208,9 @@ export function sessionAttribution(repoRoot) {
   try {
     const lock = readLock({ repoRoot });
     if (!lock) return {};
-    const out = {};
-    if (typeof lock.session_id === 'string' && lock.session_id.trim()) {
-      out.session_id = lock.session_id;
-    }
+    const lockRawId = typeof lock.session_id === 'string' ? lock.session_id.trim() : '';
+    if (!lockRawId || !readProcessLocalSessionIds().includes(lockRawId)) return {};
+    const out = { session_id: lock.session_id };
     if (typeof lock.semantic_session_id === 'string' && lock.semantic_session_id.trim()) {
       out.semantic_session_id = lock.semantic_session_id;
     }
@@ -217,7 +229,8 @@ const STATE_DIR_CANDIDATES = ['.claude', '.codex', '.cursor', '.pi'];
 
 /**
  * Session-correlation keys for a record pinned to `root` — `{}` when ownership
- * is not provable.
+ * is not provable. {@link sessionAttribution} with the record's default root;
+ * the confirmation itself lives there (#1874).
  *
  * Decision, in one line: **only a PROCESS-LOCAL id may confirm the lock, and
  * when one exists it decides alone.**
@@ -271,13 +284,7 @@ const STATE_DIR_CANDIDATES = ['.claude', '.codex', '.cursor', '.pi'];
  * @returns {{session_id?: string, semantic_session_id?: string}}
  */
 export function attributionForRecord(root = getProjectDir()) {
-  const attribution = sessionAttribution(root);
-  const lockRawId =
-    typeof attribution.session_id === 'string' ? attribution.session_id.trim() : '';
-  if (!lockRawId) return {};
-  const processLocal = readProcessLocalSessionIds();
-  if (processLocal.length === 0) return {};
-  return processLocal.includes(lockRawId) ? { ...attribution } : {};
+  return sessionAttribution(root);
 }
 
 /**

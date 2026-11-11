@@ -57,6 +57,7 @@ The `strictness` setting picks the profile; the default is `ausgewogen`.
 | SEC-008 trap | refused | refused | refused |
 | Rule trap | toast, the call runs | refused | refused |
 | Outward action (interactive) | asked twice | asked twice | asked twice |
+| Outward action (no surface) | runs with a receipt; refused with `outwardHeadless: deny` | same | same |
 | File in a peer's wave scope | toast, the edit runs | asks: [Trotzdem] [Worktree vorschlagen] [Abbrechen] | refused, with a hint to work in an own worktree |
 | Secret in a tool result | replaced, toast | replaced, toast | replaced, toast |
 | The gate itself fails | refused, except calls that are neither outward nor SEC-008 | refused | refused |
@@ -94,7 +95,7 @@ so-hud writes a receipt or a beacon only when `hud/` (and, for beacons, `hud/bea
 | `argv_sha256` | SHA-256 (hex) of the UTF-8 of `JSON.stringify([tool, text])`, the tool name standing where a program would stand in an argv: `["Bash", "<command>"]` (or `Monitor`, `PowerShell`) with the command exactly as the model sent it for `aussenwirkung`; `["Edit", "<file path>"]` (or `Write`, `NotebookEdit`) for `kollision`. Neither the command nor the path is written, because a command can carry a token |
 | `exit` | exit code, or `null` |
 | `profil` | `locker`, `ausgewogen` or `streng` |
-| `ergebnis` | `ausgefuehrt` (ran after confirmation), `abgelehnt` (declined, dialog closed, facts changed, or refused by a later check), `verfallen` (30 seconds passed), `ohne-zeichenflaeche` (nobody to ask, see below), `fehler` (the question to the owner could not be shown; the call was refused and the owner did not decide, #1856) |
+| `ergebnis` | `ausgefuehrt` (ran after confirmation), `abgelehnt` (declined, dialog closed, facts changed, or refused by a later check), `verfallen` (30 seconds passed), `ohne-zeichenflaeche` (nobody to ask, the call ran, see below), `ohne-zeichenflaeche-abgelehnt` (nobody to ask and `outwardHeadless: deny` is set, the call was refused, see below), `fehler` (the question to the owner could not be shown; the call was refused and the owner did not decide, #1856) |
 | `art` | optional short lowercase label |
 
 The field set is closed: a receipt with any other field, or larger than 1 KB, is not written.
@@ -102,6 +103,8 @@ The field set is closed: a receipt with any other field, or larger than 1 KB, is
 ### Headless runs
 
 so-hud asks wherever a surface is attached — the terminal, or a desktop, IDE or phone client. Only a run with no surface at all (a plain `claude -p`, or an Agent SDK run nobody is attached to) has nobody to ask. There so-hud writes a receipt with `ergebnis: ohne-zeichenflaeche` and lets the outward action run. What still checks it is outside so-hud: a push passes the repository's own pre-push hook if it has one, and a force push is blocked by Session Orchestrator's destructive-command guard. **Merges, releases, publishes and deploys are not checked by any Session Orchestrator gate in such a run.** SEC-008 traps, rule traps and the secret shield apply unchanged. An edit that collides with a peer's scope on `ausgewogen` is refused there, because nobody can answer the question.
+
+**Refusing outward actions in such a run (#1817, opt-in).** The setting `outwardHeadless` takes `allow` (the default) or `deny`. With `deny`, so-hud refuses every outward action in a run with no surface, on every profile, writes a receipt with `ergebnis: ohne-zeichenflaeche-abgelehnt`, and tells the model why and how to allow it: run the step in a session with a surface, or set `outwardHeadless` back to `allow`. Only the exact value `deny` switches it on; any other value behaves like `allow`, which is today's behaviour unchanged. Where a surface is attached the setting changes nothing: the owner is asked twice as before. Like all of so-hud it works in Claude Code only — a Codex, Cursor or Pi run is not checked by it. It is a hurdle, not a guarantee: a command run outside Claude Code, or a step the patterns do not recognise as outward, still runs, so protected branches, required approvals and CI stay the authority for what reaches `main`, a release or production.
 
 ### Failure direction
 

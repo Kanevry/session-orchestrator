@@ -36,13 +36,14 @@ Do NOT proceed with discovery when this conflict is present.
 
 **Argument validation:** Valid scopes: `all`, `code`, `infra`, `ui`, `arch`, `session`, `audit`, `vault`, `feature` (comma-separated for multiple). If any scope is invalid, inform the user: "Invalid scope '[token]'. Valid scopes: all, code, infra, ui, arch, session, audit, vault, feature." and default that token to `all`.
 
-Scan the codebase for quality issues, technical debt, and improvement opportunities within the requested scope. Do NOT skip the interactive triage phase — every finding must be confirmed by the user before issue creation. Evidence before assertions.
+Scan the codebase for quality issues, technical debt, and improvement opportunities within the requested scope. Do NOT skip the interactive triage phase — every finding must be confirmed by the user before issue creation (a lead-guided run confirms by recorded decision, § Lead-guided runs). Evidence before assertions.
 
 ## Invocation Modes
 
 Two modes of operation:
 
 - **Standalone** (`/discovery [scope]`): Full 6-phase flow with interactive triage (Phases 0-6)
+- **Standalone, lead-guided or headless**: the same flow; every triage question takes its recommended answer instead of asking (§ Lead-guided runs)
 - **Embedded** (from session-end when `discovery-on-close: true`): Phases 0-4 only, returns structured findings to session-end
 
 <!-- scope-enum SSOT (#762): this line is the canonical token list; the wiring test derives SCOPE_TOKENS from it. Add/remove tokens HERE first, the test guards the other surfaces. -->
@@ -323,6 +324,16 @@ See [references/discovery-interactive-triage.md](references/discovery-interactiv
 
 **Read WHEN:** running in standalone mode (not embedded mode — see Phase 4.6 Embedded Mode Exit above), after Phase 4 scoring completes.
 
+## Lead-guided runs
+
+When a standalone run is lead-guided or headless (detection, duties, owner classes and the decision-line format: [../_shared/lead-guided-mode.md](../_shared/lead-guided-mode.md)), nobody answers, so no `AskUserQuestion` is raised and the run never ends waiting. The decision the triage would ask for is taken, recorded and carried on:
+
+- **Feature-Scope Router**: `Grounded scan` (the recommended option). The judgment-topics fork does not arise.
+- **Phase 5 triage**: a verified Critical/High finding gets `Create issue (<severity>)`; each Medium/Low category gets `Accept all` (its recommended option); the batch confirmation gets `Create all`. Auto-deferred findings stay deferred. Triage state is written as in an interactive run.
+- **Owner class instead of an issue**: a finding in the security category, or one whose issue text would expose a secret or a private name, is not filed; it is parked as an owner question per the shared doc. So is any creation beyond Session Config `issue-budget:` (report the remainder). When the issue tracker is public (a public GitHub/GitLab project), no issue is filed at all: the whole batch is parked as one `aussenwirkung` owner question and the findings stay in the Final Report.
+- **Record**: one decision line per finding or category in the Final Report under `### Autonome Entscheidungen`; each created issue body ends with its own decision line, so the owner can find and close autonomously filed issues in bulk.
+- Embedded mode is unaffected: it never triages.
+
 ## Phase 6: Issue Creation & Report
 
 ### 6.1 Issue Creation
@@ -379,9 +390,9 @@ Outcome: Reduce time-to-first-value for new users
 ## Critical Rules
 
 - **NEVER** fabricate findings -- every finding must come from tool output with verifiable evidence
-- **NEVER** create issues without user approval (standalone mode)
+- **NEVER** create issues without user approval (standalone mode) — in a lead-guided run the recorded decision of § Lead-guided runs stands in for it
 - **ALWAYS** verify findings by re-reading the file at the reported line (Phase 4)
-- **ALWAYS** use AskUserQuestion for triage decisions -- never plain text options (On Codex CLI, use numbered lists as AskUserQuestion is not available)
+- **ALWAYS** use AskUserQuestion for triage decisions -- never plain text options (On Codex CLI, use numbered lists as AskUserQuestion is not available). A lead-guided or headless run follows § Lead-guided runs instead.
 - **ALWAYS** reference gitlab-ops for VCS operations -- never duplicate CLI logic inline
 - If a probe command fails or tool is unavailable, skip gracefully, continue with others
 - If in embedded mode, stop after Phase 4, return findings as structured data
@@ -421,7 +432,7 @@ See [references/discovery-triage-state.md](references/discovery-triage-state.md)
 ## Anti-Patterns
 
 - **DO NOT** report findings without verifying them first — false positives erode user trust faster than missed issues
-- **DO NOT** skip the interactive triage phase — auto-creating issues for unconfirmed findings creates noise
+- **DO NOT** skip the interactive triage phase — auto-creating issues for unconfirmed findings creates noise; a lead-guided run takes the recommended triage answer and records it instead of skipping the phase
 - **DO NOT** run probes outside the configured scope — if the user asked for `code` scope, don't scan infrastructure
 - **DO NOT** present findings without evidence (file path, line number, actual content) — assertions without proof are useless
 - **DO NOT** write to `sessions.jsonl` directly — session-end handles metrics persistence

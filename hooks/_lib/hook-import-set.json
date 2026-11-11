@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-31T09:30:33.151Z",
-  "head": "a039b5884d7ebe718c166c2d64e22756747d7bed",
+  "generated_at": "2026-11-10T23:18:48.019Z",
+  "head": "58d9de6a65ec1c9ba8cad63d0dd4e1021e06a118",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -12,10 +12,21 @@
       ]
     },
     {
+      "file": "hooks/_lib/command-hash.mjs",
+      "reachable_from": [
+        "enforce-commands.mjs",
+        "loop-guard.mjs",
+        "pre-bash-destructive-guard.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-staging-fence.mjs"
+      ]
+    },
+    {
       "file": "hooks/_lib/guard-source-loader.mjs",
       "reachable_from": [
         "enforce-commands.mjs",
         "enforce-scope.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-destructive-guard.mjs",
         "pre-bash-sessions-ledger-guard.mjs",
@@ -58,6 +69,7 @@
     {
       "file": "hooks/_lib/profile-gate.mjs",
       "reachable_from": [
+        "codex-apply-patch-guard.mjs",
         "config-protection.mjs",
         "cwd-change-restore.mjs",
         "enforce-commands.mjs",
@@ -73,8 +85,10 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-context-threshold.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-destructive-guard.mjs",
         "pre-bash-issue-budget.mjs",
@@ -105,6 +119,12 @@
       ]
     },
     {
+      "file": "hooks/_lib/templates-ack-file.mjs",
+      "reachable_from": [
+        "pre-bash-templates-first.mjs"
+      ]
+    },
+    {
       "file": "hooks/_lib/transcript-history.mjs",
       "reachable_from": [
         "pre-bash-templates-first.mjs"
@@ -116,6 +136,12 @@
         "post-bash-issue-budget-refund.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-templates-first.mjs"
+      ]
+    },
+    {
+      "file": "hooks/codex-apply-patch-guard.mjs",
+      "reachable_from": [
+        "codex-apply-patch-guard.mjs"
       ]
     },
     {
@@ -209,6 +235,12 @@
       ]
     },
     {
+      "file": "hooks/post-tool-context-threshold.mjs",
+      "reachable_from": [
+        "post-tool-context-threshold.mjs"
+      ]
+    },
+    {
       "file": "hooks/post-tool-failure-corrective-context.mjs",
       "reachable_from": [
         "post-tool-failure-corrective-context.mjs"
@@ -218,6 +250,12 @@
       "file": "hooks/post-tooluse-frontend-slop.mjs",
       "reachable_from": [
         "post-tooluse-frontend-slop.mjs"
+      ]
+    },
+    {
+      "file": "hooks/pre-agent-cap.mjs",
+      "reachable_from": [
+        "pre-agent-cap.mjs"
       ]
     },
     {
@@ -271,6 +309,7 @@
     {
       "file": "hooks/pre-task-scope-disjoint.mjs",
       "reachable_from": [
+        "pre-agent-cap.mjs",
         "pre-task-scope-disjoint.mjs"
       ]
     },
@@ -296,6 +335,16 @@
       "file": "scripts/backfill-abandoned-sessions.mjs",
       "reachable_from": [
         "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/agent-cap.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs",
+        "pre-agent-cap.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -335,6 +384,18 @@
       ]
     },
     {
+      "file": "scripts/lib/codex/apply-patch-parse.mjs",
+      "reachable_from": [
+        "codex-apply-patch-guard.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/codex/rollout-meta.mjs",
+      "reachable_from": [
+        "on-stop.mjs"
+      ]
+    },
+    {
       "file": "scripts/lib/cold-start-detector.mjs",
       "reachable_from": [
         "on-session-start.mjs"
@@ -343,11 +404,13 @@
     {
       "file": "scripts/lib/command-blocker.mjs",
       "reachable_from": [
+        "codex-apply-patch-guard.mjs",
         "on-stop.mjs",
         "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-validate.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "pre-agent-cap.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
         "pre-bash-staging-fence.mjs",
@@ -375,6 +438,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -392,6 +456,16 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/agent-caps.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs",
+        "pre-agent-cap.mjs",
         "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
@@ -421,8 +495,10 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-context-threshold.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -451,8 +527,10 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-context-threshold.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -505,6 +583,16 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/context-threshold.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs",
+        "post-tool-context-threshold.mjs",
         "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
@@ -731,6 +819,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -787,8 +876,10 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-context-threshold.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -846,6 +937,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -939,6 +1031,12 @@
       ]
     },
     {
+      "file": "scripts/lib/context-threshold.mjs",
+      "reachable_from": [
+        "post-tool-context-threshold.mjs"
+      ]
+    },
+    {
       "file": "scripts/lib/crypto-digest-utils.mjs",
       "reachable_from": [
         "config-protection.mjs",
@@ -957,6 +1055,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1006,6 +1105,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1035,6 +1135,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1064,6 +1165,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1102,6 +1204,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1131,6 +1234,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1179,6 +1283,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1208,6 +1313,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1221,6 +1327,7 @@
     {
       "file": "scripts/lib/io.mjs",
       "reachable_from": [
+        "codex-apply-patch-guard.mjs",
         "config-protection.mjs",
         "cwd-change-restore.mjs",
         "enforce-commands.mjs",
@@ -1235,8 +1342,10 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-context-threshold.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-destructive-guard.mjs",
         "pre-bash-issue-budget.mjs",
@@ -1254,6 +1363,7 @@
     {
       "file": "scripts/lib/is-main-module.mjs",
       "reachable_from": [
+        "codex-apply-patch-guard.mjs",
         "config-protection.mjs",
         "cwd-change-restore.mjs",
         "enforce-commands.mjs",
@@ -1268,8 +1378,10 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-context-threshold.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-bash-destructive-guard.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1325,6 +1437,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1354,6 +1467,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1383,6 +1497,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1405,6 +1520,7 @@
     {
       "file": "scripts/lib/native-command.mjs",
       "reachable_from": [
+        "codex-apply-patch-guard.mjs",
         "config-protection.mjs",
         "cwd-change-restore.mjs",
         "enforce-commands.mjs",
@@ -1421,6 +1537,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-destructive-guard.mjs",
         "pre-bash-issue-budget.mjs",
@@ -1431,6 +1548,19 @@
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/no-follow-open.mjs",
+      "reachable_from": [
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-validate.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "pre-agent-cap.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "pre-tool-state-md-path-guard.mjs"
       ]
     },
     {
@@ -1465,7 +1595,9 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
+        "on-stop.mjs",
         "post-edit-validate.mjs",
+        "pre-agent-cap.mjs",
         "pre-bash-sessions-ledger-guard.mjs",
         "skill-invocation-telemetry.mjs"
       ]
@@ -1506,8 +1638,10 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-context-threshold.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1538,8 +1672,10 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-context-threshold.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1575,6 +1711,7 @@
     {
       "file": "scripts/lib/program-lookup.mjs",
       "reachable_from": [
+        "codex-apply-patch-guard.mjs",
         "config-protection.mjs",
         "cwd-change-restore.mjs",
         "enforce-commands.mjs",
@@ -1591,6 +1728,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-destructive-guard.mjs",
         "pre-bash-issue-budget.mjs",
@@ -1624,18 +1762,21 @@
     {
       "file": "scripts/lib/resource-probe/parsers.mjs",
       "reachable_from": [
-        "on-session-start.mjs"
+        "on-session-start.mjs",
+        "pre-agent-cap.mjs"
       ]
     },
     {
       "file": "scripts/lib/resource-probe/probe-platform.mjs",
       "reachable_from": [
-        "on-session-start.mjs"
+        "on-session-start.mjs",
+        "pre-agent-cap.mjs"
       ]
     },
     {
       "file": "scripts/lib/scope-echo.mjs",
       "reachable_from": [
+        "pre-agent-cap.mjs",
         "pre-task-scope-disjoint.mjs"
       ]
     },
@@ -1646,6 +1787,7 @@
         "post-bash-write-verify.mjs",
         "post-edit-validate.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "pre-agent-cap.mjs",
         "pre-bash-memory-propose-audit.mjs",
         "pre-task-scope-disjoint.mjs",
         "pre-tool-state-md-path-guard.mjs"
@@ -1719,6 +1861,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1749,6 +1892,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1779,6 +1923,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1808,6 +1953,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1961,6 +2107,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -1998,6 +2145,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -2108,6 +2256,14 @@
       ]
     },
     {
+      "file": "scripts/lib/wave-dispatch-ledger.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "pre-agent-cap.mjs",
+        "pre-task-scope-disjoint.mjs"
+      ]
+    },
+    {
       "file": "scripts/lib/wave-sizing.mjs",
       "reachable_from": [
         "on-session-start.mjs"
@@ -2138,6 +2294,7 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
@@ -2153,6 +2310,18 @@
       "file": "scripts/lib/worktree/listing.mjs",
       "reachable_from": [
         "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/yaml-has-document.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-edit-validate.mjs",
+        "pre-agent-cap.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {

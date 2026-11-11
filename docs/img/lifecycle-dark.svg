@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 280" role="img" aria-labelledby="lc-title lc-desc">
   <title id="lc-title">Session Orchestrator lifecycle</title>
-  <desc id="lc-desc">/bootstrap once per repo, then /session reads the repository and proposes a scope. If you do not agree, back to /session. If you agree, /go runs waves of agents with tests and typecheck after each, then the full gate runs test, typecheck and lint, then /close verifies, commits and files the rest as issues. The next session resumes from there.</desc>
+  <desc id="lc-desc">/bootstrap once per repo, then /session reads the repository and proposes a scope. If you do not agree, back to /session. If you agree, /go runs waves of agents with tests and typecheck after each, then the full check runs test, typecheck and lint, then /close verifies, commits and files the rest as issues. The next session resumes from there.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 Z" fill="#bbc0c5"/>
@@ -42,14 +42,14 @@
   <path class="line" d="M610 126 V182" marker-end="url(#arrow)"/>
   <text class="lbl" x="622" y="159">yes</text>
 
-  <!-- row 2, right to left: /go -> full gate -> /close -->
+  <!-- row 2, right to left: /go -> full check -> /close -->
   <rect class="key" x="510" y="186" width="200" height="80" rx="10"/>
   <text class="kcmd" x="610" y="212" text-anchor="middle">/go</text>
   <text class="ksub" x="610" y="233" text-anchor="middle">waves of agents,</text>
   <text class="ksub" x="610" y="251" text-anchor="middle">tests + typecheck after each</text>
 
   <rect class="box" x="260" y="186" width="200" height="80" rx="10"/>
-  <text class="head" x="360" y="212" text-anchor="middle">full gate</text>
+  <text class="head" x="360" y="212" text-anchor="middle">full check</text>
   <text class="sub" x="360" y="233" text-anchor="middle">test, typecheck, lint</text>
 
   <rect class="key" x="10" y="186" width="200" height="80" rx="10"/>

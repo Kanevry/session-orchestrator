@@ -67,6 +67,16 @@
  *     disabled: string[]     (hook names switched off on this host; unioned with env
  *                            SO_DISABLED_HOOKS; never a safety hook. An invalid value or
  *                            any other key drops ONLY this section, see loadOwnerConfig)
+ *   notifications:          (optional; per-user notification switches — #1936)
+ *     stop: boolean          (false = on-stop sends no OSC 9/777 desktop notification;
+ *                            on/off/1/0 accepted, see parseSwitch. absent = true.
+ *                            precedence env SO_STOP_NOTIFICATION > this > true. An
+ *                            invalid value or any other key drops ONLY this section)
+ *   agent-caps:             (optional; host-local agent caps and memory brake)
+ *     process-starting, reading: number | 'off'   (keys and values: config/agent-caps.mjs,
+ *     brake-engage-pct: number | 'off'             precedence env > this > Session Config >
+ *     brake-release-pct: number                    default. A bad value warns and is skipped;
+ *                            any other key drops ONLY this section)
  *   drift-check:            (optional; host-local path exceptions — #937)
  *     foreign-host-prefixes: string[] (narrow absolute directory prefixes;
  *                            missing matching paths warn, unmatched paths error)
@@ -83,10 +93,11 @@
  *   validateOwnerSections(obj) — pure validation, no I/O; bucketed per section (#820)
  *   validateOwnerConfig(obj)   — pure validation, no I/O; thin wrapper over validateOwnerSections
  *   loadOwnerConfig({path?})   — reads file; per-section tolerance for OPTIONAL
- *                                sections (paths/dispatcher/vault-integration/drift-check/learnings/hooks/vaults/
- *                                baselines/vault-dirs) — #820
+ *                                sections (paths/dispatcher/vault-integration/drift-check/learnings/hooks/
+ *                                notifications/agent-caps/vaults/baselines/vault-dirs) — #820
  *   writeOwnerConfig(config, {path?}) — validates, writes YAML, creates dir
  *   getDefaults()              — returns sensible default config object
+ *   parseSwitch(value)         — on/off reader for SO_STOP_NOTIFICATION + notifications.stop (#1936)
  *
  * ── Zero bare-specifier imports (GH#62/#63, GitLab #1230) ────────────────────
  *
@@ -110,6 +121,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'n
 import { join, dirname, isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
 import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
+import { yamlHasDocument } from './yaml-has-document.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -247,9 +259,11 @@ const REQUIRED_SECTIONS = /** @type {const} */ (['owner', 'tone', 'efficiency', 
  * override", so a dropped section simply leaves the committed gate in force.
  * `learnings` (#1516) likewise has none: absent means the `writer` role.
  * `hooks` (#1881) has none either: absent means the default hook profile.
+ * `notifications` (#1936) has none: absent means every notification stays on.
+ * `agent-caps` has none: absent means no host override.
  */
 export const OPTIONAL_OBJECT_SECTIONS = /** @type {const} */ (
-  Object.freeze(['paths', 'dispatcher', 'vault-integration', 'drift-check', 'learnings', 'hooks'])
+  Object.freeze(['paths', 'dispatcher', 'vault-integration', 'drift-check', 'learnings', 'hooks', 'notifications', 'agent-caps'])
 );
 
 /**
@@ -287,10 +301,38 @@ const SAFETY_HOOKS = [
   'config-protection',
   'pre-task-scope-disjoint',
   'pre-bash-staging-fence',
+  'codex-apply-patch-guard',
 ];
 
 /** A hook name as `SO_DISABLED_HOOKS` takes it: a hook file stem. */
 const HOOK_NAME_RE = /^[a-z0-9][a-z0-9-]*$/i;
+
+/** Keys of the `agent-caps` section. Mirrors AGENT_CAP_KEYS in config/agent-caps.mjs (import-light, as above). */
+const VALID_AGENT_CAP_KEYS = ['process-starting', 'reading', 'brake-engage-pct', 'brake-release-pct'];
+
+const SWITCH_ON = ['true', 'on', '1', 'yes'];
+const SWITCH_OFF = ['false', 'off', '0', 'no'];
+
+/**
+ * Read an on/off switch as env `SO_STOP_NOTIFICATION` or owner.yaml
+ * `notifications.stop` carries it (#1936). One parser for both tiers, so
+ * `stop: off` — which YAML reads as the STRING "off", not a boolean — means
+ * off: a strict boolean check would drop the section and keep the
+ * notification on, silently ignoring exactly the user who tried to switch it
+ * off.
+ *
+ * @param {unknown} value
+ * @returns {boolean|undefined} undefined = unset or unreadable (next tier decides)
+ */
+export function parseSwitch(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1 ? true : value === 0 ? false : undefined;
+  if (typeof value !== 'string') return undefined;
+  const v = value.trim().toLowerCase();
+  if (SWITCH_ON.includes(v)) return true;
+  if (SWITCH_OFF.includes(v)) return false;
+  return undefined;
+}
 
 /** Canonical validation-order — MUST match the pre-#820 inline validation order. */
 const SECTION_ORDER = /** @type {const} */ ([
@@ -656,6 +698,51 @@ export function validateOwnerSections(obj) {
     sections.hooks = { valid: errors.length === 0, errors };
   }
 
+  // ── notifications (optional; per-user notification switches — #1936) ──────
+  // STRICT on keys like hooks: `stopp: false` must not read as "stop absent"
+  // and leave the notification on without a word. Values go through
+  // parseSwitch, the same reader the hook uses.
+  {
+    const errors = [];
+    const nt = obj.notifications;
+    if (nt !== undefined && nt !== null) {
+      if (!isPlainObject(nt)) {
+        errors.push('notifications must be an object when present');
+      } else {
+        for (const key of Object.keys(nt)) {
+          if (key !== 'stop') {
+            errors.push(`notifications has unknown key ${JSON.stringify(key)} (only stop is allowed)`);
+          }
+        }
+        if (nt.stop !== undefined && nt.stop !== null && parseSwitch(nt.stop) === undefined) {
+          errors.push(`notifications.stop must be true or false (or on/off), got: ${JSON.stringify(nt.stop)}`);
+        }
+      }
+    }
+    sections.notifications = { valid: errors.length === 0, errors };
+  }
+
+  // ── agent-caps (optional; host-local agent caps and memory brake) ────────
+  // STRICT on keys: `proces-starting: 2` must not read as "absent" and leave
+  // the default in force without a word. Values are judged by the resolver
+  // (config/agent-caps.mjs), which warns per value and keeps the other keys.
+  {
+    const errors = [];
+    const ac = obj['agent-caps'];
+    if (ac !== undefined && ac !== null) {
+      if (!isPlainObject(ac)) {
+        errors.push('agent-caps must be an object when present');
+      } else {
+        for (const key of Object.keys(ac)) {
+          if (!VALID_AGENT_CAP_KEYS.includes(key)) {
+            errors.push(`agent-caps has unknown key ${JSON.stringify(key)} (allowed: ${VALID_AGENT_CAP_KEYS.join(', ')})`);
+          }
+        }
+      }
+    }
+    sections['agent-caps'] = { valid: errors.length === 0, errors };
+  }
+
   // ── vaults (optional; N named vaults for walk-up resolution — #700) ──────────
   // Drop-and-WARN on malformed entries is handled by parseNamedVaults() in
   // named-vault-resolver.mjs. Here we only validate the container shape to
@@ -944,7 +1031,8 @@ function loadOwnerConfigUnredacted(opts) {
 
   let parsed;
   try {
-    parsed = yaml.load(raw);
+    // js-yaml 5 (#2015): a source without a document throws; keep the v4 'not a mapping' path.
+    parsed = yamlHasDocument(raw) ? yaml.load(raw) : undefined;
   } catch (err) {
     return {
       config: getDefaults(),

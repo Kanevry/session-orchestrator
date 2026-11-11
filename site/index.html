@@ -19,13 +19,13 @@
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Session Orchestrator: Plan, Go, Close with an illustration of an agent workshop under human direction.">
+<meta property="og:image:alt" content="Session Orchestrator: From your task to checked work. The commands /session, /go and /close beside an illustration of an agent workshop under human direction.">
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Session Orchestrator | From your task to checked work">
 <meta name="twitter:description" content="You say what you want, your coding agent plans with you, works in checked rounds and hands over to the next session. A free, open-source plugin for Claude Code, Codex, Cursor and Pi.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
-<meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close with an illustration of an agent workshop under human direction.">
+<meta name="twitter:image:alt" content="Session Orchestrator: From your task to checked work. The commands /session, /go and /close beside an illustration of an agent workshop under human direction.">
 
 <!-- Entity consolidation (issue #1046): the site, the repository, the package
      and the person who maintains them are one entity with stable @id anchors.
@@ -216,13 +216,13 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261029">
+<link rel="stylesheet" href="/assets/site.css?v=20261107">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.17.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.18.0</span></span></a>
     <nav class="nav" aria-label="Main"><a href="#how">How it works</a><a href="/commands">Commands</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="/lead">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
     <p class="lang"><a href="/" aria-current="page" lang="en">EN</a><a href="/de"  lang="de">DE</a></p>
     <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="#how">How it works</a><a href="/commands">Commands</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="/lead">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
@@ -268,7 +268,26 @@
           <li class="how-step" id="step-read">
             <h3><button class="how-step-btn" type="button"><span class="how-n">1</span>Read</button></h3>
             <p class="how-type"><span>You type</span><code>/session feature add a CSV export</code></p>
-            <p>It reads your code, open issues, recent commits and the last session, then proposes a plan. <b>Nothing has changed yet.</b></p>
+            <p>It reads your code, open issues, recent commits and the last session, then recommends what to work on. <b>Nothing has changed yet.</b></p>
+            <figure class="see-fig">
+              <div class="see-label">What you see next</div>
+              <div class="see-pane" role="img" aria-label="Session overview. Type: feature. Repository shop-dashboard on branch main. Git is clean, nothing is unpushed. 12 open issues, 2 of them high priority, and 1 open merge request. Health: 0 TypeScript errors, tests passing, CI green. Recommended focus, option A: issue 48, the CSV export, on its own, because it is what you asked for and the code it touches has tests. Then the question: Which focus should this session have? Option 1, recommended: issue 48, CSV export. One button, one export route, one test. Serves: orders as a spreadsheet, observable via the new export test. Option 2: issue 48 plus issue 51, a date filter. Same export code, about twice the work. Serves: exports per month, observable via the filter test. Option 3: issue 57, slow order list. High priority, needs its own session. Serves no named outcome.">
+                <div class="sp-h">Session Overview</div>
+                <div>Type: feature</div>
+                <div>Repo: shop-dashboard on branch main</div>
+                <div>Git: clean, 0 unpushed</div>
+                <div>VCS: 12 open issues (2 high), 1 open MR</div>
+                <div>Health: TypeScript 0 errors | Tests: passing | CI: green</div>
+                <div class="sp-h">Recommended Focus</div>
+                <div>Option A (recommended): #48 CSV export on its own. It is what you asked for, and the code it touches has tests.</div>
+                <div class="sp-q"><span class="sp-tag">Focus</span> Which focus should this session have?</div>
+                <div class="sp-opt"><span>1.</span><span><b>#48 CSV export <span class="sp-rec">(Recommended)</span></b><br>One button, one export route, one test. Serves: orders as a spreadsheet; observable via the new export test.</span></div>
+                <div class="sp-opt"><span>2.</span><span><b>#48 + #51 date filter</b><br>Same export code, about twice the work. Serves: exports per month; observable via the filter test.</span></div>
+                <div class="sp-opt"><span>3.</span><span><b>#57 slow order list</b><br>High priority, needs its own session. Serves: no named outcome.</span></div>
+              </div>
+              <figcaption>Recreated from a real /session overview, shortened; repository and numbers made up.</figcaption>
+            </figure>
+            <p>You pick an option or answer in your own words. Then it shows the plan. Nothing is built before you type <code>/go</code>.</p>
           </li>
           <li class="how-step" id="step-plan">
             <h3><button class="how-step-btn" type="button"><span class="how-n">2</span>Plan</button></h3>
@@ -495,11 +514,20 @@ expires-at: 2027-01-12</code></pre></li>
           <p class="cmd"><code>claude plugin list --json</code><button class="copy" type="button" data-copy="claude plugin list --json">Copy</button></p>
           <p class="small">Find the enabled <code>session-orchestrator@kanevry</code> entry. Replace the placeholder below with its <code>installPath</code>. If the entry is missing or disabled, resolve that through <code>/plugin</code> first. If several entries match, check the active installation instead of guessing.</p>
           <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo "dependencies present, nothing to do" || npm install; }</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo &quot;dependencies present, nothing to do&quot; || npm install; }">Copy</button></p></details></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Codex CLI</span><span class="meta">clone and installer</span></summary><div class="install-body">
-          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Copy</button></p>
-          <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Copy</button></p>
-          <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Copy</button></p>
-          <p class="small">Requires Codex CLI 0.144.4 or later. Config goes in <code>AGENTS.md</code>. After installation, open a fresh task and review the plugin hooks through <code>/hooks</code>.</p>
-          <p class="small">Select the Session Orchestrator skills: <code>$session-orchestrator:bootstrap</code>, then <code>$session-orchestrator:session feature</code>, <code>$session-orchestrator:go</code>, and <code>$session-orchestrator:close</code>. See the <a href="/guide#first-session">first-session guide</a>.</p>
+          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator">Copy</button></p>
+          <p class="cmd"><code>cd ~/Projects/session-orchestrator &amp;&amp; npm install &amp;&amp; node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="cd ~/Projects/session-orchestrator &amp;&amp; npm install &amp;&amp; node scripts/codex-install.mjs">Copy</button></p>
+          <p class="small">Requires Codex CLI 0.160 or later. Keep the clone in <code>~/Projects/session-orchestrator</code>: to update later, run <code>git pull &amp;&amp; npm install &amp;&amp; node scripts/codex-install.mjs</code> there, then start a fresh task.</p>
+          <details class="install-deps"><summary>What the installer changes</summary>
+          <ul class="install-changes small">
+            <li><b>For your user, in every project:</b> a packed copy of the plugin in <code>~/.cache/session-orchestrator/plugin-package/</code>, added to Codex as <code>session-orchestrator@kanevry</code>. Codex copies it into its plugin cache under <code>~/.codex/plugins/cache/</code>.</li>
+            <li><b>Removed:</b> an older <code>session-orchestrator@local</code> or <code>session-orchestrator@openai-curated</code> install, if you have one.</li>
+            <li><b>Not touched:</b> your projects, and the approval of the hooks.</li>
+            <li><b>Per project, later:</b> the setup step below writes <code>.orchestrator/</code> and a <code>## Session Config</code> block in <code>AGENTS.md</code>.</li>
+          </ul></details>
+          <p class="small"><b>Then approve the hooks.</b> Start a fresh Codex task, type <code>/hooks</code>, read the Session Orchestrator hooks and approve them. The installer never does this for you. Until you approve them, the hooks do not run, so no Session Orchestrator guard blocks a destructive command.</p>
+          <p class="small"><b>Set up each project once,</b> in the Codex chat inside that project:</p>
+          <p class="cmd"><code>$session-orchestrator:bootstrap --fast --no-interview</code><button class="copy" type="button" data-copy="$session-orchestrator:bootstrap --fast --no-interview">Copy</button></p>
+          <p class="small">Then <code>$session-orchestrator:session feature</code>, <code>$session-orchestrator:go</code> and <code>$session-orchestrator:close</code>. These are skills in the Codex chat; plain <code>/go</code> does not work. See the <a href="/guide#codex">Codex guide</a>.</p>
           <p class="small"><b>On Codex the Bash guards block; the file-scope guard does not.</b> The destructive-command guard and the other Bash guards run as hooks, and Codex honours their deny. The file-scope guard stays an instruction, because Codex edits files through <code>apply_patch</code>, which the scope guard does not read. The workflows and quality checks still run.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Cursor IDE</span><span class="meta">clone and installer</span></summary><div class="install-body">
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Copy</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Copy</button></p>
@@ -507,7 +535,7 @@ expires-at: 2027-01-12</code></pre></li>
           <p class="small"><b>Target project.</b> Pass the target project explicitly. Without a path, the installer uses the current directory.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Pi</span><span class="meta">package manager</span></summary><div class="install-body">
           <p class="cmd"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code><button class="copy" type="button" data-copy="npm install -g --ignore-scripts @earendil-works/pi-coding-agent">Copy</button></p>
           <p class="cmd"><code>pi install npm:session-orchestrator</code><button class="copy" type="button" data-copy="pi install npm:session-orchestrator">Copy</button></p>
-          <p class="small">This path installs its own dependencies; the Codex CLI and Cursor clones need <code>npm install</code> once.</p></div></details></div><p class="install-guide">Setting up for the first time? <a href="/guide">The guide covers installation and bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Under the hood</p><h2>What is enforced,<br>and where it stops.</h2></div><p>See which checks run, what they cover and where their limits are. With the source files to inspect.</p></div><details class="technical-detail" id="enforced"><summary>Checks and their source files</summary><div class="detail-body">
+          <p class="small">This path installs its own dependencies; the Codex CLI and Cursor clones need <code>npm install</code> once.</p></div></details></div><p class="install-guide">Setting up for the first time? <a href="/guide">The guide covers installation and bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Under the hood</p><h2>What is enforced,<br>and where it stops.</h2></div><p>See which checks run, what they cover and where their limits are. With the source files to inspect.</p></div><p class="measured-line"><span class="n"><span class="num" data-metric="sessions">321</span></span><span>sessions have built Session Orchestrator with itself so far, counted from the maintainer&rsquo;s session log (development activity, not users). Counted on <span class="num" data-metric="counted-at">2026-11-10</span>. <a href="/_census.json">See the receipt</a> or <a href="#measured">all numbers</a>.</span></p><details class="technical-detail" id="enforced"><summary>Checks and their source files</summary><div class="detail-body">
       <div class="grid-12">
         <div class="col-4">
           <p class="lede">Some protections run in code; others are instructions the agent must follow. Their strength depends on the tool and configuration.</p>
@@ -529,7 +557,7 @@ expires-at: 2027-01-12</code></pre></li>
           </tr>
           <tr>
             <td data-label="Claim">With the destructive-command hook active, Claude Code and Codex apply 14 blocking rules and 4 warning rules. Cursor and Pi use bridges.</td>
-            <td data-label="Source"><code>.orchestrator/policy/blocked-commands.json</code>, 17 rules</td>
+            <td data-label="Source"><code>.orchestrator/policy/blocked-commands.json</code>, 18 rules</td>
           </tr>
           <tr>
             <td data-label="Claim">Subagents are instructed to leave staging and commits to the coordinator. This is a workflow rule.</td>
@@ -565,19 +593,19 @@ expires-at: 2027-01-12</code></pre></li>
     </div></details><details class="technical-detail" id="measured"><summary>Repository numbers and their receipt</summary><div class="detail-body">
 
       <div class="cards">
-        <div class="card"><p class="n">v<span class="num" data-metric="version">5.17.0</span></p><p class="l">current release</p></div>
+        <div class="card"><p class="n">v<span class="num" data-metric="version">5.18.0</span></p><p class="l">current release</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="skills">52</span></p><p class="l">skills</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="commands">31</span></p><p class="l">slash commands</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typed sub-agents</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="hooks">30</span></p><p class="l">hook files</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="tests">824</span></p><p class="l">test files</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="sessions">296</span></p><p class="l">session records in this repo</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="learnings">46</span></p><p class="l">learnings in this repo</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3510</span></p><p class="l">npm downloads, last 30 days</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="github-stars">52</span></p><p class="l">GitHub stars</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="hooks">33</span></p><p class="l">hook files</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="tests">861</span></p><p class="l">test files</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="sessions">321</span></p><p class="l">session records in this repo</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="learnings">44</span></p><p class="l">learnings in this repo</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3027</span></p><p class="l">npm downloads, last 30 days</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="github-stars">53</span></p><p class="l">GitHub stars</p></div>
       </div>
 
-      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-11-01</span> at commit <span class="num" data-metric="counted-sha">7763efae</span>. Repository records describe development activity, not active users. The session count includes only sessions that actually ran, not every line in the session log, so it is lower than on older versions of this page. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
+      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-11-10</span> at commit <span class="num" data-metric="counted-sha">0b894e12</span>. Repository records describe development activity, not active users. The session count includes only sessions that actually ran, not every line in the session log, so it is lower than on older versions of this page. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
       <div class="faq-layout">
@@ -639,6 +667,6 @@ expires-at: 2027-01-12</code></pre></li>
 <footer class="foot"><div class="wrap"><div class="footer-main"><a class="brand" href="/">session-orchestrator</a><p>An open-source project by <a href="https://www.gotzendorfer.at/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">Bernhard Götzendorfer</a>.</p></div><div class="footer-links"><nav aria-label="More links"><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a href="https://www.npmjs.com/package/session-orchestrator">npm</a><a href="/guide">Guide</a><a href="/lead">Lead session</a><a href="/llms.txt">llms.txt</a><a href="/impressum">Imprint</a><a href="/datenschutz">Privacy</a></nav><a class="support-link" href="https://paypal.me/Kanevry">Buy me a coffee, if this helped.</a></div></div></footer>
 <script src="/_vercel/insights/script.js" defer></script>
 <script src="/assets/ui.js?v=20260910" defer></script>
-<script type="module" src="/assets/how.js?v=20261023"></script>
+<script type="module" src="/assets/how.js?v=20261109"></script>
 </body>
 </html>

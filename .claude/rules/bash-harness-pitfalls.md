@@ -140,6 +140,34 @@ Evidence: 2026-08-23: two wave agents hit it independently; repo code uses PIPES
 Related but distinct from § 3: there the danger is trusting a live capture over
 an artifact; here it is trusting a variable that does not exist in this shell.
 
+## 7. `writer | grep -q` under pipefail is randomly red
+
+`grep -q` exits at its first match. If the left-hand process writes anything
+after that, it gets SIGPIPE (exit 141), and `set -o pipefail` turns the whole
+pipeline red although the pattern WAS found. Timing decides, so it flakes:
+red twice in one CI day in another repo, 0 of 3000 runs locally (fail-closed
+false-red, the mirror image of § 1–§ 6).
+
+```bash
+# BAD — rc=141 when the writer outlives grep's first match
+{ printf "oid a\n"; sleep 0.2; printf "x\n"; } | grep -Eq "^oid"
+
+# GOOD — no pipe, no SIGPIPE (both forms work on bash 3.2)
+v=$(printf "oid a\nx\n"); grep -Eq "^oid" <<< "$v"   # rc=0
+grep -Eq "^oid" out.log
+```
+
+`grep PATTERN >/dev/null` instead of `-q` is NOT a fix: BSD grep returns 0,
+but GNU grep also stops at the first match when stdout is `/dev/null`, so
+Linux CI stays flaky.
+
+Evidence (bash 3.2 via `bash -c`, 2026-10-31, GitLab #1890): the three lines
+above measured rc=141 / 0 / 0 (BSD). Census here 2026-11-01 at `308f26fe`:
+`git ls-files -z | xargs -0 grep -l pipefail | xargs grep -n '| *grep -[A-Za-z]*q'`
+→ 23 files, 2 code hits, both intentional EPIPE tests
+(`tests/scripts/print-applicable-rules.test.mjs:806`,
+`tests/scripts/print-learnings-index.test.mjs:873`).
+
 ## Anti-Patterns
 
 - Timing an OLD version of a module by copying it to `/tmp` and running it there: its relative imports do not resolve, so it dies instantly and the stopwatch reports "fast". Measured 2026-08-23: 0.06 s for a crash vs 2.4 s for the real run, which turned a 2x cost into a claimed 40x regression.

@@ -71,6 +71,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { hashCommand as sharedHashCommand } from './_lib/command-hash.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
@@ -150,12 +151,26 @@ const GIT_ADD_ALL_FLAGS = new Set(['--all', '--no-ignore-removal', '--update']);
  * Shells whose `-c <payload>` operand is a command line the shell EXECUTES, so
  * a `git add` inside it stages this working copy for real.
  *
- * DELIBERATE DUPLICATE of `DASH_C_SHELLS` in scripts/lib/command-blocker.mjs —
- * that module does not export it (nor its `dashCPayloads`), and #1404's own
- * rule for this hook is to consume the tokenizer, not to edit it (5 other
- * consumers). Change one, change both.
+ * DELIBERATE DUPLICATE of the `DASH_C_SHELLS` set and its loose `-…c` scan from
+ * scripts/lib/command-blocker.mjs (the -c GRAMMAR is shared, see below) —
+ * that module still does not export the set nor its internal `dashCPayloads`,
+ * and #1404's own rule for this hook is to consume the tokenizer, not to edit
+ * it. Change one, change both. What IS shared since #1833: the shell grammar
+ * that reads WHICH word is the command string — {@link nestedShellPayloads}
+ * calls the exported `shellCommandString` over `argvWordsWithoutRedirects`,
+ * the same call shape as `dashCPayloads`.
  */
-const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'su']);
+const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'fish', 'su', 'runuser', 'sg']);
+
+/**
+ * The su-like verbs of DASH_C_SHELLS, read by the blocker's su grammar
+ * (`suCommandStrings(words, verb)`) and never by the shell grammar. Same
+ * DELIBERATE-DUPLICATE contract as the set above: `SU_LIKE_SHELLS` in
+ * scripts/lib/command-blocker.mjs is not exported. `fish` is routed to the
+ * same export (its own `-c`/`--command` grammar) AND keeps the shell grammar,
+ * as `dashCPayloads` does (#1944 sister gap).
+ */
+const SU_LIKE_SHELLS = new Set(['su', 'runuser', 'sg']);
 
 /**
  * Payload recursion depth for {@link scanForStagedPaths}. ONE level: it covers
@@ -187,7 +202,8 @@ const MAX_PAYLOAD_DEPTH = 1;
  * @returns {string}
  */
 function hashCommand(command) {
-  return crypto.createHash('sha256').update(command).digest('hex').slice(0, 16);
+  // Keyed host-local HMAC since #1880 (was unsalted sha256) — see hooks/_lib/command-hash.mjs.
+  return sharedHashCommand(command);
 }
 
 /**
@@ -256,6 +272,10 @@ async function extractStagedPaths(command) {
     return { recognised: false, paths: [] };
   }
 
+  // #2032: a line past the blocker's size bound is not split. It may stage
+  // anything, so it is recorded as the marker that overlaps every path (the
+  // fence's fail-closed reading); the fence still never blocks.
+  if (lib.oversizedCommand(command) !== null) return { recognised: true, paths: ['*'] };
   const paths = new Set();
   const state = { recognised: false };
   scanForStagedPaths(command, lib, paths, state, 0);
@@ -273,13 +293,21 @@ async function extractStagedPaths(command) {
  *    covers `xargs -I{} sh -c "git add x"` and `find … -exec sh -c "…" \;`,
  *    whose resolved verb is `xargs`/`find`; keying on the shell TOKEN instead
  *    of the verb also keeps `grep -c <pattern>` out, because `grep` is not a
- *    shell name.
+ *    shell name. Per shell token the loose `-…c` + next-word scan is UNIONED
+ *    with command-blocker's shell grammar (`shellCommandString`, both the
+ *    bash and the zsh redirect view; `su`/`runuser`/`sg`/`fish` through `suCommandStrings(words, verb)` as `dashCPayloads` reads them, #1944):
+ *    `bash +c '…'`, `bash -ce '…'`, `bash -c -e '…'` and `bash -c -- '…'`
+ *    gave the loose scan the wrong word or none (#1833). Union, never replace;
+ *    without the two exports (a degraded load) the loose scan still runs.
  *
  * @param {Array<{ text: string, quoted: boolean }>} segment
  * @param {{ payloads: string[], alt?: { payloads: string[] } }} resolved
+ * @param {{ shellCommandString?: Function, suCommandStrings?: Function, argvWordsWithoutRedirects?: Function }} lib
  * @returns {string[]} distinct payload strings
  */
-function nestedShellPayloads(segment, resolved) {
+function nestedShellPayloads(segment, resolved, lib) {
+  const grammar =
+    typeof lib.shellCommandString === 'function' && typeof lib.argvWordsWithoutRedirects === 'function';
   const out = new Set();
   for (const reading of [resolved, resolved.alt]) {
     if (!reading) continue;
@@ -287,15 +315,63 @@ function nestedShellPayloads(segment, resolved) {
   }
   for (let i = 0; i < segment.length - 1; i++) {
     const tok = segment[i];
-    if (tok.quoted || !DASH_C_SHELLS.has(path.basename(tok.text))) continue;
+    const shell = tok.quoted ? null : path.basename(tok.text);
+    if (shell === null || !DASH_C_SHELLS.has(shell)) continue;
     for (let j = i + 1; j < segment.length - 1; j++) {
       if (/^-[A-Za-z]*c$/.test(segment[j].text)) {
         out.add(segment[j + 1].text);
         break;
       }
     }
+    // #1944: su (and runuser/sg) run `-c S` behind a user name and in glued or
+    // `--command=` spellings the loose scan above misses (`sg GROUP S` even
+    // without `-c`); the blocker's su grammar reads them with the REAL verb.
+    const suLike = SU_LIKE_SHELLS.has(shell);
+    if ((suLike || shell === 'fish') && typeof lib.suCommandStrings === 'function' && typeof lib.argvWordsWithoutRedirects === 'function') {
+      for (const payload of lib.suCommandStrings(lib.argvWordsWithoutRedirects(segment, i + 1), shell)) out.add(payload);
+    }
+    if (grammar && !suLike) {
+      for (const bash of [true, false]) {
+        const payload = lib.shellCommandString(lib.argvWordsWithoutRedirects(segment, i + 1, { bash }), {
+          zsh: shell === 'zsh',
+          ksh: shell === 'ksh',
+        });
+        if (payload !== null) out.add(payload);
+      }
+    }
   }
   return [...out];
+}
+
+/**
+ * The command lines a stdin-reading shell runs from literal data in this
+ * segment (#1999 finding 6): `printf 'git add x' | sh`, `sh <<< 'git add x'`,
+ * a here-doc or `<(echo …)` into a shell, and `printf '"git add x"' | xargs
+ * sh -c` — read by the blocker's exported `pipedShellData`, whose pipe-read
+ * context `splitChainSegments` already attached to the segment.
+ *
+ * Data the blocker marks `unreadable` is handled as the fence handles an
+ * unparseable command: what was read is recorded, the rest is not, and no
+ * marker is invented (the fence only records; see extractStagedPaths'
+ * ceilings). A throw records nothing for this segment, for the same reason.
+ *
+ * NAMED CEILING (BV-004): xargs feeding a NON-shell program (`echo b.txt |
+ * xargs git add`) is not read — `pipedShellData` covers shells only, and the
+ * blocker's literal-pipe reader behind it is not exported; reimplementing it
+ * here would be a second shell grammar. REVISIT TRIGGER: the blocker exports
+ * its pipeline-data reader, or a wave agent is observed staging via xargs.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @param {{ pipedShellData?: Function }} lib
+ * @returns {string[]}
+ */
+function pipedShellLines(segment, lib) {
+  if (typeof lib.pipedShellData !== 'function') return [];
+  try {
+    return [...lib.pipedShellData(segment)];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -308,7 +384,7 @@ function nestedShellPayloads(segment, resolved) {
  *
  * @param {string} command
  * @param {{ tokenizeCommand: Function, splitChainSegments: Function,
- *           resolveSegmentVerb: Function }} lib
+ *           resolveSegmentVerb: Function, argvWordsWithoutRedirects: Function }} lib
  * @param {Set<string>} paths - OUT
  * @param {{ recognised: boolean }} state - OUT
  * @param {number} depth
@@ -333,7 +409,7 @@ function scanForStagedPaths(command, lib, paths, state, depth) {
     // fence is cross-agent collision detection, so a miss is silent in BOTH
     // directions — re-enter the same extraction on the payload.
     if (depth < MAX_PAYLOAD_DEPTH) {
-      for (const payload of nestedShellPayloads(segment, resolved)) {
+      for (const payload of [...nestedShellPayloads(segment, resolved, lib), ...pipedShellLines(segment, lib)]) {
         // The G3 pre-filter again, on the payload: same cheap question, same
         // tolerated false positives, and it keeps an unrelated `-c` operand
         // from paying for a second tokenize.
@@ -368,16 +444,24 @@ function scanForStagedPaths(command, lib, paths, state, depth) {
     let endOfFlags = false;
     let stagesAll = false;
 
-    for (; i < segment.length; i++) {
-      const tok = segment[i];
+    // #2031 item 6: git receives the argv the shell leaves AFTER removing
+    // redirects, so `git add a >/dev/null` has the operand `a` only. The
+    // blocker's own grammar (`argvWordsWithoutRedirects`, redirectSpanEnd's
+    // rule) drops each redirect token with the word it owns; a here-doc body
+    // arrives as a quoted word marked `heredocBody` and is data, not a path.
+    // A quoted `'>'` is an ordinary word (no `redirect` field) and stays.
+    const words = lib.argvWordsWithoutRedirects(segment, i).filter((t) => !t.heredocBody);
+
+    for (let w = 0; w < words.length; w++) {
+      const tok = words[w];
       const text = tok.text;
 
       if (!endOfFlags && !tok.quoted && text.startsWith('-') && text !== '-') {
         if (text === '--') { endOfFlags = true; continue; }
-        if (GIT_ADD_VALUE_FLAGS.has(text)) { i += 1; continue; }
+        if (GIT_ADD_VALUE_FLAGS.has(text)) { w += 1; continue; }
         if (text === '--pathspec-from-file' || text.startsWith('--pathspec-from-file=')) {
           stagesAll = true;
-          if (text === '--pathspec-from-file') i += 1;
+          if (text === '--pathspec-from-file') w += 1;
           continue;
         }
         if (GIT_ADD_ALL_FLAGS.has(text)) { stagesAll = true; continue; }
@@ -677,6 +761,8 @@ async function recordWorkTrees(input, command) {
     const startDir = path.isAbsolute(payloadCwd) ? payloadCwd : process.cwd();
 
     const lib = await import('../scripts/lib/command-blocker.mjs');
+    // #2032: a line past the size bound is not split; no tree is recorded.
+    if (lib.oversizedCommand(command) !== null) return;
     const dirs = commitDirs(command, startDir, lib);
     if (dirs.length === 0) return;
 

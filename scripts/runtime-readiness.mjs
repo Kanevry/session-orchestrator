@@ -33,6 +33,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
+import { checkCodexVersion } from './lib/codex/version.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { spawnNativeSync } from './lib/native-command.mjs';
 import {
@@ -83,7 +84,9 @@ update creates a new cache directory, so the check has to be repeated.
 
 Target (pick one; default: the install this script belongs to):
   --root <dir>  Check the plugin install at <dir> (must contain package.json)
-  --codex       Check the install Codex uses (codex plugin list --json)
+  --codex       Check the install Codex uses (codex plugin list --json);
+                also reports codex --version against the 0.160.0 minimum
+                (advisory: warns, never changes the exit code)
   --claude      Check the install Claude Code uses (claude plugin list --json)
 
 Options:
@@ -350,6 +353,11 @@ export function formatHuman(report, { repairRequested = false } = {}) {
     lines.push(`repair: ran ${report.repaired.argv.join(' ')} (exit ${report.repaired.rc}); `
       + `before: ${report.repaired.before.missing.length} missing`);
   }
+  if (report.codex) {
+    // Advisory only (#1919): never changes `ready` or the exit code.
+    const mark = report.codex.status === 'warn' ? '⚠ ' : report.codex.status === 'unmeasurable' ? 'ℹ ' : '';
+    lines.push(`${mark}codex: ${report.codex.detail}`);
+  }
   lines.push(`status: ${report.ready ? 'READY' : 'NOT READY'}`);
   if (!report.ready) {
     lines.push(`repair: ${formatRepairCommand(report.repair)}`);
@@ -399,6 +407,11 @@ export function main(argv, { spawn = spawnNativeSync, env = process.env, stdout 
     // not "not ready", and no reason to run npm.
     const unmeasured = (r) => r.ownerConfig.reason === 'probe-failed' && r.missing.length === 0;
     if (values.repair && !report.ready && !unmeasured(report)) report = repairAndRecheck(report, { spawn });
+    // #1919: additive `codex` key, --codex only, after the re-check (which
+    // replaces the report). Advisory: the exit code below ignores it.
+    if (values.codex) {
+      report = { ...report, codex: checkCodexVersion({ spawn }) };
+    }
     stdout.write(values.json ? `${JSON.stringify(report)}\n` : formatHuman(report, { repairRequested: values.repair }));
     if (report.ready) return 0;
     return unmeasured(report) ? 2 : 3;

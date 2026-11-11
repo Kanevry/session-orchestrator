@@ -40,7 +40,7 @@ function makeError(message) {
  *   target:          string | null | undefined
  *   driver:          'playwright' | 'peekaboo'
  *   mode:            'headless' | 'headed', default 'headless'
- *   rubric:          string, default 'skills/test-runner/rubric-v1.md'
+ *   rubric:          string, default 'skills/test-runner/rubric-v2.md' (#1961; v1 only when pinned)
  *   checks:          string[] | undefined
  *   tags:            string[] | undefined
  *   rubric_features: string[] | undefined
@@ -90,8 +90,8 @@ function parseProfileEntry(value) {
     };
   }
 
-  // rubric (with default)
-  const rubric = v.rubric === undefined ? 'skills/test-runner/rubric-v1.md' : v.rubric;
+  // rubric (with default) — v2 puts the human checks before the v1 counters (#1961)
+  const rubric = v.rubric === undefined ? 'skills/test-runner/rubric-v2.md' : v.rubric;
   if (typeof rubric !== 'string') {
     return { success: false, error: makeError('rubric must be a string') };
   }

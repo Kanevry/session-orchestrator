@@ -103,10 +103,12 @@ export const NUDGE_MIN_DELTA = 15;
 
 /**
  * Nudge threshold (c): reconcile BACKLOG — rule-eligible learnings (type + file_paths
- * allow-list, not expired, regardless of confidence) MINUS those already materialized
- * in the idempotency sidecar or a `.claude/rules/` provenance marker. Counting the
- * materialized ones too made the probe un-greenable (#1380: 98 eligible, 35 already
- * materialized, and no `/reconcile` run could ever clear it).
+ * allow-list, not expired) MINUS those already materialized in the idempotency sidecar
+ * or a `.claude/rules/` provenance marker, narrowed to those at or above
+ * `reconcile.confidence-floor`. Counting the materialized ones too made the probe
+ * un-greenable (#1380: 98 eligible, 35 already materialized, and no `/reconcile` run
+ * could ever clear it); counting those under the floor recommended a run that delivers
+ * nothing (#1991: 31 in the backlog, highest confidence 0.45, 0 proposals).
  */
 export const NUDGE_MIN_ELIGIBLE = 3;
 
@@ -128,7 +130,7 @@ export const NUDGE_MIN_ELIGIBLE = 3;
  *
  * @param {string} repoRoot
  * @param {unknown} [config] already-parsed Session Config
- * @returns {Promise<{enabled: boolean, minInsightChars: number}>}
+ * @returns {Promise<{enabled: boolean, minInsightChars: number, confidenceFloor: number}>}
  */
 async function _resolveReconcileSettings(repoRoot, config) {
   const injected =
@@ -139,10 +141,12 @@ async function _resolveReconcileSettings(repoRoot, config) {
 
   const hasEnabled = injected !== null && typeof injected.enabled === 'boolean';
   const hasChars = injected !== null && Number.isFinite(injected['min-insight-chars']);
-  if (hasEnabled && hasChars) {
+  const hasFloor = injected !== null && Number.isFinite(injected['confidence-floor']);
+  if (hasEnabled && hasChars && hasFloor) {
     return {
       enabled: /** @type {boolean} */ (injected.enabled),
       minInsightChars: Number(injected['min-insight-chars']),
+      confidenceFloor: Number(injected['confidence-floor']),
     };
   }
 
@@ -159,6 +163,9 @@ async function _resolveReconcileSettings(repoRoot, config) {
     minInsightChars: hasChars
       ? Number(injected['min-insight-chars'])
       : parsed['min-insight-chars'],
+    confidenceFloor: hasFloor
+      ? Number(injected['confidence-floor'])
+      : parsed['confidence-floor'],
   };
 }
 
@@ -204,6 +211,9 @@ function _laterIso(a, b) {
  *   OMITTED the value is read from Session Config (`reconcile.min-insight-chars`,
  *   default 24) rather than left inert, so the nudge and `/reconcile` count the SAME
  *   population — see `_resolveReconcileSettings`.
+ * @param {number} [opts.confidenceFloor] — narrows the backlog count. When OMITTED the
+ *   value is read from Session Config (`reconcile.confidence-floor`, default 0.5), the
+ *   same delivery gate `/reconcile` applies to its proposals.
  * @param {object} [opts.config] — optional already-parsed Session Config (DI seam).
  * @returns {Promise<{
  *   totalLearnings: number,
@@ -268,10 +278,18 @@ export async function computeReconcileNudge(opts = {}) {
   // truth, so the nudge can only fire on work /reconcile is able to clear.
   // That includes the placeholder-insight gate: when the caller did not supply
   // `minInsightChars`, read it from Session Config BEFORE counting, or the
-  // banner counts learnings `/reconcile` would reject.
+  // banner counts learnings `/reconcile` would reject. The confidence floor is
+  // the same kind of gate, on delivery rather than eligibility (#1991).
+  const settings =
+    Number.isFinite(opts.minInsightChars) && Number.isFinite(opts.confidenceFloor)
+      ? null
+      : await _resolveReconcileSettings(repoRoot, opts.config);
   const minInsightChars = Number.isFinite(opts.minInsightChars)
     ? Number(opts.minInsightChars)
-    : (await _resolveReconcileSettings(repoRoot, opts.config)).minInsightChars;
+    : settings.minInsightChars;
+  const confidenceFloor = Number.isFinite(opts.confidenceFloor)
+    ? Number(opts.confidenceFloor)
+    : settings.confidenceFloor;
 
   // The candidate store is read ONCE, BEFORE the backlog count — the count needs
   // the same records for its sidecar-dedupe half, and reading them here lets it
@@ -318,6 +336,7 @@ export async function computeReconcileNudge(opts = {}) {
     ledgerKeys: ledger.terminalKeys,
     now: opts.now,
     minInsightChars,
+    confidenceFloor,
   });
 
   // The later of the sidecar's and the ledger's run evidence: a fresh worktree
@@ -333,26 +352,32 @@ export async function computeReconcileNudge(opts = {}) {
   const delta = entries.length - lastRunCandidateCount;
   const quarantined = typeof skippedCandidates === 'number' ? skippedCandidates : 0;
 
+  // #1991: with an empty backlog /reconcile can propose nothing, so (a) and (b)
+  // have no run worth recommending. A backlog of 1 or 2 keeps them.
+  const hasBacklog = backlogCount > 0;
+
   const reasons = [];
   // (a) — plenty of active learnings and no DATEABLE run on record. When the
   // store holds quarantined lines the honest claim is "undeterminable", not
-  // "never": the evidence exists, it is merely unreadable. /reconcile is still
-  // the right action either way — mergeCandidates rewrites the store in full and
-  // purges the bad lines — so the nudge fires in both cases, only the wording
-  // differs.
-  if (active.length >= NUDGE_MIN_LEARNINGS && lastRunAt === null) {
+  // "never": the evidence exists, it is merely unreadable. Those lines also keep
+  // (a) alive on an empty backlog: mergeCandidates rewrites the store in full and
+  // purges them, so that run has value with nothing to propose. Without them an
+  // empty backlog silences (a).
+  if (active.length >= NUDGE_MIN_LEARNINGS && lastRunAt === null && (hasBacklog || quarantined > 0)) {
     reasons.push(
       quarantined > 0
         ? `${active.length} active learnings; last reconcile run undeterminable — ${quarantined} unreadable record(s) in the candidate store`
         : `${active.length} active learnings with no reconcile run on record`,
     );
   }
-  // (b) — a determinable prior run exists, and the corpus has grown meaningfully since.
-  if (lastRunAt !== null && delta > NUDGE_MIN_DELTA) {
+  // (b) — a determinable prior run exists, the corpus has grown meaningfully since,
+  // and the backlog gives /reconcile something to propose.
+  if (hasBacklog && lastRunAt !== null && delta > NUDGE_MIN_DELTA) {
     reasons.push(`${delta} new learnings since the last reconcile run`);
   }
-  // (c) — enough NOT-YET-MATERIALIZED rule-eligible learnings to be worth a
-  // batch, independent of confidence. HR-106: the reason names the number judged.
+  // (c) — enough NOT-YET-MATERIALIZED rule-eligible learnings at or above the
+  // confidence floor to be worth a batch: a backlog under the floor gives
+  // /reconcile nothing to deliver (#1991). HR-106: the reason names the number judged.
   if (backlogCount >= NUDGE_MIN_ELIGIBLE) {
     reasons.push(`${backlogCount} rule-eligible learnings awaiting a rule`);
   }
@@ -381,8 +406,9 @@ export async function computeReconcileNudge(opts = {}) {
  * Check reconcile-nudge readiness and produce a session-start banner.
  *
  * Silent (`null`) when: no learnings corpus (missing/empty/all-malformed),
- * zero active learnings, or none of the three nudge thresholds are met.
- * Never throws.
+ * zero active learnings, none of the three nudge thresholds are met, or the
+ * backlog after the confidence floor is empty and the candidate store holds no
+ * quarantined line for a run to purge (#1991). Never throws.
  *
  * @param {{repoRoot: string, config?: object, now?: Date|number}} opts
  *   - `repoRoot`: REQUIRED absolute path to the repo root.
@@ -396,16 +422,16 @@ export async function checkReconcileNudge(opts = {}) {
     const { repoRoot, config, now } = opts;
     if (!repoRoot || typeof repoRoot !== 'string') return null;
 
-    // ONE config read for both settings, BEFORE the backlog is counted — the
-    // `min-insight-chars` gate must reach `countReconcileBacklog`, and reading the
-    // config afterwards (as this did before) left it inert.
+    // ONE config read for all settings, BEFORE the backlog is counted — the
+    // `min-insight-chars` and `confidence-floor` gates must reach
+    // `countReconcileBacklog`, and reading the config afterwards (as this did
+    // before) left the former inert.
     let reconcileEnabled = false;
     let minInsightChars;
+    let confidenceFloor;
     try {
-      ({ enabled: reconcileEnabled, minInsightChars } = await _resolveReconcileSettings(
-        repoRoot,
-        config,
-      ));
+      ({ enabled: reconcileEnabled, minInsightChars, confidenceFloor } =
+        await _resolveReconcileSettings(repoRoot, config));
     } catch {
       // Unreachable in practice (_resolveReconcileSettings never throws) — keep the
       // conservative default and let computeReconcileNudge resolve the gate itself.
@@ -414,7 +440,7 @@ export async function checkReconcileNudge(opts = {}) {
 
     let computed;
     try {
-      computed = await computeReconcileNudge({ repoRoot, now, minInsightChars });
+      computed = await computeReconcileNudge({ repoRoot, now, minInsightChars, confidenceFloor });
     } catch {
       return null;
     }

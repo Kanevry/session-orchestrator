@@ -57,6 +57,13 @@ weaker evidence than a git or filesystem signal, and prefer passing the native
 raw id whenever the caller has one. Closing this needs a per-process ownership
 proof; see #1091.
 
+A quiet result can also be a partial read: when the worktree listing lost its
+race or the registry directory could not be listed, `findPeers` still returns
+its (fail-open) list but adds `discoveryGap` (`worktrees-unlisted`,
+`registry-unread` or `discovery-failed`); the key is absent after a complete
+read (#1946). An empty `peers` with a `discoveryGap` is "not measured", never
+"no peers".
+
 ## Preamble Algorithm
 
 Execute these steps in order. Any classification determines outcome.
@@ -207,6 +214,17 @@ if (peer !== null) {
   // ... AUQ logic per parallel-aware-auq.md ...
 }
 ```
+
+## Native Liveness Overlay (#1052 A3b)
+
+The hook and the model each know half of a peer (cross-session-messaging PRD of 2026-08-16, Epic #1048, § 2 A3): the registry knows *what it does* (repo, branch, mode, wave), the native `ListAgents` tool knows *whether it is alive* (`busy`/`idle`) and whether `SendMessage` reaches it. A Node hook cannot call a model-side tool, so the SessionStart banner stops at the registry view (`hooks/on-session-start.mjs`, "Liveness (busy/idle) is model-side"). The coordinator adds the other half here. It is a display layer: no new state, nothing is written.
+
+1. **Call `ListAgents` once** after the preamble outcome is known (Claude Code only).
+2. **Join on the session id, never on a name or a directory.** A `ListAgents` row carries a peer `name` (`<repo>-<suffix>`), nothing else. The Claude session registry maps it: `jq -c '{sessionId, name}' ~/.claude/sessions/*.json`, and that `sessionId` is the host registry's `session_id` (the file `sessions/active/<session_id>.json` that feeds the banner; the banner prints its first eight characters as `#xxxxxxxx` for peers in this working copy). Join native row → `name` → `sessionId` → registry entry. Do not join on `cwd`: two peers in the same working copy share it. Do not join on the name prefix: names are reassigned (measured 2026-08-19, Epic #1048). Skip your own `sessionId`.
+3. **Render against the registry entries, not the banner text** (the banner caps its lists with "+N more"). Per registry peer, keep the banner's own label (`<semantic>#<id8>:<branch>:<wave>` in this working copy, `<repo>:<branch>` for other repos) and append `— <busy|idle> · per SendMessage erreichbar als <name>`. A registry peer without a native row: `— kein nativer Eintrag (nicht erreichbar oder anderer Harness)`. A native row without a registry entry: `nicht in der Host-Registry: <name> (<busy|idle>; anderer Host oder Cloud möglich)` — `ListAgents` also lists sessions on other machines and in the cloud.
+4. **Fall back to the hook's view** when `ListAgents` is absent (Codex CLI, Cursor, non-Anthropic providers, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`/`DISABLE_TELEMETRY`/`DO_NOT_TRACK`/`DISABLE_GROWTHBOOK`, `.claude/rules/cross-session-messaging.md` § CSM-005): print `Liveness: nicht verfügbar auf diesem Harness` once, never "no peers".
+
+The overlay never gates anything: `busy`/`idle` is a snapshot, and neither state is consent or a lock (CSM-004, PSA scope axes). Exclusivity, promotion and Phase 1.2.1 still decide on the registry and STATE.md surfaces above.
 
 ## Cross-References
 

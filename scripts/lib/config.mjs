@@ -60,6 +60,8 @@ import { _parseColdStart } from './config/cold-start.mjs';
 import { _parseAutoDream } from './config/auto-dream.mjs';
 import { _parseStateMdLock } from './config/state-md-lock.mjs';
 import { _parseHandoverGate } from './config/handover-gate.mjs';
+import { _parseContextThreshold } from './config/context-threshold.mjs';
+import { _parseAgentCaps } from './config/agent-caps.mjs';
 import { _parseIssueBudget } from './config/issue-budget.mjs';
 import { _parseHealthEndpoints, _parseEcosystemHealthBlockEnabled } from './config/health-endpoints.mjs';
 import { _parseBrokenWindow } from './config/broken-window.mjs';
@@ -459,6 +461,14 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // Handover-Alignment-Gate — Epic #724)
   const handoverGate = _parseHandoverGate(mdContent);
 
+  // context-threshold: per-session context hints at prepare-k / handover-k
+  // (#1960). Consumer: hooks/post-tool-context-threshold.mjs (reads it inline).
+  const contextThreshold = _parseContextThreshold(mdContent);
+
+  // agent-caps: committed raw values, so the key counts as known inside the
+  // block. The hook resolves env > owner.yaml > these > default itself.
+  const agentCaps = _parseAgentCaps(mdContent);
+
   // issue-budget: per-session issue-creation cap (QUANTITY gate). Distinct from
   // discovery-severity-threshold / discovery-confidence-threshold above, which
   // are per-finding QUALITY filters and cannot bound creation volume. Enforced
@@ -543,9 +553,9 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   const customPhases = _parseCustomPhases(mdContent);
 
   // evolve.extra-sources: opt-in EXTRA learning sources for /evolve — sidecar JSON
-  // files produced out-of-band by a domain measurement (e.g. an eval-learn regression
-  // report). /evolve READS them and emits domain-regression candidates; it never runs
-  // the measurement (read-only contract). Returned as 'evolve.extra-sources' (dotted,
+  // files produced out-of-band by a domain measurement or owner-decision export.
+  // /evolve READS them and emits domain-regression or owner-preference candidates;
+  // it never runs the measurement or export (read-only contract). Returned as 'evolve.extra-sources' (dotted,
   // mirroring the cross-repo.projects precedent). Defaults to []. (#638)
   const evolveExtraSources = _parseEvolve(mdContent);
 
@@ -634,6 +644,8 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'auto-dream': autoDream,
     'state-md-lock': stateMdLock,
     'handover-gate': handoverGate,
+    'context-threshold': contextThreshold,
+    'agent-caps': agentCaps,
     'issue-budget': issueBudget,
     'broken-window-budget': brokenWindow,
     'slopcheck': slopcheck,

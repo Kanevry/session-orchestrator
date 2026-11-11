@@ -51,7 +51,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 import { atomicWriteWithBackup } from '../io.mjs';
 import { expandTilde } from '../common.mjs';

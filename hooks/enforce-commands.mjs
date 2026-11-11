@@ -37,38 +37,11 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 // transitive repo graph stays late-bound inside bootstrap().
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
-/**
- * sha256(command), auf 16 Hex-Zeichen gekuerzt.
- *
- * WORTGLEICH zu `hashCommand()` in `hooks/pre-bash-destructive-guard.mjs:245`
- * (das seinerseits `loop-guard.mjs` hashArgs() spiegelt). Bewusst dupliziert
- * statt geteilt: ein Hook darf beim Start nicht an einem weiteren Modul
- * haengen, das fehlen kann — die drei Zeilen sind billiger als ein
- * Ladefehler auf dem PreToolUse-Pfad.
- *
- * WARUM ES DEN HELFER HIER BRAUCHT (2026-09-19, EventDrop #1140):
- * Die `foreign_session_ignored`-Nutzlast dieses Hooks trug bis heute das
- * ROHE Kommando. Gemessen in EventDrop.at: 3.816 Zeilen in der getrackten
- * `.orchestrator/metrics/events.jsonl` mit rohem `command`, darin 24
- * distinkte ECHTE Produktions-Share-Codes aus 17 fremden Kundenkonten und
- * ein protokollierter `select access_pin_hash`. Bei 23 dieser Events ist
- * der Share-Code die vollstaendige Capability — `/event/<code>` oeffnet das
- * Album ohne Anmeldung. Das Journal ist getrackt und geht bei jedem Klon mit.
- * Der Geschwisterhook `pre-bash-destructive-guard.mjs` machte es von Anfang
- * an richtig und sagt es im eigenen Kopf: „Payload never includes the raw
- * command — only a truncated sha256 command_hash."
- *
- * Der Hash haelt das Ereignis ZAEHLBAR und GRUPPIERBAR — genau die
- * Eigenschaft, fuer die es laut `docs/scope-collision-guard.md` existiert.
- * Das rohe Kommando wurde von keinem Konsumenten gelesen.
- *
- * @param {string} command
- * @returns {string}
- */
-function hashCommand(command) {
-  return crypto.createHash('sha256').update(command).digest('hex').slice(0, 16);
-}
-import crypto from 'node:crypto';
+// Static for the same reason: `command-hash.mjs` imports node builtins only.
+// `command_hash` is a keyed host-local HMAC since #1880 (it was an unsalted
+// sha256 prefix, reversible by dictionary); the foreign_session_ignored
+// payload carries it instead of the raw command since 2026-09-19 (#1140).
+import { hashCommand } from './_lib/command-hash.mjs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -239,8 +212,11 @@ function flushNotices(notices) {
 }
 
 // Fallback safety list — applied when scope.blockedCommands is empty.
-// Keep in sync with hooks/enforce-commands.sh; v3 additions (#138, SECURITY-REQ-07)
-// cover the short-form git push and the lowercase SQL variant the Bash version missed.
+// v3 additions (#138, SECURITY-REQ-07) cover the short-form git push and the
+// lowercase SQL variant the former Bash version missed.
+// 'git checkout --' (#1925 point 4) is the live policy pattern: the matcher reads it as
+// an argv spec and denies whole-tree AND per-file discard plus the `git restore` forms
+// (#1917). The former 'git checkout -- .' was a literal and covered only the first.
 const FALLBACK_BLOCKED = [
   'rm -rf',
   'git push --force',
@@ -248,7 +224,7 @@ const FALLBACK_BLOCKED = [
   'git reset --hard',
   'DROP TABLE',
   'drop table',
-  'git checkout -- .',
+  'git checkout --',
 ];
 
 async function main() {

@@ -12,6 +12,8 @@ markers match. An explicit owner-supplied ID takes precedence: validate it with
 but cannot invent a catalog ID. When `selected` is null, present the returned
 `archetypes` in `order`, showing their runtime, package manager, UI/API and deploy
 metadata. Ask for the needed selection; paginate if the UI limits option count.
+Under `--no-interview`: insufficient evidence aborts with a one-line error naming
+the missing archetype selection (contract: SKILL.md § Invocation flag table).
 Do not substitute a public default for missing evidence or an invalid choice.
 
 Once selected, set `CONFIRMED_ARCHETYPE` and refresh the contract:

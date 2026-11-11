@@ -17,13 +17,13 @@
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Session Orchestrator: Plan, Go, Close with a robotics illustration.">
+<meta property="og:image:alt" content="Session Orchestrator: From your task to checked work. The commands /session, /go and /close beside an illustration of an agent workshop under human direction.">
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Commands: which one to type, and what happens next">
 <meta name="twitter:description" content="All 31 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
-<meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close with a robotics illustration.">
+<meta name="twitter:image:alt" content="Session Orchestrator: From your task to checked work. The commands /session, /go and /close beside an illustration of an agent workshop under human direction.">
 <link rel="icon" href="/favicon.svg">
 <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
 
@@ -83,15 +83,15 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261029">
-<link rel="stylesheet" href="/assets/commands.css?v=20261029">
+<link rel="stylesheet" href="/assets/site.css?v=20261107">
+<link rel="stylesheet" href="/assets/commands.css?v=20261109">
 </head>
 <body class="guide-page commands-page">
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.17.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.18.0</span></span></a>
     <nav class="nav" aria-label="Main">
       <a href="/#how">How it works</a>
       <a href="/commands" aria-current="page">Commands</a>
@@ -138,7 +138,7 @@
         <li><a class="tile" href="#build"><span class="tile-title">Build</span><span class="tile-hint">/session, /go, /close</span></a></li>
         <li><a class="tile" href="#maintain"><span class="tile-title">Maintain</span><span class="tile-hint">/session housekeeping</span></a></li>
         <li><a class="tile" href="#investigate"><span class="tile-title">Investigate</span><span class="tile-hint">/discovery, /debug</span></a></li>
-        <li><a class="tile" href="#test"><span class="tile-title">Test</span><span class="tile-hint">/test, /ux-grill</span></a></li>
+        <li><a class="tile" href="#testing"><span class="tile-title">Test</span><span class="tile-hint">/test, /ux-grill</span></a></li>
         <li><a class="tile" href="#look-back"><span class="tile-title">Look back</span><span class="tile-hint">/eval, /plan retro</span></a></li>
         <li><a class="tile" href="#learn"><span class="tile-title">Learn</span><span class="tile-hint">/evolve, /reconcile</span></a></li>
         <li><a class="tile" href="#many-repos"><span class="tile-title">Run many repos</span><span class="tile-hint">/portfolio, /dispatcher</span></a></li>
@@ -161,7 +161,7 @@
       <table class="kv typing">
         <caption class="sr">How each coding tool runs a command</caption>
         <tbody>
-          <tr><th scope="row">Claude Code</th><td>Type <code>/name</code> in the chat. In headless <code>claude -p</code>, use the long form, for example <code>/session-orchestrator:session deep</code>.</td></tr>
+          <tr><th scope="row">Claude Code</th><td>Type <code>/name</code> in the chat. In headless <code>claude -p</code>, only <code>/session</code> and <code>/plan</code> need the long form, for example <code>/session-orchestrator:session deep</code>.</td></tr>
           <tr><th scope="row">Codex CLI</th><td>Pick the skill in the Codex chat: <code>$session-orchestrator:name</code>. It is not a shell command. Plain <code>/go</code> and <code>/close</code> do not work there, and Codex never starts <code>go</code> or <code>close</code> on its own.</td></tr>
           <tr><th scope="row">Cursor IDE</th><td>Type <code>/name</code>. Agents run one after another.</td></tr>
           <tr><th scope="row">Pi</th><td>Type <code>/name</code>. Each command is a prompt template.</td></tr>
@@ -464,7 +464,7 @@
     </div>
   </section>
 
-  <section class="cmd-group" id="test" aria-labelledby="test-h">
+  <section class="cmd-group" id="testing" aria-labelledby="test-h">
     <h2 id="test-h">Test</h2>
     <p class="group-lede">Check that the app works and that your tests are worth keeping.</p>
     <div class="cmd-grid">
@@ -704,7 +704,7 @@
 <!-- Vercel Web Analytics, same-origin; see the comment on /guide and /datenschutz Punkt 04. -->
 <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
 <script src="/_vercel/insights/script.js" defer></script>
-<script src="/assets/commands.js?v=20261029" defer></script>
+<script src="/assets/commands.js?v=20261109" defer></script>
 <script src="/assets/ui.js?v=20260910" defer></script>
 </body>
 </html>

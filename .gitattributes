@@ -7,6 +7,12 @@
 *.js        text eol=lf
 *.mjs       text eol=lf
 hooks/*.sh  text eol=lf
+# Extensionless shell scripts: a CRLF checkout (Windows core.autocrlf) breaks sh (#1743)
+.husky/**   text eol=lf
+tests/fixtures/bin/node-script-launcher text eol=lf
+tests/fixtures/claude       text eol=lf
+tests/fixtures/glab         text eol=lf
+tests/fixtures/tmux/tmux    text eol=lf
 *           text=auto
 
 # Test fixtures intentionally preserve their line endings

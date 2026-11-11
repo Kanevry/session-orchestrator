@@ -68,7 +68,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { atomicWriteWithBackup, envelopeToError } from './io.mjs';
+import { atomicWriteWithBackup, envelopeToError, renameSyncWithRetry } from './io.mjs';
 import { validateSession as defaultValidateSession } from './session-schema/validator.mjs';
 import { serializeSessionLineChecked as defaultSerialize } from './session-schema.mjs';
 import { checkSessionsIntegrity as defaultCheckIntegrity } from './sessions-integrity-banner.mjs';
@@ -108,6 +108,7 @@ const INCOMPLETE_FIELD_ORDER = Object.freeze([
   'agent_summary.spiral',
   'total_agents',
   'total_files_changed',
+  'outcome',
 ]);
 // `timestamp_precision` (#1442) and `timestamp_offset` (#1525) deliberately add
 // NOTHING to the list above: a truncated or UTC-converted timestamp is still a
@@ -466,6 +467,21 @@ export function repairRecord(record) {
       out.total_files_changed = 0;
       incomplete.add('total_files_changed');
     }
+  }
+
+  // -- outcome (#2020) --------------------------------------------------------
+  // Legacy records (April 2026) wrote `outcome` as a free-text STRING; the
+  // schema (#1824) accepts only null or {statement, observable, source,
+  // observed}. A string carries no observable and no source, and inventing
+  // either would fabricate a claim — so the field becomes `null` ("no outcome
+  // named") and the string survives verbatim in `_outcome_raw`. Only strings:
+  // a half-filled OBJECT is a different shape with no defensible default and
+  // stays in the error bucket.
+  if (typeof out.outcome === 'string') {
+    preserveRaw(out, 'outcome', record.outcome, rescued);
+    out.outcome = null;
+    defects.push('outcome_string');
+    incomplete.add('outcome');
   }
 
   // -- timestamp precision (#1442) -------------------------------------------
@@ -948,7 +964,7 @@ export function repairLedger({ file, repoRoot = null, apply = false, backup = tr
       throw err;
     }
     renamedBytes = readFileSync(from);
-    renameSync(from, to);
+    renameSync(from, to); // direct-rename:ok renameSync seam of atomicWriteWithBackup, which wraps this call in its win32 retry
   };
   const res = atomicWriteWithBackup(file, text, {
     tmpPrefix: `.${path.basename(file)}.tmp`,
@@ -1033,7 +1049,7 @@ function restoreOriginal({ file, backupPath, raw, renamed, fs: io }) {
         io.unlinkSync(tmp);
         continue;
       }
-      io.renameSync(tmp, file);
+      renameSyncWithRetry(tmp, file, { fs: { renameSync: io.renameSync } });
       return tail.length;
     } catch (err) {
       try { io.unlinkSync(tmp); } catch { /* already gone */ }

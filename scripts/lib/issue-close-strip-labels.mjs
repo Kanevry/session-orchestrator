@@ -102,22 +102,34 @@ function viewIssueJson({ issueId, vcs, spec, ghFields, execFile }) {
 }
 
 /**
- * Fetch the label names currently applied to an issue.
+ * Read an issue view: the label names currently applied, plus its state.
  *
- * GitHub shape: `{ labels: [{ name }] }`; GitLab shape: `{ labels: ["status:ready", ...] }`.
+ * GitHub shape: `{ labels: [{ name }], state: "CLOSED" }`; GitLab shape:
+ * `{ labels: ["status:ready", ...], state: "closed" }`. `state` is lower-cased
+ * (GitLab `opened`/`closed`, GitHub `open`/`closed`), `null` when absent.
  *
- * @param {{ issueId: string, vcs: 'gitlab' | 'github', spec?: string, execFile?: typeof execFileSync }} opts
- * @returns {{ ok: boolean, labels: string[], stderr: string }}
+ * `withState` asks GitHub for `state` too (GitLab's view always carries it),
+ * so callers that do not need the state keep the narrower `--json labels`.
+ *
+ * @param {{ issueId: string, vcs: 'gitlab' | 'github', spec?: string, withState?: boolean, execFile?: typeof execFileSync }} opts
+ * @returns {{ ok: boolean, labels: string[], state: string | null, stderr: string }}
  */
-function fetchLabels({ issueId, vcs, spec, execFile }) {
-  const { ok, data, stderr } = viewIssueJson({ issueId, vcs, spec, ghFields: 'labels', execFile });
-  if (!ok) return { ok: false, labels: [], stderr };
+function readIssueView({ issueId, vcs, spec, withState = false, execFile }) {
+  const { ok, data, stderr } = viewIssueJson({
+    issueId,
+    vcs,
+    spec,
+    ghFields: withState ? 'labels,state' : 'labels',
+    execFile,
+  });
+  if (!ok) return { ok: false, labels: [], state: null, stderr };
   const toName =
     vcs === 'github'
       ? (l) => (typeof l?.name === 'string' ? l.name : String(l))
       : (l) => (typeof l === 'string' ? l : String(l));
   const labels = Array.isArray(data?.labels) ? data.labels.map(toName).filter(Boolean) : [];
-  return { ok: true, labels, stderr: '' };
+  const state = typeof data?.state === 'string' ? data.state.toLowerCase() : null;
+  return { ok: true, labels, state, stderr: '' };
 }
 
 /**
@@ -132,14 +144,18 @@ function fetchLabels({ issueId, vcs, spec, execFile }) {
  *   vcs?: 'gitlab' | 'github',
  *   repoRoot?: string,
  *   resolveRepoSpecFn?: (opts: { repoRoot: string, vcs: 'gitlab' | 'github' }) => string | undefined,
- *   execFile?: typeof execFileSync
+ *   execFile?: typeof execFileSync,
+ *   requireState?: 'closed'
  * }} opts
+ *   `requireState` (#1877): when set, the fresh read must report that state or
+ *   the issue is skipped (`skipped: 'state <x>'`, no update) — a sweep that
+ *   listed an issue as closed must not strip it after someone reopened it.
  *   `repoRoot` defaults to `process.cwd()`. `resolveRepoSpecFn` is the
  *   injectable seam for the `-R`/`--repo` host-pinning resolution (#839) —
  *   defaults to the real `resolveRepoSpec` (shells out to `git remote
  *   get-url`); tests inject a stub instead of shelling out. `execFile`
  *   (default `execFileSync`) runs every glab/gh call.
- * @returns {Promise<{ stripped: string[], error?: string }>}
+ * @returns {Promise<{ stripped: string[], skipped?: string, error?: string }>}
  */
 export async function stripStatusLabels({
   issueId,
@@ -147,6 +163,7 @@ export async function stripStatusLabels({
   repoRoot = process.cwd(),
   resolveRepoSpecFn = resolveRepoSpec,
   execFile = execFileSync,
+  requireState,
 } = {}) {
   try {
     const id = String(issueId ?? '').trim();
@@ -161,9 +178,18 @@ export async function stripStatusLabels({
     const spec = resolveRepoSpecFn({ repoRoot, vcs: vcsResolved });
 
     // Step 1: fetch current labels.
-    const { ok, labels, stderr } = fetchLabels({ issueId: id, vcs: vcsResolved, spec, execFile });
+    const { ok, labels, state, stderr } = readIssueView({
+      issueId: id,
+      vcs: vcsResolved,
+      spec,
+      withState: Boolean(requireState),
+      execFile,
+    });
     if (!ok) {
       return { stripped: [], error: `failed to fetch labels: ${stderr}` };
+    }
+    if (requireState && state !== requireState) {
+      return { stripped: [], skipped: `state ${state ?? 'unknown'}` };
     }
 
     // Step 2: filter to status:* only.
@@ -340,7 +366,16 @@ function listAllJson({ cli, args, spec, execFile }) {
     items.push(...data);
     if (data.length < PAGE_SIZE) return { ok: true, items, stderr: '' };
   }
-  if (cli === 'gh') return { ok: true, items, stderr: '' };
+  if (cli === 'gh') {
+    // gh has no page flag: a full `--limit` page may be a truncated listing.
+    if (items.length >= PAGE_SIZE * MAX_PAGES)
+      return {
+        ok: false,
+        items,
+        stderr: `gh list hit --limit ${PAGE_SIZE * MAX_PAGES} — refusing a possibly truncated count`,
+      };
+    return { ok: true, items, stderr: '' };
+  }
   return { ok: false, items, stderr: `more than ${MAX_PAGES} pages — refusing a partial count` };
 }
 
@@ -417,7 +452,10 @@ function listClosedByStatusLabel({ vcs, spec, execFile }) {
  * }} opts
  * @returns {Promise<{ ok: boolean, mode: 'dry-run' | 'apply',
  *   before: Record<string, { count: number, ids: number[] }>, issues: number,
- *   stripped?: number, after?: Record<string, number>, errors: string[] }>}
+ *   stripped?: number, skipped?: string[], after?: Record<string, number>,
+ *   errors: string[] }>}
+ *   `skipped` (apply only) lists `"#<id>: state <x>"` for issues whose fresh
+ *   read was not `closed` — left untouched and not counted in `stripped`.
  */
 export async function stripClosedStatusLabels({
   apply = false,
@@ -441,14 +479,19 @@ export async function stripClosedStatusLabels({
   if (!apply) return { ok: true, mode, before, issues: ids.length, errors };
 
   let stripped = 0;
+  // Issues the fresh read did not confirm closed (reopened, or state unknown):
+  // reported, never stripped, so `issues` = stripped + skipped + untouched.
+  const skipped = [];
   for (const id of ids) {
     const res = await stripStatusLabels({
       issueId: id,
       vcs: vcsResolved,
       resolveRepoSpecFn: () => spec,
       execFile,
+      requireState: 'closed',
     });
     if (res.error) errors.push(`#${id}: ${res.error}`);
+    else if (res.skipped) skipped.push(`#${id}: ${res.skipped}`);
     else if (res.stripped.length > 0) stripped++;
   }
 
@@ -457,7 +500,7 @@ export async function stripClosedStatusLabels({
   const after = {};
   for (const [label, left] of Object.entries(reread.byLabel)) after[label] = left.length;
   const ok = reread.ok && errors.length === 0 && Object.values(after).every((n) => n === 0);
-  return { ok, mode, before, issues: ids.length, stripped, after, errors };
+  return { ok, mode, before, issues: ids.length, stripped, skipped, after, errors };
 }
 
 const USAGE =

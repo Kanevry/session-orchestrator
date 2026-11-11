@@ -7,7 +7,9 @@
  * profile has no login. Every release makes that record stale again, so this is
  * ONE maintainer command, rerun after each release: install the plugin into an
  * EMPTY profile, check runtime readiness (#1848), then drive bootstrap and a
- * feature session through a model endpoint given only by environment variables.
+ * feature session through a model endpoint given only by environment variables,
+ * and check readiness once more right after the bootstrap call, the first model
+ * call, before the session step runs (#1878).
  * It is a measurement tool for a maintainer, not a CI job.
  *
  * PROFILE ISOLATION: everything lives under one `mkdtemp` root (`home/`,
@@ -77,6 +79,8 @@ Options:
   --task <text>      feature task for the session step
                      (default "Add a CONTRIBUTING.md that explains how to run the tests")
   --repair           if the install is not runtime-ready, run runtime-readiness --repair
+                     (before the model steps, and again after the bootstrap call,
+                     the first model call, before the session step, #1878)
   --no-model         skip the model steps even when credentials are set
   --keep             keep the tmp root (default: delete it)
   --json             print the receipt as JSON on stdout
@@ -578,20 +582,31 @@ function installCodexClone(ctx) {
   return true;
 }
 
-function readiness(ctx) {
-  const { env, root, record, opts } = ctx;
+/**
+ * Check runtime readiness of the recorded install and, with --repair, repair
+ * and re-check. `phase` 'after' records the rows as `readiness-after` /
+ * `repair-after` (the re-check after the bootstrap call, #1878).
+ * `ctx.run` replaces the process runner in tests.
+ * @param {object} ctx smoke context
+ * @param {'before'|'after'} [phase]
+ */
+export function readiness(ctx, phase = 'before') {
+  const { env, root, opts } = ctx;
+  const exec = ctx.run ?? run;
+  const suffix = phase === 'after' ? '-after' : '';
+  const record = (id, ...rest) => ctx.record(`${id}${suffix}`, ...rest);
   const cli = path.join(REPO_ROOT, 'scripts', 'runtime-readiness.mjs');
   const target = ctx.plugin?.installPath;
   if (!target) { record('readiness', 'failed', null, 'no install path recorded'); return; }
   if (!existsSync(cli)) { record('readiness', 'failed', null, 'runtime-readiness.mjs missing in this checkout'); return; }
-  const r = run(process.execPath, [cli, '--root', target, '--json'], { cwd: root, env, timeoutMs: INSTALL_TIMEOUT_MS });
+  const r = exec(process.execPath, [cli, '--root', target, '--json'], { cwd: root, env, timeoutMs: INSTALL_TIMEOUT_MS });
   const res = parseJson(r.stdout);
   if (!res || (r.rc !== 0 && r.rc !== 3)) { record('readiness', 'failed', r, failDetail(r)); return; }
   const extra = { ready: res.ready === true, missing: res.missing?.length ?? null, declared: res.declared?.length ?? null };
   record('readiness', extra.ready ? 'ok' : 'failed', r,
     extra.ready ? `ready (${extra.declared} declared)` : `not ready: missing ${extra.missing}/${extra.declared}`, extra);
   if (extra.ready || !opts.repair) return;
-  const rr = run(process.execPath, [cli, '--root', target, '--repair', '--json'], { cwd: root, env, timeoutMs: INSTALL_TIMEOUT_MS });
+  const rr = exec(process.execPath, [cli, '--root', target, '--repair', '--json'], { cwd: root, env, timeoutMs: INSTALL_TIMEOUT_MS });
   const rep = parseJson(rr.stdout);
   if (!rep) { record('repair', 'failed', rr, failDetail(rr)); return; }
   const after = { ready: rep.ready === true, missing: rep.missing?.length ?? null };
@@ -599,6 +614,29 @@ function readiness(ctx) {
     ? { ready: rep.repaired.before.ready === true, missing: rep.repaired.before.missing?.length ?? null }
     : { ready: extra.ready, missing: extra.missing };
   record('repair', after.ready ? 'ok' : 'failed', rr, `missing ${before.missing} -> ${after.missing}`, { before, after });
+}
+
+/**
+ * Run the model steps and check readiness again right after the bootstrap
+ * call, before the session step (#1878). Measured
+ * 2026-11-02 (codex-cli 0.160.1, plugin 5.17.0, `--ref main`): the first
+ * `codex exec` replaced the version cache from a fresh marketplace clone
+ * without `node_modules`, so a repair made before it was lost. A repair made
+ * after it survived the next exec. With the model steps skipped no exec ran,
+ * and the re-check is recorded as skipped, never as ready.
+ * The re-check runs for every harness on purpose: Codex is where the rebuild
+ * was measured; on Claude Code it is a control measurement.
+ * @param {object} ctx smoke context
+ * @param {string|null} skipReason why the model steps are skipped, or null
+ * @param {{model?: (ctx:object, skipReason:string|null, hooks:{afterFirstCall?:()=>void})=>void}} [deps] test seam
+ */
+export function modelPhase(ctx, skipReason, { model = modelSteps } = {}) {
+  if (skipReason) {
+    model(ctx, skipReason, {});
+    ctx.record('readiness-after', 'skipped', null, `${skipReason}: no model call ran, nothing to re-check`);
+    return;
+  }
+  model(ctx, skipReason, { afterFirstCall: () => readiness(ctx, 'after') });
 }
 
 function scratch(ctx) {
@@ -667,9 +705,9 @@ export function projectChanges(porcelain) {
     .filter((p) => p && !STATE_PATH_RE.test(p));
 }
 
-function gitInWork(ctx, args) {
+function gitInWork(ctx, args, cwd = ctx.work) {
   return run('git', ['-c', 'user.name=smoke', '-c', 'user.email=smoke@example.org', ...args],
-    { cwd: ctx.work, env: ctx.env, timeoutMs: SHORT_TIMEOUT_MS });
+    { cwd, env: ctx.env, timeoutMs: SHORT_TIMEOUT_MS });
 }
 
 function verifyBootstrap(work, harness) {
@@ -690,7 +728,11 @@ function verifyBootstrap(work, harness) {
   return problems;
 }
 
-function modelSteps(ctx, skipReason) {
+/**
+ * Bootstrap call, then the session call(s). `afterFirstCall` runs right after
+ * the bootstrap call, before the session step (#1878).
+ */
+function modelSteps(ctx, skipReason, { afterFirstCall } = {}) {
   const { opts, record, work } = ctx;
   const ns = opts.harness === 'claude' ? '/session-orchestrator' : '$session-orchestrator';
   if (skipReason) {
@@ -706,6 +748,16 @@ function modelSteps(ctx, skipReason) {
   if (!b.ok) record('bootstrap', 'failed', b.r, b.r.rc === 0 ? `model reported error: ${tail(b.text, 300)}` : failDetail(b.r), bExtra);
   else if (problems.length) record('bootstrap', 'failed', b.r, problems.join('; '), bExtra);
   else record('bootstrap', 'ok', b.r, 'bootstrap.lock + Session Config present', bExtra);
+  // The first exec may have rebuilt the cache without node_modules (#1878):
+  // re-check (and repair) before the session step runs on it. A throwing
+  // re-check is recorded as a failed row, never allowed to abort the smoke:
+  // the session step then runs on whatever cache the first exec left behind,
+  // and the receipt says so instead of losing the `session` row altogether.
+  try {
+    afterFirstCall?.();
+  } catch (err) {
+    record('readiness-after', 'failed', null, `re-check threw: ${err?.message ?? String(err)}`);
+  }
   // Commit what bootstrap wrote, so the session step's own changes stand alone;
   // its SHA is the baseline — a model that COMMITS its implementation leaves a
   // clean `git status` (Codex review 2026-10-28), so committed changes count too.
@@ -716,7 +768,8 @@ function modelSteps(ctx, skipReason) {
   // operator questions; the smoke answers each with "1" (option 1 is the
   // recommended one by convention) and records what was asked. It never
   // answers past a SEC-008 detector hit: the session then stopped for an
-  // incident, not for a choice (review 2026-10-28).
+  // incident, not for a choice (review 2026-10-28). Nor past a /go offer it
+  // did not recognise as a plan: `1` there is an approval (#1988).
   const needles = ['skills/session-start/', ':session-start', 'commands/session.md'];
   let s = modelCall(ctx, `${ns}:session feature ${opts.task}`);
   let evidence = skillEvidence(s.r.stdout, opts.harness, needles);
@@ -724,8 +777,10 @@ function modelSteps(ctx, skipReason) {
   const answered = [];
   let state = workState(ctx, baseline);
   let hits = secretHits(ctx);
+  let unansweredGo = false;
   while (s.ok && !state.unreadable && !state.changed.length && !hits && !reachedGo(s.text)
     && answered.length < MAX_ANSWERS) {
+    if (neverAnswer(s.text)) { unansweredGo = true; break; }
     answered.push(tail(String(s.text || ''), 200));
     s = modelCall(ctx, '1', { resume: true });
     evidence += skillEvidence(s.r.stdout, opts.harness, needles);
@@ -746,25 +801,54 @@ function modelSteps(ctx, skipReason) {
   else if (state.unreadable) record('session', 'failed', r, `could not read the scratch repo's git state: ${state.unreadable}`, extra);
   else if (state.changed.length) record('session', 'failed', r, `changed project files before a plan was approved: ${state.changed.slice(0, 5).join(', ')}`, extra);
   else if (hits) record('session', 'failed', r, `stopped after ${hits} SEC-008 detector hit(s); not answered further`, extra);
+  else if (unansweredGo) record('session', 'failed', r, 'ends offering /go, a digit to approve or a plan that reachedGo() did not recognise; not answered', extra);
   else if (evidence === 0) record('session', 'failed', r, 'no tool call opened the session-start skill', extra);
   else if (!extra.reachedGo) record('session', 'failed', r, `no plan offering /go after ${answered.length} answered question(s)`, extra);
   else record('session', 'ok', r, `plan offers /go after ${answered.length} answered question(s); ${evidence} skill reads`, extra);
 }
 
-/**
- * Project files the session changed since the post-bootstrap baseline commit:
- * uncommitted (`git status`) plus committed (`git diff baseline..HEAD`). A git
- * command that fails is reported as unreadable — never as "nothing changed".
- * @returns {{ changed: string[], unreadable: string|null }}
- */
-function workState(ctx, baseline) {
-  const st = gitInWork(ctx, ['status', '--porcelain', '--untracked-files=all']);
+/** Project files changed in one checkout (`dir`) since `baseline`; see workState(). */
+function changesIn(ctx, dir, baseline) {
+  const st = gitInWork(ctx, ['status', '--porcelain', '--untracked-files=all'], dir);
   if (st.rc !== 0) return { changed: [], unreadable: `git status ${failDetail(st)}` };
   if (!baseline) return { changed: [], unreadable: 'no baseline commit after bootstrap' };
-  const diff = gitInWork(ctx, ['diff', '--name-only', `${baseline}..HEAD`]);
+  const diff = gitInWork(ctx, ['diff', '--name-only', `${baseline}..HEAD`], dir);
   if (diff.rc !== 0) return { changed: [], unreadable: `git diff ${failDetail(diff)}` };
   const committed = String(diff.stdout || '').split('\n').map((p) => p.trim()).filter((p) => p && !STATE_PATH_RE.test(p));
   return { changed: [...new Set([...projectChanges(st.stdout), ...committed])], unreadable: null };
+}
+
+/**
+ * Project files the session changed since the post-bootstrap baseline commit:
+ * uncommitted (`git status`) plus committed (`git diff baseline..HEAD`), in
+ * the scratch repo AND in every git worktree of it — a session may create one
+ * next to `work/` and implement there (#1988 run 1). Worktree paths are
+ * reported relative to `work/` (`../work-x/CONTRIBUTING.md`). A git command
+ * that fails, or a listed worktree whose directory is gone, is reported as
+ * unreadable — never as "nothing changed". Ceiling: changes outside any git
+ * checkout of this repo (a plain copy elsewhere) stay invisible.
+ * @param {{work:string, env:object}} ctx
+ * @param {string} baseline post-bootstrap commit SHA
+ * @returns {{ changed: string[], unreadable: string|null }}
+ */
+export function workState(ctx, baseline) {
+  const main = changesIn(ctx, ctx.work, baseline);
+  if (main.unreadable) return main;
+  const list = gitInWork(ctx, ['worktree', 'list', '--porcelain']);
+  if (list.rc !== 0) return { changed: main.changed, unreadable: `git worktree list ${failDetail(list)}` };
+  // The first entry is always the main worktree, i.e. work/ itself.
+  const others = String(list.stdout || '').split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice(9)).slice(1);
+  let base = ctx.work;
+  try { base = realpathSync(ctx.work); } catch { /* keep work */ }
+  const changed = [...main.changed];
+  for (const dir of others) {
+    const rel = path.relative(base, dir).split(path.sep).join('/');
+    if (!existsSync(dir)) return { changed, unreadable: `worktree ${rel} is listed but its directory is gone` };
+    const wt = changesIn(ctx, dir, baseline);
+    if (wt.unreadable) return { changed, unreadable: `worktree ${rel}: ${wt.unreadable}` };
+    changed.push(...wt.changed.map((p) => `${rel}/${p}`));
+  }
+  return { changed, unreadable: null };
 }
 
 /** SEC-008 detector hits so far in the scratch repo (0 when no ledger exists yet). */
@@ -799,30 +883,123 @@ function secretHygiene(ctx) {
 /** Answers the smoke gives to one-time questions before it gives up. */
 const MAX_ANSWERS = 3;
 
+/** The execute command on either harness (`$session-orchestrator:go` on Codex). */
+const GO_CMD = String.raw`(?:\/go|\/session-orchestrator:go|\$session-orchestrator:go)(?![\w-])`;
+
+/** A plan printed by session-plan (mission status, wave plan, execution config, a wave heading). */
+const PLAN_MARKER = /mission-status|wave[- ]plan|execution config|^#{2,4} wave\b/im;
+
+/**
+ * True when the answer loop must not answer `text` with `1`: it offers the
+ * execute command or an approval digit (offersGo()), or it carries a plan.
+ * Answering a plan approves it, whatever its last line looks like ("Notes:\n1.
+ * Wave 2 waits", "Option 1: `/go`", "1. Execute the plan now"), so a plan that
+ * reachedGo() did not recognise ends the loop as a failure instead (#1993).
+ * Kept out of offersGo() so reachedGo() still needs its own go-ahead wording.
+ * Ceiling (BV-004): a plan that leaves the session-plan template (no
+ * mission-status, wave plan, execution config or wave heading) and offers
+ * execution without an approval word is still answered; workState() then
+ * fails the run on the changed files. Revisit if a kept run shows one.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function neverAnswer(text) {
+  return offersGo(text) || PLAN_MARKER.test(String(text || ''));
+}
+
+/**
+ * True when the END of the text offers the execute command, whatever the
+ * wording: it names /go and is neither a pending question ("Reply with 1 or 2,
+ * then /go", a trailing "?") nor a negation in the clause that names it ("Do
+ * not run /go yet"). Answering `1` to such a text reads as approval (#1988,
+ * run 1: the model took `1` after "Reply `/go` to begin." as the go-ahead), so
+ * the answer loop never does. Deliberately wider than reachedGo(): no verb and
+ * no plan marker needed. Ceiling: a /go named in the last 600 characters for
+ * another reason ("after /go, I will …") also stops the loop — the step then
+ * fails loudly instead of the smoke sending an approval-like answer.
+ *
+ * Two more hand-overs, both checked before the question test (#1993): a
+ * digit offered for approval ("Reply `1` to confirm", "To approve the plan,
+ * reply 1.", an option line "1. Approve"), and a numbered option that runs
+ * /go ("1. Start with `/go` (Recommended)", the Codex choice format of
+ * skills/session-start/presentation-format.md), because answering that
+ * option's number approves too. A numbered list or "reply with the (choice)
+ * number" otherwise stays a question, also when an option only mentions /go
+ * ("1. Inspect before /go"). When in doubt this errs towards a hand-over: a
+ * loud failure costs one rerun, an answered approval made the model
+ * implement unseen (#1988). Ceiling (BV-004): approval words outside
+ * APPROVE_WORDS ("Reply 1 to go ahead") are not recognised; revisit when a
+ * kept run shows the smoke answering one.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function offersGo(text) {
+  const end = String(text || '').slice(-600);
+  if (offersApprovalDigit(end)) return true;
+  const go = new RegExp(GO_CMD, 'i');
+  if (!go.test(end)) return false;
+  // A negation counts only inside the clause that names the command, so
+  // "Do not change files yet; use /go" stays an offer.
+  const negation = new RegExp(String.raw`\b(?:do not|don't|not yet|noch nicht|nicht)\b[^.;,\n]{0,30}${GO_CMD}`, 'i');
+  const mentionOnly = new RegExp(String.raw`\b(?:before|after|without|instead of|vor|nach|ohne|statt)\b[^\n]{0,15}${GO_CMD}`, 'i');
+  const goOption = end.split('\n').some((line) => /^\s*\d+[.)]\s/.test(line)
+    && go.test(line) && !mentionOnly.test(line) && !negation.test(line));
+  if (goOption) return true;
+  const asks = /\b(?:reply|answer|respond|antworte)\b[^\n]{0,40}\b1\b/i.test(end)
+    || /\breply with the (?:choice )?number\b/i.test(end)
+    || /^\s*\d+[.)]\s/.test(end.trimEnd().split('\n').at(-1))
+    || /\?\s*$/.test(end);
+  return !asks && !negation.test(end);
+}
+
+/** Words that turn an offered digit into an approval (EN and DE stems). */
+const APPROVE_WORDS = String.raw`(?:approv\w*|confirm\w*|accept\w*|proceed\w*|freig\w*|freizugeben|genehmig\w*|bestätig\w*|zustimm\w*)`;
+/**
+ * Stricter words for an option line: "1. Proceed with issue #91" or "1. Accept
+ * the worktree suggestion" pick a scope in a Codex focus question; they do
+ * not approve a plan, and "proceed with the approved plan" describes one
+ * (the one of 23 kept question texts in the so-38 receipts that stopped).
+ * A plan with such options ends via neverAnswer().
+ */
+const OPTION_APPROVE_WORDS = String.raw`(?:approv(?:e|al)\b|confirm\w*|freig\w*|freizugeben|genehmig\w*|bestätig\w*|zustimm\w*)`;
+/** Verbs that offer a digit as the answer. */
+const REPLY_WORDS = String.raw`(?:reply|answer|respond|type|send|antworte\w*|schick\w*|sende\w*|gib|tipp\w*)`;
+
+/**
+ * True when the text offers a digit whose answer is an approval, in either
+ * word order or as a numbered option (#1993 N2). A digit not offered as a
+ * reply ("Should I create 3 files for you to approve later?") is no offer.
+ * @param {string} end
+ * @returns {boolean}
+ */
+function offersApprovalDigit(end) {
+  const clause = String.raw`[^\n.;!?]`;
+  return new RegExp(String.raw`\b${REPLY_WORDS}\b${clause}{0,20}\b\d+\b${clause}{0,40}\b${APPROVE_WORDS}`, 'i').test(end)
+    || new RegExp(String.raw`\b${APPROVE_WORDS}${clause}{0,40}\b${REPLY_WORDS}\b${clause}{0,20}\b\d+\b`, 'i').test(end)
+    || new RegExp(String.raw`^\s*\d+[.)]\s+[^\n]{0,40}\b${OPTION_APPROVE_WORDS}`, 'im').test(end);
+}
+
 /**
  * True when the text is a plan handed over to the execute step: session-plan
  * prints its plan (mission status / wave plan / execution config) and ends
- * with "Use /go to begin." (`$session-orchestrator:go` on Codex). A mention of
- * /go alone is not enough (review 2026-10-28): "Do not run /go yet" and a
- * numbered question that mentions /go are not a hand-over. A heuristic over
- * model prose — its ceiling: a plan worded without any of the plan markers
- * reads as "no plan", and the receipt's finalTextTail lets a human check.
+ * with "Use /go to begin." (`$session-orchestrator:go` on Codex). It must
+ * offersGo() and carry an affirmative hand-over word right before the
+ * command; a mention of /go alone is not enough (review 2026-10-28). Reply-
+ * style words count ("Reply `/go` to begin.", #1988 run 1); offersGo() keeps
+ * "Reply with 1 or 2, then /go" a question. A heuristic over model prose —
+ * its ceiling: a plan worded without any plan marker or hand-over word reads
+ * as "no plan" (the answer loop then stops unanswered, see offersGo()), and
+ * the receipt's finalTextTail lets a human check.
  * @param {string} text
  * @returns {boolean}
  */
 export function reachedGo(text) {
   const all = String(text || '');
-  const end = all.slice(-600);
-  const GO = String.raw`(?:\/go|\/session-orchestrator:go|\$session-orchestrator:go)\b`;
-  // An affirmative invitation right before the command ("Use /go", "Send
+  // An affirmative invitation right before the command ("Use /go", "Reply
   // `/go`", "Starte ihn mit `/go`"), not a mention ("Before /go, choose …").
-  const go = new RegExp(String.raw`\b(?:use|send|run|type|start|starte|nutze|tippe|mit)\b[^.?\n;]{0,20}?[\s\`'"(*]${GO}`, 'i').test(end);
-  const plan = /mission-status|wave[- ]plan|execution config|^#{2,4} wave\b/im.test(all);
-  const asks = /\b(?:reply|answer|respond|antworte)\b[^\n]{0,40}\b1\b/i.test(end) || /\?\s*$/.test(end);
-  // A negation counts only inside the clause that names the command, so
-  // "Do not change files yet; use /go" stays a hand-over.
-  const negated = new RegExp(String.raw`\b(?:do not|don't|not yet|noch nicht|nicht)\b[^.;,\n]{0,30}${GO}`, 'i').test(end);
-  return go && plan && !asks && !negated;
+  const go = new RegExp(String.raw`\b(?:use|send|run|type|start|reply|answer|respond|starte|nutze|tippe|mit|antworte|schick|sende)\b[^.?\n;]{0,20}?[\s\`'"(*]${GO_CMD}`, 'i').test(all.slice(-600));
+  const plan = PLAN_MARKER.test(all);
+  return go && plan && offersGo(all);
 }
 
 function toolVersion(ctx) {
@@ -874,7 +1051,7 @@ export function runSmoke(opts, { env: parentEnv = process.env, log = () => {} } 
     if (toolVersion(ctx) && installers[opts.harness](ctx)) {
       readiness(ctx);
       if (scratch(ctx)) {
-        modelSteps(ctx, skipReason);
+        modelPhase(ctx, skipReason);
         if (!skipReason) secretHygiene(ctx);
       }
     }

@@ -163,6 +163,10 @@ function statementsOf(command) {
     const segments = splitChainSegments(tokenizeCommand(command));
     const out = [];
     for (const segment of segments) {
+      // #2027 fix cycle 1: a statement only an extra reading adds (zsh's bare
+      // `}`, a function-call stdin view) repeats one of the line's own
+      // statements; counting it would count one create twice.
+      if (segment.extraReading === true) continue;
       out.push(segment);
       const rest = xargsDrivenRemainder(segment);
       if (rest !== null) out.push(rest);

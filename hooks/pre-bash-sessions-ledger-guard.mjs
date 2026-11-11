@@ -439,7 +439,16 @@ async function bootstrap() {
       blocker: {
         specifier: lib('command-blocker.mjs'),
         headFallback: true,
-        requires: ['tokenizeCommand', 'resolveSegmentVerb', 'splitChainSegments'],
+        requires: [
+          'tokenizeCommand',
+          'resolveSegmentVerb',
+          'splitChainSegments',
+          'shellCommandString',
+          'suCommandStrings',
+          'argvWordsWithoutRedirects',
+          'pipedShellData',
+          'oversizedCommand',
+        ],
       },
     },
     {
@@ -1656,10 +1665,26 @@ function findInterpreterLedgerWrite(verb, args) {
 /**
  * Shells whose `-c <payload>` operand is a command line the shell EXECUTES.
  *
- * DELIBERATE DUPLICATE of `DASH_C_SHELLS` in scripts/lib/command-blocker.mjs,
- * which does not export it (nor its `dashCPayloads`). Change one, change both.
+ * DELIBERATE DUPLICATE of the `DASH_C_SHELLS` set and its loose `-…c` scan from
+ * scripts/lib/command-blocker.mjs (the -c GRAMMAR is shared, see below), which
+ * still does not export the set nor its internal `dashCPayloads`. Change
+ * one, change both. What IS shared since #1833: the shell grammar that reads
+ * WHICH word is the command string — {@link dashCShellPayloads} calls the
+ * exported `blocker.shellCommandString` over `blocker.argvWordsWithoutRedirects`,
+ * and for the su-like verbs and `fish` `blocker.suCommandStrings(words, verb)` (#1944; all three on the `requires`
+ * list in `bootstrap`), the call shape of `dashCPayloads`.
  */
-const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'su']);
+const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'fish', 'su', 'runuser', 'sg']);
+
+/**
+ * The su-like verbs of DASH_C_SHELLS, read by the blocker's su grammar
+ * (`blocker.suCommandStrings(words, verb)`) and never by the shell grammar.
+ * Same DELIBERATE-DUPLICATE contract as the set above: `SU_LIKE_SHELLS` in
+ * scripts/lib/command-blocker.mjs is not exported. `fish` is routed to the
+ * same export (its own `-c`/`--command` grammar) AND keeps the shell grammar,
+ * as `dashCPayloads` does (#1944 sister gap).
+ */
+const SU_LIKE_SHELLS = new Set(['su', 'runuser', 'sg']);
 
 /**
  * Collect the command lines a shell nested in this segment will EXECUTE, so
@@ -1680,6 +1705,12 @@ const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'su']);
  * (`bash -c "jq . <ledger>"`, `bash -c "tail -1 <ledger> | jq ."`) is judged by
  * the same matcher as its unwrapped form, not by a second, weaker one.
  *
+ * Per shell token the loose `-…c` + next-word scan is UNIONED with
+ * command-blocker's shell grammar (`shellCommandString`, both the bash and the
+ * zsh redirect view; `su`/`runuser`/`sg`/`fish` through `suCommandStrings(words, verb)`, as `dashCPayloads` reads them, #1944): `bash +c '…'`,
+ * `bash -ce '…'`, `bash -c -e '…'` and `bash -c -- '…'` gave the loose scan the
+ * wrong word or none and ALLOWED (#1833). Union, never replace.
+ *
  * @param {Array<{ text: string, quoted: boolean }>} segment
  * @returns {string[]} distinct payload strings
  */
@@ -1687,12 +1718,28 @@ function dashCShellPayloads(segment) {
   const out = new Set();
   for (let i = 0; i < segment.length - 1; i++) {
     const tok = segment[i];
-    if (tok.quoted || !DASH_C_SHELLS.has(path.basename(tok.text))) continue;
+    const shell = tok.quoted ? null : path.basename(tok.text);
+    if (shell === null || !DASH_C_SHELLS.has(shell)) continue;
     for (let j = i + 1; j < segment.length - 1; j++) {
       if (/^-[A-Za-z]*c$/.test(segment[j].text)) {
         out.add(segment[j + 1].text);
         break;
       }
+    }
+    if (SU_LIKE_SHELLS.has(shell) || shell === 'fish') {
+      // #1944: `su USER -c S`, a glued `-cS`, `--command=S` and the login
+      // shell's own cluster reading (runuser alike, `sg GROUP S` without `-c`,
+      // fish's own `-c`/`--command`) — the blocker's one su grammar, called
+      // with the REAL verb.
+      for (const payload of blocker.suCommandStrings(blocker.argvWordsWithoutRedirects(segment, i + 1), shell)) out.add(payload);
+      if (shell !== 'fish') continue;
+    }
+    for (const bash of [true, false]) {
+      const payload = blocker.shellCommandString(blocker.argvWordsWithoutRedirects(segment, i + 1, { bash }), {
+        zsh: shell === 'zsh',
+        ksh: shell === 'ksh',
+      });
+      if (payload !== null) out.add(payload);
     }
   }
   return [...out];
@@ -1895,6 +1942,47 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
 }
 
 /**
+ * Judge the command lines a stdin-reading shell runs from literal data (#1999
+ * finding 6): `printf 'echo x >> <ledger>' | sh`, `sh <<< '…'`, a here-doc
+ * into `sh`, `bash <(echo '…')` and `printf '"…"' | xargs sh -c`. The
+ * blocker's `pipedShellData` reads that data; each line re-enters the SAME
+ * matcher, bounded by MAX_PAYLOAD_DEPTH like every other payload.
+ *
+ * Reads the RAW command, not `scan.sanitized`: the sanitizer elides redirects
+ * and here-doc bodies, which is exactly where a here-string or here-doc
+ * script sits. The pipe-read context `pipedShellData` needs is attached by
+ * `splitChainSegments` itself (`pipedFrom.pipeRead`), so nothing internal is
+ * passed.
+ *
+ * Data the blocker marks `unreadable` (its pipe-read budget spent, an xargs
+ * option it cannot resolve) fails CLOSED, as the unbalanced-quote case does:
+ * this function is only reached past {@link findLedgerWrite}'s pre-filter, so
+ * the command already mentions the ledger.
+ *
+ * @param {string} command - raw command line of this recursion level
+ * @param {number} depth
+ * @param {string[]} marks - OUT, see {@link findWriteVerbTarget}
+ * @returns {string|null}
+ */
+function findPipedShellWrite(command, depth, marks) {
+  for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
+    const data = blocker.pipedShellData(segment);
+    if (data.unreadable) {
+      return `${LEDGER_BASENAME} (data piped into a shell is not readable — denied fail-closed)`;
+    }
+    for (const line of data) {
+      if (depth >= MAX_PAYLOAD_DEPTH) {
+        if (line.includes(LEDGER_BASENAME) || line.includes(REPAIR_SCRIPT_BASENAME)) marks.push('depth-exceeded');
+        continue;
+      }
+      const hit = findLedgerWrite(line, depth + 1, marks);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/**
  * The single matcher seam. Returns the offending write target, or null when the
  * command carries no direct ledger write.
  *
@@ -1921,6 +2009,11 @@ function findLedgerWrite(command, depth = 0, marks = []) {
     !unquoted.includes(REPAIR_SCRIPT_BASENAME) &&
     !(unquoted.includes(`${LEDGER_DIR}/`) && /\$\(|`/.test(command))
   ) return null;
+  // #2032 — a line that names the ledger but is past the blocker's size bound
+  // is denied before it is split: a reader that runs out of time or memory
+  // ends without a verdict, which the harness reads as an allow.
+  const oversized = blocker.oversizedCommand(command);
+  if (oversized !== null) return `${LEDGER_BASENAME} (${oversized} — denied fail-closed)`;
 
   const scan = scanCommand(command);
   for (const target of scan.targets) {
@@ -1942,6 +2035,8 @@ function findLedgerWrite(command, depth = 0, marks = []) {
   if (scan.unparsedSubstitution) marks.push('unparsed-substitution');
   const direct = findWriteVerbTarget(scan.sanitized, depth, marks);
   if (direct) return direct;
+  const piped = findPipedShellWrite(command, depth, marks);
+  if (piped) return piped;
   // #1665 — every `$(…)` / backtick body, quoted or not, runs as its own
   // command line; judged by the SAME matcher, bounded like every other payload
   // recursion.

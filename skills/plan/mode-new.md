@@ -30,7 +30,23 @@ Public archetype catalog: the IDs of [`public-fallback.md`](../bootstrap/public-
 
 ## Phase 1: Requirement Gathering (3 waves, 16 questions)
 
-Wave 1 has 6 questions (incl. the User-Story toggle); Waves 2-3 have 5 each. Before each wave, dispatch 2-3 Explore agents in parallel to pre-research options. Synthesize agent results into AskUserQuestion calls (max 4 questions per call, so split 4+1 or 3+2 per wave). Wave 1 carries the 6th User-Story toggle question, so split it 3+3.
+Wave 1 has 6 questions (incl. the User-Story toggle); Waves 2-3 have 5 each. Before each wave, dispatch 2-3 Explore agents in parallel to pre-research options. Every agent prompt below includes the limits and reporting requirements from [Research budget for `/plan new`](#research-budget-for-plan-new) below. Synthesize agent results into AskUserQuestion calls (max 4 questions per call, so split 4+1 or 3+2 per wave). Wave 1 carries the 6th User-Story toggle question, so split it 3+3.
+
+### Research budget for `/plan new`
+
+Apply SKILL.md § 3.1 with a **self-checked time limit of 4 wall-clock minutes per research agent**, replacing its approximate time allowance for this mode. Keep its call limits: web agents get at most **6 WebSearch + 6 WebFetch calls and 15 Read/Glob/Grep calls**; local-only agents get **15 Read/Glob/Grep calls and no web calls**. Equivalent browser/CLI research consumes the same allowances; all other research tool calls count against the local-call limit (at most 27 research calls for a web agent, 15 for a local-only agent). Count failed calls and retries too; batched searches/fetches count each requested query or page against the corresponding limit. Each research agent runs `date` at the start and before every further research call to check elapsed wall-clock time, including tool waits. These `date` calls do not count against any call budget. If the time limit is reached or exceeded, the agent ends its research and returns the available findings. Use per-call timeouts where supported to bound calls by the remaining time; if a call cannot be bounded, continue with existing evidence. The call limits remain hard ceilings: stop at the first call limit reached and never start a call that would exceed a call budget.
+
+In headless/autonomous runs these limits are fixed and cannot be raised. In interactive runs announce them before Wave 1: "Research defaults per agent: 6 searches + 6 fetches, 15 local calls, 4 minutes; you may change these before a wave." Use the defaults unless the operator explicitly changes them, and record any change before dispatch. These are skill instructions, not new Session Config keys.
+
+Append the actual numeric limits and reporting requirements to **every** research-agent prompt, including optional style/capability research and any research requested during review. Include the `date` self-check instructions and their budget exemption in every prompt; the research agent enforces its own time limit during foreground dispatch. At a limit, return the available findings immediately with `Not checked: <topics>` and continue synthesis and PRD generation; do not re-dispatch, add replacement research, or continue the exhausted agent's research in the coordinator. Apply SKILL.md § 3.1's evidence contract to the gaps. In headless/autonomous mode use the supported recommended answers per SKILL.md § Critical Rules rather than waiting for interactive answers. Complete the three waves, then save the initial PRD in Phase 2 before panel/reviewer refinement; research gaps do not trigger extra waves or block that save.
+
+For each agent, record in the wave recap and in a **Research Budget** subsection of PRD Section 2: wave/agent, allowed and used WebSearch/WebFetch/Read-Glob-Grep calls, allowed and elapsed minutes, stop reason (`complete`, `call-limit`, or `time-limit`), and unchecked topics. Also record total research wall-clock minutes for the run (overlapping agents count once). Persist this log with the initial PRD in Phase 2 step 3 and update it if later research runs, so the audit trail exists even when no Epic is created. Missing usage data is `not reported`, never an invented zero.
+
+### Cross-repo resolution
+
+**Resolving a `cross-repos` entry.** An entry that starts with `/` or `~/`, or is an absolute Windows path such as `C:\…`, is a path and is used as written (a leading `~` expands to the home directory). Any other entry is a bare repository name and resolves to `~/Projects/<name>`. A resolved folder that does not exist is a hint, never an error: print `cross-repos: <entry> — no folder at <resolved path>, skipped` and continue with the remaining entries, never abort and never search a parent directory.
+
+Use `resolveCrossRepoEntry()` in `$PLUGIN_ROOT/scripts/lib/config/cross-repo.mjs` for entries from `cross-repos` / `cross-repo.projects`; pass only resolved existing paths to the agents below. Do not discover additional repositories by scanning parent directories.
 
 ### Wave 1 — Core Decisions (6 questions)
 
@@ -50,9 +66,13 @@ Agent({ subagent_type: "Explore", description: "Research market context",
   Keep it to 5-10 bullet points with sources." })
 
 Agent({ subagent_type: "Explore", description: "Check ecosystem for conflicts",
-  prompt: "Run: ls ~/Projects/
-  List all repos. Identify any that overlap with or could serve as dependencies
+  prompt: "Cross-repo scope only: the repositories named by Session Config `cross-repos` /
+  `cross-repo.projects` (each entry resolved by the `cross-repos` rule in docs/session-config-reference.md § cross-repos; pass the resolved absolute path in the prompt).
+  Identify any that overlap with or could serve as dependencies
   for the proposed project. Report potential conflicts and reuse opportunities." })
+// Skip this agent when no entry resolves to an existing folder; print one hint per missing folder.
+// With no entries configured at all, print:
+// "No cross-repos configured — ecosystem conflict check skipped."
 ```
 
 **Questions:**
@@ -62,7 +82,7 @@ Agent({ subagent_type: "Explore", description: "Check ecosystem for conflicts",
 3. **Target audience** — Options informed by market research agent. User selects or provides custom.
 4. **User-Story-Schicht** — "User-Story-Schicht für dieses Feature erzeugen?" Immer fragen (kein Audience-Heuristik-Gate). Drei Antwortoptionen: **Ja (Als/möchte/damit)** — klassische Persona-Story-Form; **Ja (job-story)** — job-story-Form ("When [situation], I want [motivation], so I can [outcome]"); **Nein** — byte-identisches Status-quo-Verhalten. Bei einer der beiden "Ja"-Optionen emittiert die PRD eine optionale ## User Stories Sektion (je Story ein ↳ AC-Pointer) in der gewählten Form; bei "Nein" wird die Sektion vollständig weggelassen.
 5. **Core problem being solved** — Open-ended. Claude suggests structure if answer is vague.
-6. **GitLab group** — Select the GitLab host explicitly, then discover available groups dynamically. *Private path:* run `ls $BASELINE_PATH/templates/` for project types, and check for a groups config in `$BASELINE_PATH/config/` or run `glab api --hostname "$GITLAB_HOST" "groups?per_page=100&min_access_level=10"` to discover GitLab groups — read each entry's `full_path` field. (`glab` has no `group` subcommand at all — invoking one exits 1 with `Unknown command "group"`.) *Public path:* skip the `$BASELINE_PATH` lookups. With `vcs: gitlab`, keep the GitLab group discovery above; otherwise offer a GitHub owner (`gh api user/orgs --jq '.[].login'` plus the user's own login) or **No remote yet** (the plan finishes locally; Phase 4 prints the issue table instead of creating issues). Present findings via AskUserQuestion.
+6. **GitLab group** — Select the GitLab host explicitly, then discover available groups dynamically. *Private path:* run `ls $BASELINE_PATH/templates/` for project types, and check for a groups config in `$BASELINE_PATH/config/` or run `glab api --hostname "$GITLAB_HOST" "groups?per_page=100&min_access_level=10"` to discover GitLab groups — read each entry's `full_path` field. (`glab` has no `group` subcommand at all — invoking one exits 1 with `Unknown command "group"`.) *Public path:* skip the `$BASELINE_PATH` lookups and ask the host first (AskUserQuestion; the options come from the configured `vcs` and the remotes already known to the user, never from a filesystem search). With `vcs: gitlab` (or a GitLab host chosen), set `GITLAB_HOST` to it and run only the `glab api --hostname "$GITLAB_HOST" "groups?per_page=100&min_access_level=10"` discovery above, reading each `full_path`. With GitHub, offer the owners from `gh api --hostname "${GITHUB_HOST:-github.com}" user/orgs --jq '.[].login'` plus the user's own login (`gh api user --jq .login`); host-pinning and syntax per [`gitlab-ops`](../gitlab-ops/SKILL.md) § Canonical Project Identity and § Common CLI Commands. If discovery fails or returns nothing (no CLI, not logged in), say so in one line and offer the remaining options. Always include **No remote yet** (the plan finishes locally; Phase 4 prints the issue table instead of creating issues). Present findings via AskUserQuestion.
 
 ### Optional private capability context — after Wave 1
 
@@ -88,13 +108,16 @@ Agent({ subagent_type: "Explore", description: "Research tech stack best practic
   Report: recommended patterns, common pitfalls, performance tips. 5-10 bullet points." })
 
 Agent({ subagent_type: "Explore", description: "Check ecosystem for shared patterns",
-  prompt: "Explore repos in ~/Projects/ that use similar tech stacks.
+  prompt: "Explore only the repositories named by Session Config `cross-repos` /
+  `cross-repo.projects` (each entry resolved by the `cross-repos` rule in docs/session-config-reference.md § cross-repos; pass the resolved absolute path in the prompt) for similar tech stacks.
   Report: shared libraries, common patterns, reusable modules." })
+// Skip this agent when no entry resolves to an existing folder; print one hint per missing folder.
+// With no entries configured at all, print "No cross-repos configured — shared-pattern exploration skipped."
 ```
 
 **Questions:**
 
-1. **Tech stack decisions** — e.g., Supabase vs alternative DB for nextjs-saas. Options informed by archetype config agent.
+1. **Tech stack decisions** — e.g., Supabase vs alternative DB for nextjs-minimal. Options informed by archetype config agent.
 2. **Design style** — For frontend archetypes: read `$BASELINE_PATH/templates/{archetype}/styles/` to discover available design variants. Dispatch agent to read baseline style configs. Skip for non-frontend archetypes (those without a `styles/` directory) and on the public path (bundled templates carry no `styles/`).
 3. **External integrations** — APIs, services, payment providers. Agent research informs common choices.
 4. **Performance requirements** — Latency targets, concurrent users, throughput expectations.
@@ -178,8 +201,8 @@ GITLAB_HOST="<selected GitLab hostname>"
 PROJECT_PATH="$GROUP_PATH/$PROJECT_NAME"
 ENCODED_PROJECT_PATH="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$PROJECT_PATH")"
 (
-  echo "$TYPE_CHOICE"    # e.g., "1" for nextjs-saas
-  echo "$STYLE_CHOICE"   # e.g., "1" for vega (only if nextjs-saas)
+  echo "$TYPE_CHOICE"    # e.g., "1" for nextjs-minimal
+  echo "$STYLE_CHOICE"   # e.g., "1" for vega (private path only; bundled templates carry no styles)
   echo "$PROJECT_NAME"   # e.g., "my-cool-app"
   echo "$GROUP_CHOICE"   # e.g., "1" for products
   echo "y"               # confirm

@@ -37,7 +37,6 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
-  renameSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -45,6 +44,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { isMainModule } from './lib/is-main-module.mjs';
+import { renameSyncWithRetry } from './lib/io.mjs';
 import {
   carriesEnvelopeToken,
   LEGACY_UNTRUSTED_BEGIN,
@@ -197,7 +197,7 @@ function atomicWrite(path, content, mode, verify) {
       closeSync(fd);
     }
     verify();
-    renameSync(tmp, path);
+    renameSyncWithRetry(tmp, path);
   } catch (err) {
     if (created) {
       try {

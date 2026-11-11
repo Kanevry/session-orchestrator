@@ -653,17 +653,31 @@ export function renderEvidence(records, located, opts = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Encode a repo path the way Claude Code names its projects directory: every
- * `/` and `.` becomes `-`. Same encoding as
- * `scripts/lib/wave-transcript-tail.mjs::encodeProjectDir`, duplicated here
- * rather than imported so this module stays free of that tailer's `events.mjs`
- * / file-lock / subagent-paths closure.
+ * Encode a repo path the way Claude Code names its projects directory.
+ *
+ * MEASURED 2026-11-08 (Claude Code 2.1.319): every character that is not an
+ * ASCII letter or digit becomes `-` — not only `/` and `.`, also `_` (the
+ * fleet's `/Projects/_wt/<repo>/<wt>` worktrees live in `-Projects--wt-…`). A
+ * `-` in the path stays `-`. Measurement: the `"cwd"` recorded in the
+ * transcripts of 320 `~/.claude/projects/*` folders; 300 folders equal this
+ * rule's encoding of one of their cwds, 0 equal only the old `/`+`.` rule (it
+ * missed all 97 folders whose cwd contains `_`); the other 20 record no cwd
+ * equal to their launch dir. The encoding is lossy: `/x/a_b`, `/x/a.b` and
+ * `/x/a-b` share one folder.
+ *
+ * Ceiling (BV-004): no measured cwd contained a space or non-ASCII character;
+ * the rule maps them to `-` as well. Revisit if such a path fails to resolve.
+ *
+ * Byte-identical body in `scripts/lib/wave-transcript-tail.mjs::encodeProjectDir`,
+ * duplicated here rather than imported so this module stays free of that
+ * tailer's `events.mjs` / file-lock / subagent-paths closure; the parity test in
+ * `tests/lib/wave-transcript-tail.test.mjs` keeps the two in step.
  *
  * @param {string} repoRoot
  * @returns {string}
  */
 export function encodeProjectDir(repoRoot) {
-  return String(repoRoot).replace(/[/.]/g, '-');
+  return String(repoRoot).replace(/[^A-Za-z0-9]/g, '-');
 }
 
 /**

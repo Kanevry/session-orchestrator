@@ -54,6 +54,29 @@ Resolution order (first match wins):
    Error: Cannot resolve target — provide --target or add .orchestrator/policy/test-profiles.json
    ```
 
+### Rubric and Target Label
+
+Resolve the rubric and requested target right after the profile; verify the target against Phase 2 capture evidence before Phase 3 passes it to the evaluator.
+
+**`RUBRIC`** — the selected profile's `rubric` field:
+
+```js
+import { loadProfiles, getProfile } from 'scripts/lib/profiles/registry.mjs';
+const reg = await loadProfiles();                      // .orchestrator/policy/test-profiles.json
+const hit = reg.ok ? getProfile(reg.profiles, PROFILE) : { ok: false };
+const RUBRIC = hit.ok ? hit.profile.rubric : 'skills/test-runner/rubric-v2.md';
+```
+
+`getProfile()` already applies the schema default (`scripts/lib/profiles/schema.mjs`, rubric-v2) when a profile names no rubric, so a pin is honoured and an unpinned profile gets v2. No registry file or no matching profile (convention-based detection) → rubric-v2. The mac profiles pin `rubric-v1.md` on purpose: peekaboo writes `ax-snapshots/<scenario>.json`, no 1440/390 viewports, so the v2 human checks could never complete there.
+
+**`TARGET_KIND` / `TARGET_URL`** — what the run actually looked at (rubric-v2 Hard rule 4):
+
+- Consume `target_kind` and `target_url` from the `/test` handoff. A recognized `--target-kind` (`live`, `production-build`, `dev-server`) overrides an operator statement; without that flag, use an explicit statement for this run, otherwise `dev-server`. An invalid or missing flag value forces the pair `dev-server unknown` even if a URL was supplied. No profile field upgrades the kind.
+- `TARGET_URL` is `target_url` from `--target-url` first, then the URL the operator named, then the web target's `playwright.config.{ts,js}` `use.baseURL` (read the file, never execute it); for a macOS target use the app path. No value, or an explicitly missing flag value, is the literal `unknown`. Use the resolved URL for browser navigation as well as labelling; a label must describe the target actually driven.
+- A `localhost` / `127.0.0.1` / branch-preview URL is always `dev-server`, whatever was stated or flagged.
+- Unknown is never upgraded: the evaluator gets `dev-server unknown`, and its report header says `DEV-SERVER RUN`.
+- For web targets, treat `TARGET_KIND` as requested until capture evidence confirms `${TARGET_URL}` was actually driven. Grant `LIVE RUN` / `PRODUCTION-BUILD RUN` only when the per-page visited-URL record from Phase 2 supports that target. Missing records or any visited origin differing from `${TARGET_URL}`'s origin force `TARGET_KIND = dev-server`; name the requested URL, observed URLs (or missing evidence), and mismatch in the report. Use the observed URL for `TARGET_URL`, or `unknown` if absent. After verification, set `TARGET_HEADER` to `LIVE RUN`, `PRODUCTION-BUILD RUN`, or `DEV-SERVER RUN — not the live state; no verdict about what users see.` respectively; keep `Target: ${TARGET_KIND} ${TARGET_URL}` consistent with that result.
+
 ### Run ID
 
 Generate a run ID immediately after target resolution:
@@ -67,7 +90,7 @@ All artifact paths in subsequent phases derive from this run ID. Never use ad-ho
 
 ### Status Report
 
-After resolution, emit: `Test Runner: target=[name] profile=[name] run_id=[runId] driver=[driver]`
+After resolution, emit: `Test Runner: target=[name] profile=[name] run_id=[runId] driver=[driver] rubric=[RUBRIC] target_label=[TARGET_KIND TARGET_URL]`
 
 ## Phase 2: Driver Dispatch
 
@@ -90,7 +113,7 @@ For each resolved driver:
 
 ### Web (playwright-driver)
 
-Dispatch via Bash per `skills/playwright-driver/SKILL.md`. Pass `${RUN_DIR}` so the driver writes all artifacts (screenshots, AX dumps, HAR) under it.
+Dispatch via Bash per `skills/playwright-driver/SKILL.md`. Pass `${RUN_DIR}`, `${TARGET_URL}` as the navigation URL, and the expected route inventory (e.g. `/start`, with slugs only for artifact filenames) for the selected scope to the driver context. `--target` below remains the repository path; the runner has no `--target-url` option. The capture harness must navigate `${TARGET_URL}` rather than silently using a different configured base URL; passing an environment variable alone does not configure Playwright's base URL. Require the capture pass to record the actual visited URL per page and viewport next to its artifact paths in `${RUN_DIR}/visited-urls.json`. After capture, compare every recorded origin with `${TARGET_URL}`'s origin and apply Phase 1's evidence gate before granting the target label; absent records also trigger the dev-server fallback. For rubric-v2, require each page’s screenshot and AX snapshot at both 1440 and 390 per the driver’s Per-Page Capture Contract. Pass the expected inventory and any capture gaps to Phase 3, even if Playwright tests fail; the evaluator must check expected pages, not just files that happened to exist.
 
 ```bash
 # Example invocation shape (exact flags defined by playwright-driver SKILL.md)
@@ -148,12 +171,20 @@ Log: `peekaboo-driver exited [code] — [N] scenarios captured under ${RUN_DIR}`
 
 ## Phase 3: UX Evaluator Dispatch
 
-Invoke the `ux-evaluator` agent (`agents/ux-evaluator.md`) via the Agent tool. The agent reads driver artifacts under `${RUN_DIR}/` and applies `skills/test-runner/rubric-v1.md` (4 checks). The agent writes `findings.jsonl` directly to `${RUN_DIR}/findings.jsonl` — the coordinator does NOT need to forward findings through prompt context.
+Invoke the `ux-evaluator` agent (`agents/ux-evaluator.md`) via the Agent tool. The agent reads driver artifacts under `${RUN_DIR}/` and applies `${RUBRIC}` from Phase 1 § Rubric and Target Label. Under rubric-v2 (the default) that is six human checks per page at 1440 and 390 px first, then the four v1 mechanical checks. The agent writes `findings.jsonl` directly to `${RUN_DIR}/findings.jsonl` — the coordinator does NOT need to forward findings through prompt context. `rubric-v1.md` applies to a profile that pins it (the mac profiles do) and to re-reading runs stamped `"v1"` — the same rule as rubric-v2 § Which rubric applies when and `agents/ux-evaluator.md` § Which rubric (#1961).
+
+Pass the expected route inventory (including pages with capture gaps) in the evaluator prompt; `checkReportComplete({ pages, coverage, judged })` must receive routes such as `/start` matching `coverage.page` and `judged.page` exactly, never filename slugs such as `start`. Pass the visited-URL record and any target mismatch, plus the evidence-verified `TARGET_HEADER` as `report_header`. The evaluator emits that single header line alongside `Target:`; preserve its incomplete marker as the first line when applicable.
+
+Three rules from rubric-v2 the coordinator enforces too:
+
+- **Live target.** Drive the live URL or a production build. A dev-server or branch-preview run is passed as `target: dev-server <url>` and its report says so in the header — never present it as the live state.
+- **Mechanics are a footnote.** axe/console/onboarding/Liquid-Glass counts are never the summary verdict; "0 findings" from them is not "clean".
+- **Incomplete is incomplete.** A report whose first line is `REPORT INCOMPLETE — human checks missing: …` (or whose JSON verdict is `BLOCKED`) is relayed as incomplete, never summarised as a pass.
 
 ```js
 Agent({
   description: `UX evaluate run ${runId}`,
-  prompt: `<scope: ${RUN_DIR}, rubric: skills/test-runner/rubric-v1.md, output: ${RUN_DIR}/findings.jsonl>`,
+  prompt: `<scope: ${RUN_DIR}, rubric: ${RUBRIC}, target: ${TARGET_KIND} ${TARGET_URL}, report_header: ${TARGET_HEADER}, output: ${RUN_DIR}/findings.jsonl>`,
   subagent_type: "ux-evaluator",
   run_in_background: false
 })
@@ -258,13 +289,15 @@ Pass these buckets to Phase 5.
 
 ### report.md
 
-Write `${RUN_DIR}/report.md` — a markdown summary of the run. Minimum content:
+Write `${RUN_DIR}/report.md` — a markdown summary of the run. Carry the evidence-verified target label and evaluator's single `report_header` line through verbatim; do not append a second target header when incorporating the evaluator summary. Include any requested/observed URL mismatch or missing visited-URL evidence; do not replace the URL with the target name. Preserve the evaluator's incomplete marker as the first line when present. Minimum content:
 
 ```markdown
 # Test Run Report
 
 **Run ID:** <runId>
-**Target:** <target>
+Target: <TARGET_KIND> <TARGET_URL>
+<TARGET_HEADER>
+**Target name:** <target>
 **Profile:** <profile>
 **Timestamp:** <ISO 8601>
 **Duration:** <ms>ms
@@ -351,12 +384,14 @@ Test Runner complete: run_id=<runId> findings=[total] issues_created=[N] duratio
 | File | Purpose |
 |------|---------|
 | `soul.md` | Orchestrator identity — read before Phase 0 |
-| `rubric-v1.md` | UX rubric specification (4 checks, fingerprint formula, findings JSON schema) — read by `ux-evaluator` agent |
+| `rubric-v2.md` | Current UX rubric — six human checks first, v1 checks as footnote, live-target and incomplete-report rules — read by `ux-evaluator` agent |
+| `rubric-v1.md` | Frozen v1 rubric (4 mechanical checks, fingerprint formula, findings JSON schema) — for runs stamped `"v1"` and as the footnote's check definitions |
 
 ## Implementation Modules
 
 | File | Purpose |
 |------|---------|
 | `scripts/lib/test-runner/fingerprint.mjs` | Stable 16-hex fingerprint per finding (deterministic, idempotent) |
+| `scripts/lib/test-runner/human-checks.mjs` | Mechanical floor of the rubric-v2 human checks from AX snapshots + completeness check for the judged ones |
 | `scripts/lib/test-runner/artifact-paths.mjs` | Run-dir + artifact path builders — pure functions, no side effects |
 | `scripts/lib/test-runner/issue-reconcile.mjs` | glab/gh dispatch via execFile + binary allowlist (ADR-364 §C5) |

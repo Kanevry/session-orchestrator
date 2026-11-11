@@ -77,6 +77,11 @@ Fixtures for producer/consumer formats (`sessions.jsonl`, `learnings.jsonl`, on-
 - Framework internals (Next.js routing, Supabase client initialization).
 - Simple pass-through functions with no logic.
 
+## Executing Probes Get Synthetic Forms Only (#1943)
+- A probe that EXECUTES commands takes only `{D}` templates through `scripts/guard-probe-git-effect.mjs` (vetted allowlist, fresh scratch repo, replaced env, git with symlinks/hooks/signing/transport off, macOS `sandbox-exec`: writes only below the scratch root, no reads under /Users, no network; no sandbox → no run) — never a replay corpus of real transcript commands. Write templates yourself, never pass it a found list.
+- Read-only readers (matcher replay, hook-payload replay) may keep using the corpus; a corpus file carries `REPLAY_CORPUS_MARKER`, which the executing CLI refuses.
+- Why: on 2026-11-03 an executing probe ran 662 real fleet commands (GitLab notes, branch switches in real checkouts); a cwd is no isolation.
+
 ## CI Integration
 Reporter, sharding and coverage wiring live in `.gitlab-ci.yml` + `vitest.config.base.ts` — read them there, not here. The two non-obvious traps:
 

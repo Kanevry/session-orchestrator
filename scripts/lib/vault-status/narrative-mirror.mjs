@@ -739,8 +739,9 @@ async function emitNarrativeEvent({ repoRoot, action, path: outputPath, chars, e
         // why this file rejects the loose form.
         ...(typeof errorCode === 'string' && errorCode.length > 0 ? { error_code: errorCode } : {}),
         // session_id / semantic_session_id — omitted entirely when no session
-        // lock is readable (CI, ad-hoc runs). See sessionAttribution's contract:
-        // a fabricated id would read as a real session.
+        // lock is readable (CI, ad-hoc runs) or this process's own id does not
+        // equal the lock's (#1874). See sessionAttribution's contract: a
+        // fabricated id would read as a real session.
         ...sessionAttribution(repoRoot),
       },
       { repoRoot },

@@ -22,13 +22,46 @@
  *                            the suite again (envelope and event carry
  *                            `reused_from`), and write one after a green run on
  *                            an unchanged tree. See scripts/lib/gate-receipt.mjs.
- *                            Opt-in: the Quality wave and session-end pass it.
+ *                            On a local miss and a clean tree it also asks the
+ *                            navigator gate-run ledger (gate `so:full-gate`,
+ *                            LSO#961) and records each real run there (`gruen`
+ *                            only after three real passes; a skipped check
+ *                            records nothing); without navigator (absent,
+ *                            SO_NAVIGATOR_BIN=off) output and exit code are
+ *                            unchanged.
+ *                            Opt-in: the Quality wave and session-end pass it
+ *                            (in the working copy; their records carry no
+ *                            provenance and never answer pre-push, ceiling C12).
+ *                            With a usable `--ledger-root` (a git repo), the
+ *                            receipt store is that repo's, not the cwd's.
+ *   --receipt-check          full-gate only: read-only probe for the pre-push
+ *                            reader. On a CLEAN tree, looks up a `pushed-tree`
+ *                            receipt (ceiling C12) under the any-node gate
+ *                            definition (ceiling C9) and, on a hit, publishes it
+ *                            like `--receipt` reuse (exit 0).
+ *                            On any miss: one stderr line, no stdout, no event,
+ *                            nothing run or written, exit 10. Never asks
+ *                            navigator (ceiling C11).
+ *   --receipt-record         full-gate only, write-only: the pre-push hook's
+ *                            local fallback in its temp clone. Never reads a
+ *                            receipt and never touches navigator; always runs
+ *                            the suite. After a green run on an unchanged clean
+ *                            tree it writes a `pushed-tree` receipt (with the
+ *                            any-node key) into the `--ledger-root` store — only
+ *                            when that store belongs to a DIFFERENT checkout
+ *                            than the cwd; otherwise it warns and writes
+ *                            nothing. Combined with `--receipt` or
+ *                            `--receipt-check`: usage error, exit 1.
+ *   --pushed-sha <sha>       40- or 64-hex commit id; the emitted
+ *                            `orchestrator.quality_gate.*` event carries it as
+ *                            `pushed_sha`. Any other value is warned and ignored.
  *   -h, --help               Show this help and exit.
  *
  * Exit codes:
  *   0 — pass (or informational; non-blocking variants always exit 0)
  *   1 — script error (bad arguments, missing dependencies)
  *   2 — gate failed (full-gate only: typecheck/test/lint errors)
+ *  10 — `--receipt-check` miss (no receipt, dirty tree, or any error)
  * 124 — the gate sub-script exceeded the wall-clock ceiling and its whole
  *       process GROUP was killed (SIGTERM→SIGKILL). Same value coreutils
  *       `timeout(1)` uses. Applies to EVERY variant, including the otherwise
@@ -53,6 +86,7 @@ import { fileURLToPath } from 'node:url';
 import { die, warn } from './lib/common.mjs';
 import { loadQualityGatesPolicy, resolveCommand } from './lib/quality-gates-policy.mjs';
 import { emitEvent, sessionAttribution } from './lib/events.mjs';
+import { getProjectDir } from './lib/platform.mjs';
 import {
   admitSuiteCounts,
   collectDebugArtifacts,
@@ -63,10 +97,27 @@ import {
 import { buildCommandSignature, spawnInGroup } from './lib/process-group.mjs';
 import { resolveWaveNumber } from './lib/quality-gate-wave.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
+import { resolveOwnLockRootFor } from './lib/own-lock-root.mjs';
 import { admitRerunSkipped, gateKillFields } from './lib/quality-gate.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { spawn } from './lib/native-command.mjs';
-import { contentTree, findReceipt, gateDefinition, writeReceipt } from './lib/gate-receipt.mjs';
+import {
+  contentTree,
+  createNavigatorLedger,
+  findReceipt,
+  gateDefinition,
+  gateDefinitionAnyNode,
+  gateDefinitionCanonical,
+  headState,
+  isForeignReceiptStore,
+  isStandaloneCheckout,
+  PUSHED_TREE_CONTEXT,
+  ledgerKey,
+  receiptStorePath,
+  navigatorGateDef,
+  navigatorVerdict,
+  writeReceipt,
+} from './lib/gate-receipt.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -158,6 +209,32 @@ function extractCommand(policy, policyKey, configKey, configJson, defaultCmd) {
   // 3. Built-in default
   return defaultCmd;
 }
+
+/**
+ * The gate-definition inputs of a run in `repoRoot` (#1897) — the single
+ * source `main()` and the pre-push reader both hash, so their keys cannot
+ * drift apart. Commands resolve policy file → `configJson` → built-in default.
+ *
+ * @param {{ repoRoot: string, configJson?: object|null, variant?: string, node?: string }} opts
+ * @returns {{ variant: string, typecheck: string, test: string, lint: string, node: string, plugin: string }}
+ */
+export function resolveDefinitionInputs({ repoRoot, configJson = null, variant = 'full-gate', node = process.version }) {
+  const policy = loadQualityGatesPolicy(repoRoot);
+  return {
+    variant,
+    typecheck: extractCommand(policy, 'typecheck', 'typecheck-command', configJson, DEFAULT_TYPECHECK_CMD),
+    test: extractCommand(policy, 'test', 'test-command', configJson, DEFAULT_TEST_CMD),
+    lint: extractCommand(policy, 'lint', 'lint-command', configJson, DEFAULT_LINT_CMD),
+    node,
+    plugin: pluginVersion(),
+  };
+}
+
+/** A full commit id (SHA-1 or SHA-256), the only `--pushed-sha` accepted. */
+const PUSHED_SHA = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+
+/** Exit code of a `--receipt-check` miss. */
+const RECEIPT_CHECK_MISS_EXIT = 10;
 
 /**
  * Lift the suite counts out of a gate sub-script's JSON stdout envelope (#954).
@@ -365,6 +442,22 @@ function resolveLedgerRoot(value) {
   return null;
 }
 
+/**
+ * The checkout holding THIS session's lock, or `null` when no lock carries a
+ * process-local session id (#1730 Pkt 3). The id comes from the process-local
+ * witness only, never from `session.lock` itself — a peer may own that.
+ *
+ * @param {string} cwd
+ * @returns {string|null}
+ */
+function ownLockRegisterRoot(cwd) {
+  for (const sessionId of readProcessLocalSessionIds({ env: process.env, hookInput: null })) {
+    const { root, source } = resolveOwnLockRootFor({ sessionId, cwd });
+    if (source !== 'none') return root;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Main — the CLI body. Guarded below so a bare `import()` runs none of it.
 // ---------------------------------------------------------------------------
@@ -376,12 +469,23 @@ async function main() {
   if (argv.includes('-h') || argv.includes('--help')) {
     process.stdout.write(
       'Usage: run-quality-gate.mjs --variant <variant> [--config <json-or-file>] ' +
-      '[--files <file1,file2,...>] [--session-start-ref <ref>] [--ledger-root <path>] [--receipt]\n\n' +
+      '[--files <file1,file2,...>] [--session-start-ref <ref>] [--ledger-root <path>] [--receipt] ' +
+      '[--receipt-check | --receipt-record] [--pushed-sha <sha>]\n\n' +
       'Variants: baseline, incremental, full-gate, per-file\n\n' +
+      'Options (full-gate only):\n' +
+      '  --receipt          reuse a green run on the same content tree and gate definition; record one\n' +
+      '  --receipt-check    read-only: on a clean tree, publish a pushed-tree receipt under the\n' +
+      '                     any-node gate definition (exit 0), otherwise exit 10; never runs the suite\n' +
+      '  --receipt-record   write-only (pre-push temp clone): always run the suite, never read a\n' +
+      '                     receipt or navigator; after a green run on a clean tree write a pushed-tree\n' +
+      '                     receipt into a --ledger-root store of another checkout\n' +
+      '  --pushed-sha <sha> 40/64-hex commit id carried as `pushed_sha` in the gate event\n\n' +
       'Exit codes:\n' +
       '  0 — pass (non-blocking variants always exit 0)\n' +
-      '  1 — script error (bad arguments, missing dependencies)\n' +
+      '  1 — script error (bad arguments, missing dependencies, --receipt-record with\n' +
+      '      --receipt or --receipt-check)\n' +
       '  2 — gate failed (full-gate only)\n' +
+      '  10 — --receipt-check miss (no receipt, dirty tree, or any error); nothing ran\n' +
       '  124 — gate timed out; its process group was killed (SIGTERM→SIGKILL)\n',
     );
     process.exit(0);
@@ -393,6 +497,9 @@ async function main() {
   let sessionStartRef = '';
   let ledgerRootArg = '';
   let receipt = false;
+  let receiptCheck = false;
+  let receiptRecord = false;
+  let pushedShaArg = '';
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -420,6 +527,16 @@ async function main() {
       case '--receipt':
         receipt = true;
         break;
+      case '--receipt-check':
+        receiptCheck = true;
+        break;
+      case '--receipt-record':
+        receiptRecord = true;
+        break;
+      case '--pushed-sha':
+        if (i + 1 >= argv.length) die('Missing value for --pushed-sha');
+        pushedShaArg = argv[++i];
+        break;
       default:
         die(`Unknown argument: ${arg}`);
     }
@@ -429,14 +546,32 @@ async function main() {
   if (!VALID_VARIANTS.includes(variant)) {
     die(`Invalid variant: '${variant}' (allowed: ${VALID_VARIANTS.join(', ')})`);
   }
+  // `--receipt-record` is write-only; beside a reader, a read could answer the
+  // run it exists to force (#1897 F2), so the mix is a usage error.
+  if (receiptRecord && (receipt || receiptCheck)) {
+    die(`--receipt-record cannot be combined with ${receipt ? '--receipt' : '--receipt-check'}`);
+  }
+  if (receiptRecord && variant !== 'full-gate') {
+    warn(`--receipt-record applies to full-gate only; ignored for '${variant}'`);
+    receiptRecord = false;
+  }
   if (receipt && variant !== 'full-gate') {
     warn(`--receipt applies to full-gate only; ignored for '${variant}'`);
     receipt = false;
   }
+  if (receiptCheck && variant !== 'full-gate') {
+    warn(`--receipt-check applies to full-gate only; ignored for '${variant}'`);
+    receiptCheck = false;
+  }
+  // The read-only probe never writes, so it overrides a `--receipt` beside it.
+  if (receiptCheck) receipt = false;
+  let pushedSha = null;
+  if (pushedShaArg !== '') {
+    if (PUSHED_SHA.test(pushedShaArg)) pushedSha = pushedShaArg;
+    else warn(`--pushed-sha '${pushedShaArg}' is not a 40- or 64-hex commit id; ignored`);
+  }
 
-  // Load policy file (never throws)
   const repoRoot = process.cwd();
-  const policy = loadQualityGatesPolicy(repoRoot);
 
   // Parse --config (JSON string or file path)
   let configJson = null;
@@ -458,9 +593,11 @@ async function main() {
     }
   }
 
-  const TYPECHECK_CMD = extractCommand(policy, 'typecheck', 'typecheck-command', configJson, DEFAULT_TYPECHECK_CMD);
-  const TEST_CMD      = extractCommand(policy, 'test',      'test-command',      configJson, DEFAULT_TEST_CMD);
-  const LINT_CMD      = extractCommand(policy, 'lint',      'lint-command',      configJson, DEFAULT_LINT_CMD);
+  // One derivation for the commands AND the receipt key (#1897).
+  const definitionInputs = resolveDefinitionInputs({ repoRoot, configJson, variant });
+  const TYPECHECK_CMD = definitionInputs.typecheck;
+  const TEST_CMD      = definitionInputs.test;
+  const LINT_CMD      = definitionInputs.lint;
 
   // ---------------------------------------------------------------------------
   // Gate dispatch — shell-out to existing gate-*.mjs sub-scripts
@@ -515,11 +652,17 @@ async function main() {
     ? resolveGateTimeoutMs()
     : configuredGateTimeoutMs;
 
-  // Gate-process REGISTER root — the same precedence the telemetry destination
-  // uses below (`--ledger-root` > project-dir env > cwd), so a sandboxed test that
-  // only sets CLAUDE_PROJECT_DIR never writes register lines into the checkout.
+  // Gate-process REGISTER root: `--ledger-root` > project-dir env > this
+  // session's own lock root > cwd. The env rung stays ahead of the lock so a
+  // sandboxed test that only sets CLAUDE_PROJECT_DIR never writes register lines
+  // into the checkout. The lock rung is #1730 Pkt 3: a Bash child gets no
+  // CLAUDE_PROJECT_DIR (measured 2026-10-22), so a session whose lock sits in a
+  // linked worktree while its shell cwd is the main checkout (or the reverse)
+  // wrote the register at the cwd, and the reapers — which read at the session
+  // root — never saw it. `source: 'none'` (no lock carries our id) keeps cwd.
   const gateLedgerRoot =
-    ledgerRoot ?? process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_PROJECT_DIR ?? repoRoot;
+    ledgerRoot ?? process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_PROJECT_DIR ??
+    ownLockRegisterRoot(repoRoot) ?? repoRoot;
 
   const env = {
     ...process.env,
@@ -577,15 +720,102 @@ async function main() {
   // published with `reused_from` and nothing is spawned; the event below carries
   // the same field, so the reuse is never silent. Its debug-artifact scan is
   // redone: it depends on `--session-start-ref`, which is not in the key.
-  const receiptDefinition = receipt
-    ? gateDefinition({ variant, typecheck: TYPECHECK_CMD, test: TEST_CMD, lint: LINT_CMD, node: process.version, plugin: pluginVersion() })
-    : null;
-  const treeBefore = receipt ? contentTree(repoRoot) : null;
-  const found = receipt ? findReceipt({ repoRoot, tree: treeBefore, definition: receiptDefinition }) : null;
-  const reusedFrom = found ? { tree: found.tree, at: found.at } : null;
-  if (reusedFrom) {
-    process.stderr.write(`ℹ Full Gate not re-run: receipt for content tree ${reusedFrom.tree.slice(0, 12)} from ${reusedFrom.at} (#1897)\n`);
+  //
+  // Navigator gate-run ledger (LSO#961): only on a local miss AND a clean tree
+  // (`ledgerKey`), so the SO-local store keeps answering first and a dirty tree
+  // never spawns navigator. A navigator hit has no stored envelope; it is
+  // synthesized from the three commands — truthful, because only three real
+  // passes are ever written as `gruen` (`navigatorVerdict`). Without navigator
+  // every byte below is what it was. Ceilings: scripts/lib/gate-receipt.mjs.
+  //
+  // Store root (ceiling C10): with a `--ledger-root` that is a git repo (the
+  // pre-push hook's real checkout) receipts live in ITS store, because the
+  // tree under test is a temp clone whose `.git` is deleted on exit. The
+  // content tree, the navigator key and the spawn stay on the cwd `repoRoot`.
+  const storeRoot = ledgerRoot !== null && receiptStorePath(ledgerRoot) !== null ? ledgerRoot : repoRoot;
+
+  // `--receipt-check` (pre-push reader): any-node key, clean tree only, never
+  // navigator (C9, C11). A miss — any error included — exits 10 before
+  // anything is published, emitted, spawned or written.
+  let checkHit = null;
+  if (receiptCheck) {
+    let reason;
+    try {
+      const tree = contentTree(repoRoot);
+      if (tree === null) reason = 'no content tree';
+      else if (headState(repoRoot)?.tree !== tree) reason = 'working tree is not clean';
+      else {
+        checkHit = findReceipt({
+          repoRoot: storeRoot, tree, definition: gateDefinitionAnyNode(definitionInputs), anyNode: true, context: PUSHED_TREE_CONTEXT,
+        });
+        if (!checkHit) reason = `no pushed-tree receipt for content tree ${tree.slice(0, 12)}`;
+      }
+    } catch (err) {
+      checkHit = null;
+      reason = `error: ${err?.message ?? err}`;
+    }
+    if (!checkHit) {
+      process.stderr.write(`ℹ receipt check missed: ${reason} (#1897)\n`);
+      process.exit(RECEIPT_CHECK_MISS_EXIT);
+    }
   }
+
+  // `--receipt-record` (pre-push temp clone, #1897 F2/M1): no read of any kind
+  // — neither the SO store nor navigator — so it can never pass a push the probe
+  // rejected; it only mints a `pushed-tree` record (C12) after the run, and only
+  // on a clean tree whose store belongs to a FOREIGN checkout (the real repo).
+  // In the working copy itself the store root is the cwd, and a working-copy
+  // run must not mint a pushed-tree record (F1).
+  let recordTree = null;
+  if (receiptRecord) {
+    let reason = null;
+    try {
+      const tree = contentTree(repoRoot);
+      if (tree === null) reason = 'no content tree';
+      else if (headState(repoRoot)?.tree !== tree) reason = 'working tree is not clean';
+      // A1 (#1897 review): a linked worktree shares its main checkout's store,
+      // so compare STORES and require a standalone cwd repo. Ceiling C12: a
+      // second full clone used as a working copy still passes both checks.
+      else if (!isStandaloneCheckout(repoRoot)) reason = 'cwd is a linked worktree, not a standalone clone';
+      else if (!isForeignReceiptStore(storeRoot, repoRoot)) reason = 'no --ledger-root store of another checkout';
+      else recordTree = tree;
+    } catch (err) {
+      reason = `error: ${err?.message ?? err}`;
+    }
+    if (recordTree === null) warn(`--receipt-record writes no receipt: ${reason} (#1897)`);
+  }
+
+  const receiptDefinition = receipt ? gateDefinition(definitionInputs) : null;
+  const treeBefore = receipt ? contentTree(repoRoot) : null;
+  const found = receipt ? findReceipt({ repoRoot: storeRoot, tree: treeBefore, definition: receiptDefinition }) : null;
+  const navigator = receipt && !found ? createNavigatorLedger() : null;
+  const navKey = navigator?.enabled ? ledgerKey(repoRoot, treeBefore) : null;
+  const navGateDef = navKey ? navigatorGateDef(gateDefinitionCanonical(definitionInputs)) : null;
+  const navHit = navKey ? navigator.read({ key: navKey, gateDef: navGateDef }) : null;
+  let reusedFrom = null;
+  let reusedEnvelope = null;
+  if (checkHit) {
+    reusedFrom = { tree: checkHit.tree, at: checkHit.at, host: checkHit.host, key: 'any-node' };
+    reusedEnvelope = checkHit.envelope;
+  } else if (found) {
+    reusedFrom = { tree: found.tree, at: found.at };
+    reusedEnvelope = found.envelope;
+  } else if (navHit) {
+    reusedFrom = { tree: navKey.tree, at: navHit.eintrag.zeit, source: 'navigator', entry_sha256: navHit.entry_sha256 };
+    reusedEnvelope = {
+      variant,
+      typecheck: { status: 'pass', command: TYPECHECK_CMD },
+      test: { status: 'pass', command: TEST_CMD },
+      lint: { status: 'pass', command: LINT_CMD },
+      stubbed: {},
+    };
+  }
+  if (reusedFrom) {
+    const via = reusedFrom.source === 'navigator' ? ' in the navigator gate-run ledger' : '';
+    process.stderr.write(`ℹ Full Gate not re-run: receipt${via} for content tree ${reusedFrom.tree.slice(0, 12)} from ${reusedFrom.at} (#1897)\n`);
+  }
+  // The navigator `zeit` is the run start (ceiling C5).
+  const startedAt = Date.now();
 
   const result = reusedFrom !== null ? {
     pid: 0,
@@ -593,7 +823,7 @@ async function main() {
     timedOut: false,
     survivors: [],
     killSignals: [],
-    fullOutput: `${JSON.stringify({ ...found.envelope, debug_artifacts: collectDebugArtifacts(sessionStartRef), reused_from: reusedFrom })}\n`,
+    fullOutput: `${JSON.stringify({ ...reusedEnvelope, debug_artifacts: collectDebugArtifacts(sessionStartRef), reused_from: reusedFrom })}\n`,
   } : await spawnInGroup(gateCommand, {
     cwd: repoRoot,
     env,
@@ -645,13 +875,41 @@ async function main() {
 
   // Write a receipt only for a green run on a tree that did not change while
   // the suite ran — a peer session or the gate itself writing a file in between
-  // would otherwise confirm content that was never tested.
-  if (receipt && reusedFrom === null && outcome.exitCode === 0 && !result.timedOut && treeBefore !== null) {
+  // would otherwise confirm content that was never tested. The navigator ledger
+  // records every real run on a clean tree (red ones too), under the same
+  // unchanged-tree rule; a reuse is never written there (ceiling C1).
+  if (receipt && reusedFrom === null && treeBefore !== null) {
     let envelope;
     try { envelope = JSON.parse(gateStdout); } catch { envelope = null; }
-    if (envelope !== null && contentTree(repoRoot) === treeBefore) {
+    const localCandidate = outcome.exitCode === 0 && !result.timedOut && envelope !== null;
+    if ((localCandidate || (navKey !== null && navigator.available())) && contentTree(repoRoot) === treeBefore) {
+      if (localCandidate) {
+        const sessionId = [...readProcessLocalSessionIds({ env: process.env, hookInput: null })][0] ?? null;
+        writeReceipt({ repoRoot: storeRoot, tree: treeBefore, definition: receiptDefinition, envelope, sessionId });
+      }
+      const ergebnis = navKey ? navigatorVerdict({ envelope, exitCode: outcome.exitCode, timedOut: result.timedOut }) : null;
+      if (ergebnis) {
+        navigator.write({ key: navKey, gateDef: navGateDef, ergebnis, zeit: new Date(startedAt).toISOString(), dauerMs: Date.now() - startedAt });
+      }
+    }
+  }
+
+  // `--receipt-record`: the same green + unchanged-tree rule, plus the any-node
+  // key and the `pushed-tree` provenance only this writer sets locally (C9, C12).
+  if (recordTree !== null && reusedFrom === null) {
+    let envelope;
+    try { envelope = JSON.parse(gateStdout); } catch { envelope = null; }
+    if (outcome.exitCode === 0 && !result.timedOut && envelope !== null && contentTree(repoRoot) === recordTree) {
       const sessionId = [...readProcessLocalSessionIds({ env: process.env, hookInput: null })][0] ?? null;
-      writeReceipt({ repoRoot, tree: treeBefore, definition: receiptDefinition, envelope, sessionId });
+      writeReceipt({
+        repoRoot: storeRoot,
+        tree: recordTree,
+        definition: gateDefinition(definitionInputs),
+        definitionAnyNode: gateDefinitionAnyNode(definitionInputs),
+        context: PUSHED_TREE_CONTEXT,
+        envelope,
+        sessionId,
+      });
     }
   }
 
@@ -734,7 +992,15 @@ async function main() {
         ...(rerunSkipped ? { rerun_skipped: rerunSkipped } : {}),
         ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
         ...(reusedFrom ? { reused_from: reusedFrom } : {}),
-        ...sessionAttribution(ledgerRoot ?? repoRoot),
+        ...(pushedSha !== null && variant === 'full-gate' ? { pushed_sha: pushedSha } : {}),
+        // The ids come from the SAME root the line lands in (#2005). `repoRoot`
+        // is the cwd; with a null `ledgerRoot` the destination is
+        // `getProjectDir()`, which follows CLAUDE_PROJECT_DIR. Reading the lock
+        // at the cwd instead stamped one checkout's session onto a record in
+        // another checkout's ledger. Pinning the destination to `repoRoot`
+        // instead would have been the wrong half to move: the suite sandboxes
+        // telemetry through CLAUDE_PROJECT_DIR while its cwd is the real repo.
+        ...sessionAttribution(ledgerRoot ?? getProjectDir()),
       },
       // `{}` is byte-identical to omitting the argument (`opts.repoRoot ??
       // getProjectDir()`), so the default path is untouched.

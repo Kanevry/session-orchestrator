@@ -5,6 +5,7 @@
  *   _parseCrossRepo(content)       — PURE, no side effects. Extracts cross-repo.projects from
  *                                    the top-level `cross-repo:` block in markdown content.
  *   getCrossRepoProjects(cwd?)     — async accessor: reads config file, parses, returns list.
+ *   resolveCrossRepoEntry(entry)   — PURE resolver for one flat `cross-repos` entry (#1922).
  *
  * Uses block-scanner (not _parseKV) because the dot in "cross-repo.projects" is not
  * supported by the KV regex. Scans for a `cross-repo:` block and then reads `projects:`.
@@ -16,9 +17,9 @@
 // here). We deliberately do NOT import `parseSessionConfig` — calling it from
 // `getCrossRepoProjects` would re-run `_parseCrossRepo` (double-parse). By calling
 // `_parseCrossRepo` directly on the raw content we parse exactly once. (issue #664)
-import { statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, win32 } from 'node:path';
 import { expandTilde } from '../common.mjs';
 import { readConfigFile } from './io.mjs';
 import { loadHostPaths, resolveHostPath } from './host-paths.mjs';
@@ -169,4 +170,49 @@ export async function getCrossRepoProjects(cwd = process.cwd()) {
   } catch {
     return [];
   }
+}
+
+/**
+ * Resolve one flat `cross-repos` entry by the one rule stated in
+ * docs/session-config-reference.md § cross-repos (#1922): an entry that starts
+ * with `/` or `~/` is a path used as written (a leading `~` expands to `home`);
+ * any other entry is a bare repository name under `~/Projects/<name>`. A missing
+ * folder is a hint, never an error — the caller prints `hint` and continues.
+ *
+ * Pure: no logging, no throw on a missing folder; the filesystem is touched only
+ * through the injected `exists`.
+ *
+ * Projects root: bare names resolve under `projectsRoot`, default
+ * `<home>/Projects`. Session start and `/plan` use the default; the dispatcher
+ * (`scripts/lib/dispatcher/enumerate.mjs`) passes its confinement root
+ * (getConfinementRoot(): SO_PROJECTS_ROOT > owner.yaml paths.projects-root >
+ * ~/Projects), so a name lands inside the directory its FS scan confines to.
+ * One rule, one configurable root.
+ *
+ * @param {string} entry — one raw list entry from Session Config `cross-repos`
+ * @param {{ home?: string, projectsRoot?: string, exists?: (path: string) => boolean }} [opts]
+ * @returns {{ entry: string, path: string, kind: 'path'|'name', exists: boolean, hint: string|null }}
+ * @throws {TypeError} when `entry` is not a non-blank string
+ */
+export function resolveCrossRepoEntry(
+  entry,
+  { home = homedir(), projectsRoot = join(home, 'Projects'), exists = existsSync } = {},
+) {
+  if (typeof entry !== 'string' || entry.trim() === '') {
+    throw new TypeError('resolveCrossRepoEntry: entry must be a non-blank string');
+  }
+  const value = entry.trim();
+  // A Windows drive path (`C:\…`, `C:/…`) is a path too — before this check the
+  // dispatcher resolved it with path.resolve(), so a bare-name reading would
+  // have turned it into `<projectsRoot>/C:\…` (W3-P3 finding, 2026-11-02).
+  const isPath = value.startsWith('/') || value.startsWith('~/') || win32.isAbsolute(value);
+  const path = value.startsWith('~/') ? join(home, value.slice(2)) : isPath ? value : join(projectsRoot, value);
+  const found = Boolean(exists(path));
+  return {
+    entry: value,
+    path,
+    kind: isPath ? 'path' : 'name',
+    exists: found,
+    hint: found ? null : `cross-repos: ${value} — no folder at ${path}, skipped`,
+  };
 }

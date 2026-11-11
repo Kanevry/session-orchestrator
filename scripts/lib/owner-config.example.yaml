@@ -53,3 +53,21 @@ hardware-sharing:
 # Optional. Host-local cross-repo dispatcher autonomy override (#679).
 # dispatcher:
 #   autonomy: ''   # '' = no override; one of off | advisory | autonomous-gated
+
+# Optional. Notification switches for THIS user/host (#1936).
+# stop: false = no desktop notification ("Session stopped — your turn",
+# OSC 9 + OSC 777) when a session stops. Useful when you run many sessions
+# in parallel and read open work from an inbox instead. Absent = on.
+# Env SO_STOP_NOTIFICATION=off|on overrides this for one process.
+# notifications:
+#   stop: false
+
+# Optional. Agent caps and memory brake for THIS user/host.
+# Per field: env > this > Session Config agent-caps > default. off = no limit.
+# Env: SO_AGENT_CAP_PROCESS_STARTING, SO_AGENT_CAP_READING,
+# SO_AGENT_BRAKE_ENGAGE_PCT, SO_AGENT_BRAKE_RELEASE_PCT.
+# agent-caps:
+#   process-starting: 6     # number from 1, or off
+#   reading: 6              # number from 1, or off
+#   brake-engage-pct: 15    # 1 to 99, or off
+#   brake-release-pct: 20   # 1 to 99, not below brake-engage-pct

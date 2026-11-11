@@ -4,7 +4,7 @@
     "target": null,
     "driver": "playwright",
     "mode": "headless",
-    "rubric": "skills/test-runner/rubric-v1.md",
+    "rubric": "skills/test-runner/rubric-v2.md",
     "checks": ["onboarding", "axe", "console"],
     "tags": ["smoke", "web"],
     "timeout_ms": 120000,

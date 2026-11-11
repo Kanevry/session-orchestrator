@@ -389,7 +389,7 @@ export function applyPrune(plan, { vaultDir }) {
       mkdirSync(dirname(dst), { recursive: true });
       if (a.action === 'move') {
         if (existsSync(dst)) throw new Error(`target exists: ${a.target}`);
-        renameSync(src, dst);
+        renameSync(src, dst); // direct-rename:ok move of a note inside the vault zone, not a content write; a failure is recorded per action
         moved += 1;
         continue;
       }

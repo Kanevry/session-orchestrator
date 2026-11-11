@@ -153,10 +153,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 
-import { isShellCommandTool, readStdin, writeStdoutLineSync } from '../scripts/lib/io.mjs';
+import { isShellCommandTool, readStdin, writeJsonAtomicSync, writeStdoutLineSync } from '../scripts/lib/io.mjs';
 import { detectSecretOutput } from '../scripts/lib/secret-output-detector.mjs';
+import { secretNeedleEntries } from '../scripts/lib/secret-masker.mjs';
 import { pathMatchesPattern } from '../scripts/lib/hardening.mjs';
 // #1057 — `sessionAgeMs` and its private `clockAgeMs` helper MOVED to the lib so
 // hooks/enforce-scope.mjs can read the same session clock without a hook->hook
@@ -695,6 +696,22 @@ export function formatMessage(report, allowedCount) {
 }
 
 /**
+ * The scope file's path relative to the repo root, in the POSIX form git
+ * reports dirty paths in — `computeReport` excludes it by string equality, so
+ * the native win32 `.claude\wave-scope.json` matched no git path and every Bash
+ * call reported the manifest itself as an out-of-scope write (#1742).
+ *
+ * @param {string} repoRoot
+ * @param {string} scopePath absolute path of wave-scope.json
+ * @param {{relative: Function, sep: string}} [pathApi] node:path flavour (tests pass `path.win32`)
+ * @returns {string} the relative POSIX path, or `scopePath` when it IS the root
+ */
+export function scopeRelPathOf(repoRoot, scopePath, pathApi = path) {
+  const rel = pathApi.relative(repoRoot, scopePath);
+  return rel === '' ? scopePath : rel.split(pathApi.sep).join('/');
+}
+
+/**
  * Render the control-file-change notice (#938 vector 1).
  *
  * Fired whenever the wave-scope.json CONTENT differs from the state recorded
@@ -934,7 +951,8 @@ function trustedScopeState(snapshot) {
 }
 
 /**
- * Atomic tmp+rename write; failure is non-fatal (worst case: a re-baseline).
+ * Atomic tmp+rename write via the shared `writeJsonAtomicSync` (#1865: EPERM/EBUSY
+ * retry and tmp cleanup); failure is non-fatal (worst case: a re-baseline).
  *
  * The schema marker is stamped HERE, not at the call sites: it is the property
  * that makes a record trustworthy, so the one place that produces records is the
@@ -942,10 +960,8 @@ function trustedScopeState(snapshot) {
  */
 function writeSnapshot(file, data) {
   try {
-    mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ ...data, schema: SNAPSHOT_SCHEMA }), 'utf8');
-    renameSync(tmp, file);
+    // Returns an fs-error envelope instead of throwing; ignored — best-effort.
+    writeJsonAtomicSync(file, { ...data, schema: SNAPSHOT_SCHEMA }, { indent: 0, tmpPrefix: `.tmp-pbwv-${process.pid}` });
   } catch {
     /* best-effort */
   }
@@ -1067,7 +1083,7 @@ async function verifyBashWrites(input, emit) {
   // Nothing but the hash/enforcement snapshot is derived here: no path
   // evaluation, no allowedPaths read, no report — those still wait for the
   // classification below to judge the manifest ours.
-  const relScopePath = path.relative(repoRoot, scopePath) || scopePath;
+  const relScopePath = scopeRelPathOf(repoRoot, scopePath);
   const currentScopeState = {
     hash: createHash('sha1').update(raw).digest('hex').slice(0, 16),
     enforcement: scope
@@ -1345,6 +1361,31 @@ async function verifyBashWrites(input, emit) {
 }
 
 /**
+ * #1799 point 3 — the notice for a scan that did not cover the whole output.
+ * A clean scan is silent; an incomplete one must not look like it.
+ *
+ * @param {number} bytes — output size (a lower bound when the stdin cap fired)
+ * @returns {string}
+ */
+function truncatedScanNotice(bytes) {
+  return `SEC-008: output truncated (${bytes} bytes, middle skipped) — values in the middle were not checked.`;
+}
+
+/**
+ * UTF-8 byte size of the scannable streams of a `tool_response` (string or
+ * `{ stdout, stderr }`), for the truncation notice.
+ *
+ * @param {unknown} toolResponse
+ * @returns {number}
+ */
+function responseBytes(toolResponse) {
+  if (typeof toolResponse === 'string') return Buffer.byteLength(toolResponse, 'utf8');
+  if (!toolResponse || typeof toolResponse !== 'object') return 0;
+  const r = /** @type {Record<string, unknown>} */ (toolResponse);
+  return [r.stdout, r.stderr].reduce((n, s) => n + (typeof s === 'string' ? Buffer.byteLength(s, 'utf8') : 0), 0);
+}
+
+/**
  * SEC-008 value detector (#1786): scan this call's output for qualifying env
  * values of the HOOK's own `process.env`, emit one event on a hit and return
  * the visible notice. Never a value in any output; never throws.
@@ -1352,8 +1393,18 @@ async function verifyBashWrites(input, emit) {
  * NAMED CEILING (BV-004): no secrets file is read — a value a command loads
  * itself (`set -a; . ./.env.local`) is not in this env and is invisible here.
  *
+ * NAMED CEILING (BV-004): only the literal value and its one-level JSON-escaped
+ * form are needles (`scripts/lib/secret-output-detector.mjs`). A value that is
+ * double-escaped, line-wrapped (`fold`), base64- or URL-encoded is NOT detected.
+ * Revisit-Trigger: an incident in one of these forms (#1799 point 4).
+ *
+ * A truncated scan without a hit returns the truncation notice (#1799 point 3).
+ * HR-101: it fires only when a stream exceeds 2 × 64 KiB; the measured Bash
+ * output max is 29,965 B over 44,382 results (2026-10-25, detector header), so
+ * the measured firing rate is 0 % — far below the ~10 % broken-instrument line.
+ *
  * @param {Record<string, any>} input
- * @returns {Promise<string|null>}
+ * @returns {Promise<{ text: string, warn: boolean }|null>}
  */
 async function detectSecretEmission(input) {
   let found;
@@ -1363,7 +1414,9 @@ async function detectSecretEmission(input) {
     try { process.stderr.write('⚠ bash-write-verify: SEC-008 detector failed (skipped)\n'); } catch { /* closed */ }
     return null;
   }
-  if (found.hits === 0) return null;
+  if (found.hits === 0) {
+    return found.truncated ? { text: truncatedScanNotice(responseBytes(input.tool_response)), warn: false } : null;
+  }
   const MAX_NAMED_KEYS = 10;
   const named = found.envKeys.slice(0, MAX_NAMED_KEYS).join(', ')
     + (found.envKeys.length > MAX_NAMED_KEYS ? ` (+${found.envKeys.length - MAX_NAMED_KEYS} more)` : '');
@@ -1378,14 +1431,40 @@ async function detectSecretEmission(input) {
       truncated: found.truncated,
     });
   } catch { /* observability is best-effort — the notice below still stands */ }
-  return `SEC-008 incident: this Bash output contained the value of env ${named} `
-    + `(${found.hits} match${found.hits === 1 ? '' : 'es'}${found.truncated ? ', output only partly scanned' : ''}). `
-    + 'The value is now in the transcript: rotate it and file an owner-queue item. '
-    + 'Do not repeat the value; print key names, presence or length only.';
+  return {
+    text: `SEC-008 incident: this Bash output contained the value of env ${named} `
+      + `(${found.hits} match${found.hits === 1 ? '' : 'es'}${found.truncated ? ', output only partly scanned' : ''}). `
+      + 'The value is now in the transcript: rotate it and file an owner-queue item. '
+      + 'Do not repeat the value; print key names, presence or length only.',
+    warn: true,
+  };
 }
 
+/** `readStdin`'s cap error text (scripts/lib/io.mjs) — carries the bytes read so far. */
+const STDIN_CAP_RE = /stdin payload exceeds 1 MB limit \((\d+) bytes read\)/;
+
 async function main() {
-  const input = await readStdin();
+  let input;
+  try {
+    input = await readStdin();
+  } catch (err) {
+    // #1799 point 3: a payload over the 1 MB cap is never parsed, so neither the
+    // tool name nor the output is known. The matcher (`Bash|Monitor` in
+    // hooks.json) makes it a shell call; say the scan was skipped instead of
+    // ending silent. The byte count is a lower bound (read stops at the cap).
+    // NAMED CEILING (BV-004): recognised by io.mjs's error TEXT — no typed error
+    // exists there; a reworded message makes this branch silent again.
+    // Revisit-Trigger: a typed stdin-cap error in scripts/lib/io.mjs.
+    // HR-101: like the detector's own truncation path (it returns before
+    // `truncated` when no needle qualifies), the notice needs a non-empty
+    // needle set — same source, `secretNeedleEntries`, no second derivation.
+    const m = STDIN_CAP_RE.exec(err instanceof Error ? err.message : '');
+    if (m && secretNeedleEntries(process.env).length > 0) {
+      const notice = truncatedScanNotice(Number(m[1]));
+      emitMessages([notice], false, notice);
+    }
+    return;
+  }
   if (!input) return;
 
   // G2 — verify writes and output from Bash and Monitor calls.
@@ -1402,10 +1481,10 @@ async function main() {
     await verifyBashWrites(input, (m, w) => { messages.push(...m); warn = warn || w; });
   } finally {
     if (secretNotice) {
-      messages.unshift(secretNotice);
-      warn = true;
+      messages.unshift(secretNotice.text);
+      warn = warn || secretNotice.warn;
     }
-    if (messages.length > 0) emitMessages(messages, warn, secretNotice);
+    if (messages.length > 0) emitMessages(messages, warn, secretNotice?.text ?? null);
   }
 }
 

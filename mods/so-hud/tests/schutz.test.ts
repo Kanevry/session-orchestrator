@@ -478,6 +478,54 @@ test('headless push passes to the CLI once and leaves a receipt', opts(), async 
   expect(w.runs).toEqual(['Bash'])
   expect(w.receipts[0]).toMatchObject({ ergebnis: 'ohne-zeichenflaeche', art: 'push' })
 })
+// outwardHeadless: deny (#1817) — opt-in refusal where nobody can be asked.
+const headlessDeny = (strictness: Profile = 'ausgewogen') => ({ options: { soRoot: '/so', strictness, outwardHeadless: 'deny' } })
+const RAN = { result: { stdout: '', stderr: '', interrupted: false }, text: '' }
+// Catches: the opt-in switch letting a push to main run in a run with no surface.
+test('outwardHeadless deny refuses a headless push to main and records why', headlessDeny(), async ($, on) => {
+  const w = world(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: false })
+  const result = JSON.stringify(await $.tool.call(bash('git push origin main')))
+  expect(result).toContain('outwardHeadless: deny')
+  expect(result).toContain('Sitzung mit Oberfläche')
+  expect(w.asks).toEqual([])
+  expect(w.runs).toEqual([])
+  expect(w.receipts).toHaveLength(1)
+  expect(w.receipts[0]).toMatchObject({ ergebnis: 'ohne-zeichenflaeche-abgelehnt', art: 'push', exit: null })
+})
+// Catches: the switch covering pushes only, while merges — checked by no other gate headless — still run.
+test('outwardHeadless deny refuses a headless merge, also on locker', headlessDeny('locker'), async ($, on) => {
+  const w = world(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: false })
+  expect(JSON.stringify(await $.tool.call(bash('glab mr merge 42')))).toContain('outwardHeadless: deny')
+  expect(w.runs).toEqual([])
+  expect(w.receipts[0]).toMatchObject({ ergebnis: 'ohne-zeichenflaeche-abgelehnt', art: 'merge' })
+})
+// Catches: any value other than the exact string `deny` changing the receipt-and-run result.
+for (const [name, options] of [
+  ['unset', { soRoot: '/so', strictness: 'ausgewogen' }],
+  ['allow', { soRoot: '/so', strictness: 'ausgewogen', outwardHeadless: 'allow' }],
+  ['Deny', { soRoot: '/so', strictness: 'ausgewogen', outwardHeadless: 'Deny' }],
+  ['boolean true', { soRoot: '/so', strictness: 'ausgewogen', outwardHeadless: true }],
+] as const) {
+  test(`outwardHeadless ${name} keeps the headless receipt-and-run result`, { options }, async ($, on) => {
+    const w = world(on)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: false })
+    expect(await $.tool.call(bash('git push origin main'))).toEqual(RAN)
+    expect(w.runs).toEqual(['Bash'])
+    expect(w.receipts).toHaveLength(1)
+    expect(w.receipts[0]).toMatchObject({ ergebnis: 'ohne-zeichenflaeche', art: 'push', exit: null, profil: 'ausgewogen' })
+  })
+}
+// Catches: the switch refusing where a surface can ask, taking the owner's decision away.
+test('outwardHeadless deny still asks where a surface is attached', headlessDeny(), async ($, on) => {
+  const w = world(on, { surfaces: ['desktop'], answer: (_q, labels) => labels.find(l => CONFIRM.includes(l)) ?? null })
+  await $.session.start({ cwd: '/repo', surface: null, isInteractive: false })
+  expect(await $.tool.call(bash('git push origin main'))).toEqual(RAN)
+  expect(w.asks).toHaveLength(2)
+  expect(w.runs).toEqual(['Bash'])
+  expect(w.receipts[0]).toMatchObject({ ergebnis: 'ausgefuehrt' })
+})
 
 // ---- Collisions (F8) -----------------------------------------------------------------
 const collide = [peer('peer-b', ['src/'])]

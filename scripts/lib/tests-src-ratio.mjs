@@ -26,7 +26,8 @@
  *                files (`*.d.ts`, `*.d.mts`, `*.d.cts` — types, not executable code)
  *   numerator    tracked code under a top-level `tests/`, plus co-located tests
  *                anywhere: basename `*.test.<ext>` / `*.spec.<ext>`, or any file
- *                under a `__tests__/` directory
+ *                under a `__tests__/` directory; Python/Swift also use nested
+ *                `tests/` / `Tests/` and `test_*.py` / `*_test.py` / `*Tests.swift`
  *   denominator  every OTHER tracked code file
  *   reported     tracked shell (EXCLUDED_SHELL_EXTENSIONS) — in NEITHER bucket,
  *                its volume shipped as `excludedScope.shell` (#1488, variant B)
@@ -79,11 +80,11 @@
  *   1 — --check only: ratio exceeds the ceiling
  *   2 — tool error (missing/unreadable root, bad argv)
  *   3 — --check only: ratio not measurable — 0 test files counted while test-like
- *       files ARE tracked (`reason: 'no-tests-found'`, e.g. a Python repo whose
- *       `tests/test_*.py` sit outside CODE_EXTENSIONS). Fail-closed since #1451:
+ *       files ARE tracked (`reason: 'no-tests-found'`, e.g. a Ruby repo whose
+ *       `tests/test_*.rb` sit outside CODE_EXTENSIONS). Fail-closed since #1451:
  *       before, such a repo read `ratio 0, withinCorridor true` — "not found"
  *       reported as "in corridor". TypeScript tests count since the 2026-10-01
- *       owner decision on #1451; other stacks still get "not measurable".
+ *       owner decision on #1451; Python/Swift count since #2021.
  */
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
@@ -112,6 +113,8 @@ export const CODE_EXTENSIONS = Object.freeze([
   '.tsx',
   '.mts',
   '.cts',
+  '.py',
+  '.swift',
 ]);
 
 /**
@@ -147,31 +150,33 @@ const COLOCATED_TEST_RE = /\.(test|spec)\.[^./]+$|(^|\/)__tests__\//;
  * @param {string} p normalised repo-relative path
  */
 function isTestCorpusPath(p) {
-  return p.startsWith(TEST_PREFIX) || COLOCATED_TEST_RE.test(p);
+  // #2021: recognise Python/Swift conventions without changing the JS/TS recipe.
+  const stackTest = /(^|\/)(test_[^/]*\.py|[^/]*_test\.py|[^/]*Tests\.swift)$/.test(p)
+    || (/\.(py|swift)$/.test(p) && /(^|\/)(tests|Tests)\//.test(p));
+  return p.startsWith(TEST_PREFIX) || COLOCATED_TEST_RE.test(p) || stackTest;
 }
 
 /**
- * A tracked path that LOOKS like a test, counted or not: a `*.test.*` / `*.spec.*`
- * JS/TS file, anything under a `__tests__/` segment, or any file under `tests/`
- * regardless of extension. Used only to tell "this repo has no tests" apart from
- * "this repo has tests the recipe cannot see" (#1451) — e.g. `tests/test_x.py`.
- */
-const TEST_LIKE_RE = /\.(test|spec)\.[cm]?[jt]sx?$/;
-
-/**
+ * A tracked path that LOOKS like a test, counted or not. Use the same corpus
+ * rules (#2021), including paths with uncounted extensions under `tests/`, to
+ * distinguish "no tests" from "tests the recipe cannot see" (#1451).
+ *
  * @param {string} relPath repo-relative path
  * @returns {boolean}
  */
 export function isTestLikePath(relPath) {
   const p = String(relPath).replace(/\\/g, '/').replace(/^\.\//, '');
-  return TEST_LIKE_RE.test(p) || p.startsWith(TEST_PREFIX) || /(^|\/)__tests__\//.test(p);
+  return isTestCorpusPath(p);
 }
 
 /** The TV-003 ceiling. Exceeding it switches the consolidation rule on. */
 export const DEFAULT_CEILING = 1.6;
 
-/** Machine-readable schema tag for the --json envelope. */
-export const SCHEMA = 'tests-src-ratio/2';
+/**
+ * Machine-readable schema tag for the --json envelope. `/3` since #2021: Python
+ * and Swift count, so a ratio under `/2` and one under `/3` are not comparable.
+ */
+export const SCHEMA = 'tests-src-ratio/3';
 
 /**
  * Which bucket a repo-relative path belongs to.
@@ -181,7 +186,7 @@ export const SCHEMA = 'tests-src-ratio/2';
  * two buckets a partition rather than two globs that can overlap or leave a gap.
  *
  * Known blind spot: a nested `pkg/tests/helper.ts` that is not itself named
- * `*.test.*` counts as src — only the TOP-LEVEL `tests/` is a test directory.
+ * `*.test.*` counts as src — JS/TS keep the TOP-LEVEL `tests/` rule (#2021).
  *
  * @param {string} relPath repo-relative path, `/`-separated
  * @returns {'test'|'src'|null} null = outside the metric entirely
@@ -301,7 +306,7 @@ export function measure({ files, readFile, ceiling = DEFAULT_CEILING }) {
   // A repo with no src code has an undefined ratio, not an infinite one. Saying
   // `null` keeps the consumer from reading Infinity as a corridor breach.
   // Fail closed (#1451): a zero numerator next to tracked test-like files means
-  // the recipe cannot SEE this repo's tests (e.g. `tests/test_x.py`), not that
+  // the recipe cannot SEE this repo's tests (e.g. `tests/test_x.rb`), not that
   // there are none. Reporting ratio 0 / withinCorridor true there turned "not found"
   // into "green". The verdict is unknown, so every verdict field is null.
   if (testFiles === 0 && testLikeFilesSeen > 0) {
@@ -352,7 +357,8 @@ export function definitionOf(source) {
     declarationsExcluded: [...DECLARATION_SUFFIXES],
     numerator:
       `tracked code files under a top-level ${TEST_PREFIX}, plus co-located tests anywhere: ` +
-      'basename *.test.<ext> / *.spec.<ext>, or any file under a __tests__/ directory',
+      'basename *.test.<ext> / *.spec.<ext>, or any file under a __tests__/ directory; ' +
+      'Python/Swift also use any tests/ or Tests/ segment and test_*.py / *_test.py / *Tests.swift',
     denominator: `every OTHER tracked code file (src defined by negation, not by a directory list)`,
     lineRule: 'physical lines; blank + comment lines counted; EOF-newline-insensitive',
     excluded:

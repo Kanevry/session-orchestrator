@@ -116,6 +116,8 @@ export const LEARNING_TYPE_REGISTRY = Object.freeze({
   // delta) surfaced via /evolve extra-sources. 60d aligns with the moderate-decay tier
   // (hardware-pattern / default) — a regression signal should age out if it stops recurring.
   'domain-regression':           Object.freeze({ ttlDays: 60, agentProposable: true,  ruleConvertible: false, hostScoped: false }),
+  // owner-preference: sidecar-synthesized owner decision patterns; analyzer-only.
+  'owner-preference':            Object.freeze({ ttlDays: 60, agentProposable: false, ruleConvertible: false, hostScoped: false }),
   'convention':                  Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true,  hostScoped: false }),
   'architecture-pattern':        Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true,  hostScoped: false }),
   'design-pattern':              Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true,  hostScoped: false }),

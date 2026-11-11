@@ -49,13 +49,14 @@
  */
 
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import { promises as fs } from 'node:fs';
 import {
   loadVaultMigrationRules,
   VAULT_MIGRATION_RULES_PATH,
 } from './lib/vault-migration-rules.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
+import { atomicWriteText, envelopeToError } from './lib/io.mjs';
 
 const MARKER_REL = '.orchestrator/welcome-banner-pending';
 const ORCH_REL = '.orchestrator';
@@ -274,12 +275,12 @@ async function processRepo(repo, { apply }) {
     return { repo, status: 'would-seed', gitTracked };
   }
 
-  // --apply: write zero-byte marker atomically (tmp + rename).
+  // --apply: write zero-byte marker atomically (shared tmp + rename helper:
+  // win32 rename retry and tmp cleanup on failure, #1865). The envelope is
+  // re-raised so the EACCES/EPERM triage below sees the original code+message.
   try {
-    await fs.mkdir(dirname(markerPath), { recursive: true });
-    const tmp = `${markerPath}.tmp-${process.pid}-${Date.now()}`;
-    await fs.writeFile(tmp, '', { encoding: 'utf8', flag: 'wx' });
-    await fs.rename(tmp, markerPath);
+    const res = await atomicWriteText(markerPath, '');
+    if (!res.ok) throw envelopeToError(res);
   } catch (err) {
     if (err.code === 'EACCES' || err.code === 'EPERM') {
       return {

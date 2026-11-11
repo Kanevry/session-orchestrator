@@ -4,9 +4,9 @@
 // Exit 0 = all checks passed, 1 = at least one failure.
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 import { CURSOR_TO_CANONICAL_EVENT } from '../cursor-hook-bridge.mjs';
 import { isMainModule } from '../is-main-module.mjs';
@@ -99,6 +99,16 @@ function validateArtefactFrontmatter(filePath, rel, { requireName }) {
 }
 
 /**
+ * Repo-relative label of an artefact, `/` on every host (#1742).
+ * @param {string} root
+ * @param {string} filePath
+ * @returns {string}
+ */
+function posixRel(root, filePath) {
+  return relative(root, filePath).split(sep).join('/');
+}
+
+/**
  * Validate every generated Cursor artefact under `<pluginRoot>/.cursor`.
  *
  * This deliberately does NOT run the generator. Comparing generator output to
@@ -120,7 +130,7 @@ export function validateCursorArtefacts(pluginRoot) {
       const filePath = join(commandsDir, name);
       files += 1;
       violations.push(
-        ...validateArtefactFrontmatter(filePath, relative(pluginRoot, filePath), { requireName: false }),
+        ...validateArtefactFrontmatter(filePath, posixRel(pluginRoot, filePath), { requireName: false }),
       );
     }
   }
@@ -134,7 +144,7 @@ export function validateCursorArtefacts(pluginRoot) {
       if (!isDir || !existsSync(filePath)) continue;
       files += 1;
       violations.push(
-        ...validateArtefactFrontmatter(filePath, relative(pluginRoot, filePath), { requireName: true }),
+        ...validateArtefactFrontmatter(filePath, posixRel(pluginRoot, filePath), { requireName: true }),
       );
     }
   }

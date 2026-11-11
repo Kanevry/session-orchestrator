@@ -64,6 +64,8 @@ Skip entirely when `persistence: false` in Session Config (no STATE.md exists in
 
 Before dispatching agents, the coordinator runs a resource gate to decide whether the wave should proceed as planned, reduce its agent count, or escalate to coordinator-direct. Gated on `$CONFIG["resource-awareness"]` (default: true).
 
+The agent caps of the fleet conditions (Auflagen file or Standard-Auflagen) and the memory emergency brake (< 15 % free by default) are no longer this gate's job: `hooks/pre-agent-cap.mjs` enforces them mechanically on every `Agent` dispatch and denies one above the cap (#1959; default 6 + 6, configurable via `agent-caps`, see `docs/session-config-reference.md` § Agent Caps). This gate stays for sizing and offload decisions.
+
 ```js
 import {evaluateWaveResourceGate, formatGateReport} from "scripts/lib/wave-resource-gate.mjs";
 

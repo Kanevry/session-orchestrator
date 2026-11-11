@@ -569,6 +569,138 @@ export function registeredWorktreeRoots(commonDir) {
 }
 
 /**
+ * Does git's boolean parser read this raw config value as false? Spellings
+ * measured against `git config --bool` (#1981, 2026-11-08, git 2.56): the empty
+ * value, `false`/`no`/`off`, and an integer zero with any sign, base prefix or
+ * unit (`00`, `-0`, `0x0`, `0k`). Any of these may carry balanced double quotes.
+ * An unterminated quote, or anything else, is not false.
+ *
+ * @param {string} raw  the value with its comment already removed
+ * @returns {boolean}
+ */
+function _gitReadsFalse(raw) {
+  const value = raw.replace(/^[ \t\r]+|[ \t\r]+$/g, '');
+  if (value.split('"').length % 2 === 0) return false;
+  return /^(?:|false|no|off|[-+]?(?:0+|0x0+)[kmg]?)$/i.test(value.replaceAll('"', ''));
+}
+
+/**
+ * Does this Git config text make the repository bare? Reads the `[core]`
+ * sections only; the last `bare` wins, as in git. Fails towards bare: only a
+ * value {@link _gitReadsFalse} accepts (or no key at all) answers `false`.
+ *
+ * Ceiling (BV-004): `include.path` is not followed, and `\` continuation lines
+ * are not joined. A continuation inside `[core]` answers bare for the whole
+ * file, because the next line may not be a key at all, so a checkout whose
+ * `[core]` holds one loses the #1977 grant although git reads it as non-bare.
+ * Two forms read as non-bare where git reads bare: a continuation in ANOTHER
+ * section that swallows a later `[core]` header, and two headers on one line.
+ * Revisit if a bare repo with an included `core.bare` or such a checkout
+ * reports #1977.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+function _configSetsBare(text) {
+  let inCore = false;
+  let bare = false;
+  for (const line of text.split(/\r?\n/)) {
+    // `[\s\S]`, not `.`: a stray CR survives the split, and `.` would drop the whole key.
+    const header = /^\s*\[([^\]]*)\]([\s\S]*)$/.exec(line);
+    if (header) inCore = header[1].trim().toLowerCase() === 'core';
+    if (!inCore) continue;
+    const body = (header ? header[2] : line).replace(/[#;][\s\S]*$/, '');
+    if (body.endsWith('\\')) return true;
+    const setting = /^\s*bare\s*(?:=([\s\S]*))?$/i.exec(body);
+    if (setting) bare = setting[1] === undefined || !_gitReadsFalse(setting[1]);
+  }
+  return bare;
+}
+
+/**
+ * Is `commonDir` the Git directory of a repository with a working copy? Needs a
+ * `HEAD` file, an `objects` directory and a config that leaves `bare` unset or
+ * false. Measured 2026-11-08: a real repo's config is 8647 bytes, past the 8 KiB
+ * of {@link readWorktreeMetadata}, hence the separate cap. Over the cap answers
+ * `false`; revisit if a real config reaches it. Never throws.
+ *
+ * @param {string} commonDir
+ * @returns {boolean}
+ */
+function _isNonBareRepository(commonDir) {
+  try {
+    if (!lstatSync(path.join(commonDir, 'HEAD')).isFile()) return false;
+    if (!lstatSync(path.join(commonDir, 'objects')).isDirectory()) return false;
+    const config = path.join(commonDir, 'config');
+    const info = lstatSync(config);
+    if (!info.isFile() || info.size > 1024 * 1024) return false;
+    return !_configSetsBare(readFileSync(config, 'utf8'));
+  } catch { return false; }
+}
+
+/**
+ * The main checkout of the linked worktree holding `dir`, for a caller that
+ * GRANTS something based on the answer (#1977), or `''`.
+ *
+ * Unlike {@link _mainCheckoutOfLinkedWorktree}, which trusts the `.git` file's
+ * forward pointer and is fine for routing a ledger, this goes through
+ * `worktreeBinding`: the admin dir must sit in `<common>/worktrees/` and its
+ * `gitdir` file must name this very worktree. A `.git` file aimed at another
+ * repo's admin dir therefore fails on the back-pointer. A main checkout INSIDE
+ * the worktree is refused too: a fabricated `<wt>/x/.git/worktrees/y` satisfies
+ * both checks, and `<wt>/x` can encode to the harness name of a sibling repo.
+ * The common dir must also be a repository with a working copy
+ * ({@link _isNonBareRepository}), so the two pointer files alone answer nothing
+ * and a bare repo named `.git` is not taken for a checkout. Spawn-free; never
+ * throws.
+ *
+ * Ceilings (BV-004): whoever can create a complete repository with reciprocal
+ * pointers OUTSIDE the worktree still gets that repository's answer, because
+ * nothing on disk tells a fabricated repository from a real one. If that path
+ * encodes like a foreign repo (`encodeProjectDir` maps `/` and `.` to `-`), the
+ * grant lands on the foreign repo's folder: the encoder's own name collision.
+ * The answer names a repository only as far as that location is not writable by
+ * the caller. A worktree with relative back-pointers (`worktree.useRelativePaths`)
+ * answers `''`, so its callers grant nothing extra. Revisit if a session in such
+ * a worktree reports #1977, or if a caller grants more than a memory folder.
+ *
+ * @param {string} dir
+ * @returns {string}  Absolute canonical path, or `''`
+ */
+export function verifiedMainCheckout(dir) {
+  const root = typeof dir === 'string' && dir !== '' ? dotGitAncestor(dir) : '';
+  if (!root) return '';
+  try {
+    const { commonDir } = worktreeBinding(root);
+    if (path.basename(commonDir) !== '.git' || !_isNonBareRepository(commonDir)) return '';
+    const main = path.dirname(commonDir);
+    return _isStrictlyInside(main, root) ? '' : main;
+  } catch { return ''; }
+}
+
+/**
+ * Canonical git common dir of the working copy holding `dir` (any depth), or
+ * `''`: the identity of a repository across its main checkout and its linked
+ * worktrees (#1981). A linked worktree must pass `worktreeBinding`, so a forged
+ * `.git` file names no repository. Spawn-free; never throws.
+ *
+ * Ceiling (BV-004): a submodule and a worktree with relative back-pointers
+ * answer `''`, so a caller comparing identities treats them as unrelated.
+ * Revisit if either needs to share a session lock with its parent checkout.
+ *
+ * @param {string} dir
+ * @returns {string}
+ */
+export function repositoryCommonDir(dir) {
+  const root = typeof dir === 'string' && dir !== '' ? dotGitAncestor(dir) : '';
+  if (!root) return '';
+  try {
+    const dotGit = path.join(root, '.git');
+    return lstatSync(dotGit).isDirectory() ? _canonical(dotGit) : worktreeBinding(root).commonDir;
+  } catch { return ''; }
+}
+
+/**
  * The spot in ANOTHER working copy of the launch root's repository that matches
  * the launch root — `<cwd's linked worktree>/<launchRoot relative to its own
  * checkout>` — or `''` (#1605). The one candidate a lifecycle hook may move a
@@ -669,6 +801,25 @@ function _inMainCheckout(dir) {
   if (!ancestor) return '';
   const main = _mainCheckoutOfLinkedWorktree(ancestor);
   return main ? path.join(main, path.relative(ancestor, dir)) : '';
+}
+
+/**
+ * Root of the runtime state (`<root>/.orchestrator/runtime/…`) for the checkout
+ * holding `dir`: its git toplevel, mapped to the main checkout for a linked
+ * worktree — never a subdirectory (#1730 Pkt 5). Unlike
+ * {@link resolveEventsLedgerRoot}, which keeps a launch subdirectory on
+ * purpose, a writer running in `wt/sub` and a reader holding the repo root
+ * must name the SAME file. A non-git `dir` is returned resolved, unchanged.
+ * Spawn-free, never throws.
+ *
+ * @param {string} dir
+ * @returns {string}  Absolute path
+ */
+export function resolveRuntimeStateRoot(dir) {
+  const abs = path.resolve(dir);
+  const top = dotGitAncestor(abs);
+  if (!top) return abs;
+  return _inMainCheckout(top) || top;
 }
 
 /**

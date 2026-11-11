@@ -10,11 +10,28 @@ The `schema-drift-check` job compares the vendored `vault-frontmatter` schema
 in this repo against the canonical source in
 `infrastructure/projects-baseline` (project ID 52, private).
 
-Because the target repo is on the same private GitLab instance but is a
-**different project**, `CI_JOB_TOKEN` is rejected with HTTP 403 unless
-project-level Job Token allowlists are explicitly configured — an admin action
-in the foreign project that cannot be scripted from here. The fix is a deploy
-token or PAT stored as the masked CI variable `SCHEMA_DRIFT_TOKEN`.
+**Credential model (since 2026-11-01, #1820).** The job clones the baseline
+with its own job token:
+`https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/infrastructure/projects-baseline.git`.
+Because the target repo is a **different project** on the same instance,
+GitLab accepts that only if project 52 lists this project (74) on its
+**inbound job-token allowlist** — an admin action on project 52, done
+2026-11-01 (the same arrangement `agents/lead-session-orchestrator`, project
+223, already had). Without the entry the clone gets HTTP 403 and the job exits
+5 `UNAVAILABLE`.
+
+`SCHEMA_DRIFT_TOKEN` (the Project Access Token below) is now an **optional,
+legacy fallback**: the job tries it once, only when the job-token clone fails
+and the variable is set. Before #1820 it was the only credential, and since MR
+pipelines need it, it could not be `protected` — so any MR branch could read
+the real PAT. With the job token primary that is no longer necessary; see
+§ Retiring `SCHEMA_DRIFT_TOKEN` for the owner's follow-up.
+
+**Verify the prerequisite** (read-only):
+
+```bash
+glab api projects/52/job_token_scope/allowlist   # must list project 74 (infrastructure/session-orchestrator)
+```
 
 > **Armed (2026-09-03, #1175): the hard gate is live.** #531 landed upstream
 > — `infrastructure/projects-baseline` commit `cb9ec97` adds `peer-card`,
@@ -29,11 +46,11 @@ token or PAT stored as the masked CI variable `SCHEMA_DRIFT_TOKEN`.
 > sites in `.gitlab-ci.yml` — a missing or expired token now hard-fails the
 > pipeline (exit 4) instead of printing the amber `NOT VERIFIED` line that
 > was the accepted state under the prior (2026-08-28, #1062) decision. Both
-> directions were proven before the flip — see below. Revisit trigger for
-> the token itself: expiry (2027-09-01) or a scope/rotation need — see
-> § Rotation / re-arm sequence.
+> directions were proven before the flip — see below. Since #1820 the
+> armed gate runs on `CI_JOB_TOKEN`; the PAT history below is kept as the
+> record of how it was armed and as the recipe for the legacy fallback.
 
-### Activation status (token re-minted 2026-09-03, id 53)
+### Activation status (token re-minted 2026-09-03, id 53 — history; legacy since #1820)
 
 The Project Access Token was revoked on 2026-09-02 once a control run had
 answered the question it was minted for — an unused credential is a
@@ -62,8 +79,10 @@ z.string().optional()`. With the canonical source caught up,
 - **Access level:** Reporter (20)
 - **Expires:** 2027-09-01
 
-The masked `SCHEMA_DRIFT_TOKEN` CI variable is set on this project (id 74),
-**not** Protected — same reasoning as Option A step 3 below.
+The masked `SCHEMA_DRIFT_TOKEN` CI variable was set on this project (id 74),
+**not** Protected — that was the price of being the only credential (Option A
+step 3 below). Since #1820 it is the legacy fallback and may be protected or
+deleted (§ Retiring `SCHEMA_DRIFT_TOKEN`).
 
 **Proof pipelines, both directions, run before the flip:**
 
@@ -83,7 +102,9 @@ sites in `.gitlab-ci.yml` — `schema-drift-check` and `pipeline-gate`.
 jobs, so a half-revert or a template refresh flipping one site back to
 `"true"` fails the suite locally, not silently in a pipeline.
 
-**Rotation / re-arm sequence** (token expiry or replacement):
+**Rotation / re-arm sequence** (legacy PAT only — needed only while the
+fallback is kept; with the job token primary, an expired PAT no longer breaks
+the gate):
 
 0. **Re-mint the token.** Run the same `glab api --method POST … --input -`
    recipe as Option A step 1, against the TARGET project (id 52), and copy
@@ -129,18 +150,37 @@ Per `.claude/rules/security.md` § SEC-005, this token's lifecycle belongs in
 in this repo (measured 2026-09-02: no `.claude/docs/` directory tracked), so
 the inventory is not adopted here and this section remains the sole record.
 
-### Required CI variable
+### Credentials and prerequisite
 
-| Variable | Type | Mask | Protect | Value |
-|---|---|---|---|---|
-| `SCHEMA_DRIFT_TOKEN` | Variable | Yes | No | Project Access Token or PAT — see Option A/B below |
+| Credential | Required | Source | Notes |
+|---|---|---|---|
+| `CI_JOB_TOKEN` | Yes (primary) | set by GitLab in every job | works only while project 52's inbound job-token allowlist contains project 74 |
+| `SCHEMA_DRIFT_TOKEN` | No (legacy fallback) | masked CI variable, Project Access Token or PAT — Option A/B below | tried once, only after a failed job-token clone; may be protected or deleted |
 
-If `SCHEMA_DRIFT_TOKEN` is **not set**, the job prints a `NOT VERIFIED` notice
-and exits **3** — which `allow_failure.exit_codes` renders as an amber *warning*,
-never as a pass — provided `SCHEMA_DRIFT_OPTIONAL` is still `"true"`. Once that
-flag is flipped, the same missing token exits **4** and hard-fails. Set the
-variable to activate the real drift check; the full exit taxonomy is the table
-in the next section.
+An unset `SCHEMA_DRIFT_TOKEN` is **not** a misconfiguration any more. The
+no-credential guard fires only when **both** are empty (in practice: the script
+run outside GitLab). Then the job prints a `NOT VERIFIED` notice and exits
+**3** — which `allow_failure.exit_codes` renders as an amber *warning*, never
+as a pass — if `SCHEMA_DRIFT_OPTIONAL` is `"true"`, and **4** (hard failure)
+otherwise. The full exit taxonomy is the table in the next section.
+
+### Retiring `SCHEMA_DRIFT_TOKEN` (owner follow-up, #1820)
+
+Once one pipeline has shown `cloned infrastructure/projects-baseline with
+CI_JOB_TOKEN.` followed by `RESULT: IN-SYNC (exit 0)` in the
+`schema-drift-check` log, the PAT is no longer needed:
+
+1. Either mark the variable **Protected** (it then only reaches protected
+   branches, so MR branches can no longer read it), or delete it:
+   `glab variable delete SCHEMA_DRIFT_TOKEN -R infrastructure/session-orchestrator`.
+2. Revoke token id 53 on project 52 if the variable was deleted — an unused
+   credential is a liability (SEC-005).
+3. Optional cleanup afterwards: drop the fallback branch from the clone step in
+   `.gitlab-ci.yml` and the matching rows in
+   `tests/ci/schema-drift-check.test.mjs`.
+
+Deleting the variable without step 3 is safe: with it unset the fallback
+branch is simply never taken.
 
 Until 2026-07-30 this path exited **0**, so a job that had checked nothing
 reported exactly the same green tick as a job that had checked everything. It
@@ -157,21 +197,21 @@ variables:
   SCHEMA_DRIFT_OPTIONAL: "false"
 ```
 
-It is the review-visible declaration that "no token" is *no longer* an
+It is the review-visible declaration that "no credential" is *no longer* an
 accepted state — armed 2026-09-03 (#1175, see § Activation status above).
 The behaviour matrix:
 
-| `SCHEMA_DRIFT_TOKEN` | `SCHEMA_DRIFT_OPTIONAL` | Exit | State | Pipeline effect |
+| Credentials | `SCHEMA_DRIFT_OPTIONAL` | Exit | State | Pipeline effect |
 |---|---|---|---|---|
-| unset | `"true"` | 3 | `SKIPPED` | amber warning; `pipeline-gate` prints `schema-drift: NOT VERIFIED` |
-| unset | anything else | 4 | `MISCONFIGURED` | hard failure — the token is required and the check never ran |
-| set, clone fails | either | 5 | `UNAVAILABLE` | hard failure — token scope/expiry/masking or network, **not** drift |
-| set, clone works | either | 0 | `IN-SYNC` | pass; writes the `.ci-markers/schema-drift.ok` marker |
-| set, clone works | either | 1 | `DRIFT` | hard failure — **the only code that means drift** |
+| neither `CI_JOB_TOKEN` nor `SCHEMA_DRIFT_TOKEN` | `"true"` | 3 | `SKIPPED` | amber warning; `pipeline-gate` prints `schema-drift: NOT VERIFIED` |
+| neither | anything else | 4 | `MISCONFIGURED` | hard failure — a credential is required and the check never ran |
+| job-token clone fails, PAT unset or its retry fails too | either | 5 | `UNAVAILABLE` | hard failure — project 52 allowlist missing, PAT scope/expiry, or network; **not** drift |
+| a clone works (job token, or the one PAT retry with a `WARNING` line) | either | 0 | `IN-SYNC` | pass; writes the `.ci-markers/schema-drift.ok` marker |
+| a clone works | either | 1 | `DRIFT` | hard failure — **the only code that means drift** |
 
 **One code per fact.** Exit 1 is reserved for a real schema divergence; 3, 4 and
 5 all mean NOT VERIFIED and none of them is a drift verdict. That split is the
-point of the taxonomy: before it, "you forgot the token" and "the schema has
+point of the taxonomy: before it, "there is no credential" and "the schema has
 diverged" were the same red, so the first person to see the failure went hunting
 a schema diff that does not exist. Only 3 is listed in
 `allow_failure.exit_codes`; 4 and 5 are hard failures by construction. Every
@@ -196,8 +236,8 @@ job and `pipeline-gate`. One flag, two enforcement points;
 `tests/ci/schema-drift-check.test.mjs` asserts the mirroring AND pins the
 literal `"false"` value on both jobs, so a half-flip — or a full revert —
 fails the suite locally rather than silently leaving one point advisory. A
-missing or expired token now hard-fails the pipeline (exit 4) instead of the
-tolerated amber warning — that is the whole point of the flag: the opt-out is
+missing credential now hard-fails the pipeline (exit 4), and a refused clone
+exit 5, instead of the tolerated amber warning — that is the whole point of the flag: the opt-out is
 a line in a reviewed file, not the accidental side effect of an unset CI
 variable.
 
@@ -212,13 +252,13 @@ operation.
 **Fork / external-contributor MR caveat.** `.gate-rules` (`.gitlab-ci.yml:74`)
 includes `if: $CI_PIPELINE_SOURCE == "merge_request_event"`, so a merge
 request pipeline runs `schema-drift-check` regardless of who opened it — but
-GitLab does not pass the target project's masked CI/CD variables to a
-pipeline running a **forked** project's code, by design, so that an untrusted
-fork cannot exfiltrate a secret. A fork/contributor MR therefore cannot read
-`SCHEMA_DRIFT_TOKEN` even though the variable is set and unprotected on this
-project, and with `SCHEMA_DRIFT_OPTIONAL: "false"` that reads as a genuinely
-missing token: exit **4** (`MISCONFIGURED`), a hard pipeline failure — not the
-amber `SKIPPED` a same-project branch would get. The accepted mitigation is
+a pipeline running a **forked** project's code gets neither the target
+project's masked CI/CD variables (by design, so an untrusted fork cannot
+exfiltrate a secret) nor a job token of THIS project: its `CI_JOB_TOKEN`
+belongs to the fork, which is not on project 52's allowlist. The job-token
+clone is refused and no PAT is there to retry with, so the job exits **5**
+(`UNAVAILABLE`), a hard pipeline failure — not the amber `SKIPPED` a
+same-project branch would get. The accepted mitigation is
 either of: a maintainer re-runs the pipeline from within this project (e.g.
 pushing the same commit to a branch here, where the variable IS available),
 or a maintainer temporarily sets `SCHEMA_DRIFT_OPTIONAL: "true"` on that one
@@ -239,12 +279,15 @@ state above.
 > exactly this failure — pipeline 6815 reported SUCCESS in 17 s having checked
 > nothing (issue #933).
 
-### Option A — Project Access Token (recommended — works with the current clone URL)
+### Option A — Project Access Token (legacy fallback credential)
+
+Since #1820 this section matters only if you keep the legacy fallback; the
+primary credential is `CI_JOB_TOKEN` (see the top of this section).
 
 GitLab resolves a **deploy token** by its own fixed username
 (`gitlab+deploy-token-<n>`, or a custom username if one was set at creation).
-The job's clone step hardcodes the login as `oauth2:${SCHEMA_DRIFT_TOKEN}`
-(`.gitlab-ci.yml` ~:652) — `oauth2` is the username GitLab expects for a
+The job's fallback clone hardcodes the login as `oauth2:${SCHEMA_DRIFT_TOKEN}`
+(`schema-drift-check` clone step in `.gitlab-ci.yml`) — `oauth2` is the username GitLab expects for a
 Personal or Project Access Token, not for a deploy token. A deploy token's
 value paired with that hardcoded username fails authentication at clone time
 and surfaces as exit 5 `UNAVAILABLE`, which reads as a network/credential
@@ -289,9 +332,11 @@ changes.
      -R infrastructure/session-orchestrator --masked
    ```
 
-   **Masked:** Yes. **Not** `--protected` — `.gate-rules` (`.gitlab-ci.yml:74`)
-   runs the job on every branch and every MR pipeline, so a protected-only
-   variable would silently be absent everywhere the job actually needs it.
+   **Masked:** Yes. Historically **not** `--protected` — `.gate-rules`
+   (`.gitlab-ci.yml:74`) runs the job on every branch and every MR pipeline,
+   and while the PAT was the only credential a protected-only variable would
+   have been absent everywhere the job needed it. As a fallback behind
+   `CI_JOB_TOKEN` it can be protected (#1820).
 
 ### Option B — Personal Access Token (fallback)
 
@@ -313,8 +358,8 @@ Project Access Token in Option A so the CI credential survives staff changes.
 This was the previously recommended option; it is demoted here because, as
 the job is written today, it does not authenticate. GitLab deploy tokens
 authenticate under their OWN username (`gitlab+deploy-token-<n>`, or a custom
-username set at creation) — never as `oauth2`. The job's clone step hardcodes
-`oauth2:${SCHEMA_DRIFT_TOKEN}` (`.gitlab-ci.yml` ~:652), so a deploy token's
+username set at creation) — never as `oauth2`. The job's fallback clone hardcodes
+`oauth2:${SCHEMA_DRIFT_TOKEN}` (`schema-drift-check` in `.gitlab-ci.yml`), so a deploy token's
 value paired with the wrong username fails authentication at clone time. This
 job reports that as exit 5 `UNAVAILABLE` — read as a network/credential-scope
 problem, when the actual cause is the username mismatch.
@@ -329,12 +374,14 @@ username requirement (any username) already matches the hardcoded login.
 
 ### Verification path
 
-After setting the variable:
+After the allowlist entry exists (`glab api projects/52/job_token_scope/allowlist`):
 
 1. Push to a feature branch or open an MR against `main`.
-2. Observe the `schema-drift-check` job in the pipeline — it should now clone
-   `infrastructure/projects-baseline` and run the sync check instead of
-   printing the skip warning. Read the job's `[schema-drift] RESULT:` line; it
+2. Observe the `schema-drift-check` job in the pipeline — it should log
+   `cloned infrastructure/projects-baseline with CI_JOB_TOKEN.` and run the
+   sync check. A `WARNING: CI_JOB_TOKEN clone failed` line means the job ran
+   on the legacy PAT: the allowlist entry is missing. Read the job's
+   `[schema-drift] RESULT:` line; it
    names the state directly, and the duration corroborates it (a real run
    clones a repo, so it cannot finish in seconds).
 3. Read the exit code against the table above before diagnosing anything:
@@ -342,31 +389,27 @@ After setting the variable:
    - **1 (`DRIFT`)** — and only 1 — means drift was detected. Run
      `node scripts/sync-vault-schema.mjs --update` locally and commit the
      refreshed copy.
-   - **3 (`SKIPPED`)** — the token still is not reaching the job. Nothing was
-     compared; do not read the amber tick as a pass.
-   - **4 (`MISCONFIGURED`)** — `SCHEMA_DRIFT_OPTIONAL` is no longer `"true"` and
-     the token is missing. Provision the variable; there is no schema diff to
-     look for.
-   - **5 (`UNAVAILABLE`)** — the clone failed. Check the token's
-     `read_repository` scope, its expiry, and its masking. Also not drift.
+   - **3 (`SKIPPED`)** — no credential reached the job (neither
+     `CI_JOB_TOKEN` nor `SCHEMA_DRIFT_TOKEN`). Nothing was compared; do not
+     read the amber tick as a pass.
+   - **4 (`MISCONFIGURED`)** — same, with `SCHEMA_DRIFT_OPTIONAL` not `"true"`.
+     There is no schema diff to look for.
+   - **5 (`UNAVAILABLE`)** — every clone attempt failed. First check project
+     52's inbound job-token allowlist; if the legacy PAT is still set, also its
+     `read_repository` scope and expiry. Also not drift.
 
-### Why not configure the CI Job Token allowlist in projects-baseline?
+### The CI job-token allowlist on projects-baseline (the primary path since #1820)
 
-That approach (Settings → CI/CD → Token Access in the foreign project) is
-equally valid and may be preferable if you manage `projects-baseline`.
-Documenting it here for completeness:
-
-- Go to `infrastructure/projects-baseline → Settings → CI/CD → Token Access`.
-- Under "Allow CI job tokens from the following projects", add
-  `infrastructure/session-orchestrator`.
-- Once the allowlist entry is saved, the job can use `CI_JOB_TOKEN` directly
-  and `SCHEMA_DRIFT_TOKEN` is not needed.
-- Issue #279 chose the token-variable path over this allowlist because it
-  requires no admin action in the foreign project and works immediately after
-  variable creation. The original choice was a deploy token; as documented in
-  Option A above, a deploy token does not actually authenticate with this
-  job's hardcoded `oauth2:` clone login, so a Project Access Token (or PAT)
-  is the variant that delivers on that original reasoning.
+- Admin action on the foreign project: `infrastructure/projects-baseline →
+  Settings → CI/CD → Job token permissions`, add
+  `infrastructure/session-orchestrator` to the inbound allowlist (API:
+  `POST /projects/52/job_token_scope/allowlist`). Done 2026-11-01 for
+  project 74.
+- Read back with `glab api projects/52/job_token_scope/allowlist`.
+- Issue #279 originally chose the token-variable path because it needed no
+  admin action in the foreign project. #1820 reversed that: the variable had
+  to be unprotected for MR pipelines, so every MR branch could read a real
+  PAT, while the job token is scoped to the running job and expires with it.
 
 ## `pack-lifecycle` job (#1375)
 

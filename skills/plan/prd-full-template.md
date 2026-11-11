@@ -111,7 +111,7 @@
 ## 6. Technical Architecture
 
 ### Archetype
-{{archetype from Wave 1 Q1}} (from projects-baseline)
+{{archetype from Wave 1 Q1}} (from the configured baseline or the plugin's bundled templates)
 
 ### Tech Stack
 | Layer | Technology | Rationale |

@@ -346,6 +346,11 @@ export function partitionMaterialized(eligible, { existingCandidates, materializ
  *        ledger (DI seam). Absent ⇒ read via `loadVerdictLedger(repoRoot)` (repoRoot-gated).
  * @param {Date|number} [params.now] - clock for the expiry gate (defaults to `Date.now()`).
  * @param {number} [params.minInsightChars] - forwarded to `filterEligible`.
+ * @param {number} [params.confidenceFloor] - narrows `backlog` only, to the learnings
+ *        `/reconcile` would deliver: the skill keeps a proposal at `confidence >= floor`,
+ *        and a proposal carries 0 for a learning without a numeric confidence
+ *        (`emitter.mjs`). Absent ⇒ no filter; `eligible` and `alreadyMaterialized`
+ *        never depend on it.
  * @returns {{ eligible: number, alreadyMaterialized: number, backlog: number }}
  */
 export function countReconcileBacklog({
@@ -355,6 +360,7 @@ export function countReconcileBacklog({
   ledgerKeys,
   now,
   minInsightChars,
+  confidenceFloor,
 } = {}) {
   try {
     const corpus = Array.isArray(learnings)
@@ -371,10 +377,15 @@ export function countReconcileBacklog({
       materialized: defaultReadMaterializedProvenance(repoRoot),
       ledgerKeys: ledgerKeys ?? loadVerdictLedger(repoRoot).terminalKeys,
     });
+    const deliverable = Number.isFinite(confidenceFloor)
+      ? stillEligible.filter(
+          (l) => (typeof l.confidence === 'number' ? l.confidence : 0) >= confidenceFloor,
+        )
+      : stillEligible;
     return {
       eligible: eligible.length,
       alreadyMaterialized: materializedItems.length,
-      backlog: stillEligible.length,
+      backlog: deliverable.length,
     };
   } catch {
     return { eligible: 0, alreadyMaterialized: 0, backlog: 0 };

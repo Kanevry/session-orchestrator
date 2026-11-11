@@ -40,11 +40,12 @@
  */
 
 import { isShellCommandTool, readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
-import { resolveProjectDir, resolveConfigFile, resolvePluginRoot, resolveEventsLedgerRoot } from '../scripts/lib/platform.mjs';
+import { resolveProjectDir, resolveConfigFile } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
 import { readProcessLocalSessionIds } from '../scripts/lib/session-identity/own-session.mjs';
 import { hasReadInSession } from './_lib/transcript-history.mjs';
 import { resolveHost, matchesBypass } from './_lib/vcs-create-matcher.mjs';
+import { resolvePolicyPath, resolveAckFilePath } from './_lib/templates-ack-file.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
@@ -61,12 +62,6 @@ import path from 'node:path';
  * sibling issue-budget hook parses create commands with byte-identical
  * semantics instead of a diverging copy. Behaviour here is unchanged.
  */
-
-/**
- * Default acknowledgement path, relative to project root. Used when the
- * policy omits the `acknowledgement_file` key.
- */
-const DEFAULT_ACK_PATH = '.orchestrator/runtime/templates-acknowledged.json';
 
 /**
  * Ceiling (in characters) for the raw bash command echoed into the deny reason.
@@ -175,43 +170,6 @@ function blockCreate(ctx) {
   // Single channel: the full multi-line reason (template paths + ack hint)
   // rides in permissionDecisionReason. Never returns.
   emitDeny(reason);
-}
-
-/**
- * Resolve the policy file path, searching in priority order. Mirrors the
- * resolution chain in pre-bash-destructive-guard.mjs so administrators only
- * have to maintain a single mental model for policy locations.
- *
- * @param {string|null} projectDir
- * @returns {string|null}
- */
-function resolvePolicyPath(projectDir) {
-  const candidates = [
-    path.join(
-      process.cwd(),
-      '.orchestrator',
-      'policy',
-      'templates-policy.json',
-    ),
-  ];
-
-  if (projectDir && projectDir !== process.cwd()) {
-    candidates.push(
-      path.join(projectDir, '.orchestrator', 'policy', 'templates-policy.json'),
-    );
-  }
-
-  const pluginRoot = resolvePluginRoot();
-  if (pluginRoot) {
-    candidates.push(
-      path.join(pluginRoot, '.orchestrator', 'policy', 'templates-policy.json'),
-    );
-  }
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
 }
 
 /**
@@ -339,17 +297,9 @@ async function main() {
     return emitAllow();
   }
 
-  // Resolve the acknowledgement file path (policy override or default).
-  const ackRel =
-    typeof policy.acknowledgement_file === 'string' && policy.acknowledgement_file.length > 0
-      ? policy.acknowledgement_file
-      : DEFAULT_ACK_PATH;
-  // A relative ack file is runtime state, not a tracked file: resolve it under
-  // the MAIN checkout for a linked worktree, the same root `/templates-ack`
-  // writes to — otherwise the two sides split across roots (sweep of #1729).
-  const ackFile = path.isAbsolute(ackRel)
-    ? ackRel
-    : path.join(resolveEventsLedgerRoot(projectDir || process.cwd()), ackRel);
+  // Resolve the acknowledgement file path (policy override or default) — the
+  // same helper `/templates-ack` writes through (#1730 Pkt 4).
+  const ackFile = resolveAckFilePath(policy, projectDir || process.cwd());
 
   // G6 — acknowledgement-file check.
   const sessionId = resolveSessionId(input);

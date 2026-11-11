@@ -101,6 +101,8 @@ process.exit(10);  // signal: prompt user
 
 When the script exits 10 (product signals detected, no vault yet): prompt the user:
 
+Under `--no-interview`: skip this block and note `vault registration skipped (--no-interview)` in the bootstrap summary (contract: SKILL.md § Invocation flag table).
+
 > Repo appears to carry product data (framework: \<detected>, signals: \<list>). Create vault registration in Session Config? [Y/n]
 
 **On Y (default):** Append the following block to the `## Session Config` section of CLAUDE.md:

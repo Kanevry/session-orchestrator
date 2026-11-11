@@ -249,6 +249,11 @@ import { homedir } from 'node:os';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { execFileSync } from '../scripts/lib/native-command.mjs';
+// Stdlib-only leaf, static like native-command.mjs: SessionEnd removes these
+// files through the SAME name derivation (#2020), so it lives in ONE module.
+import { LEDGER_DIR_REL, LEDGER_STEM, ledgerPathsFor } from '../scripts/lib/wave-dispatch-ledger.mjs';
+
+export { ledgerPathsFor };
 
 // ---------------------------------------------------------------------------
 // #993 — late-bound repo dependencies
@@ -302,20 +307,14 @@ const DISPATCH_TOOL = 'Agent';
  * step (#1495) ignores `.orchestrator/wave-dispatch-scopes.*` in consumer repos,
  * which covers this name; a directory would surface untracked in each of them.
  *
- * NAMED CEILING (BV-004, #1504 point 7a): nothing ever deletes a per-session
- * file — the hook only writes its own, and no sweep exists (a sweep would delete
- * files that may be a live peer's state, PSA-003). Each FILE is bounded: it holds
- * one `waveKey`'s agents, reset on the next wave. The DIRECTORY is not: it grows
- * by one file (plus a transient `.lock`) per session that dispatched an agent.
- * Measured 2026-10-08 in this repo's main checkout: 7 files, largest 2918 bytes,
- * oldest 2026-10-03 — negligible. Fine under ~500 files; the hook never lists
- * the directory, so the count costs disk, not latency.
- * Revisit-Trigger: `ls .orchestrator/wave-dispatch-scopes.*.json | wc -l`
- * passes 500 in any repo, OR a reader starts enumerating these files — then
- * build an age-gated sweep that skips any session with a live `session.lock`.
+ * Removal (#2020, superseding the #1504 point 7a ceiling "nothing ever deletes
+ * a per-session file"): `hooks/on-session-end.mjs` removes the ending session's
+ * own ledger + lock, and sweeps other sessions' files older than 7 days that
+ * the root's live `session.lock` does not name — names, token derivation and
+ * the age ceiling live in `scripts/lib/wave-dispatch-ledger.mjs`. Each FILE is
+ * bounded: it holds one `waveKey`'s agents, reset on the next wave. The hook
+ * itself never lists the directory, so the count costs disk, not latency.
  */
-const LEDGER_DIR_REL = '.orchestrator';
-const LEDGER_STEM = 'wave-dispatch-scopes';
 
 /**
  * The pre-#1493 single shared ledger. READ only, for migration: adopted when
@@ -325,16 +324,6 @@ const LEDGER_STEM = 'wave-dispatch-scopes';
  * when no session that recorded claims in the old file can still be running.
  */
 const LEGACY_LEDGER_REL = path.join(LEDGER_DIR_REL, `${LEDGER_STEM}.json`);
-
-/**
- * Longest session token a ledger file name carries. Harness session ids are
- * UUIDs (36 chars) and pass through unchanged; the cap only keeps a pathological
- * id below the 255-byte file-name limit. Two ids that sanitise to ONE token
- * share a file again — degraded to the pre-#1493 behaviour, never worse, since
- * `waveKey` still carries the raw id. Revisit if a harness ships ids that are
- * not path-safe.
- */
-const MAX_SESSION_TOKEN_CHARS = 128;
 
 /**
  * Ledger-lock budget. Short on purpose: the whole locked region is a read, a
@@ -1279,6 +1268,19 @@ function buildLivenessIndex(raw) {
     else state = LIVE_UNKNOWN;
     states.set(useId, state);
   }
+  // A nested agent — dispatched BY a subagent — has its tool_use in the parent's
+  // own agent-<id>.jsonl, never here; only the harness's terminal notification
+  // reaches this transcript. Without this, such an agent read as unknown and was
+  // released only by the 30-min TTL, holding a cap slot / file scope (#1965 review).
+  // Ceiling: a nested agent resumed via SendMessage after its terminal
+  // notification reads finished (the resume sits in the parent's transcript);
+  // revisit when nested resumes show up in subagent transcripts. A nested agent
+  // whose notification never reaches this transcript (1 of 45 in 14 days,
+  // measured 2026-11-06) still waits for the TTL.
+  for (const [useId, heads] of headsByUse) {
+    if (dispatchPos.has(useId) || sendIds.has(useId)) continue;
+    if (heads.some((h) => h.terminal)) states.set(useId, LIVE_FINISHED);
+  }
   return { states, idsByDesc };
 }
 
@@ -1469,21 +1471,6 @@ function sessionIdOf(input) {
   return typeof input?.session_id === 'string' ? input.session_id : 'no-session';
 }
 
-/**
- * The repo-relative paths of THIS session's ledger and its lock (#1493.3).
- * The session id is reduced to a path-safe token (`[A-Za-z0-9._-]`, capped at
- * `MAX_SESSION_TOKEN_CHARS`), so no id can name a file outside `.orchestrator/`;
- * an id with no usable character falls back to `no-session`.
- *
- * @param {string} sessionId
- * @returns {{ ledgerRel: string, lockRel: string }}
- */
-export function ledgerPathsFor(sessionId) {
-  const token = String(sessionId).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, MAX_SESSION_TOKEN_CHARS);
-  const safe = /[A-Za-z0-9]/.test(token) ? token : 'no-session';
-  const base = path.join(LEDGER_DIR_REL, `${LEDGER_STEM}.${safe}`);
-  return { ledgerRel: `${base}.json`, lockRel: `${base}.lock` };
-}
 
 /**
  * Migration read of the pre-#1493 shared ledger: the parsed legacy ledger when

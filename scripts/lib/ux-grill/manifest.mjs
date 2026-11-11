@@ -24,7 +24,7 @@
 
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { digestSha256 } from '../crypto-digest-utils.mjs';
 
 /**

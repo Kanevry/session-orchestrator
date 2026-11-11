@@ -46,6 +46,10 @@ export const NAVIGATOR_CONFIG_DIR_ENV = 'NAVIGATOR_CONFIG_DIR';
 /** Minutes a session waits for a navigator before it falls back (PRD !53 § 3). */
 export const CHECKIN_FALLBACK_MIN = 10;
 
+// Bound JSON reads on the UUID fallback: a session older than the newest N
+// check-ins is not found. Revisit when active sessions fall outside this window.
+export const CHECKIN_SESSION_SCAN_LIMIT = 256;
+
 const SESSION_ID_RE = /^[A-Za-z0-9._-]+$/;
 const SESSION_ID_MAX = 128;
 const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -129,6 +133,55 @@ function assertSafeSessionId(sessionId) {
 export function checkinPath(sessionId, opts) {
   assertSafeSessionId(sessionId);
   return path.join(navigatorDir(opts), 'checkin', `${sessionId}.json`);
+}
+
+/**
+ * Recover file and semantic keys for an exact native UUID match. This is a
+ * fallback, not a dispatch hot-path lookup: all candidates need a stat, but
+ * only the newest `limit` files are read. Unreadable/broken files are skipped.
+ * `checkins` shares already-read records (including null for failed reads)
+ * with the caller so neither side reads a key twice.
+ * @param {string} native
+ * @param {{ env?: Record<string, string|undefined>, home?: string, limit?: number,
+ *   checkins?: Map<string, object|null> }} [opts]
+ * @returns {Promise<string[]>}
+ */
+export async function findCheckinSessionKeys(native, {
+  env, home, limit = CHECKIN_SESSION_SCAN_LIMIT, checkins = new Map(),
+} = {}) {
+  if (!isNativeUuid(native) || !Number.isInteger(limit) || limit <= 0) return [];
+  const opts = { env, home };
+  const candidates = [];
+  try {
+    const entries = await fs.readdir(path.dirname(checkinPath(native, opts)), { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const key = entry.name.slice(0, -5);
+      if (!isSafeSessionId(key)) continue;
+      try {
+        const stat = await fs.stat(checkinPath(key, opts));
+        candidates.push({ key, mtime: stat.mtimeMs });
+      } catch { /* a disappearing or unreadable candidate is not a match */ }
+    }
+  } catch {
+    return [];
+  }
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  const keys = new Set();
+  for (const { key } of candidates.slice(0, limit)) {
+    if (!checkins.has(key)) {
+      try {
+        checkins.set(key, JSON.parse(await fs.readFile(checkinPath(key, opts), 'utf8')));
+      } catch {
+        checkins.set(key, null);
+      }
+    }
+    const checkin = checkins.get(key);
+    if (checkin?.session_uuid !== native) continue;
+    keys.add(key);
+    if (isSafeSessionId(checkin.session)) keys.add(checkin.session);
+  }
+  return [...keys];
 }
 
 /**
@@ -251,6 +304,13 @@ const CHECKIN_FIELD_CHECKS = {
   bedarf: (v) => (isPlainObject(v) ? null : 'bedarf must be an object'),
   vorab_geschrieben: (v) => (Array.isArray(v) ? null : 'vorab_geschrieben must be an array'),
   rueckfall: (v) => (isNonEmptyString(v) ? null : 'rueckfall must be a non-empty string'),
+  // Optional (#1960): the session's context in whole thousands of tokens, or the
+  // literal "nicht messbar" — never a 0 or "unter der Schwelle" for a context
+  // nobody measured (scripts/lib/context-threshold.mjs UNMEASURABLE_LABEL).
+  kontext_k: (v) =>
+    (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 100_000) || v === 'nicht messbar'
+      ? null
+      : 'kontext_k must be a whole number of thousand tokens (0..100000) or "nicht messbar"',
   zeit: (v) =>
     typeof v === 'string' && UTC_SECONDS_RE.test(v) && isIsoTimestamp(v)
       ? null
@@ -428,11 +488,18 @@ export async function readAuflagen(sessionId, { repoRoot = process.cwd(), env, h
  * embedding/override (U+202A..U+202E), word joiner and invisible operators
  * (U+2060..U+2064), bidi isolates (U+2066..U+2069), the BOM (U+FEFF) and the
  * invisible tag characters (U+E0000..U+E007F), which can carry hidden text into
- * a subagent prompt that adopts `grenze` verbatim.
+ * a subagent prompt that adopts `grenze` verbatim. Also (#1844) the soft hyphen
+ * (U+00AD), the combining grapheme joiner (U+034F), the Mongolian vowel
+ * separator (U+180E), the variation selectors (U+FE00..U+FE0F and the
+ * supplement U+E0100..U+E01EF, a known way to smuggle text into a prompt) and
+ * the specials U+FFF0..U+FFFB, including the interlinear annotation marks.
+ * The combining marks among them are listed singly on purpose: under the `u`
+ * flag each code point is its own class member, hence no-misleading-character-class
+ * is off for that line.
  * Global so `terminalSafeJson()` can replace every match; tests use
  * `search()`, which ignores `lastIndex`.
  */
-const UNSAFE_CONTROL_RE = /[\x00-\x08\x0B-\x1F\x7F-\x9F\u061C\u200B-\u200F\u2028\u2029\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu; // eslint-disable-line no-control-regex
+const UNSAFE_CONTROL_RE = /[\x00-\x08\x0B-\x1F\x7F-\x9F\u061C\u200B-\u200F\u2028\u2029\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}\u00AD\u034F\u180E\uFE00-\uFE0F\uFFF0-\uFFFB\u{E0100}-\u{E01EF}]/gu; // eslint-disable-line no-control-regex, no-misleading-character-class
 
 /**
  * `JSON.stringify(value)` with every `UNSAFE_CONTROL_RE` character written as a

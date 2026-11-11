@@ -20,7 +20,7 @@ Rejected on measurement, 2026-09-02: filtering the entry out (instead of annotat
 
 ## Consequences
 
-The residual gap is real and named, not solved: a live lock still hides a *finished* Codex task for up to `DEFAULT_TTL_HOURS` (4 h, `scripts/lib/session-lock.mjs`) when nothing else marks the registry entry stale sooner — the annotation makes the ambiguity visible to consumers, it does not resolve it. Closing that gap needs a Codex task-end signal this repo does not currently receive; tracked as #1171.
+The residual gap is real and named, not solved: a live lock still hides a *finished* Codex task for up to its TTL when nothing else marks the registry entry stale sooner — the annotation makes the ambiguity visible to consumers, it does not resolve it. Since #1889 that TTL is 0.5 h on Codex (`hooks/on-session-start.mjs`; Claude Code keeps `DEFAULT_TTL_HOURS` = 4 h in `scripts/lib/session-lock.mjs`), and a one-shot `codex exec` run releases its lock at Stop, because its rollout's `session_meta.payload.source` is the measured task-end signal (2026-11-02, codex-cli 0.160.1). An *interactive* Codex session still has no end signal; that remainder stays tracked as #1171.
 
 ## References
 

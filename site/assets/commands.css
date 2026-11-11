@@ -77,6 +77,25 @@
 .cmd-src a { color: var(--fg-2); overflow-wrap: anywhere; }
 .cmd-src a:hover { color: var(--accent); }
 
+/* Collapsed cards (classes set by commands.js; without JS nothing here matches) */
+.cmd-card.has-toggle:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; align-content: start; column-gap: 8px; }
+.cmd-card.has-toggle h3 { margin: 0; }
+.cmd-card.has-toggle .cmd-facts, .cmd-card.has-toggle .cmd-src { grid-column: 1 / -1; }
+.cmd-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; min-width: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--fg-2); font-size: var(--text-meta); white-space: nowrap; cursor: pointer; }
+.cmd-toggle:hover { border-color: var(--fg-2); color: var(--fg); }
+.cmd-toggle:focus-visible { border-color: var(--accent); }
+.cmd-toggle::after { content: ""; width: .45em; height: .45em; margin-top: -.2em; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); }
+.cmd-toggle[aria-expanded="true"]::after { margin-top: .2em; transform: rotate(-135deg); }
+@media screen {
+  .cmd-card.is-collapsed { align-self: start; padding-block: 10px 12px; }
+  .cmd-card.is-collapsed .cmd-facts { display: block; }
+  .cmd-card.is-collapsed .cmd-facts > dt, .cmd-card.is-collapsed .cmd-facts > dd, .cmd-card.is-collapsed .cmd-src { display: none; }
+  .cmd-card.is-collapsed .cmd-facts > dd:first-of-type { display: block; margin: 0; color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
+@media print {
+  .cmd-toggle { display: none; }
+}
+
 /* Background */
 .bg-group { margin-top: 24px; }
 .bg-detail { border-top: 1px solid var(--line); padding: 4px 0; }

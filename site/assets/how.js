@@ -106,6 +106,11 @@ function setup(root) {
     fig.dataset.mode = 'svg';
   }
   setPlaying(playing);
+  // The setting can change with the page open: stop then, as ui.js does for the
+  // hero video. Play stays available, a press is the visitor's own choice.
+  window.matchMedia(STILL).addEventListener('change', (e) => {
+    if (e.matches) setPlaying(false);
+  });
 }
 
 function hasWebGL() {

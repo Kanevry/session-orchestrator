@@ -50,6 +50,34 @@ function isUsableVersion(v) {
 }
 
 /**
+ * The package name in an npm registry tarball URL (`…/<name>/-/<file>.tgz`,
+ * scoped `…/@s/x/-/x-1.0.0.tgz` or `…/@s%2fx/-/…`), or null when `resolved`
+ * is not such a URL. A registry path prefix (`/npm/repo/…`) is ignored.
+ */
+function tarballPackageName(resolved) {
+  if (typeof resolved !== 'string' || !/^https?:\/\//i.test(resolved)) return null;
+  let pathname;
+  try {
+    pathname = new URL(resolved).pathname;
+  } catch {
+    return null;
+  }
+  const cut = pathname.lastIndexOf('/-/');
+  if (cut <= 0) return null;
+  let segments;
+  try {
+    segments = pathname.slice(0, cut).split('/').filter(Boolean).map(decodeURIComponent);
+  } catch {
+    return null;
+  }
+  const last = segments.at(-1);
+  if (!last) return null;
+  if (last.startsWith('@') && last.includes('/')) return last; // `@s%2fx` decoded
+  const prev = segments.at(-2);
+  return prev?.startsWith('@') ? `${prev}/${last}` : last;
+}
+
+/**
  * Parsed package-lock.json v2/v3 → { packages: [{ name, version, resolved }], invalid: string[] }.
  * `invalid` names entries without a usable version (counted unchecked, never queried).
  */
@@ -60,12 +88,21 @@ function parsePackageLock(doc) {
     if (key === '' || !entry || typeof entry !== 'object' || entry.link === true) continue;
     const idx = key.lastIndexOf('node_modules/');
     if (idx === -1) continue; // workspace folder entries (`packages/foo`) are not registry packages
-    const name = key.slice(idx + 'node_modules/'.length);
-    if (!name || !isUsableVersion(entry.version)) {
+    const resolved = typeof entry.resolved === 'string' ? entry.resolved : null;
+    // npm aliases use the install path for the alias and `name` for the registry
+    // identity (#1847). `name` alone is not trusted: npm installs from `resolved`,
+    // so a forged `name` could hide the real package. The registry tarball path
+    // decides; on a mismatch with `name` both are reported. Ceiling: an entry
+    // without a registry tarball URL falls back to `name`, then the folder.
+    const declared = typeof entry.name === 'string' && entry.name !== '' ? entry.name : null;
+    const fromUrl = tarballPackageName(resolved);
+    const names = [...new Set([fromUrl, declared].filter(Boolean))];
+    if (names.length === 0) names.push(key.slice(idx + 'node_modules/'.length));
+    if (!names[0] || !isUsableVersion(entry.version)) {
       invalid.push(key);
       continue;
     }
-    packages.push({ name, version: entry.version, resolved: typeof entry.resolved === 'string' ? entry.resolved : null });
+    for (const name of names) packages.push({ name, version: entry.version, resolved });
   }
   return { packages, invalid };
 }

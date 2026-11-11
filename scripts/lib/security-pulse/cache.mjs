@@ -128,7 +128,7 @@ export function writePrivateFile(file, text) {
     fsyncSync(fd);
     closeSync(fd);
     fd = null;
-    renameSync(tmp, file);
+    renameSync(tmp, file); // direct-rename:ok no retry: fsync+wx private write, node:*-only module reachable from the SessionStart probe (#1865)
   } catch (err) {
     if (fd !== null) {
       try { closeSync(fd); } catch { /* already closed */ }

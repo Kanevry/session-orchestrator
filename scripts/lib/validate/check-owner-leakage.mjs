@@ -38,6 +38,30 @@ if (isMain && !pluginRoot) {
 
 // Host policy stays outside source and package; this file remains standalone.
 
+// Mirror no-follow-open.mjs's sync fallback: vendored scanners carry this file
+// alone, so importing the shared helper would break their pre-commit check.
+function openReadNoFollow(filename) {
+  if (typeof constants.O_NOFOLLOW === 'number' && typeof constants.O_NONBLOCK === 'number') {
+    return openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  }
+  const before = lstatSync(filename, { bigint: true });
+  if (before.isSymbolicLink()) throw Object.assign(new Error('unsafe'), { code: 'ELOOP' });
+  if (!before.isFile()) throw Object.assign(new Error('unsafe'), { code: 'ERR_NOT_REGULAR_FILE' });
+  // Same residual lstat/open race as the shared helper; Windows has no FIFOs
+  // here. Bigint preserves Windows file IDs above 2^53 for the identity check.
+  const fd = openSync(filename, 'r');
+  try {
+    const after = fstatSync(fd, { bigint: true });
+    if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino) {
+      throw Object.assign(new Error('unsafe'), { code: 'ERR_FILE_CHANGED' });
+    }
+  } catch (err) {
+    closeSync(fd);
+    throw err;
+  }
+  return fd;
+}
+
 // Public-export policy (#1631, #1594). Lives here, not in scripts/lib/github-export.mjs,
 // because vendored copies carry this file alone; the export CLI imports it from here.
 export const PUBLIC_EXPORT_POLICY_FILE = '.orchestrator/policy/public-export.json';
@@ -151,7 +175,9 @@ function checkedHostFile(filename) {
   // EVERY policy file there (measured on Windows 11, #1612). They apply on POSIX only;
   // the symlink, hard-link, repo-ancestor and size checks still apply everywhere.
   // Ceiling (BV-004): Windows ACLs are not inspected — revisit if the policy file
-  // ever carries secrets rather than private names.
+  // ever carries secrets rather than private names. Because ownership cannot be
+  // judged there either (lstat reports uid 0 for every junction and symlink), any
+  // link in the ancestor chain is refused on win32 (#1901 4a).
   const posixModes = process.platform !== 'win32';
   // Canonical OS aliases (/tmp on macOS) are allowed above the private source parent.
   let cursor = dirname(filename);
@@ -164,17 +190,19 @@ function checkedHostFile(filename) {
     if (existsSync(join(cursor, '.git'))) throw new Error('unsafe');
     const next = dirname(cursor); if (next === cursor) break; cursor = next;
   }
-  // Reject user-controlled intermediate symlinks; OS-owned /var and /tmp aliases are trusted.
+  // Reject user-controlled intermediate symlinks; OS-owned /var and /tmp aliases are
+  // trusted on POSIX only — win32 reports uid 0 for every link, so none is trusted there.
   cursor = dirname(filename);
   while (cursor !== dirname(cursor)) {
     const st = lstatSync(cursor);
-    if ((st.isSymbolicLink() && st.uid !== 0) || (posixModes && st.uid !== 0 && (st.mode & 0o022))) throw unsafeDir(cursor, st);
+    if ((st.isSymbolicLink() && (!posixModes || st.uid !== 0)) || (posixModes && st.uid !== 0 && (st.mode & 0o022))) throw unsafeDir(cursor, st);
     cursor = dirname(cursor);
   }
   const st = lstatSync(filename);
   if (!st.isFile() || st.isSymbolicLink() || (posixModes && (st.mode & 0o7777) !== 0o600) || st.nlink !== 1 || (typeof process.getuid === 'function' && st.uid !== process.getuid())) throw new Error('unsafe');
   if (st.size > POLICY_LIMIT_BYTES) throw new Error('invalid');
-  const fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  // Refuse final symlinks: private owner policy must come from the validated file (#1749).
+  const fd = openReadNoFollow(filename);
   try {
     const opened = fstatSync(fd);
     if (!opened.isFile() || opened.ino !== st.ino || opened.dev !== st.dev || (posixModes && (opened.mode & 0o7777) !== 0o600) || opened.size > POLICY_LIMIT_BYTES) throw new Error('unsafe');
@@ -267,7 +295,8 @@ function currentOwnerRules() {
 }
 function getPackedFiles() {
   // npm's JSON inventory is bounded; filenames alone never constitute a content scan.
-  const inventoryFd = openSync(packedInventoryPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  // Refuse final symlinks: a redirected inventory could change which shipped files are scanned (#1749).
+  const inventoryFd = openReadNoFollow(packedInventoryPath);
   let raw;
   try {
     const stat = fstatSync(inventoryFd);
@@ -746,7 +775,8 @@ for (const filePath of scanFiles) {
   let content;
   try {
     if (packedInventoryPath) {
-      const fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      // Refuse final symlinks: packed content must be opened within the validated inventory (#1749).
+      const fd = openReadNoFollow(filePath);
       try {
         if (!fstatSync(fd).isFile() || realpathSync(filePath) !== filePath) throw new Error('unsafe-inventory');
         content = readFileSync(fd, 'utf8');

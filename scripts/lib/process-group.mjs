@@ -26,6 +26,7 @@
 
 import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import {
   existsSync,
   lstatSync,
@@ -74,6 +75,17 @@ export const GATE_PROCESS_LEDGER_RELPATH = '.orchestrator/runtime/gate-processes
  * costs only the timeout path.
  */
 export const DEFAULT_VERIFY_WAIT_MS = 500;
+
+/**
+ * Step between GROUP probes during the SIGTERM grace window (#1708).
+ *
+ * Named ceiling (BV-004): 100 ms — a group that obeys SIGTERM is released at
+ * most this long after it is gone, instead of after the full `killGraceMs`.
+ * 100 probes over the 10 s default are a few hundred µs of syscalls. Revisit if
+ * the ladder ever runs against many groups at once and the probing is measured
+ * as load; raising the step only lengthens the early exit.
+ */
+const GRACE_PROBE_STEP_MS = 100;
 
 /** Byte cap on captured stdout+stderr. Mirrors the 16 MiB `maxBuffer` the
  * synchronous gate used, because async `spawn` has no `maxBuffer` at all. */
@@ -382,6 +394,10 @@ function killAllLiveGroupsSync() {
  *    broadcast to every process this user may signal.
  *  - `ESRCH` on the FIRST signal — the group was already gone. `ok: true`,
  *    `error: 'ESRCH'`, no escalation.
+ *  - group gone DURING the grace window (#1708) — the group probe answered
+ *    "gone" (`kill(-pgid, 0)` → ESRCH). `ok: true`, `signalsSent: ['SIGTERM']`,
+ *    `error: null`: no SIGKILL, no verify wait. The probe can only REMOVE the
+ *    escalation, never add a signal.
  *  - `ESRCH` on the escalation — proof of death, not a failure: `error` stays
  *    null and the ladder completes normally.
  *  - `EPERM` — a foreign process sits in the group and refused our signal. Stop
@@ -402,6 +418,25 @@ function killAllLiveGroupsSync() {
  * It may be async; a throw counts as REFUSAL (fail-closed — an unmeasurable gate
  * must never read as permission). An abort returns `aborted: '<signal>'`,
  * `ok: false`, and `signalsSent` carries only the signals actually attempted.
+ * It is consulted only before a signal, never per grace step: the reaper's gate
+ * runs a `ps` per call, and an abort at SIGKILL already ends the ladder.
+ *
+ * ## Grace window — ends early when the GROUP is gone (#1708)
+ *
+ * With a group probe (`groupAliveFn`), the grace is slept in
+ * `GRACE_PROBE_STEP_MS` steps and the GROUP is probed after each one — the
+ * group, not the leader: a grandchild with a TERM trap outlives its leader, and
+ * that is the case escalation exists for. The clock (`nowFn`) bounds the grace
+ * by a deadline, so delayed sleeps do not accumulate extra grace under load.
+ * The requested-step sum also bounds the loop when a fake sleep advances no
+ * clock. "Alive" is the fail-safe reading: only an explicit
+ * `false` counts as gone; `true`, EPERM (a member we may not signal) and a
+ * throwing probe keep waiting, i.e. fall back to today's full-grace path where
+ * `beforeSignal` still gates SIGKILL. A recycled pgid can therefore only make
+ * the probe say "alive". Named ceiling (BV-004): a zombie member (exited, not
+ * yet reaped) still answers signal 0, so such a group waits the full grace —
+ * the same as before #1708. Without a probe (`null`) one `sleepFn(killGraceMs)`
+ * runs, unchanged.
  *
  * @param {number} pgid  Process-group id (positive; the negation happens here).
  * @param {object} [opts]
@@ -415,7 +450,13 @@ function killAllLiveGroupsSync() {
  * @param {number} [opts.killGraceMs]
  * @param {number} [opts.verifyWaitMs]
  * @param {(pid: number) => boolean} [opts.isAliveFn]  Liveness probe on the group leader.
+ * @param {((pgid: number) => boolean)|null} [opts.groupAliveFn]  GROUP probe for the
+ *   grace window. Defaults to {@link defaultGroupAlive} ONLY while `killFn` is the
+ *   real one; with an injected `killFn` and no injected probe the grace is one
+ *   unprobed sleep, so a test's fake pgid never reaches the real kernel.
  * @param {(ms: number) => Promise<void>} [opts.sleepFn]
+ * @param {() => number} [opts.nowFn]  Grace-window clock in milliseconds; defaults to the monotonic `performance.now()`, so a
+ *   wall-clock jump (NTP) can neither skip nor stretch the grace.
  * @param {((signal: string) => boolean|Promise<boolean>)|null} [opts.beforeSignal]  Consulted
  *   immediately before EVERY signal. Anything but `true` aborts the rest of the ladder.
  * @returns {Promise<{ok: boolean, signalsSent: string[], survivors: number[]|null,
@@ -427,7 +468,9 @@ export async function killProcessGroup(pgid, {
   killGraceMs = DEFAULT_KILL_GRACE_MS,
   verifyWaitMs = DEFAULT_VERIFY_WAIT_MS,
   isAliveFn = defaultIsAlive,
+  groupAliveFn,
   sleepFn = defaultSleep,
+  nowFn = () => performance.now(),
   beforeSignal = null,
   platform = process.platform,
   spawnSyncFn,
@@ -481,14 +524,37 @@ export async function killProcessGroup(pgid, {
     };
   }
 
-  await sleepFn(killGraceMs);
+  const groupAlive = groupAliveFn ?? (killFn === defaultKill ? defaultGroupAlive : null);
+  /** Only an explicit `false` is "gone"; a throwing probe reads as alive. */
+  const groupGone = () => {
+    try {
+      return groupAlive(pgid) === false;
+    } catch {
+      return false;
+    }
+  };
+  if (typeof groupAlive === 'function' && Number.isFinite(killGraceMs) && killGraceMs > 0) {
+    const deadline = nowFn() + killGraceMs;
+    for (let slept = 0; slept < killGraceMs;) {
+      const remaining = deadline - nowFn();
+      if (remaining <= 0) break;
+      const step = Math.min(GRACE_PROBE_STEP_MS, killGraceMs - slept, remaining);
+      await sleepFn(step);
+      slept += step;
+      if (groupGone()) {
+        return { ok: true, signalsSent, survivors: [], error: null, aborted: null };
+      }
+    }
+  } else {
+    await sleepFn(killGraceMs);
+  }
 
-  // Escalate unconditionally: SIGTERM is a REQUEST and a grandchild with a
-  // TERM trap ignores it (measured). SIGKILL on an already-dead group throws
+  // Escalate unless the GROUP probe proved the whole group gone: SIGTERM is a
+  // REQUEST and a grandchild with a TERM trap ignores it (measured), so the
+  // leader's exit proves nothing. SIGKILL on an already-dead group throws
   // ESRCH, which is the cheapest possible proof that the ladder worked.
-  // "Unconditionally" means "regardless of what SIGTERM appeared to achieve" —
-  // never "regardless of whether this pgid is still the process we targeted",
-  // which is what `beforeSignal` re-decides here.
+  // Escalating never means "regardless of whether this pgid is still the
+  // process we targeted", which is what `beforeSignal` re-decides here.
   if (!(await permitted('SIGKILL'))) return aborted('SIGKILL');
 
   signalsSent.push('SIGKILL');
@@ -775,7 +841,7 @@ export function replaceRegularFile(target, body, io = { lstatSync, writeFileSync
   const tmp = `${target}.tmp-${process.pid}`;
   try {
     io.writeFileSync(tmp, body, { encoding: 'utf8', flag: 'wx' });
-    io.renameSync(tmp, target);
+    io.renameSync(tmp, target); // direct-rename:ok no retry: wx tmp + injected fs seam, POSIX-only caller (win32 keeps no ledger)
   } catch (err) {
     // EEXIST: the tmp name belongs to someone else — never remove it.
     if (err?.code !== 'EEXIST') {
@@ -933,9 +999,10 @@ export function pruneGateProcessLedger(repoRoot, {
  * @param {() => number} [opts.now]
  * @param {(pid: number) => boolean} [opts.isAliveFn]
  * @param {((pgid: number) => boolean)|null} [opts.groupAliveFn]  Group probe for the
- *   normal-exit path. Defaults to {@link defaultGroupAlive} ONLY while `killFn` is
- *   the real one; with an injected `killFn` and no injected probe the normal-exit
- *   probe is skipped, so a test's fake pid never reaches the real kernel.
+ *   normal-exit path and for the ladder's grace window (#1708). Defaults to
+ *   {@link defaultGroupAlive} ONLY while `killFn` is the real one; with an injected
+ *   `killFn` and no injected probe both probes are skipped, so a test's fake pid
+ *   never reaches the real kernel.
  * @param {(ms: number) => Promise<void>} [opts.sleepFn]
  * @param {(record: GateProcessRecord) => void} [opts.onRegister]  Defaults to
  *   {@link recordGateProcess} when — and only when — `repoRoot` is given.
@@ -1121,6 +1188,7 @@ export function spawnInGroup(cmd, {
         killGraceMs,
         verifyWaitMs,
         isAliveFn,
+        groupAliveFn: groupAlive,
         sleepFn,
         // Cancel the ladder the moment this promise settles. `finish()` has by
         // then deleted the pgid from LIVE_GROUPS, so a SIGKILL arriving
@@ -1173,6 +1241,7 @@ export function spawnInGroup(cmd, {
         // The leader is already reaped, so the leader-pid probe would read the
         // group as dead; verify on the GROUP instead.
         isAliveFn: groupAlive,
+        groupAliveFn: groupAlive,
         // Settled only via the hard deadline here; after that the pgid is
         // deregistered and may be recycled, so no further signal (see runLadder).
         beforeSignal: () => !settled,

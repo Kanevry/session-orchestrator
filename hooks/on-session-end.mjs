@@ -25,6 +25,16 @@
  * A terminal event must be persisted BEFORE teardown, so we deliberately do NOT
  * fire-and-forget: emitEvent's appendFile is sub-millisecond and its webhook is itself
  * fire-and-forget, so the synchronous window does not meaningfully delay teardown.
+ *
+ * Codex (#1919): hooks-codex.json wires this file on SessionEnd since codex-cli
+ * 0.160 (measured firing on 0.160.1, 2026-11-02, payload `{session_id,
+ * transcript_path (null when ephemeral), cwd, hook_event_name, reason:"other"}`,
+ * no `source` key). Codex caps a SessionEnd hook at 3 s, so the manifest says
+ * `timeout: 3` and the telemetry flush takes a Codex-specific ceiling
+ * (resolveTelemetryFlushTimeoutMs). CEILING, accepted deliberately: the
+ * abandoned-session backfill stays unconditional, so a one-shot `codex exec`
+ * run (reason "other") now runs it at its end too. Revisit if Codex starts
+ * sending a reason that distinguishes a clean exec exit.
  */
 
 import { promises as fs } from 'node:fs';
@@ -33,7 +43,13 @@ import path from 'node:path';
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 
 import { emitEvent } from '../scripts/lib/events.mjs';
-import { getProjectDir } from '../scripts/lib/platform.mjs';
+import { getProjectDir, resolveSessionRoot } from '../scripts/lib/platform.mjs';
+import { execFileSync } from '../scripts/lib/native-command.mjs';
+import {
+  ledgerTokenFor,
+  removeOwnDispatchLedger,
+  sweepStaleDispatchLedgers,
+} from '../scripts/lib/wave-dispatch-ledger.mjs';
 import {
   backfillAbandonedSession,
   backfillCompletedFromStateMd,
@@ -53,6 +69,65 @@ import { flush } from '../scripts/lib/telemetry/sync.mjs';
 import { attemptLockReconciliation } from './_lib/lock-reconcile.mjs';
 import { atomicMutateJson } from './_lib/atomic-json.mjs';
 import { resolveOwnLockRoot } from './_lib/hook-root.mjs';
+
+/** Budget for the one `git rev-parse` the ledger cleanup spends (SessionEnd timeout: 10 s). */
+const LEDGER_ROOT_GIT_TIMEOUT_MS = 1500;
+
+/**
+ * #2020 — remove this session's `wave-dispatch-scopes.<token>.json`/`.lock`
+ * and sweep other sessions' leftovers older than `LEDGER_SWEEP_MAX_AGE_MS`.
+ *
+ * The root is resolved EXACTLY as `hooks/pre-task-scope-disjoint.mjs` anchors
+ * the ledger: payload `cwd` (else `$CLAUDE_PROJECT_DIR`, else `process.cwd()`)
+ * through `git rev-parse --show-toplevel` into `resolveSessionRoot()`. The lock
+ * root and the launch root are added because the dispatch-time `cwd` may differ
+ * from the ending one; removing the OWN-token file at each is safe by name.
+ * Ceiling: a ledger written under a repo the session `cd`ed into and left is
+ * not reached here — the 7-day sweep of that repo's next SessionEnd takes it.
+ *
+ * The sweep spares the token of each root's `session.lock` holder. Never
+ * throws; every failure leaves files in place.
+ *
+ * @param {object|null} input SessionEnd payload
+ * @param {string} lockRoot
+ * @param {string} projectRoot
+ * @returns {{ removed: string[], swept: string[] }}
+ */
+export function cleanupDispatchLedgers(input, lockRoot, projectRoot) {
+  const removed = [];
+  const swept = [];
+  try {
+    const cwd = typeof input?.cwd === 'string' && input.cwd !== ''
+      ? input.cwd
+      : (process.env.CLAUDE_PROJECT_DIR || process.cwd());
+    let toplevel = '';
+    try {
+      toplevel = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: LEDGER_ROOT_GIT_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+      }).trim();
+    } catch { /* no git here — resolveSessionRoot falls back like the writer */ }
+    const roots = new Set([resolveSessionRoot(cwd, toplevel), lockRoot, projectRoot]
+      .filter((r) => typeof r === 'string' && r !== ''));
+    const rawId = input?.session_id;
+    for (const root of roots) {
+      removed.push(...removeOwnDispatchLedger(root, rawId));
+      const keepTokens = [];
+      if (typeof rawId === 'string' && rawId !== '') keepTokens.push(ledgerTokenFor(rawId));
+      const lock = readLockDetailed({ repoRoot: root });
+      if (lock.status === 'ok' && typeof lock.lock?.session_id === 'string') {
+        keepTokens.push(ledgerTokenFor(lock.lock.session_id));
+      } else if (lock.status !== 'absent') {
+        continue; // an unreadable lock may name a live session: no sweep at this root
+      }
+      swept.push(...sweepStaleDispatchLedgers(root, { keepTokens }));
+    }
+  } catch { /* best-effort — never block teardown */ }
+  return { removed, swept };
+}
 
 /** SessionEnd reasons after which the session continues or was cleared on purpose — never 'abandoned'. */
 const ABANDON_BACKFILL_SKIP_REASONS = new Set(['clear', 'resume']);
@@ -242,6 +317,27 @@ async function resolveSession(input, projectRoot) {
 const TELEMETRY_FLUSH_TIMEOUT_MS = 2000;
 
 /**
+ * Codex caps SessionEnd at 3 s; 500 ms stdin + ~845 ms backfill MEDIAN + 700 ms
+ * flush stays under it. The backfill tail is unmeasured (the live run of
+ * 2026-11-02 shows the hook finishing within the run's last second, not its
+ * duration); a tail overrun loses only this telemetry record, because the lock
+ * release and the deregistration run before the flush. hooks-codex.json therefore registers this file with
+ * `timeout: 3`, and the internal flush bound must stay below that harness bound
+ * for the same reason as above (an internal timeout queues, a harness kill loses).
+ */
+const CODEX_TELEMETRY_FLUSH_TIMEOUT_MS = 700;
+
+/**
+ * The telemetry-flush bound for the platform this hook runs on.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {number} milliseconds
+ */
+export function resolveTelemetryFlushTimeoutMs(env = process.env) {
+  return env.SO_PLATFORM === 'codex' ? CODEX_TELEMETRY_FLUSH_TIMEOUT_MS : TELEMETRY_FLUSH_TIMEOUT_MS;
+}
+
+/**
  * Read `persistence` from the repo's Session Config. Defaults to `true` — the
  * same default `scripts/lib/config.mjs` applies — so an unreadable or absent
  * CLAUDE.md (or its Codex alias AGENTS.md) never silently disables the flush.
@@ -309,7 +405,7 @@ export function classifyFlush(res) {
  * the only caller that fires on EVERY close, including the ones that never
  * reach `/close` at all.
  *
- * Strictly best-effort: never throws, and bounded by TELEMETRY_FLUSH_TIMEOUT_MS.
+ * Strictly best-effort: never throws, and bounded by resolveTelemetryFlushTimeoutMs().
  * The consent gate lives INSIDE `flush()` (`resolveConsent()` is its first
  * statement) — this function deliberately does not re-implement it, so there is
  * exactly one place where "may we send?" is decided.
@@ -329,7 +425,7 @@ async function flushTelemetry(projectRoot) {
     result = (await readPersistence(projectRoot))
       ? classifyFlush(await flush({
         metricsDir: path.join(projectRoot, '.orchestrator', 'metrics'),
-        timeoutMs: TELEMETRY_FLUSH_TIMEOUT_MS,
+        timeoutMs: resolveTelemetryFlushTimeoutMs(),
       }))
       // `persistence: false` means this session leaves no durable local trace;
       // a telemetry ping is a durable record too, so it honours the same switch.
@@ -847,23 +943,19 @@ async function main() {
   //     would delete a foreign live session. Ownership is therefore structural
   //     here, not a check.
   //
-  //     CONSEQUENCE, accepted deliberately — and the affected platform is
-  //     CODEX ALONE. Measured 2026-08-17 across the three bridge manifests:
+  //     Bridge coverage, measured 2026-08-17 and updated for #1919 (2026-11-02):
   //       hooks.json         SessionStart + SessionEnd        -> registers, deregisters
   //       hooks-pi.json      session_start + session_shutdown -> registers, deregisters
   //                          (session_shutdown maps to THIS file)
-  //       hooks-codex.json   SessionStart + Stop, no SessionEnd
-  //                          -> registers, never deregisters      <- the gap
+  //       hooks-codex.json   SessionStart + SessionEnd        -> registers, deregisters
+  //                          (SessionEnd wired since codex-cli 0.160, #1919;
+  //                          before that an entry persisted until sweepZombies())
   //       hooks-cursor.json  afterFileEdit + beforeShellExecution only
   //                          -> never registers, so nothing to leak
-  //     On Codex an entry therefore persists until sweepZombies() removes it at
-  //     the next SessionStart — up to the sweep threshold (`thresholdMin`,
-  //     default 60 min) after the session ended. That is the same path crash
-  //     and Ctrl-C already rely on for EVERY platform; no platform-detecting
-  //     second teardown branch exists by design.
-  //
-  //     Note where this is written: THIS file does not run on Codex, so the
-  //     consequence is also pointed at from hooks/on-stop.mjs, which does.
+  //     A crash or Ctrl-C still leaves the entry to sweepZombies() at the next
+  //     SessionStart, up to the sweep threshold (`thresholdMin`, default 60 min),
+  //     on every platform; no platform-detecting second teardown branch exists
+  //     by design.
   //
   //     The `sessionId` guard is not decoration: deregisterSelf() throws
   //     TypeError on a null/empty id, and "no id resolvable" is a normal
@@ -878,6 +970,14 @@ async function main() {
       logSweepEvent({ event: 'deregister-failed', session_id: sessionId, error: err?.message ?? String(err) });
     }
   }
+
+  // (c2) #2020 — the dispatch-scope ledgers of pre-task-scope-disjoint.mjs.
+  //      AFTER (b): the sweep spares the token of whatever lock still stands.
+  //      AFTER (c): its git call may take up to LEDGER_ROOT_GIT_TIMEOUT_MS, and
+  //      Codex caps SessionEnd at 3 s (hooks-codex.json), so it must not stand
+  //      between the lock release and the deregistration. Before (d), which
+  //      may touch the network.
+  cleanupDispatchLedgers(input, lockRoot, projectRoot);
 
   // (d) #1138 — mechanical telemetry flush. Deliberately LAST: it is the only
   //     step here that may touch the network, so every local-fs guarantee above

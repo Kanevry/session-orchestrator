@@ -14,10 +14,11 @@
  */
 
 import {
-  copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync,
+  copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { renameSyncWithRetry } from './io.mjs';
 import { spawnNativeSync } from './native-command.mjs';
 
 const COMMAND_TIMEOUT_MS = 300_000;
@@ -144,15 +145,15 @@ export function stagePackage({
     }
     const previous = path.join(work, 'previous');
     const hadPrevious = existsSync(stageDir);
-    if (hadPrevious) renameSync(stageDir, previous);
+    if (hadPrevious) renameSyncWithRetry(stageDir, previous);
     try {
-      renameSync(pkg, stageDir);
+      renameSyncWithRetry(pkg, stageDir);
     } catch (error) {
       // Put the old stage back before the finally deletes the work dir with it.
       // If even that fails, keep the work dir: it is the only copy left.
       if (hadPrevious) {
         try {
-          renameSync(previous, stageDir);
+          renameSyncWithRetry(previous, stageDir);
         } catch (restoreError) {
           work = undefined;
           throw new Error(`${error.message}; restoring the previous stage failed (${restoreError.message}) — it is kept at ${previous}`, { cause: restoreError });

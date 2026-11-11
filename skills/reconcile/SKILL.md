@@ -365,10 +365,15 @@ instruction budget (`computeInstructionBudget`) on a temporary copy of
 `.claude/rules/` plus the pending writes. If an axis would end over its ceiling
 AND the batch grows it, it writes NOTHING, stamps no candidate (approved or
 rejected) and returns `{ written: 0, archived: 0, errors: [<one line>], ok: false,
-reason: 'instruction-budget-exceeded', axis, current, projected, ceiling, hint }`.
+reason: 'instruction-budget-exceeded', axis, current, projected, ceiling, calibrated, hint }`.
 Read `ok`/`reason` alongside `written, archived, errors`; on a refusal, tell the
-operator, absorb the approved learnings into an existing thematic rule file per
-`docs/rule-authoring.md` § Consolidated rules, then re-run `/reconcile`.
+operator, then branch on `calibrated` (#1995):
+- `calibrated: true` — the repo set this ceiling itself: absorb the approved
+  learnings into an existing thematic rule file per `docs/rule-authoring.md`
+  § Consolidated rules, then re-run `/reconcile`.
+- `calibrated: false` — the ceiling is the plugin's own default, not this
+  repo's: show the operator the calibrate command named in `hint`. He commits
+  the printed block into the file it names, then re-runs `/reconcile`.
 
 ### 6.2 Handle Errors
 

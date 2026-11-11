@@ -19,6 +19,10 @@
  *  3. `sectionWarnings` present (and nothing dropped) — an OPTIONAL list
  *     section (`vaults`, `baselines`) has invalid entries that lenient
  *     consumers will drop at point-of-use.
+ *  4. Loose file mode (#1636 point 8) — owner.yaml or its directory carries
+ *     group/world bits (an older writer under umask 022 left 644/755, salt
+ *     included). The writer tightens only what it rewrites, so a host that
+ *     never rewrote the file keeps it readable. POSIX only; silent when tight.
  *
  * Plain-JS — no Zod dependency. Never throws. Returns null (silent no-op)
  * when the load was clean (`source: 'file'`, nothing dropped/warned) or the
@@ -36,12 +40,16 @@
  *  - Issue #820.
  */
 
+import { statSync } from 'node:fs';
+import { dirname } from 'node:path';
+
 import {
   loadOwnerConfig,
   resolveOwnerYamlPath,
   getDefaults,
   OPTIONAL_OBJECT_SECTIONS,
 } from './owner-yaml.mjs';
+import { shellQuote } from './sh-quote.mjs';
 
 /**
  * Format a `{ section, errors }` entry into a short `"name" (first error)` tag.
@@ -51,6 +59,37 @@ import {
 function formatSectionTag(entry) {
   const firstError = Array.isArray(entry?.errors) && entry.errors.length > 0 ? entry.errors[0] : 'invalid';
   return `"${entry?.section}" (${firstError})`;
+}
+
+/**
+ * Measure owner.yaml and its directory for group/world permission bits.
+ * The file fails on any group/world bit (`& 0o077`). The directory fails only
+ * on group/world read or write (`& 0o066`): execute-only (e.g. 711) lets
+ * others traverse to a known name but not list the directory, and the 600
+ * file behind it is what guards the content.
+ * Returns one banner line naming the measured modes and the exact fix, or
+ * null when both are tight, the file is absent, the platform is win32 (POSIX
+ * modes are meaningless there) or any stat fails. Never throws.
+ *
+ * @param {string} filePath - absolute owner.yaml path
+ * @param {string} platform - `process.platform` value
+ * @returns {string|null}
+ */
+function looseModeLine(filePath, platform) {
+  if (platform === 'win32') return null;
+  try {
+    const dir = dirname(filePath);
+    const fileMode = statSync(filePath).mode & 0o777;
+    const dirMode = statSync(dir).mode & 0o777;
+    if ((fileMode & 0o077) === 0 && (dirMode & 0o066) === 0) return null;
+    const oct = (m) => m.toString(8).padStart(3, '0');
+    return (
+      `⚠ owner-config: ${filePath} is ${oct(fileMode)} in a ${oct(dirMode)} directory — open to other users. ` +
+      `Fix: chmod 700 ${shellQuote(dir)}; chmod 600 ${shellQuote(filePath)}`
+    );
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -64,15 +103,36 @@ function formatSectionTag(entry) {
  *   sectionWarnings?: Array<{ section: string, errors: string[] }>,
  * } }} [opts]
  *   - `loader`: defaults to `loadOwnerConfig`; injectable for tests (fake loader).
+ *   - `ownerYamlPath`: file whose mode is checked; defaults to `resolveOwnerYamlPath()`.
+ *   - `platform`: defaults to `process.platform`; injectable for tests.
  * @returns {null | {
  *   severity: 'warn',
  *   message: string,
  *   droppedSections?: Array<{ section: string, errors: string[] }>,
  *   sectionWarnings?: Array<{ section: string, errors: string[] }>,
  *   discarded?: boolean,
+ *   looseMode?: boolean,
  * }}
  */
-export function checkOwnerConfig({ loader = loadOwnerConfig } = {}) {
+export function checkOwnerConfig({ loader = loadOwnerConfig, ownerYamlPath, platform = process.platform } = {}) {
+  let modeLine;
+  try {
+    modeLine = looseModeLine(ownerYamlPath ?? resolveOwnerYamlPath(), platform);
+  } catch {
+    modeLine = null;
+  }
+  const result = checkLoadHealth(loader);
+  if (!modeLine) return result;
+  if (!result) return { severity: 'warn', message: modeLine, looseMode: true };
+  return { ...result, message: `${result.message}\n${modeLine}`, looseMode: true };
+}
+
+/**
+ * Load-health findings 1–3 (see module header). Never throws.
+ * @param {Function} loader
+ * @returns {null | { severity: 'warn', message: string }}
+ */
+function checkLoadHealth(loader) {
   try {
     const result = loader();
     if (!result || typeof result !== 'object') return null;

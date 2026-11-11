@@ -88,10 +88,20 @@
  *   Their ceilings are not the same kind of number either: its 200 is an
  *   unvalidated placeholder it explicitly retracts in its own header, ours is a
  *   self-relative growth ratchet calibrated just above our own baseline.
+ *
+ * CONSUMER REPOS (#1995). Because every DEFAULT_* ceiling below is this repo's
+ * self-relative ratchet, it says nothing about a consumer's corpus: measured
+ * 2026-11-09 over 32 consumer repos, the breach line fired in 15 (47 %). A
+ * consumer axis is therefore judged as "over" only once the repo has set its own
+ * key; until then `checkInstructionBudget` reports it as NOT CALIBRATED and
+ * points at `scripts/instruction-budget-calibrate.mjs`, which prints a block
+ * measured on that repo. `computeInstructionBudget` is unchanged — its flags
+ * still compare against whatever ceiling it is given.
  */
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { eventsFilePath, scanEventsBackwards } from './events.mjs';
 import {
   FRONTMATTER_NOT_AT_TOP,
@@ -100,6 +110,66 @@ import {
   parseGlobsFrontmatter,
   ruleExpiryInstantMs,
 } from './rule-loader.mjs';
+
+/*
+ * RE-CALIBRATED 2026-11-10 (#2000) — THIS REPO's `instruction-budget:` block,
+ * not the module defaults. The four DEFAULT_* constants below are UNCHANGED:
+ * `computeInstructionBudget()` binds them (it reads no Session Config), and
+ * `tests/rules/receiving-review.test.mjs` pins the live repo against them.
+ *
+ * Why: the always-on corpus halved in one commit (`9c388d9c`, 2026-10-12:
+ * 470 → 242 directives, 120,927 → 64,913 B), so the ceilings calibrated on the
+ * old corpus sat at 50 % / 54 % / 66 % / 84 % share and fired on no growth.
+ *
+ * Method (#1308 replay, widened): `git log --format=%h -- .claude/rules/`
+ * → 132 states, `45116136` (2026-04-19) .. `9eaf9e34` (2026-11-07), measured
+ * 2026-11-10T07:05Z with the base tree `418773a7`. Each state materialised via
+ * `git archive <sha> .claude/rules | tar -x`, fed to `computeInstructionBudget
+ * ({ rulesDir })`, with the clock set to the commit time so rule expiry is
+ * judged as it was then. Two rates per candidate: STATE firing (states over
+ * the ceiling) and STEP firing (single commits whose growth alone exceeds the
+ * headroom the ceiling leaves over today's value).
+ *
+ * Peaks: directives 1,317 @ `a9040080`; always-on 218,115 B @ `a9040080`;
+ * generated 99,774 B @ `2ae08fe0`; path-scoped 147,407 B @ `2ae08fe0`.
+ * Today (`418773a7`): 241 / 65,000 / 62,515 / 104,685.
+ *
+ *   ceiling 273 (was 480): state 107/132 (all pre-diet states; 0/19 since
+ *     `9c388d9c`), step 7/131 = 5.3 % (480: step 1/131). Measured + one
+ *     medium rule (32 directives, the calibrate floor).
+ *   byte-ceiling 72,000 (was 121,000): state 0/19 since `9c388d9c` (106/132
+ *     overall, every one pre-diet), step 8/131 = 6.1 % (121,000: 1/131).
+ *     Headroom 7,000 B ≥ one medium always-on rule (6,113 B). State firing
+ *     over all 132 is the wrong denominator here: it counts a corpus that no
+ *     longer exists, so the step rate is the falsification record.
+ *   generated-byte-ceiling 81,000 (was 95,000): state 9/132 = 6.8 %, step
+ *     3/131 = 2.3 % (the three 10-learning standalone-file /reconcile runs,
+ *     `f0766e1e` +18,926, `8dbc81b3` +21,609, `2cb8708b` +19,987); 0/41 steps
+ *     since the #1367 thematic writer (`dd05e0f8`), whose largest step is
+ *     +4,574 B (`c6b7331c`) — covered 4x by the 18,485 B headroom. Chosen at
+ *     or under the path-scoped headroom (19,315 B) on purpose: every generated
+ *     byte is also a path-scoped byte, so a looser generated ceiling (85,000,
+ *     the "largest step ever" value) would never fire before the path-scoped
+ *     one — decorative by construction. Fires on the regime peak 81,147 B.
+ *   path-scoped-byte-ceiling 124,000 — KEPT: state 5/132 = 3.8 %, step 4/131.
+ *     The calibrate suggestion 117,000 would put the 90 % near-threshold at
+ *     105,300 B, 615 B over today — the first /reconcile step of the
+ *     thematic regime's typical size would raise the near banner. 124,000
+ *     leaves 6,915 B to the near line and 19,315 B to the ceiling. Covering
+ *     the largest generated step (+21,609 B) would need 127,000, a raise.
+ *
+ * 24 rule-eligible learnings are queued: no falsifiable ceiling covers all of
+ * them at once (~1.5 KB each per #1419). The /reconcile writer's budget
+ * pre-flight (`reconcile/writer.mjs`, reads this block) refuses a batch
+ * that would cross a ceiling, so the gate cannot turn red from a reconcile;
+ * the batch is capped instead — the intended cue to consolidate.
+ *
+ * BV-004 revisit trigger: re-run the replay after the next /reconcile here,
+ * or when an always-on axis has used half its headroom (directives > 257,
+ * always-on > 68,500 B). An "> 80 % of ceiling" trigger cannot work on these
+ * values: at calibration the axes already stand at 88.3 % (241/273) and
+ * 90.3 % (65,000/72,000), because measured + one rule is the whole method.
+ */
 
 /** Default directive ceiling (operator-chosen growth ratchet just above the ~457 baseline). */
 export const DEFAULT_CEILING = 480;
@@ -521,78 +591,86 @@ export const PATH_SCOPED_NEAR_THRESHOLD = 0.9;
  * `byteCeiling` spelling appears only on the `opts`/result surfaces of
  * `computeInstructionBudget`, which are plain JS objects, not config mirrors.
  *
+ * `opts.withExplicit` (#1995): when true, the result ALSO carries
+ * `explicit: string[]` — the axis keys (`ceiling`, `byte-ceiling`,
+ * `generated-byte-ceiling`, `path-scoped-byte-ceiling`) that THIS repo's own
+ * block sets to a valid value. An axis listed there is CALIBRATED for the repo;
+ * an axis absent from it is judged against a plugin default that was measured
+ * on the plugin's own corpus, not on this one. Opt-in so the shape every
+ * existing caller reads stays byte-identical; on any fallback path the list is
+ * `[]` (nothing was set, so nothing is calibrated). The same opt-in also adds
+ * `hostFile` (the file read, see {@link resolveInstructionBudgetHostFile}) and
+ * `existingBlock` ({@link findInstructionBudgetBlock} of that file) so the
+ * banner can say WHERE the calibrated block goes.
+ *
  * @param {string} repoRoot
- * @returns {{ enabled: boolean, ceiling: number, 'byte-ceiling': number, mode: 'warn' | 'off' }}
+ * @param {{ withExplicit?: boolean }} [opts]
+ * @returns {{ enabled: boolean, ceiling: number, 'byte-ceiling': number, mode: 'warn' | 'off', explicit?: string[], hostFile?: 'CLAUDE.md' | 'AGENTS.md' | null, existingBlock?: { keys: string[] } | null }}
  */
-export function loadInstructionBudgetConfig(repoRoot) {
-  const fallback = {
+export function loadInstructionBudgetConfig(repoRoot, opts = {}) {
+  const withExplicit = opts?.withExplicit === true;
+  const defaults = {
     enabled: true,
     ceiling: DEFAULT_CEILING,
     'byte-ceiling': DEFAULT_BYTE_CEILING,
     mode: 'warn',
   };
-
-  let content = null;
-  for (const name of ['CLAUDE.md', 'AGENTS.md']) {
-    const file = join(repoRoot ?? process.cwd(), name);
-    try {
-      if (existsSync(file)) {
-        content = readFileSync(file, 'utf8');
-        break;
-      }
-    } catch {
-      // unreadable — try the next candidate
-    }
-  }
-  if (typeof content !== 'string') return fallback;
+  const host = resolveInstructionBudgetHostFile(repoRoot);
+  const where = (obj) =>
+    withExplicit
+      ? {
+          ...obj,
+          hostFile: host ? host.name : null,
+          existingBlock: host ? findInstructionBudgetBlock(host.content) : null,
+        }
+      : obj;
+  const fallback = withExplicit ? where({ ...defaults, explicit: [] }) : defaults;
+  if (host === null) return fallback;
 
   try {
-    return _parseInstructionBudget(content, fallback);
+    return where(_parseInstructionBudget(host.content, defaults, { withExplicit }));
   } catch {
     return fallback;
   }
 }
 
 /**
- * Parse the `instruction-budget:` block out of raw markdown content.
- * Independent helper (testable without disk IO).
+ * The instruction file the budget loader actually reads: `CLAUDE.md` when it
+ * exists and is readable, else `AGENTS.md`, else null (#1995 F4). A
+ * `CLAUDE.md` stub therefore shadows a block that lives only in `AGENTS.md` —
+ * the calibrate CLI and the banner name THIS file so the operator pastes the
+ * block where it is read.
  *
- * A `defaults` object that predates the `byte-ceiling` key (#931a) is tolerated:
- * the missing entry falls back to `DEFAULT_BYTE_CEILING` rather than yielding
- * `undefined`, so an older caller can never disable the byte axis by omission.
- *
- * The two SURFACE ceilings (`generated-byte-ceiling`, `path-scoped-byte-ceiling`)
- * are parsed with the same validation as `byte-ceiling` but emitted ONLY when
- * present (in the block or in `defaults`) — see the inline note in the body.
- * Until #1309 they were parsed by nothing at all, so the Session Config
- * override for both surface axes was dead from the day the axes were added:
- * `checkInstructionBudget` read `cfg['generated-byte-ceiling']` /
- * `cfg['path-scoped-byte-ceiling']`, and the only producer of `cfg` never put
- * either key on the object.
- *
- * @param {string} content - full file contents
- * @param {{ enabled: boolean, ceiling: number, 'byte-ceiling'?: number, 'generated-byte-ceiling'?: number, 'path-scoped-byte-ceiling'?: number, mode: 'warn' | 'off' }} [defaults]
- * @returns {{ enabled: boolean, ceiling: number, 'byte-ceiling': number, 'generated-byte-ceiling'?: number, 'path-scoped-byte-ceiling'?: number, mode: 'warn' | 'off' }}
+ * @param {string} [repoRoot] - default process.cwd()
+ * @returns {{ name: 'CLAUDE.md' | 'AGENTS.md', path: string, content: string } | null}
  */
-export function _parseInstructionBudget(content, defaults) {
-  const base = defaults ?? {
-    enabled: true,
-    ceiling: DEFAULT_CEILING,
-    'byte-ceiling': DEFAULT_BYTE_CEILING,
-    mode: 'warn',
-  };
-  const baseByteCeiling =
-    typeof base['byte-ceiling'] === 'number' ? base['byte-ceiling'] : DEFAULT_BYTE_CEILING;
-  if (typeof content !== 'string' || content === '') {
-    return { ...base, 'byte-ceiling': baseByteCeiling };
+export function resolveInstructionBudgetHostFile(repoRoot) {
+  for (const name of /** @type {const} */ (['CLAUDE.md', 'AGENTS.md'])) {
+    const file = join(repoRoot ?? process.cwd(), name);
+    try {
+      if (existsSync(file)) return { name, path: file, content: readFileSync(file, 'utf8') };
+    } catch {
+      // unreadable — try the next candidate
+    }
   }
+  return null;
+}
 
-  const lines = content.split(/\r?\n/);
+/**
+ * Scan `content` for the FIRST `instruction-budget:` key and collect its child
+ * lines. Only the first block is ever read, so a second block pasted below an
+ * existing one is dead (#1995 F2) — callers use the non-null result to tell the
+ * operator to REPLACE the existing block instead of adding another.
+ *
+ * @param {string} content
+ * @returns {{ keyIndent: number, blockLines: string[] } | null} null ⇔ no key line
+ */
+function scanInstructionBudgetBlock(content) {
+  if (typeof content !== 'string' || content === '') return null;
   let inBlock = false;
   let keyIndent = 0;
   const blockLines = [];
-
-  for (const rawLine of lines) {
+  for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.replace(/\r$/, '');
     if (!inBlock) {
       // The block key normally sits at column 0 inside `## Session Config`,
@@ -615,8 +693,75 @@ export function _parseInstructionBudget(content, defaults) {
     if (indent <= keyIndent) break;
     blockLines.push(line);
   }
+  return inBlock ? { keyIndent, blockLines } : null;
+}
 
-  if (blockLines.length === 0) return { ...base, 'byte-ceiling': baseByteCeiling };
+/**
+ * The block the loader reads in `content`, as the key names it sets (in file
+ * order, comments stripped, values not interpreted), or null when the file has
+ * no `instruction-budget:` key at all.
+ *
+ * @param {string} content
+ * @returns {{ keys: string[] } | null}
+ */
+export function findInstructionBudgetBlock(content) {
+  const scan = scanInstructionBudgetBlock(content);
+  if (scan === null) return null;
+  const keys = [];
+  for (const raw of scan.blockLines) {
+    const m = raw.replace(/\s*#.*$/, '').match(/^\s+([a-zA-Z_-]+):/);
+    if (m && !keys.includes(m[1])) keys.push(m[1]);
+  }
+  return { keys };
+}
+
+/**
+ * Parse the `instruction-budget:` block out of raw markdown content.
+ * Independent helper (testable without disk IO).
+ *
+ * A `defaults` object that predates the `byte-ceiling` key (#931a) is tolerated:
+ * the missing entry falls back to `DEFAULT_BYTE_CEILING` rather than yielding
+ * `undefined`, so an older caller can never disable the byte axis by omission.
+ *
+ * The two SURFACE ceilings (`generated-byte-ceiling`, `path-scoped-byte-ceiling`)
+ * are parsed with the same validation as `byte-ceiling` but emitted ONLY when
+ * present (in the block or in `defaults`) — see the inline note in the body.
+ * Until #1309 they were parsed by nothing at all, so the Session Config
+ * override for both surface axes was dead from the day the axes were added:
+ * `checkInstructionBudget` read `cfg['generated-byte-ceiling']` /
+ * `cfg['path-scoped-byte-ceiling']`, and the only producer of `cfg` never put
+ * either key on the object.
+ *
+ * `opts.withExplicit` (#1995) adds `explicit: string[]` — see
+ * {@link loadInstructionBudgetConfig}. A key whose value is malformed or
+ * non-positive is NOT explicit: it silently keeps the default, so the axis is
+ * still judged by a number this repo never chose.
+ *
+ * @param {string} content - full file contents
+ * @param {{ enabled: boolean, ceiling: number, 'byte-ceiling'?: number, 'generated-byte-ceiling'?: number, 'path-scoped-byte-ceiling'?: number, mode: 'warn' | 'off' }} [defaults]
+ * @param {{ withExplicit?: boolean }} [opts]
+ * @returns {{ enabled: boolean, ceiling: number, 'byte-ceiling': number, 'generated-byte-ceiling'?: number, 'path-scoped-byte-ceiling'?: number, mode: 'warn' | 'off', explicit?: string[] }}
+ */
+export function _parseInstructionBudget(content, defaults, opts = {}) {
+  const withExplicit = opts?.withExplicit === true;
+  /** @type {string[]} */
+  const explicit = [];
+  const tag = (obj) => (withExplicit ? { ...obj, explicit } : obj);
+  const base = defaults ?? {
+    enabled: true,
+    ceiling: DEFAULT_CEILING,
+    'byte-ceiling': DEFAULT_BYTE_CEILING,
+    mode: 'warn',
+  };
+  const baseByteCeiling =
+    typeof base['byte-ceiling'] === 'number' ? base['byte-ceiling'] : DEFAULT_BYTE_CEILING;
+  if (typeof content !== 'string' || content === '') {
+    return tag({ ...base, 'byte-ceiling': baseByteCeiling });
+  }
+
+  const blockLines = scanInstructionBudgetBlock(content)?.blockLines ?? [];
+
+  if (blockLines.length === 0) return tag({ ...base, 'byte-ceiling': baseByteCeiling });
 
   let enabled = base.enabled;
   let ceiling = base.ceiling;
@@ -656,7 +801,10 @@ export function _parseInstructionBudget(content, defaults) {
       case 'ceiling': {
         if (/^-?\d+$/.test(v)) {
           const n = Number.parseInt(v, 10);
-          if (Number.isFinite(n) && n > 0) ceiling = n;
+          if (Number.isFinite(n) && n > 0) {
+            ceiling = n;
+            if (!explicit.includes('ceiling')) explicit.push('ceiling');
+          }
         }
         break;
       }
@@ -665,7 +813,10 @@ export function _parseInstructionBudget(content, defaults) {
         // or non-positive values silently keep the default (#931a).
         if (/^-?\d+$/.test(v)) {
           const n = Number.parseInt(v, 10);
-          if (Number.isFinite(n) && n > 0) byteCeiling = n;
+          if (Number.isFinite(n) && n > 0) {
+            byteCeiling = n;
+            if (!explicit.includes('byte-ceiling')) explicit.push('byte-ceiling');
+          }
         }
         break;
       }
@@ -675,7 +826,10 @@ export function _parseInstructionBudget(content, defaults) {
         // already resolved (#1309).
         if (/^-?\d+$/.test(v)) {
           const n = Number.parseInt(v, 10);
-          if (Number.isFinite(n) && n > 0) generatedByteCeiling = n;
+          if (Number.isFinite(n) && n > 0) {
+            generatedByteCeiling = n;
+            if (!explicit.includes('generated-byte-ceiling')) explicit.push('generated-byte-ceiling');
+          }
         }
         break;
       }
@@ -685,7 +839,10 @@ export function _parseInstructionBudget(content, defaults) {
         // nothing until #1309.
         if (/^-?\d+$/.test(v)) {
           const n = Number.parseInt(v, 10);
-          if (Number.isFinite(n) && n > 0) pathScopedByteCeiling = n;
+          if (Number.isFinite(n) && n > 0) {
+            pathScopedByteCeiling = n;
+            if (!explicit.includes('path-scoped-byte-ceiling')) explicit.push('path-scoped-byte-ceiling');
+          }
         }
         break;
       }
@@ -703,7 +860,7 @@ export function _parseInstructionBudget(content, defaults) {
   if (typeof pathScopedByteCeiling === 'number') {
     parsed['path-scoped-byte-ceiling'] = pathScopedByteCeiling;
   }
-  return parsed;
+  return tag(parsed);
 }
 
 /**
@@ -1419,6 +1576,66 @@ function formatFrontmatterDefectLine(defects) {
 }
 
 /**
+ * Absolute path of the calibration CLI, resolved from THIS module's location.
+ *
+ * Why not `$CLAUDE_PLUGIN_ROOT` / `$PLUGIN_ROOT`: no sibling banner renders a
+ * plugin root (they print repo-relative `node scripts/…`, which is wrong in a
+ * consumer repo), and the env var can name a different install than the code
+ * that is running (see `plugin-update-banner.mjs` § "Installed = the code that
+ * is RUNNING"). The CLI ships next to this module, so this path always exists.
+ */
+export const CALIBRATE_CLI_PATH = fileURLToPath(new URL('../instruction-budget-calibrate.mjs', import.meta.url));
+
+/**
+ * The #1995 re-aimed line: an axis over a plugin default this repo never chose.
+ *
+ * The DEFAULT_* ceilings are the plugin repo's own growth ratchet; in a
+ * consumer repo an "over" against them measured nothing about that repo and
+ * fired on 15 of 32 consumer corpora (47 %, HR-101: a broken instrument). So
+ * the remedy named here is calibration, never consolidation.
+ *
+ * @param {string[]} parts - "<axis> <measured> > <default>" clauses
+ * @param {{ hostFile?: string | null, existingBlock?: { keys: string[] } | null }} where
+ *   - the loaded config (`withExplicit` shape); see {@link formatCalibrateInstruction}
+ * @returns {string}
+ */
+function formatUncalibratedLine(parts, where) {
+  return (
+    `⚠ Instruction budget not calibrated for this repo — ${parts.join(' · ')} (plugin defaults). ` +
+    formatCalibrateInstruction(where)
+  );
+}
+
+/**
+ * The one "how to calibrate" sentence, shared by the banner, the calibrate CLI
+ * and the `/reconcile` writer's budget refusal so the three never disagree.
+ *
+ * Names the file the loader reads (#1995 F4) and, when that file already has an
+ * `instruction-budget:` block, says REPLACE and lists the keys it sets — the
+ * loader reads only the first block, so a pasted second block is silently
+ * ignored (#1995 F2).
+ *
+ * @param {{ hostFile?: string | null, existingBlock?: { keys: string[] } | null }} [where]
+ * @returns {string}
+ */
+export function formatCalibrateInstruction(where = {}) {
+  const run = `Run node "${CALIBRATE_CLI_PATH}"`;
+  const hostFile = where?.hostFile ?? null;
+  const block = where?.existingBlock ?? null;
+  if (hostFile === null) {
+    return `${run} and commit the printed block into ## Session Config of CLAUDE.md (or AGENTS.md).`;
+  }
+  if (block === null) {
+    return `${run} and commit the printed block into ## Session Config in ${hostFile}.`;
+  }
+  const sets = block.keys.length > 0 ? `sets ${block.keys.join(', ')}` : 'sets no key';
+  return (
+    `${run} and replace the existing instruction-budget block in ${hostFile} (${sets}) with the printed one ` +
+    '— only the first block is read, a second one is ignored.'
+  );
+}
+
+/**
  * Banner wrapper — session-start Phase 4 convention.
  *
  * Reads `instruction-budget.{enabled,ceiling,byte-ceiling,mode}` from Session
@@ -1428,7 +1645,7 @@ function formatFrontmatterDefectLine(defects) {
  *     `opts.byteCeiling` are explicitly supplied (an explicit opt wins, keeping
  *     callers that pin a ceiling deterministic).
  *   - Config-load failure → graceful fallback `{enabled:true, ceiling:480,
- *     'byte-ceiling':114000, mode:warn}` so the probe still computes (mirrors
+ *     'byte-ceiling':121000, mode:warn}` so the probe still computes (mirrors
  *     the other probes).
  * Never throws.
  *
@@ -1443,6 +1660,15 @@ function formatFrontmatterDefectLine(defects) {
  * @param {number} [opts.ceiling]  explicit directive-ceiling override (wins over config).
  * @param {number} [opts.byteCeiling] explicit byte-ceiling override (wins over config).
  * @param {number} [opts.pathScopedByteCeiling] explicit path-scoped-ceiling override.
+ * CALIBRATION (#1995). An axis is calibrated when this repo's own block sets its
+ * key (`ceiling`, `byte-ceiling`, `generated-byte-ceiling`,
+ * `path-scoped-byte-ceiling`) or the caller pins it via `opts`. A calibrated
+ * axis over (or, path-scoped, near) its ceiling reports as below. An
+ * UNCALIBRATED axis over a plugin default — or near it, path-scoped — never
+ * says "Instruction budget over": it is folded into ONE "not calibrated" line
+ * that names measured vs. default and the calibrate CLI. Both kinds can appear
+ * in the same message, each in its own wording.
+ *
  * @returns {{ severity: 'warn', message: string } | null}
  *   null when disabled / off / every axis comfortably under its ceiling OR on
  *   any read failure. Since #1316 each of the four axes — directives, bytes,
@@ -1459,7 +1685,7 @@ function formatFrontmatterDefectLine(defects) {
 export function checkInstructionBudget(opts = {}) {
   let cfg;
   try {
-    cfg = loadInstructionBudgetConfig(opts.repoRoot);
+    cfg = loadInstructionBudgetConfig(opts.repoRoot, { withExplicit: true });
   } catch {
     cfg = {
       enabled: true,
@@ -1467,6 +1693,7 @@ export function checkInstructionBudget(opts = {}) {
       'byte-ceiling': DEFAULT_BYTE_CEILING,
       'generated-byte-ceiling': DEFAULT_GENERATED_BYTE_CEILING,
       mode: 'warn',
+      explicit: [],
     };
   }
 
@@ -1501,6 +1728,20 @@ export function checkInstructionBudget(opts = {}) {
         ? cfg['path-scoped-byte-ceiling']
         : DEFAULT_PATH_SCOPED_BYTE_CEILING;
 
+  // #1995: an axis is CALIBRATED when its ceiling was chosen for this corpus —
+  // set in this repo's own Session Config block, or pinned by the caller. Only
+  // then is "over" a finding about the repo; otherwise it is a finding about
+  // the plugin's default (measured on the plugin's own corpus).
+  const explicit = Array.isArray(cfg.explicit) ? cfg.explicit : [];
+  const calibrated = {
+    directives: typeof opts.ceiling === 'number' || explicit.includes('ceiling'),
+    bytes: typeof opts.byteCeiling === 'number' || explicit.includes('byte-ceiling'),
+    generated:
+      typeof opts.generatedByteCeiling === 'number' || explicit.includes('generated-byte-ceiling'),
+    pathScoped:
+      typeof opts.pathScopedByteCeiling === 'number' || explicit.includes('path-scoped-byte-ceiling'),
+  };
+
   let budget;
   try {
     budget = computeInstructionBudget({
@@ -1526,17 +1767,52 @@ export function checkInstructionBudget(opts = {}) {
     budget.pathScopedByteCeiling > 0 &&
     budget.bySurface.pathScoped.bytes >= budget.pathScopedByteCeiling * PATH_SCOPED_NEAR_THRESHOLD;
 
+  // Split every finding by calibration (#1995). The breach and near lines below
+  // see only CALIBRATED axes; the uncalibrated ones get one re-aimed line.
+  const over = {
+    directives: budget.overDirectiveBudget && calibrated.directives,
+    bytes: budget.overByteBudget && calibrated.bytes,
+    generated: budget.overGeneratedBudget && calibrated.generated,
+    pathScoped: budget.overPathScopedBudget && calibrated.pathScoped,
+  };
+  const anyOver = over.directives || over.bytes || over.generated || over.pathScoped;
+  const nearCalibrated = nearPathScoped && calibrated.pathScoped;
+
+  const uncalibrated = [];
+  if (budget.overDirectiveBudget && !calibrated.directives) {
+    uncalibrated.push(`directives ${budget.totalDirectives} > ${budget.ceiling}`);
+  }
+  if (budget.overByteBudget && !calibrated.bytes) {
+    uncalibrated.push(`always-on bytes ${budget.totalBytes} > ${budget.byteCeiling}`);
+  }
+  if (budget.overGeneratedBudget && !calibrated.generated) {
+    uncalibrated.push(
+      `generated rules ${budget.bySurface.generated.bytes} B > ${budget.generatedByteCeiling} B`,
+    );
+  }
+  if (budget.overPathScopedBudget && !calibrated.pathScoped) {
+    uncalibrated.push(
+      `path-scoped rules ${budget.bySurface.pathScoped.bytes} B > ${budget.pathScopedByteCeiling} B`,
+    );
+  } else if (nearPathScoped && !calibrated.pathScoped) {
+    const pct = ((budget.bySurface.pathScoped.bytes / budget.pathScopedByteCeiling) * 100).toFixed(1);
+    uncalibrated.push(
+      `path-scoped rules ${budget.bySurface.pathScoped.bytes} B = ${pct} % of ${budget.pathScopedByteCeiling} B`,
+    );
+  }
+  const uncalibratedLine = uncalibrated.length > 0 ? formatUncalibratedLine(uncalibrated, cfg) : null;
+
   // #1449 — reported on its own line, never folded into `overBudget`.
   const defectLine =
     budget.defects.length > 0 ? formatFrontmatterDefectLine(budget.defects) : null;
 
-  if (!budget.overBudget && !nearPathScoped && !defectLine) return null;
+  if (!anyOver && !nearCalibrated && !uncalibratedLine && !defectLine) return null;
 
-  const nearLine = nearPathScoped ? formatNearPathScopedLine(budget, opts.repoRoot) : null;
+  const nearLine = nearCalibrated ? formatNearPathScopedLine(budget, opts.repoRoot) : null;
 
-  // Nothing breached: one block per finding — the near-threshold line carries
-  // the same remedy as the breach clause below (consolidate — never raise).
-  if (!budget.overBudget) {
+  // No calibrated breach: one block per finding — the near-threshold line
+  // carries the same remedy as the breach clause below (consolidate — never raise).
+  if (!anyOver) {
     return {
       severity: 'warn',
       message: [
@@ -1546,6 +1822,7 @@ export function checkInstructionBudget(opts = {}) {
               '  Consolidate generated rules per docs/rule-authoring.md § Consolidated rules; never raise the ceiling.',
             ]
           : []),
+        ...(uncalibratedLine ? [uncalibratedLine] : []),
         ...(defectLine ? [defectLine] : []),
       ].join('\n'),
     };
@@ -1554,13 +1831,13 @@ export function checkInstructionBudget(opts = {}) {
   // Name only the breached axes — listing a healthy axis would pad the line
   // without telling the operator anything they must act on.
   const axes = [];
-  if (budget.overDirectiveBudget) {
+  if (over.directives) {
     axes.push(`directives ${budget.totalDirectives} > ${budget.ceiling}`);
   }
-  if (budget.overByteBudget) {
+  if (over.bytes) {
     axes.push(`bytes ${budget.totalBytes} > ${budget.byteCeiling}`);
   }
-  if (budget.overGeneratedBudget) {
+  if (over.generated) {
     // Reported with its FILE COUNT, because the actionable lever on this axis
     // is consolidating files, not trimming prose inside them (HR-106: the
     // banner reports the number the rule judged).
@@ -1569,12 +1846,11 @@ export function checkInstructionBudget(opts = {}) {
         `${budget.bySurface.generated.files} files > ${budget.generatedByteCeiling} B`,
     );
   }
-  // A trigger in its own right since #1316 — the corpus sits under this
-  // ceiling now, so the line is rare (HR-101), not a fixture of every session
-  // start. It carries its remedy inline because the lever is not obvious from
-  // the number: consolidate generated rules; raising the ceiling is the
-  // unfalsifiable move DEFAULT_PATH_SCOPED_BYTE_CEILING's docblock rules out.
-  if (budget.overPathScopedBudget) {
+  // A trigger in its own right since #1316. It carries its remedy inline
+  // because the lever is not obvious from the number: consolidate generated
+  // rules; raising the ceiling is the unfalsifiable move
+  // DEFAULT_PATH_SCOPED_BYTE_CEILING's docblock rules out.
+  if (over.pathScoped) {
     axes.push(
       `path-scoped rules ${budget.bySurface.pathScoped.bytes} B over ` +
         `${budget.bySurface.pathScoped.files} files > ${budget.pathScopedByteCeiling} B ` +
@@ -1586,7 +1862,7 @@ export function checkInstructionBudget(opts = {}) {
   // broke, that ordering points at the wrong files — re-sort by bytes so the
   // Top-files line lists the ones actually responsible for the breach.
   const ranked =
-    budget.overByteBudget && !budget.overDirectiveBudget
+    over.bytes && !over.directives
       ? [...budget.perFile].sort((a, b) => b.bytes - a.bytes || a.file.localeCompare(b.file))
       : budget.perFile;
 
@@ -1603,6 +1879,7 @@ export function checkInstructionBudget(opts = {}) {
     ...(nearLine ? [`  ${nearLine}.`] : []),
     `  Top files: ${top}`,
     '  See the instruction-budget audit (#687; archived in the private Meta-Vault) for the prune/demote list.',
+    ...(uncalibratedLine ? [uncalibratedLine] : []),
     ...(defectLine ? [defectLine] : []),
   ].join('\n');
 

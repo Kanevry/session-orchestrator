@@ -73,14 +73,14 @@ Cursor / Pi on native Windows. WSL counts as Linux.
 | **Node.js** | Required, **>=24.0.0**. Check `node --version`. | Run the ES-module scripts and Node hooks. <!-- sources: package.json:25-27,64-78; hooks/run-node.sh:22-29 --> |
 | **Git and a git repository** | Required. | Read session-start repository state or use git-based workflow operations. <!-- sources: hooks/on-session-start.mjs:605-612; scripts/lib/quality-gate.mjs:403-468 --> |
 | **A coding agent** | Required: Claude Code, Codex CLI, Cursor IDE or Pi; use the matching setup guide below. | Load commands, skills and platform integration. <!-- sources: package.json:4,112-121; .claude-plugin/plugin.json:5; scripts/codex-install.mjs:1-18; scripts/cursor-install.mjs:3-9; scripts/pi-install.mjs:1-18 --> |
-| **Codex CLI version** | Feature requirement for the Codex route: **0.144.4 or later**, as documented in its setup guide. | Use the documented marketplace installation route. <!-- source: docs/codex-setup.md:7,37-56 --> |
+| **Codex CLI version** | Feature requirement for the Codex route: **0.160 or later**, as documented in its setup guide. | Use the documented marketplace installation route. <!-- source: docs/codex-setup.md:7,37-56 --> |
 | **Claude Code plugin support** | Required for the Claude Code route; **no minimum version is declared** in `package.json` or `.claude-plugin/plugin.json`. | Use `/plugin` installation and the Claude Code hooks. <!-- sources: package.json:25-27; .claude-plugin/plugin.json:1-19; hooks/hooks.json:6-18 --> |
 | **POSIX sh** | Required for shell-wrapped hooks; Claude Code on Windows uses `sh` from Git for Windows. | Launch the configured hook wrappers, including scope and destructive-command guards. <!-- sources: hooks/hooks.json:14,49,69; hooks/run-node.sh:1-29 --> |
 | **npm** | Required for clone-based dependency setup and manual dependency repair; expose it on the harness PATH. | Install missing packages, run npm scripts or update a local clone. <!-- sources: package.json:64-78; scripts/self-update.mjs:200,299; .mcp.json:8 --> |
 | **Runtime Node packages** | Required, installed from `package.json`: `@babel/parser`, `ajv`, `js-yaml`, `mdast-util-to-string`, `picomatch`, `remark`, `remark-parse`, `unified`, `yaml`, `zod`, `zx`. | Load scripts importing these parsers, validators and utilities. No separate global installation is needed. <!-- source: package.json:80-92 --> |
 | **Development Node packages** | Contributor requirement: `@commitlint/cli`, `@commitlint/config-conventional`, `@eslint/js`, `@vitest/coverage-v8`, `eslint`, `husky`, `lint-staged`, `prettier`, `vitest`. | Run the corresponding lint, test, coverage, formatting and git-hook tooling from the checkout. Runtime-only installs can omit them. <!-- sources: package.json:64-78,93-103 --> |
 | **pnpm** | Optional, for consumer projects whose quality commands use it; this plugin checkout is npm-canonical. | Run those consumer quality commands. It is not required to install this plugin. <!-- sources: scripts/check-package-manager.mjs:140-158,193-235; .claude/rules/development.md:36-37 --> |
-| **tsgo** | Optional, for a consumer project's TypeScript gate. Not declared as a dependency here. | Run a consumer gate configured to use `tsgo`; this repo's typecheck uses `node --check` instead. <!-- sources: package.json:73,80-103; scripts/typecheck.mjs:8,28 --> |
+| **tsgo** | Optional, for a consumer project's TypeScript gate. Not declared as a dependency here. | Run a consumer gate configured to use `tsgo`; this repo's typecheck uses `node --check` instead, plus `tsc --noEmit` over the so-hud hook logic (`mods/so-hud/tsconfig.check.json`). That step uses the `typescript` package npm installs as a transitive dev peer; without it (no `npm ci`) `npm run typecheck` fails rather than skipping. <!-- sources: package.json:73,80-103; scripts/typecheck.mjs:10,30,48-74; package-lock.json:4305-4311 --> |
 
 ### Dependencies for individual features
 
@@ -271,7 +271,15 @@ the GitHub mirror, `--keep`). Every install step passed on all three paths:
   and `--repair` brought it to 11 of 11 in 3.7 s. Bootstrap passed. The
   session failed: model `gpt-6-sol` wrote `CONTRIBUTING.md` before any plan
   was approved. After the first `codex exec` the cache had no `node_modules`
-  again (#1878).
+  again (#1878). Measured on 2026-11-02 with codex-cli 0.160.1 and plugin
+  5.17.0 from `--ref main`: the first `codex exec` rebuilds the version
+  directory once from a fresh marketplace clone under
+  `<CODEX_HOME>/.tmp/marketplaces/`, which has no `node_modules`. This happened
+  even when the exec failed with 401. A repair made after that exec survived the
+  next exec. The smoke therefore checks readiness again right after the
+  bootstrap call, the first model call, and before the session step
+  (`readiness-after`, and `repair-after` with `--repair`). Without model steps
+  that check is recorded as skipped.
 - **Codex CLI 0.160.1, clone path:** 11 of 11 dependencies, and bootstrap
   passed. The session failed: after three answered questions there was no
   plan offering `/go` (model `gpt-6-sol`).

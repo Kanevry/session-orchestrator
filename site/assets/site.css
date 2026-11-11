@@ -208,6 +208,10 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
 #measured .card { padding: 12px 0; background: transparent; border: 0; border-radius: 0; }
 #measured .n { font: 500 1.75rem/1.2 var(--font-display); margin-bottom: 6px; }
 #measured .l { font-size: .75rem; color: var(--fg-2); }
+.measured-line { display: flex; align-items: baseline; gap: 18px; max-width: 72ch; margin: 0 0 32px; color: var(--fg-2); font-size: .95rem; line-height: 1.5; }
+.measured-line > .n { flex: none; color: var(--fg); font: 500 2.5rem/1 var(--font-display); letter-spacing: -.03em; }
+.install-changes { margin: 0 0 16px; padding-left: 1.2em; max-width: 84ch; }
+.install-changes li + li { margin-top: 6px; }
 .table,.kv,.proof { border-collapse: collapse; width: 100%; max-width: none; font-size: .85rem; }
 .table th,.table td,.kv th,.kv td { padding: 13px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
 .table th { font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; font-weight: 500; color: var(--fg-2); }
@@ -304,6 +308,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
   .cmd { padding: 13px 90px 13px 12px; }.cmd > code,.cmd > pre.code { font-size: .72rem; }.copy { min-height: 40px; min-width: 67px; font-size: .68rem; }
   .technical-detail > summary { font-size: 1.15rem; min-height: 80px; }.table,.kv { table-layout: fixed; font-size: .8rem; }.table th,.table td,.kv th,.kv td { padding: 10px 6px; overflow-wrap: anywhere; }
   .proof,.proof tbody,.proof tr,.proof td { display: block; width: 100%; }.proof thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }.proof tr { border-bottom: 1px solid var(--line); padding-block: 10px; }.proof td { border: 0; padding-inline: 0; }.proof td::before { content: attr(data-label); display: block; color: var(--fg); font-size: .65rem; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 5px; }
+  .measured-line { gap: 12px; font-size: .85rem; margin-bottom: 24px; }.measured-line > .n { font-size: 1.9rem; }
   #measured .cards { grid-template-columns: repeat(2,minmax(0,1fr)); }#measured .n { font-size: 1.5rem; }#measured .card { margin-bottom: 10px; }
   .faq-item > summary { font-size: .9rem; }.faq-item > p { font-size: .85rem; }
   .end-grid { align-items: flex-start; flex-direction: column; gap: 28px; }.end p:not(.eyebrow) { font-size: .9rem; }
@@ -521,3 +526,18 @@ h1, h2, h3, h4 { overflow-wrap: break-word; hyphens: auto; }
   .tools-table tr:first-child td::before { top: 52px; }
   .tools-table tr:first-child td::after { content: attr(data-label); position: absolute; left: 0; top: 14px; font: 500 1.05rem var(--font-display); color: var(--fg); }
 }
+/* #1700: what /session prints before any work starts, inside step 1. Terminal-style, not interactive. */
+.how-step > p:has(+ .see-fig) { color: var(--fg-2); }
+.see-fig { margin: 14px 0 12px; min-width: 0; }
+.see-label { margin-bottom: 6px; font-size: var(--text-meta); text-transform: uppercase; letter-spacing: .08em; color: var(--fg-2); }
+.see-pane { padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--code-bg); color: var(--fg-2); font: 400 .78rem/1.55 var(--font-mono); overflow-wrap: anywhere; }
+.see-pane b { font-weight: 500; color: var(--fg); }
+.see-pane .sp-h { color: var(--fg); font-weight: 500; }
+.see-pane .sp-h:not(:first-child), .see-pane .sp-q { margin-top: 10px; }
+.see-pane .sp-q { margin-bottom: 4px; color: var(--fg); }
+.see-pane .sp-tag { color: var(--fg-2); }
+.see-pane .sp-tag::after { content: ' \00b7'; }
+.see-pane .sp-opt { display: grid; grid-template-columns: 3ch minmax(0, 1fr); margin-top: 4px; }
+.see-pane .sp-rec { color: var(--accent); }
+.see-fig figcaption { margin-top: 8px; font-size: var(--text-meta); color: var(--fg-2); }
+@media (max-width: 480px) { .see-pane { padding: 12px; font-size: .75rem; } }

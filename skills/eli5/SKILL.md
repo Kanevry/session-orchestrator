@@ -24,14 +24,14 @@ The argument is optional and is a topic, in prose. If `$ARGUMENTS` is empty, the
 
 **Write for someone who knows this project but has not seen what you just saw.**
 
-He owns this repo. He is not missing knowledge, he is missing observation — he did not watch the command run or read the file it points at. Write across, not down. `.claude/rules/ask-via-tool.md` § AUQ-006 and `skills/session-start/soul.md` § Register are the canonical statement of this register; apply them, do not restate them.
+He owns this repo. He is not missing knowledge, he is missing observation — he did not watch the command run or read the file it points at. Write across, not down. The two limits below are the core of this register and suffice on their own. When the project defines its own register rule (session-orchestrator: `.claude/rules/ask-via-tool.md` § AUQ-006 and `skills/session-start/soul.md` § Register), that rule is the canonical statement; apply it, do not restate it.
 
 ## What to restate
 
 - `/eli5` — my last substantial output in this conversation. If there is none yet, say so instead of inventing a topic.
 - `/eli5 <topic>` — that topic (`$ARGUMENTS`), grounded in what THIS session already measured: name the file, command, or record it came from. If it was never measured here, say that rather than filling the gap from memory.
 
-Answer in the operator's language: `owner.language` in `~/.config/session-orchestrator/owner.yaml`, falling back to `en` when that file is missing, unreadable, or the key is absent — and follow the operator's own language the moment he writes in another one.
+Answer in the operator's language: `owner.language` from the owner config when the harness defines one (session-orchestrator: `~/.config/session-orchestrator/owner.yaml`), falling back to `en` when there is no such file, it is unreadable, or the key is absent — and follow the operator's own language the moment he writes in another one.
 
 ## Two limits, and they are the whole skill
 
@@ -39,13 +39,13 @@ Answer in the operator's language: `owner.language` in `~/.config/session-orches
 Test: delete every noun the system does not contain. Sentence still true and complete → it was no analogy. Sentence collapses → describe what actually happens instead.
 ✓ "Waiting means the other session finishes first." ✗ "Think of the session as a level crossing."
 
-**2. Simplifying removes words, never facts.** If a path, a number, an error code, an identifier, or an instruction to act disappears, that is data loss, not simplification. The mechanical decider: **could the token you are about to cut ever appear in a `grep`? Then it stays.** `skills/session-start/soul.md` § "Never traded for brevity" outranks every brevity instruction in this file.
+**2. Simplifying removes words, never facts.** If a path, a number, an error code, an identifier, or an instruction to act disappears, that is data loss, not simplification. The mechanical decider: **could the token you are about to cut ever appear in a `grep`? Then it stays.** Never traded for brevity, and outranking every brevity instruction in this file: input validation and the reporting of invalid input; error messages and failure disclosure; security findings, warnings and destructive-action confirmations; accessibility of the output (no meaning carried by colour or emoji alone, no bare unlabelled numbers, no table without its header); anything he explicitly asked to see. When the project defines its own list (session-orchestrator: `skills/session-start/soul.md` § "Never traded for brevity"), that list wins on any difference.
 
 ## Shape
 
 Line 1 answers the question he actually has: **do I have to do something now, and what happens if I don't?** Then the facts, in the order he needs them — not the order you found them.
 
-This is a terminal, so there is no picture to draw. The second channel is the `preview` field on an `AskUserQuestion` option: when the options differ in something literal — a diff, a title, a config block, a file list — put that text there and he reads the thing instead of a description of it.
+The output is text, so there is no picture to draw. When options differ in something literal — a diff, a title, a config block, a file list — show that text itself, so he reads the thing instead of a description of it: in the option's preview field where the harness has a question tool with one (Claude Code: `preview` on an `AskUserQuestion` option), otherwise in a fenced block directly under the option it belongs to.
 
 ## What this is not
 

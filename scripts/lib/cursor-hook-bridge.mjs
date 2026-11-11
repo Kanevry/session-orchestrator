@@ -18,10 +18,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { matcherMatches, readHookDecision } from './pi-hook-bridge.mjs';
+import { matcherMatches, readHookDecision, spawnHookShell } from './pi-hook-bridge.mjs';
 import { resolvePluginRoot } from './plugin-root.mjs';
 import { isMainModule } from './is-main-module.mjs';
-import { spawnSync } from './native-command.mjs';
 
 export const CURSOR_TO_CANONICAL_EVENT = Object.freeze({
   sessionStart: 'SessionStart',
@@ -251,7 +250,7 @@ export function selectCursorHooks(manifest, cursorEventName, event = {}) {
 /**
  * @param {Record<string, unknown>} hook
  * @param {Record<string, unknown>} payload
- * @param {{ pluginRoot: string, cwd?: string, env?: NodeJS.ProcessEnv }} options
+ * @param {{ pluginRoot: string, cwd?: string, env?: NodeJS.ProcessEnv, nativeHost?: Parameters<typeof import('./pi-hook-bridge.mjs').hookShellLaunch>[1] }} options
  * @returns {{ command: string, status: number|null, stdout: string, stderr: string, blocked: boolean, reason: string|null }}
  */
 export function runCursorHookCommand(hook, payload, options) {
@@ -284,15 +283,14 @@ export function runCursorHookCommand(hook, payload, options) {
   // .claude/rules/security.md § Session Config Command Trust). Nothing here
   // interpolates user or payload input into the command string; the payload
   // travels on stdin.
-  // nosemgrep: unsafe-shell-spawn
-  const result = spawnSync(command, {
-    shell: true,
+  // spawnHookShell: /bin/sh on Unix, Git Bash on Windows (#1743).
+  const result = spawnHookShell(command, {
     cwd,
     env,
     input: JSON.stringify(payload) + '\n',
     encoding: 'utf8',
     timeout: timeoutSeconds * 1000,
-  });
+  }, options.nativeHost);
 
   const stdout = result.stdout ?? '';
   const stderr = result.stderr ?? '';

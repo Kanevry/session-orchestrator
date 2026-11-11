@@ -161,7 +161,8 @@ export function runCategory6(root) {
 
     const runGit = (args) => {
       try {
-        return execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+        // A local refs/replace/* object must not hide unpushed commits from aheadCount (SO#1925).
+        return execFileSync('git', args, { cwd: root, encoding: 'utf8', env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' } }).trim();
       } catch {
         return null;
       }

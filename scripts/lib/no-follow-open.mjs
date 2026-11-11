@@ -7,6 +7,7 @@
  */
 
 import { constants as fsConstants, promises as fsPromises } from 'node:fs';
+import * as fsSync from 'node:fs';
 
 const codedError = (message, code) => Object.assign(new Error(message), { code });
 
@@ -54,4 +55,30 @@ export async function openNoFollow(target, { constants = fsConstants, fsImpl = f
     throw err;
   }
   return handle;
+}
+
+/**
+ * Synchronous counterpart of openNoFollow, with the same flags, bigint identity
+ * check and fallback race ceiling described above. The caller closes the fd.
+ * @param {string} target
+ * @returns {number}
+ */
+export function openNoFollowSync(target) {
+  if (typeof fsConstants.O_NOFOLLOW === 'number' && typeof fsConstants.O_NONBLOCK === 'number') {
+    return fsSync.openSync(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  }
+  const before = fsSync.lstatSync(target, { bigint: true });
+  if (before.isSymbolicLink()) throw codedError(`${target} is a symbolic link`, 'ELOOP');
+  if (!before.isFile()) throw codedError(`${target} is not a regular file`, 'ERR_NOT_REGULAR_FILE');
+  const fd = fsSync.openSync(target, 'r');
+  try {
+    const after = fsSync.fstatSync(fd, { bigint: true });
+    if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino) {
+      throw codedError(`${target} changed between check and open`, 'ERR_FILE_CHANGED');
+    }
+  } catch (err) {
+    fsSync.closeSync(fd);
+    throw err;
+  }
+  return fd;
 }

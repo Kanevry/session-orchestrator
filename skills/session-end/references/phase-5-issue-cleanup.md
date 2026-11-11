@@ -9,8 +9,13 @@
 1. **Close resolved issues — one command strips, closes and verifies (#308):** run the CLI ONCE with every resolved issue ID, `--vcs` taken from Session Config. An `[Abnahme]` issue is never in that list: it closes only on oracle evidence (`plan-verification.md` § 1.1b, #1678).
 
    ```bash
-   node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --close --vcs <gitlab|github> <iid> [<iid> ...]
+   mkdir -p .orchestrator/tmp
+   node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --close --vcs <gitlab|github> <iid> [<iid> ...] \
+     > .orchestrator/tmp/<sid>-close.jsonl; close_rc=$?
+   cat .orchestrator/tmp/<sid>-close.jsonl; echo "close exit=$close_rc"
    ```
+
+   The stdout goes to `.orchestrator/tmp/<sid>-close.jsonl` (same `<sid>` as step 3b.3, which reads it for the issue balance); stderr stays on the terminal. Redirect, never pipe: `| tee` would make `$?` the exit of `tee`, and `${PIPESTATUS[0]}` is empty in zsh (`.claude/rules/bash-harness-pitfalls.md` § 6). `close_rc` is the close CLI's own exit code — non-zero still means an ID did not verify as closed. If no issue was resolved, the CLI is not run; step 3b.3 must omit `--close-results` even if a file from an earlier close with the same `<sid>` exists, so it falls back to `issues_closed` of the session record.
 
    For each ID, in this order, it strips every `status:*` label (a closed issue carrying `status:in-progress` or `status:ready` skews dashboard filters and discovery heuristics), closes the issue, then re-reads it. It prints one JSON line per ID — `{"id","stripped","closed","state"}`, plus `stripError` / `error` when a step failed — and exits 1 when any ID did not verify as closed. Pass `-R <spec>` only to override the repo; without it the repo resolves from the git remotes (#839). Do not hand-roll `stripStatusLabels` + `glab issue close` instead: that two-step prose path was skipped often enough that 339 closed issues still carried `status:in-progress` (measured 2026-09-19).
 
@@ -35,7 +40,7 @@
 
      Fail-open: a `markOpenQuestionAnsweredOnDisk` failure is non-fatal — log a WARN and proceed with the close; the question simply stays `- [ ]` and roundtrips to the next session.
 
-3b. **Drain the issue-budget overflow — exactly ONE collector artefact (issue-budget):** when this session's budget file (`budgetStatePath(repoRoot, accountingSessionId)` → `.orchestrator/runtime/issue-budget/<hash>.json`, #1141) has a non-empty `overflow[]`, the session hit its `issue-budget.max-per-session` cap and every over-cap creation was PARKED rather than filed. Fold the whole list into a single artefact so nothing is silently dropped.
+3b. **Drain the issue-budget overflow — exactly ONE collector artefact (issue-budget):** when this session's budget file (`budgetStatePath(repoRoot, accountingSessionId)` → `.orchestrator/runtime/issue-budget/<hash>.json`, #1141) has a non-empty `overflow[]`, the session hit its `issue-budget.max-per-session` cap and every over-cap creation was PARKED rather than filed. Fold the whole list into a single artefact so nothing is silently dropped. The same single collector also carries this session's LOW findings (#1947, below), so the step runs when EITHER `overflow[]` is non-empty OR a LOW finding is to be filed.
 
     **Ordering (load-bearing):** run this as the LAST issue-creating action of Phase 5 — after step 3, after "Discovery Issue Creation", after step 4 — and re-read the counter file at that moment. Those steps can themselves push new entries into `overflow[]`; draining early would leave them unfiled.
 
@@ -66,10 +71,24 @@
     A host rotation that changes both raw and semantic values has no guaranteed
     budget continuity.
 
+    - **LOW findings share this collector (#1947, default).** Every review (Phase 1.8 / W4 panel) or discovery (Phase 1.5) finding at `priority::low` that this close would FILE — a `follow-up` disposition under RCR-007, or an operator choice — becomes one checklist line in this same collector instead of its own issue. MEDIUM and above stay single issues (still gated by step 4 and the Phase 1.8 table; #617 is unchanged: unfiled MED/LOW findings stay in the Final Report under "Unresolved Review Findings"). The RCR-007 class `follow-up` is kept; only the filing shape changes. Plan the split and the body with the pure function, then file `plan.single` one by one and `plan.collector` once:
+
+      ```js
+      import { planBacklogCollector } from '${PLUGIN_ROOT}/scripts/lib/issue-balance.mjs';
+      const plan = planBacklogCollector({
+        sessionId: accountingSessionId,
+        findings: toFile,            // [{ title, priority|severity, source: 'review'|'discovery', file?, line? }]
+        overflow: state.overflow,    // issue-budget overflow[] — same collector
+        thisRepo,                    // repo spec; foreign-repo overflow entries keep their description out
+      });
+      // plan.collector === null → nothing LOW and no overflow: file no collector
+      ```
+
+      `planBacklogCollector` renders the overflow entries by exactly the rules below, so the collector body is code, not hand-assembled. An unknown priority stays a single issue (never bundle what cannot be classified). Old issues are never closed automatically (explicitly rejected in #1947).
     - **`issue-budget.overflow: collect-issue` (default)** — create exactly ONE issue:
-      - Title: `[Backlog-Sammel] <accountingSessionId>, <N> zurückgestellte Punkte`
+      - Title: `[Backlog-Sammel] <accountingSessionId>, <N> zurückgestellte Punkte` (`N` = LOW findings + overflow entries; `plan.collector.title`)
       - Labels: `type::backlog`, `priority::low`
-      - Body: a Markdown checklist with one `- [ ]` line per `overflow[]` entry (`title` when present, otherwise the truncated `command`, plus its `at` timestamp). Since #1314 an entry may also carry `description`, `repo` and `truncated`; older entries have only `title`/`command`/`at` and render exactly as before.
+      - Body (`plan.collector.body`): a `## LOW-Folgepunkte` checklist when LOW findings were bundled, then a Markdown checklist with one `- [ ]` line per `overflow[]` entry (`title` when present, otherwise the truncated `command`, plus its `at` timestamp). Since #1314 an entry may also carry `description`, `repo` and `truncated`; older entries have only `title`/`command`/`at` and render exactly as before.
         - `description` present → put it under the line as a collapsed `<details><summary>Beschreibung</summary>` block, verbatim. If `truncated: true`, append `(gekürzt)` to the summary.
         - `truncated: true` and NO `description` (the body file was over 1 MiB and was not read) → add an indented line `Beschreibung zu groß, nicht übernommen`.
         - `descriptionUnresolved: 'cwd-changed'` → add an indented line `Beschreibung nicht aufgelöst (cd in der Kette)`; the raw `command` still names the file.
@@ -115,6 +134,16 @@
       if (removed.length) console.log(`issue-budget: reaped ${removed.length} stale counter file(s) (> 14 d)`);
       ```
 
+    - **3b.3 — Issue balance of this session (#1947):** after the reconcile, measure what this session added to and removed from the backlog. Write the in-memory session record to `.orchestrator/tmp/`, then run the command below. Add `--close-results .orchestrator/tmp/<sid>-close.jsonl` only if the step-1 close CLI ran during THIS `/close` invocation. File existence alone is not evidence of a current result: a repeated close with the same `<sid>` can leave an old file. Without the option, the script falls back to `issues_closed` of the session record.
+
+      ```bash
+      node "$PLUGIN_ROOT/scripts/issue-balance.mjs" --record .orchestrator/tmp/<sid>-record.json \
+        --session-id <accountingSessionId> \
+        --raw-session-id <rawSessionId> --vcs <gitlab|github>
+      ```
+
+      It prints one line, e.g. `Issues dieser Session: +7 angelegt, −3 geschlossen, Saldo +4 (Repo heute: +11) — Grundgesamtheit: …; gemessen <ISO>`. Sources, in order: created = `issues_created` of the record, else the issue-budget ledger (`count + exempt`, both keys); closed = the close CLI's `closed: true` lines (platform re-read), else — when `--close-results` is omitted or that file does not exist — `issues_closed`; a file that exists but is unreadable or malformed is `nicht messbar`, never a fallback; "Repo heute" = ONE `glab api`/`gh api` read of issues updated since local midnight, 10 s timeout (`--no-repo` skips it). Each value is measured, `kein Wert (…)` or `nicht messbar (…)` — never print an unmeasured value as `0`. Copy the line verbatim into the Phase 6 Final Report under `### New Issues Created`. Never blocks the close; exit is 0 in every measurement state.
+
 #### Discovery Issue Creation (if discovery ran in Phase 1.5)
 
 For each finding with severity `critical` or `high` from Phase 1.5:
@@ -125,6 +154,6 @@ For each finding with severity `critical` or `high` from Phase 1.5:
 2. Log each created issue ID for the Final Report
 3. Update `discovery_stats.issues_created` count
 
-4. **Create gap issues for HIGH+/blocking newly-discovered problems only** — MED/LOW review findings are recorded in the Final Report, not filed as issues (#617; see the Phase 1.8 severity-disposition table). This mirrors the Phase 5 "Discovery Issue Creation" gate (critical/high only).
+4. **Create gap issues for HIGH+/blocking newly-discovered problems only** — MED/LOW review findings are recorded in the Final Report, not filed as issues (#617; see the Phase 1.8 severity-disposition table). This mirrors the Phase 5 "Discovery Issue Creation" gate (critical/high only). A LOW finding that is filed anyway (follow-up disposition, operator choice) goes to the step-3b collector, never to its own issue (#1947).
 5. **Update milestones**: if milestone progress changed
 

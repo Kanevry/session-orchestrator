@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 // Closed receipt shape: no free-text field, so a command (which can carry a token) never reaches the file —
 // argv_sha256 is its only reference. Allowlist via Set, never `in` (that would admit `toString` and friends).
 const RECEIPT_KEYS = new Set(['zeit', 'session_id', 'vorgang', 'aktion', 'argv_sha256', 'exit', 'profil', 'ergebnis', 'art']);
-const RECEIPT_ENUMS = { vorgang: ['pane-aktion'], aktion: ['aussenwirkung', 'kollision'], profil: ['locker', 'ausgewogen', 'streng'], ergebnis: ['ausgefuehrt', 'abgelehnt', 'verfallen', 'ohne-zeichenflaeche', 'fehler'] };
+const RECEIPT_ENUMS = { vorgang: ['pane-aktion'], aktion: ['aussenwirkung', 'kollision'], profil: ['locker', 'ausgewogen', 'streng'], ergebnis: ['ausgefuehrt', 'abgelehnt', 'verfallen', 'ohne-zeichenflaeche', 'ohne-zeichenflaeche-abgelehnt', 'fehler'] };
 const validReceipt = (r, id) => r !== null && typeof r === 'object' && !Array.isArray(r)
   && Object.keys(r).every(k => RECEIPT_KEYS.has(k)) && r.session_id === id
   && Object.entries(RECEIPT_ENUMS).every(([k, allowed]) => allowed.includes(r[k]))

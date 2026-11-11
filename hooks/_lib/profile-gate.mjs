@@ -97,6 +97,9 @@ export const SAFETY_HOOKS = Object.freeze([
   'config-protection',
   'pre-task-scope-disjoint',
   'pre-bash-staging-fence',
+  // Codex route to enforce-scope / config-protection / the ledger guard (#1913):
+  // disabling it would disarm all three there.
+  'codex-apply-patch-guard',
 ]);
 
 /** The profile that applies when neither env nor owner.yaml names one. */

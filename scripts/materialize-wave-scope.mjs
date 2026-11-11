@@ -20,6 +20,9 @@
  * still written into the aggregate, where `--assert-disjoint` and
  * `hooks/post-bash-write-verify.mjs` do read them; `--union` excludes them so
  * `allowedPaths` never grants a peer's territory to this wave's agents.
+ *
+ * WAVE ROLE (#1984): `filescopes/wave-W.role.json` keeps the role of the wave
+ * the sibling manifest describes. See {@link recordManifestRole}.
  */
 
 import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
@@ -73,6 +76,9 @@ Writes:
                       aggregate-only: no agent is dispatched for it, so nothing
                       would read its per-agent file.
   <state-dir>/filescopes/wave-N.scopes.json     Aggregate [{id, files}, ...]
+  <state-dir>/filescopes/wave-W.role.json       {role} of the wave W that
+                      <state-dir>/wave-scope.json describes, W <= N; not written
+                      without a usable manifest. Read by wave-scope-commit-guard.
 
 Removes (only with a proven owner — see --session):
   <state-dir>/filescopes/wave-N/<stale-id>.json Per-agent declarations of this
@@ -304,6 +310,44 @@ export function manifestSessionIds(stateDir, readFile = readFileSync) {
 }
 
 /**
+ * Keep the role of the wave the sibling manifest describes, so that
+ * `hooks/wave-scope-commit-guard.mjs` can re-derive that wave's test-sibling
+ * grants once the manifest has moved on (#1984). The aggregate cannot carry it:
+ * its bytes are the canonical `{id, files}` array `--assert-disjoint` reads.
+ *
+ * The record is keyed on the MANIFEST's wave, not on `wave`, because the manifest
+ * may be written before or after this command: it then describes wave N or still
+ * wave N-1, and either way the role of a wave a later commit asks about is on
+ * record by then. A manifest numbered above `wave` is a leftover and is ignored.
+ *
+ * Best-effort and silent: without a record the guard blocks, as it did before.
+ *
+ * CEILING (BV-004): the manifest is not checked for a session binding, so a
+ * leftover or a peer's manifest can name the role of a wave of the same number
+ * until the next materialization replaces it. At worst that admits the test
+ * siblings of that wave's own declared files. Revisit when sidecars gain a
+ * session binding (see the matching ceiling in the guard).
+ *
+ * @param {string} stateDir
+ * @param {number} wave
+ * @param {typeof writeJsonAtomicSync} writeJson
+ * @param {typeof readFileSync} readFile
+ */
+function recordManifestRole(stateDir, wave, writeJson, readFile) {
+  try {
+    const manifest = JSON.parse(readFile(resolve(stateDir, 'wave-scope.json'), 'utf8'));
+    if (!isRecord(manifest) || !Number.isInteger(manifest.wave)) return;
+    if (manifest.wave < 1 || manifest.wave > wave) return;
+    if (typeof manifest.role !== 'string' || manifest.role.trim().length === 0) return;
+    writeJson(
+      resolve(stateDir, 'filescopes', `wave-${manifest.wave}.role.json`),
+      { role: manifest.role },
+      { tmpPrefix: '.materialize-wave-scope' },
+    );
+  } catch { /* no usable manifest: nothing to record */ }
+}
+
+/**
  * Reconcile per-agent declarations left behind by an earlier materialization of
  * the SAME wave (#1103).
  *
@@ -463,6 +507,8 @@ export function materializeWaveScope(records, {
   if (!aggregateResult?.ok) {
     throw new WriteError(`cannot write aggregate declaration ${aggregatePath}: ${aggregateResult?.error ?? 'unknown write failure'}`);
   }
+
+  recordManifestRole(stateDir, wave, writeJson, readFile);
 
   // #1103 — strictly AFTER the aggregate write. The aggregate is this command's
   // publication marker (see the write-order note above), so reconciling before

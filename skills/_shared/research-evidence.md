@@ -7,6 +7,8 @@ claim. It does not require external research when repository evidence is enough.
 
 ## Record
 
+A research agent that stopped at its budget (skills/plan/SKILL.md § 3.1) lists what it did not check; each such gap becomes the `Next check` of the finding it limits.
+
 For each finding that changes the recommendation, retain:
 
 - **Source:** stable reference plus source revision or publication/update date.

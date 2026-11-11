@@ -32,7 +32,37 @@ if [ -n "${SO_NODE_BIN:-}" ] && [ -x "${SO_NODE_BIN:-}" ]; then
 fi
 
 # 2. PATH as inherited from the harness.
-if command -v node >/dev/null 2>&1; then
+# Git Bash / MSYS / Cygwin (#1969): a relative PATH entry such as `.` taken over
+# from the Windows PATH makes `command -v node` pick a node.exe from the hook's
+# cwd (the repo). There, search only the absolute entries. The check runs only
+# when PATH holds an empty or relative entry, so a clean PATH and every
+# Darwin/Linux run take the unchanged lookup below without an extra process.
+path_lookup=true
+case ":${PATH-}:" in
+  *::* | *:[!/]*)
+    abs_path=""
+    rest="${PATH-}:"
+    while [ -n "$rest" ]; do
+      dir="${rest%%:*}"
+      rest="${rest#*:}"
+      case "$dir" in
+        /*) abs_path="${abs_path:+$abs_path:}$dir" ;;
+      esac
+    done
+    # uname itself is looked up on the absolute entries, never in cwd.
+    case "$(PATH="$abs_path"; uname -s 2>/dev/null)" in
+      MINGW* | MSYS* | CYGWIN*)
+        node_bin="$(PATH="$abs_path"; command -v node 2>/dev/null)"
+        if [ -n "$node_bin" ]; then
+          exec "$node_bin" "$@"
+        fi
+        # No node on an absolute entry: never fall back to the relative ones.
+        path_lookup=false
+        ;;
+    esac
+    ;;
+esac
+if [ "$path_lookup" = true ] && command -v node >/dev/null 2>&1; then
   exec node "$@"
 fi
 

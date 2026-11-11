@@ -10,7 +10,7 @@
 
 ### Wave 1 — Feature Core (6 questions)
 
-Before asking questions, dispatch 3 Explore agents in parallel:
+Before asking questions, dispatch 3 Explore agents in parallel. Every agent prompt below ends with the Research budget line of SKILL.md § 3.1.
 
 ```
 Agent({ subagent_type: "Explore", description: "Analyze codebase for related patterns",
@@ -50,7 +50,7 @@ Synthesize agent findings into 2 AskUserQuestion calls (3+3 split):
 > integration points, significant architectural decisions needed, or user explicitly
 > requests deeper analysis. Skip otherwise — proceed to Phase 2.
 
-Before asking, dispatch 3 Explore agents:
+Before asking, dispatch 3 Explore agents. Every agent prompt below ends with the Research budget line of SKILL.md § 3.1.
 
 ```
 Agent({ subagent_type: "Explore", description: "Deep-read affected source files",

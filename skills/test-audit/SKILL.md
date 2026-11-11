@@ -24,7 +24,7 @@ Invoked as `/test-audit [gate|audit|campaign] [scope] [--goal "<goal>"]` with ar
 - `gate` — run the write gate on the test about to be written. Default when no mode is given and the conversation is about to add a test.
 - `audit <scope>` — one focused pass over a path, glob, or module. Default when a scope is given without a mode.
 - `campaign <scope>` — a whole repo or subsystem, split into lanes. Only on the explicit word `campaign`; read [references/campaign.md](references/campaign.md) before starting.
-- A missing scope for `audit` or `campaign` is asked for once via `AskUserQuestion`, with the largest test directories as options.
+- A missing scope for `audit` or `campaign` is asked for once via `AskUserQuestion`, with the largest test directories as options (lead-guided: § Lead-guided runs).
 
 ## Set an ambitious goal first (audit and campaign)
 
@@ -125,7 +125,7 @@ Phases P1 to P9 with lanes, a separate layer-plan pass, an owner checkpoint afte
 
 ## Never without the owner
 
-Ask via `AskUserQuestion`, and do not work around a refusal. A headless run without that tool takes the answer the brief or this list already gives and logs it; anything else becomes an O mark plus an entry in the run's parking file (the report's _Parked_ section when the brief names none), never a workaround:
+Ask via `AskUserQuestion`, and do not work around a refusal. A headless or lead-guided run (§ Lead-guided runs) without that tool takes the answer the brief or this list already gives and logs it; anything else becomes an O mark plus an entry in the run's parking file (the report's _Parked_ section when the brief names none), never a workaround:
 
 - changing coverage thresholds, include/exclude lists, or runner config (never `autoUpdate`);
 - deleting or skipping e2e, Playwright, or real-database suites;
@@ -135,6 +135,16 @@ Ask via `AskUserQuestion`, and do not work around a refusal. A headless run with
 - fixing a product bug found on the way (it becomes an issue);
 - removing a seam whose removal changes a public contract (`stop-and-escalate`, RCR-007 in `.claude/rules/receiving-review.md`);
 - merging.
+
+## Lead-guided runs
+
+When the run is lead-guided or headless (detection, duties, owner classes and the decision-line format: [../_shared/lead-guided-mode.md](../_shared/lead-guided-mode.md)), nobody answers and no question ends the turn. Where this skill would ask:
+
+- **Missing scope**: the brief's scope; without one, audit (never campaign) on the largest test directory that fits one lane, with one decision line naming the larger directories as rejected.
+- **Scope above one lane, no word `campaign`**: narrow to one lane (the recommendation) and record the line; a campaign starts only when the brief says `campaign`.
+- **Write gate and marks**: answer the four questions and set the marks yourself, as in an interactive run; they need evidence, not an owner.
+- **§ Never without the owner and the P4 checkpoint**: the brief's answer when it gives one, logged as a decision line; otherwise park it as an O mark plus a parking entry, through the owner queue the steering section names when it names one, and stop after P4 as campaign.md says. Evidenced C and D deletions land on the draft MR's branch, which is preparation the owner reviews; merging stays owner class.
+- The report lists every decision line under `### Autonome Entscheidungen` beside the _Parked_ section, and ends as a report.
 
 ## Stop and success
 

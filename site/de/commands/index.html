@@ -17,13 +17,13 @@
 <meta property="og:image" content="https://session-orchestrator.com/de/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Session Orchestrator: Plan, Go, Close mit einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
+<meta property="og:image:alt" content="Session Orchestrator: Aus deiner Aufgabe wird geprüfte Arbeit. Die Befehle /session, /go und /close neben einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
 <meta property="og:locale" content="de_DE">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Befehle: Welchen tippst du, und was passiert danach">
 <meta name="twitter:description" content="Alle 31 Befehle von session-orchestrator nach Situation: wann du welchen nutzt, was du bekommst, wie du ihn in Claude Code, Codex, Cursor und Pi tippst und was er ändert.">
 <meta name="twitter:image" content="https://session-orchestrator.com/de/og.png">
-<meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close mit einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
+<meta name="twitter:image:alt" content="Session Orchestrator: Aus deiner Aufgabe wird geprüfte Arbeit. Die Befehle /session, /go und /close neben einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
 <link rel="icon" href="/favicon.svg">
 <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
 
@@ -83,15 +83,15 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261029">
-<link rel="stylesheet" href="/assets/commands.css?v=20261029">
+<link rel="stylesheet" href="/assets/site.css?v=20261107">
+<link rel="stylesheet" href="/assets/commands.css?v=20261109">
 </head>
 <body class="guide-page commands-page">
 <a class="skip" href="#main">Zum Inhalt</a>
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.17.0</span></span></a>
+    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.18.0</span></span></a>
     <nav class="nav" aria-label="Hauptnavigation">
       <a href="/de#how">Ablauf</a>
       <a href="/de/commands" aria-current="page">Befehle</a>
@@ -138,7 +138,7 @@
         <li><a class="tile" href="#build"><span class="tile-title">Bauen</span><span class="tile-hint">/session, /go, /close</span></a></li>
         <li><a class="tile" href="#maintain"><span class="tile-title">Pflegen</span><span class="tile-hint">/session housekeeping</span></a></li>
         <li><a class="tile" href="#investigate"><span class="tile-title">Untersuchen</span><span class="tile-hint">/discovery, /debug</span></a></li>
-        <li><a class="tile" href="#test"><span class="tile-title">Testen</span><span class="tile-hint">/test, /ux-grill</span></a></li>
+        <li><a class="tile" href="#testing"><span class="tile-title">Testen</span><span class="tile-hint">/test, /ux-grill</span></a></li>
         <li><a class="tile" href="#look-back"><span class="tile-title">Zurückschauen</span><span class="tile-hint">/eval, /plan retro</span></a></li>
         <li><a class="tile" href="#learn"><span class="tile-title">Lernen</span><span class="tile-hint">/evolve, /reconcile</span></a></li>
         <li><a class="tile" href="#many-repos"><span class="tile-title">Viele Repositories führen</span><span class="tile-hint">/portfolio, /dispatcher</span></a></li>
@@ -161,7 +161,7 @@
       <table class="kv typing">
         <caption class="sr">Wie jedes Coding-Tool einen Befehl ausführt</caption>
         <tbody>
-          <tr><th scope="row">Claude Code</th><td>Tippe <code>/name</code> in den Chat. Im Headless-Modus <code>claude -p</code> nimmst du die lange Form, zum Beispiel <code>/session-orchestrator:session deep</code>.</td></tr>
+          <tr><th scope="row">Claude Code</th><td>Tippe <code>/name</code> in den Chat. Im Headless-Modus <code>claude -p</code> brauchen nur <code>/session</code> und <code>/plan</code> die lange Form, zum Beispiel <code>/session-orchestrator:session deep</code>.</td></tr>
           <tr><th scope="row">Codex CLI</th><td>Wähle den Skill im Codex-Chat: <code>$session-orchestrator:name</code>. Es ist kein Shell-Befehl. Das einfache <code>/go</code> und <code>/close</code> funktioniert dort nicht, und Codex startet <code>go</code> oder <code>close</code> nie von selbst.</td></tr>
           <tr><th scope="row">Cursor IDE</th><td>Tippe <code>/name</code>. Die Agents arbeiten nacheinander.</td></tr>
           <tr><th scope="row">Pi</th><td>Tippe <code>/name</code>. Jeder Befehl ist eine Prompt-Vorlage.</td></tr>
@@ -464,7 +464,7 @@
     </div>
   </section>
 
-  <section class="cmd-group" id="test" aria-labelledby="test-h">
+  <section class="cmd-group" id="testing" aria-labelledby="test-h">
     <h2 id="test-h">Testen</h2>
     <p class="group-lede">Prüfe, ob die App funktioniert und ob deine Tests es wert sind, behalten zu werden.</p>
     <div class="cmd-grid">
@@ -668,7 +668,7 @@
       <p>Optionale Tools, die dein Coding-Tool aufrufen kann. Es sind keine Slash-Befehle.</p>
       <dl class="mcp">
         <dt><code>session_config</code></dt><dd>Liest die Session Config aus CLAUDE.md oder AGENTS.md.</dd>
-        <dt><code>session_metrics</code></dt><dd>Liest die letzten fünf Session-Einträge aus .orchestrator/metrics/sessions.jsonl.</dd>
+        <dt><code>session_metrics</code></dt><dd>Liest die letzten fünf Session-Aufzeichnungen aus .orchestrator/metrics/sessions.jsonl.</dd>
       </dl>
     </details>
   </section>
@@ -704,7 +704,7 @@
 <!-- Vercel Web Analytics, same-origin; see the comment on /guide and /datenschutz Punkt 04. -->
 <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
 <script src="/_vercel/insights/script.js" defer></script>
-<script src="/assets/commands.js?v=20261029" defer></script>
+<script src="/assets/commands.js?v=20261109" defer></script>
 <script src="/assets/ui.js?v=20260910" defer></script>
 </body>
 </html>

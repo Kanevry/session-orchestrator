@@ -33,8 +33,22 @@ Present to the user:
 - [ ] [middle-band item] — origin #<IID> — reason: [operator deselected in Phase 1.65 triage; no [Carryover] duplicate filed]
 
 ### New Issues Created
+- Issues dieser Session: [line printed by scripts/issue-balance.mjs, verbatim — Phase 5 Step 3b.3] [#1947]
 - #R: [title] (priority: [X], status: ready)
 - #S: [title] (priority: [X], status: ready)
+- [Backlog-Sammel] #C: [N] LOW-Folgepunkte / zurückgestellte Punkte (one collector per session)
+
+### Entscheidungen für dich [#1950]
+- [decision taken on the owner's behalf: default chosen, scope cut, requirement reinterpreted where it contradicted] — [why] — [how to reverse]
+- up to five points; write `keine` when there were none — never omit the section
+
+### Nicht geprüft [#1950]
+- [what no check covers — a green gate proves one property, name the ones it does not]
+- up to five points; write `keine` when everything shipped is covered — never omit the section
+
+### Ergebnis gegen Erwartung [#1950]
+- [task id]: Erwartung „<sentence from the plan>“ — Ergebnis: <met | partly: … | missed: …>
+- only for tasks whose plan carried an `Erwartung`; write `keine Erwartung im Plan` when none did
 
 ### Unresolved Review Findings (MED/LOW — recorded, not ticketed) [#617]
 - [MED] <finding> — <file:line> — <why deferred / fold decision>

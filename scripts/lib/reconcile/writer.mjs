@@ -511,6 +511,14 @@ const BUDGET_HINT =
   '(N provenance pairs in ONE file, globs:/paths: mirrored — docs/rule-authoring.md § Consolidated rules) ' +
   'and re-run; never raise the ceiling';
 
+/** Session Config key of each refusal axis — the key whose presence calibrates it (#1995). */
+const AXIS_CONFIG_KEY = {
+  'path-scoped-bytes': 'path-scoped-byte-ceiling',
+  'generated-bytes': 'generated-byte-ceiling',
+  'always-on-bytes': 'byte-ceiling',
+  directives: 'ceiling',
+};
+
 /**
  * @typedef {Object} BudgetRefusal
  * @property {string} reason    - always {@link BUDGET_REFUSAL_REASON}.
@@ -518,6 +526,10 @@ const BUDGET_HINT =
  * @property {number} current   - the axis value before the write.
  * @property {number} projected - the axis value after the write.
  * @property {number} ceiling   - the ceiling the projection breaches.
+ * @property {boolean} calibrated - true when this repo's own Session Config
+ *   block sets the axis's key (#1995). False ⇒ `ceiling` is the plugin default,
+ *   measured on the plugin's corpus, and `hint` names the calibrate CLI instead
+ *   of "never raise the ceiling" — the same verdict the session-start banner gives.
  * @property {string} hint
  */
 
@@ -587,7 +599,7 @@ async function budgetPreflight({ approvedItems, prep, roots, repoRoot, errors })
   try {
     // Dynamic import keeps the guard out of this module's static graph.
     const guard = await import('../instruction-budget-guard.mjs');
-    const cfg = guard.loadInstructionBudgetConfig(repoRoot);
+    const cfg = guard.loadInstructionBudgetConfig(repoRoot, { withExplicit: true });
     if (!cfg.enabled || cfg.mode === 'off') return null;
     // computeInstructionBudget falls back to its module default for any
     // non-number, so an absent optional key needs no special case here.
@@ -626,7 +638,15 @@ async function budgetPreflight({ approvedItems, prep, roots, repoRoot, errors })
     ];
     for (const [axis, cur, proj, ceiling, over] of axes) {
       if (over && proj > cur) {
-        return { reason: BUDGET_REFUSAL_REASON, axis, current: cur, projected: proj, ceiling, hint: BUDGET_HINT };
+        // The refusal stays either way (protection holds); only the remedy
+        // differs. An uncalibrated axis is over a number this repo never chose,
+        // so "never raise the ceiling" would contradict the banner (#1995 F3).
+        const calibrated = Array.isArray(cfg.explicit) && cfg.explicit.includes(AXIS_CONFIG_KEY[axis]);
+        const hint = calibrated
+          ? BUDGET_HINT
+          : `ceiling ${ceiling} is the plugin default, not calibrated for this repo — ` +
+            guard.formatCalibrateInstruction(cfg);
+        return { reason: BUDGET_REFUSAL_REASON, axis, current: cur, projected: proj, ceiling, calibrated, hint };
       }
     }
     return null;

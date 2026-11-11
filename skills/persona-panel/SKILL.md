@@ -194,7 +194,7 @@ Dispatch one Agent per persona from the active catalog set.
 Agent({
   subagent_type: "general-purpose",
   model: <resolved model ID>,
-  prompt: <buildPersonaPrompt(persona, $TARGET, targetContent, groundingMode)>,
+  prompt: <buildPersonaPrompt(persona, $TARGET, targetContent, groundingMode, { contextBlocks })>,
   tools: ["Read", "Grep", "Glob"]
 })
 ```
@@ -204,6 +204,16 @@ Use `buildPersonaPrompt(persona, target, targetContent, groundingMode)` from
 `evaluation_criteria` entries in `<persona-criteria>...</persona-criteria>` delimiters (security
 M1: persona body is treated as data, not free-form instructions; see `persona-format.md` for the
 full rationale).
+
+**Mission and Context Files (#1857):** `buildPersonaPrompt` opens with "You are [role].
+[Mission]." from the persona's `## Mission` section (`persona.mission`, parsed by the loader).
+Before dispatch, resolve the `## Context Files` per persona with
+`const { blocks: contextBlocks, skipped } = resolvePersonaContext(persona, { projectRoot, vaultDir })`
+from `persona-runner.mjs` (`vaultDir` = the resolved `vault-integration.vault-dir`, or `null`) and
+pass `{ contextBlocks }` as the fifth argument; the runner renders them as one
+`<persona-context>` block marked as untrusted data. Report every `skipped` entry (source +
+reason) in the panel summary — a persona that lost its sources judges with less background.
+Limits and resolution rules: `persona-format.md` § Markdown Body.
 
 **Grounding Mode (optional, `--grounding <off|re-derive>`, default `off`, #730 Epic H):** when
 `re-derive`, `groundingMode='re-derive'` is passed to `buildPersonaPrompt`, which inserts a

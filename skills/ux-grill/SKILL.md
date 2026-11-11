@@ -142,7 +142,7 @@ Walk the journeys one at a time. A **journey finding** is one of exactly four th
 3. a persona-lens observation — `skills/persona-panel/presets/designer-lens.md` § Evaluation Criteria, narrowed by the manifest persona's `goal`,
 4. a catalogue item from `rubric-v2.md` § Stufe 2 that a screenshot actually shows.
 
-Per finding, **exactly one** `AskUserQuestion` call:
+Per finding, **exactly one** `AskUserQuestion` call (a lead-guided run asks none, § Lead-guided runs):
 
 ```
 AskUserQuestion({
@@ -165,6 +165,15 @@ AskUserQuestion({
 **Subagents ask nothing.** `AskUserQuestion` does not exist inside a dispatched agent (AUQ-004). The whole grill loop is coordinator-side, which is also why Stufe 1 — the part that COULD be dispatched — deliberately needs no judgment.
 
 **Budget.** Read `efficiency.output-level` from `owner.yaml` and apply the matching block in `soul.md` § Output Levels. The AUQ budget is separate and harder: at most one question per journey finding, and mechanical findings never become questions at all. **Stop** when every journey is walked, when the operator says it is enough, or when the remaining findings need a product decision no screenshot can inform — the last case goes to Phase 3 as an open question, not to a fifth AUQ.
+
+## Lead-guided runs
+
+When the run is lead-guided or headless (detection, duties, owner classes and the decision-line format: `skills/_shared/lead-guided-mode.md`), nobody answers and no `AskUserQuestion` is raised anywhere in this skill. The run never ends waiting:
+
+- **§ 0.2 Bootstrap**: take the recommended env names only when they occur in the named env file (`grep -c '^NAME=' <file>`, never its values); otherwise take "Ohne Login" and name the missing names as an open question. Writing the manifest is the run's own file, not an owner-class act.
+- **Phase 2**: per journey finding, take the option you would have marked `(Recommended)` and write one line, `Entscheidung (autonom, Lead-geführt): <finding> → <disposition>; verworfen: <other options>; Grund: <screenshot path + one sentence>`. A finding whose recommended disposition is owner class (removing a step or feature, a legal requirement, pricing, anything shown to customers beyond a fix) is parked per the shared doc, not decided, and the loop continues with the next finding.
+- **Phase 4**: take the recommended hand-off. For a public target repo that is the vault dossier, as stated there. High findings are filed through `reconcileFindings` as usual; the batched medium/low AUQ takes its recommended option, within `issue-budget:`.
+- **Recap**: list every decision line under `### Autonome Entscheidungen`, and every parked question under **Open questions**, each as a statement (`Offen: <topic> — <what is missing>, <who decides>`), never ending in a question mark. End with the report.
 
 ## Phase 3: Recap
 

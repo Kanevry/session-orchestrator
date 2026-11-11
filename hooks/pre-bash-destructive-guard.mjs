@@ -50,7 +50,10 @@
  * Telemetry (Epic #803 process-safety dimension): best-effort
  * `orchestrator.destructive_guard.blocked` / `orchestrator.destructive_guard.warned`
  * events are appended to events.jsonl on the block/warn paths. Payload never
- * includes the raw command — only a truncated sha256 `command_hash`. Emission
+ * includes the raw command — only a keyed, host-local `command_hash`
+ * (`hmac:` + 16 hex of HMAC-SHA256 under the host key, or `v0-hmac:` with a
+ * per-process key when none is readable) from `hooks/_lib/command-hash.mjs`
+ * (#1880; unsalted sha256 before). Emission
  * is wrapped in try/catch and happens BEFORE the block/warn outcome is
  * finalized; a telemetry failure never changes the guard's decision.
  */
@@ -58,12 +61,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
+import { hashCommand as sharedHashCommand } from './_lib/command-hash.mjs';
 import { pathToFileURL } from 'node:url';
 
 import { shouldRunHook, effectiveRuleSeverity } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
-import { execFileSync } from '../scripts/lib/native-command.mjs';
+import { execFileSync as nativeExecFileSync } from '../scripts/lib/native-command.mjs';
 
 // #1826 — stdout ceiling for every git read in this hook. Node's default 1 MiB
 // made a CLEAN worktree with node_modules "not measurable": its
@@ -209,7 +212,18 @@ async function bootstrap() {
           'extractDeleteTargets',
           'firstDeniedDeleteTarget',
           'shellCommandString',
+          'suCommandStrings',
           'argvWordsWithoutRedirects',
+          'readPathReset',
+          'readForcedDiscard',
+          'pipedShellData',
+          'programName',
+          'gitShellAliasRun',
+          'expandBraces',
+          'unreadBraceWord',
+          'gitInlineAliasWords',
+          'gitEnvAliasUnfollowed',
+          'oversizedCommand',
         ],
       },
     },
@@ -267,14 +281,15 @@ const _policyCache = new Map();
 // ---------------------------------------------------------------------------
 
 /**
- * sha256(command) truncated to 16 hex chars — mirrors loop-guard.mjs
- * hashArgs(). Never emit the raw command into telemetry (privacy).
+ * Keyed telemetry mark of the command (`hmac:<16 hex>`, see
+ * hooks/_lib/command-hash.mjs). Never emit the raw command into telemetry (privacy).
  *
  * @param {string} command
  * @returns {string}
  */
 function hashCommand(command) {
-  return crypto.createHash('sha256').update(command).digest('hex').slice(0, 16);
+  // Keyed host-local HMAC since #1880 (was unsalted sha256) — see hooks/_lib/command-hash.mjs.
+  return sharedHashCommand(command);
 }
 
 /**
@@ -415,7 +430,7 @@ async function isGitStashNonEmpty(projectDir) {
  * @returns {{targets: RmTarget[], writeTargets: RmTarget[]}}
  * @typedef {{ text: string, dirs: Array<string|null>, trustTmpdir: boolean }} RmTarget
  */
-function parseRmTargets(command, cwd = null) {
+function parseRmTargets(command, cwd = null, pattern = 'rm -rf') {
   const targets = [];
   const writeTargets = [];
   let dirs = [cwd];
@@ -426,7 +441,8 @@ function parseRmTargets(command, cwd = null) {
     cdpath: /\bCDPATH\b|\bcdpath\b/.test(command) || Boolean(process.env.CDPATH),
   };
 
-  for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
+  for (const segment of blocker.splitChainSegments(blocker.expandBraces(blocker.tokenizeCommand(command)))) {
+    chargeHookRead(segment.length);
     const trustTmpdir = segmentNo++ === 0 && !hidesTmpdirChange(segment);
     // From the first subshell or substitution on, a `cd` may or may not have run.
     if (segment.some((t) => t.operator === 'substitution' || t.operator === 'subshell')) dirs = [null];
@@ -441,9 +457,19 @@ function parseRmTargets(command, cwd = null) {
     }
     // The rm reading, if any (zsh reads `3>&-echo rm P` as `rm P`, #1832 G1).
     const rmReading = readings.find((r) => isRmReading(r, segment));
-    if (!rmReading) continue;
-    const { index } = rmReading;
     const at = { dirs, trustTmpdir };
+    // #1956 fix cycle 1: a segment that carries the removal without an rm
+    // verb to read (a `bash -c` payload, an unread brace word) stands as an
+    // unread target, so an allowlisted rm elsewhere on the line cannot lift
+    // its deny (a payload removal followed by `rm -rf /tmp/x` was allowed).
+    if (!rmReading) {
+      const text = segmentText(segment);
+      if (blocker.commandMatchesBlocked(text, pattern, RULE_MATCH) || commandHasRecursiveForceRm(text)) {
+        targets.push({ text, unread: true, ...at });
+      }
+      continue;
+    }
+    const { index } = rmReading;
 
     for (let i = index + 1; i < segment.length; i++) {
       const tok = segment[i];
@@ -467,7 +493,8 @@ function parseRmTargets(command, cwd = null) {
       // One the shell still expands may also split off a path (`-rf${x}` with
       // x=' /'), so it stays a target and passes no exception (#1892).
       if (!seenDashDash && !tok.quoted && tok.text.startsWith('-') && tok.text !== '-' && !NON_LITERAL_WORD.test(tok.text)) continue;
-      targets.push({ text: tok.text, ...at });
+      // A brace word the expansion did not read is never allowlisted (#1956 fix cycle 1).
+      targets.push(tok.braceUnreadable === true ? { text: tok.text, unread: true, ...at } : { text: tok.text, ...at });
     }
   }
 
@@ -560,6 +587,29 @@ function isNullSink(targetPath) {
 }
 
 /**
+ * The segments the rm readers judge (#1956 fix cycle 1): as written, after
+ * brace expansion (blocker.expandBraces), and with each brace word left unread
+ * beside a substitution read as its words with the expansions dropped
+ * (`{rm,-fr,src}$X`), as the blocker's pattern matcher reads it. Union only.
+ *
+ * @param {string} command
+ * @returns {Array<Array<object>>}
+ */
+function rmReadSegments(command) {
+  const raw = blocker.tokenizeCommand(command);
+  const segments = blocker.splitChainSegments(raw);
+  const braced = blocker.expandBraces(raw);
+  if (braced === raw) return segments;
+  segments.push(...blocker.splitChainSegments(braced));
+  if (braced.some((t) => t.braceWords !== undefined)) {
+    const words = braced.flatMap((t) => (t.braceWords === undefined ? [t]
+      : t.braceWords.map((w) => ({ text: withoutExpansions(w.text), quoted: w.quoted })).filter((w) => w.text !== '' || w.quoted)));
+    segments.push(...blocker.splitChainSegments(words));
+  }
+  return segments;
+}
+
+/**
  * Detect whether the command contains an UNQUOTED `rm` invocation carrying BOTH
  * recursive (`-r`/`-R`/`--recursive`) AND force (`-f`/`--force`) semantics,
  * including combined/short forms (`-rf`, `-fr`, `-r -f`) and the long-flag pair
@@ -592,11 +642,28 @@ function isNullSink(targetPath) {
  * what #1892 closed. REVISIT TRIGGER: a recursive rm without `-f` that
  * destroyed work, or the #1854 ADR on the guard's goal.
  *
+ * The words are read as written and after brace expansion (#1956 fix cycle
+ * 1, rmReadSegments: `{rm,-fr,src}`, `rm {-r,-f} src`), and `bash -c` /
+ * `eval` payloads are followed up to MAX_PAYLOAD_DEPTH (`bash -c 'rm -fr
+ * src'` was allowed while `bash -c 'rm -rf src'` was denied).
+ *
  * @param {string} command
+ * @param {number} [depth]
  * @returns {boolean}
  */
-function commandHasRecursiveForceRm(command) {
-  for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
+function commandHasRecursiveForceRm(command, depth = 0) {
+  for (const segment of rmReadSegments(command)) {
+    chargeHookRead(segment.length);
+    if (depth < MAX_PAYLOAD_DEPTH) {
+      for (const { verb, index, payloads: wrapperPayloads = [] } of verbReadingsOf(segment)) {
+        // Wrapper payloads (`env -S '…'`, `sudo -s CMD`, #1944 F4).
+        if (wrapperPayloads.some((payload) => commandHasRecursiveForceRm(payload, depth + 1))) return true;
+        if (index < 0 || !(DASH_C_SHELLS.has(verb) || verb === 'eval')) continue;
+        const words = blocker.argvWordsWithoutRedirects(segment, index + 1);
+        const payloads = verb === 'eval' ? [words.map((t) => t.text).join(' ')] : shellPayloads(verb, words);
+        if (payloads.some((payload) => commandHasRecursiveForceRm(payload, depth + 1))) return true;
+      }
+    }
     const rmReading = verbReadingsOf(segment).find((r) => isRmReading(r, segment) && !segment[r.index].quoted);
     if (!rmReading) continue;
     const { index } = rmReading;
@@ -641,10 +708,42 @@ function commandHasRecursiveForceRm(command) {
  * @param {Array<{ text: string }>} segment
  * @returns {boolean}
  */
+// NAMED CEILING (BV-004, #1908 point 3): this hook reads an expanded verb word
+// with its own grammar (withoutExpansions + localeDollarsOf), the blocker with
+// emptyExpansionText. Probed 2026-11-02 (r${x}m, "r""m", $'rm', r\m, r$""m,
+// rm${${TMPDIR::=/usr}:+}, r`true`m, /bin/r${x}m, r$(true)m — all nine deny, and
+// the blocker reading names `rm` wherever the raw verb is not already `rm`). Kept
+// separate: emptyExpansionText returns UNREAD past MAX_DEFAULT_WORD_DEPTH where
+// this grammar still reads `rm`, and switching would add a blocker export to the
+// HEAD-fallback `requires` list. REVISIT TRIGGER: a probe where the two readings
+// disagree on `rm`, or a third consumer of either grammar.
 function isRmReading(reading, segment) {
   if (reading.verb === 'rm') return true;
-  const text = segment[reading.index]?.text;
-  return typeof text === 'string' && /[$`]/.test(text) && path.basename(withoutExpansions(text)) === 'rm';
+  const tok = segment[reading.index];
+  const text = tok?.text;
+  return typeof text === 'string' && /[$`]/.test(text) && path.basename(withoutExpansions(text, localeDollarsOf(tok))) === 'rm';
+}
+
+/**
+ * Offsets of the unquoted `$` of each locale string `$"…"` in a word token,
+ * empty ones included (`r$""m`, #1899). bash without a message catalog drops
+ * that `$`; the lexer keeps it, so `r$""m` reaches here as the text `r$m`. The
+ * token's `parts` tell where each double-quoted run starts, a zero-length one
+ * too.
+ *
+ * @param {{ text: string, parts?: Array<{ text: string, quote: string }> }} tok
+ * @returns {Set<number>}
+ */
+function localeDollarsOf(tok) {
+  const at = new Set();
+  let pos = 0;
+  let prev = null;
+  for (const p of tok.parts ?? []) {
+    if (p.quote === 'double' && prev?.quote === 'none' && prev.text.endsWith('$')) at.add(pos - 1);
+    pos += p.text.length;
+    prev = p;
+  }
+  return at;
 }
 
 /**
@@ -652,12 +751,15 @@ function isRmReading(reading, segment) {
  * included (`rm${${TMPDIR::=/usr}:+}` → `rm`).
  *
  * @param {string} word
+ * @param {Set<number>} [localeDollars] — offsets of a locale string's `$`,
+ *   dropped alone (see localeDollarsOf)
  * @returns {string}
  */
-function withoutExpansions(word) {
+function withoutExpansions(word, localeDollars = new Set()) {
   let out = '';
   for (let i = 0; i < word.length; i++) {
     const c = word[i];
+    if (localeDollars.has(i)) continue;
     if (c === '`') {
       const end = word.indexOf('`', i + 1);
       i = end < 0 ? word.length : end;
@@ -706,7 +808,22 @@ const NO_VERIFY_SHORT_WITH_VALUE = { commit: 'mFCctSu', am: 'CpS' };
 const GIT_OPTIONS_WITH_VALUE = new Set(['-c', '--namespace', '--config-env', '--attr-source']);
 /** Options and env prefixes after which the guard cannot tell which repo or hooks git uses. */
 const GIT_UNKNOWABLE_OPTION = /^--(git-dir|work-tree)(=|$)/;
-const GIT_UNKNOWABLE_ENV = /^GIT_(DIR|WORK_TREE|COMMON_DIR|CONFIG\w*)=/;
+// GIT_INDEX_FILE moves the index a path reset is measured against and
+// GIT_CEILING_DIRECTORIES can stop repo discovery (#1917 point 4).
+const GIT_UNKNOWABLE_ENV = /^GIT_(DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|CEILING_DIRECTORIES|CONFIG\w*)=/;
+/** Config keys that move git's work tree away from the directory the guard measures (#1834 review). */
+const GIT_WORKTREE_CONFIG = /^core\.(worktree|bare)(=|$)/i;
+
+/**
+ * Whether a `-c` / `--config-env` value can move git's work tree: `core.worktree`,
+ * `core.bare`, or a value the shell still expands (it may be either).
+ *
+ * @param {string} value
+ * @returns {boolean}
+ */
+function configMovesWorktree(value) {
+  return GIT_WORKTREE_CONFIG.test(value) || NON_LITERAL_WORD.test(value);
+}
 
 /**
  * Resolve a literal path operand against `base`, or null when the shell would
@@ -780,8 +897,221 @@ function argvWords(segment, from) {
   return blocker.argvWordsWithoutRedirects(segment, from);
 }
 
-/** Shells whose `-c <payload>` runs a nested command line (#1789 M1). */
-const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
+/**
+ * Shells whose `-c <payload>` runs a nested command line (#1789 M1), and `su`,
+ * which hands `-c` to the target user's shell (#1944), as `runuser` and `sg`
+ * do (#1944 F4). `ash` (BusyBox) and `fish` read a `-c` string the bash way
+ * (#1944 point 8). Read their payloads with shellPayloads, never with
+ * shellCommandString alone.
+ */
+const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'fish', 'su', 'runuser', 'sg']);
+
+/**
+ * The su-like verbs, read by the blocker's su grammar. Same list as
+ * `SU_LIKE_SHELLS` in scripts/lib/command-blocker.mjs (not exported: a new
+ * required export would fail the HEAD-copy check of the guard loader).
+ */
+const SU_LIKE_SHELLS = new Set(['su', 'runuser', 'sg']);
+
+/**
+ * The command strings a DASH_C_SHELLS verb runs (#1944): the shell `-c`
+ * grammar for a shell, the blocker's su reading for `su` (`su USER -c S`,
+ * `--command=S` — the shell grammar stops at USER and reads none), so the
+ * guard's readers see what the pattern matcher sees.
+ *
+ * @param {string} verb
+ * @param {Array<{ text: string }>} words - redirect-free argv after the verb
+ * @param {{ zsh?: boolean, ksh?: boolean }} [opts]
+ * @returns {string[]}
+ */
+function shellPayloads(verb, words, opts) {
+  // `fish` reads its own `-c`/`--command`/`-C`/`--init-command` values; the
+  // blocker's suCommandStrings routes verb 'fish' to that grammar
+  // (fishCommandStrings in scripts/lib/command-blocker.mjs, #1944 follow-up).
+  if (SU_LIKE_SHELLS.has(verb) || verb === 'fish') return blocker.suCommandStrings(words, verb);
+  const payload = blocker.shellCommandString(words, opts);
+  return payload === null ? [] : [payload];
+}
+
+/** Builtins that declare or export shell variables by their operand words. */
+const VAR_DECLARING_BUILTINS = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
+/**
+ * Builtins that run text the guard does not read in the main shell's environment.
+ *
+ * Fail-closed on purpose (#1917 point 5, measured 2026-11-02): only `source <file>; …`
+ * and `. <file>; …` are unmeasurable; `export FOO=1; …` and `( export FOO=1 ); …`
+ * already measure clean. The one known candidate false deny is
+ * `( export GIT_DIR=… ); git checkout -- a.txt` (a subshell export does not leak).
+ * REVISIT RECIPE: extract Bash tool_use commands from transcripts, replay them through
+ * this hook in a throwaway repo under the live policy; pre-registered metric = share of
+ * `git-checkout-discard` "not measurable" denies a relaxed rule would allow. The ledger
+ * cannot replay (blocked records carry only a salted command_hash). Above ~10 % the
+ * deny is a broken instrument (HR-101): relax; below it, keep.
+ */
+const ENV_OPAQUE_BUILTINS = new Set(['eval', 'source', '.']);
+
+/**
+ * Whether one segment may point a LATER git call of the same line at another
+ * repo (#1834 security review): an assignment, `export`, `declare -x` or
+ * `typeset -x` of a `GIT_UNKNOWABLE_ENV` variable — the same list the inline
+ * prefix (`GIT_DIR=… git …`) judges — or a name the guard cannot read
+ * (`export $V=…`), or `eval` / `source` / `.` whose text may export one. A
+ * plain `VAR=…;` segment counts even without `export`: under `set -a`, or when
+ * the variable is already exported, the shell hands it to git. `unset GIT_*`
+ * does not count: it drops a redirect, so git falls back to the directory the
+ * guard measures.
+ *
+ * @param {Array<{ text: string }>} segment
+ * @param {string|null} verb
+ * @param {number} index
+ * @returns {boolean}
+ */
+function segmentRedirectsGitEnv(segment, verb, index) {
+  const names = (words) => words.some((t) => {
+    const name = t.text.split('=')[0];
+    return NON_LITERAL_WORD.test(name) || GIT_UNKNOWABLE_ENV.test(`${name}=`);
+  });
+  if (verb === null) return names(segment);
+  if (ENV_OPAQUE_BUILTINS.has(verb)) return true;
+  if (VAR_DECLARING_BUILTINS.has(verb)) return names(segment.slice(index + 1).filter((t) => !/^[-+][a-zA-Z]+$/.test(t.text)));
+  return false;
+}
+
+/** procps-ng watch(1) options taking a value: `-n/--interval`, `-q/--equexit`, `-s/--shotsdir`. */
+const WATCH_VALUE_SHORT = new Set(['n', 'q', 's']);
+const WATCH_VALUE_LONG = new Set(['--interval', '--equexit', '--shotsdir']);
+/** procps-ng watch(1) value-less options (`-d` takes only a glued optional value). */
+const WATCH_BOOL_SHORT = new Set(['b', 'c', 'C', 'e', 'g', 'h', 'p', 'r', 't', 'v', 'w', 'x']);
+const WATCH_BOOL_LONG = new Set(['--beep', '--color', '--no-color', '--differences', '--errexit', '--chgexit',
+  '--help', '--precise', '--no-rerun', '--no-title', '--version', '--no-wrap', '--exec']);
+
+/**
+ * The command lines `watch [options] command…` runs (#1940 point 2), as
+ * payloads. Semantics relied on, from the procps-ng watch(1) manual page
+ * (procps-ng 4.0.x; NOT measured — `watch` is absent on the M4, 2026-11-03):
+ * options stop at the first non-option word (getopt `+`); without `-x` the
+ * remaining words are joined by one space and run through `sh -c`; with
+ * `-x`/`--exec` they run as argv. Every word is read both ways (the raw join,
+ * and each word shell-quoted), so a misread `-x` only adds a reading. An option
+ * the tables above do not know is read both with and without a value word
+ * (union, never weaker).
+ * Fix cycle 1 (C2): the option words are read to the first non-option word
+ * with no limit — the old cap of eight read the ninth `-t` as the command.
+ * Each word index is visited once, so ONE call is linear in the word count —
+ * but every start yields a payload of the rest of the line, which is read
+ * again (`watch -Z watch …` nests): fix cycle 2 charges each visit and each
+ * payload word to the hook's read budget (chargeHookRead), which fails closed.
+ *
+ * @param {Array<{ text: string }>} words - argv after `watch`, redirects removed
+ * @returns {string[]}
+ */
+function watchPayloads(words) {
+  chargeHookRead(words.length);
+  const starts = new Set();
+  const seen = new Set();
+  const todo = [0];
+  while (todo.length > 0) {
+    const i = todo.pop();
+    if (seen.has(i)) continue;
+    seen.add(i);
+    const text = words[i]?.text;
+    if (text === undefined) continue;
+    if (text === '--') { starts.add(i + 1); continue; }
+    if (!text.startsWith('-') || text === '-') { starts.add(i); continue; }
+    if (text.startsWith('--')) {
+      const name = text.split('=')[0];
+      if (text.includes('=') || WATCH_BOOL_LONG.has(name)) todo.push(i + 1);
+      else if (WATCH_VALUE_LONG.has(name)) todo.push(i + 2);
+      else todo.push(i + 1, i + 2);
+      continue;
+    }
+    let next = [i + 1];
+    for (let k = 1; k < text.length; k++) {
+      const c = text[k];
+      if (c === 'd') { if (k + 1 < text.length) break; continue; } // `-dpermanent`
+      if (WATCH_VALUE_SHORT.has(c)) { next = [k + 1 < text.length ? i + 1 : i + 2]; break; }
+      if (!WATCH_BOOL_SHORT.has(c)) { next = [i + 1, i + 2]; break; }
+    }
+    todo.push(...next);
+  }
+  const out = new Set();
+  for (const at of starts) {
+    const rest = words.slice(at);
+    if (rest.length === 0) continue;
+    chargeHookRead(rest.length);
+    out.add(rest.map((t) => t.text).join(' '));
+    out.add(rest.map((t) => `'${t.text.replace(/'/g, `'\\''`)}'`).join(' '));
+  }
+  return [...out];
+}
+
+/**
+ * The action string of `trap [-lpP] [--] <action> <signal>…` (#1944 point
+ * 6), or null: bash runs it as a command line when a listed signal or EXIT
+ * comes, so it is read like a `bash -c` payload. `-` (reset) and a missing
+ * operand run nothing. A lone operand (`trap EXIT`, a reset) is still
+ * returned — a signal name read as a command line holds no git call, so the
+ * over-read costs nothing.
+ *
+ * @param {Array<{ text: string }>} words - argv after `trap`, redirects removed
+ * @returns {string|null}
+ */
+function trapAction(words) {
+  let i = 0;
+  while (i < words.length && /^-[lpP]+$/.test(words[i].text)) i++;
+  if (words[i]?.text === '--') i++;
+  const action = words[i]?.text;
+  return action === undefined || action === '-' ? null : action;
+}
+
+/** Most substituted readings one line may produce (#1944 point 1). */
+const MAX_VARIABLE_READINGS = 8;
+
+/**
+ * The line again with every `$NAME` / `${NAME}` replaced by a literal value
+ * the same line assigns it (`G=git; $G checkout -f other`, `S=switch; git $S
+ * -f other`, `G=git env -S '${G} checkout -f other'`), #1944 point 1. Judged
+ * as one more reading of the line BESIDE the original one (union, never instead): a
+ * command word, subcommand or option from such a variable is then judged
+ * like the written form. One reading per assigned value, at most
+ * MAX_VARIABLE_READINGS. Text substitution also replaces inside single
+ * quotes, where the shell does not (env -S does) — a deny-side over-read.
+ * Values holding `$` or a backtick are not literal and left out. Only a
+ * single word is substituted (no whitespace, quote or shell operator): a
+ * command word, subcommand or option is one word, and splicing a multi-word
+ * string raw into the line let the pattern matcher read DATA as a command —
+ * `P='<text naming a blocked git command>'; printf "$P" | node x` (hook replay
+ * 2026-11-07: 18 of 18 new denies in one corpus slice had this shape).
+ * NAMED CEILING (BV-004): a variable the line does not assign (inherited from
+ * the environment, an earlier Bash call, `read`, a sourced file) stays unread
+ * as a command word or subcommand, like the #1940 ceiling for options from a
+ * variable (ADR-0017). Also unread (same ceiling, REFUTE review 2026-11-07):
+ * parameter-expansion forms (`${G:-git}`, `${G%x}`, `${G:0:3}`), arrays
+ * (`"${A[@]}"`) and names bound by `for G in …` or `read G`. REVISIT TRIGGER:
+ * a reported or replayed discard through one of these forms.
+ *
+ * @param {string} command
+ * @returns {string[]} the substituted lines that differ from `command`
+ */
+function literalVariableReadings(command) {
+  if (!command.includes('$')) return [];
+  const values = new Map();
+  for (const tok of blocker.tokenizeCommand(command)) {
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)=([^\s$`'"\\;|&<>(){}]+)$/.exec(tok.text);
+    if (m === null) continue;
+    if (!values.has(m[1])) values.set(m[1], new Set());
+    values.get(m[1]).add(m[2]);
+  }
+  let readings = [command];
+  for (const [name, vals] of values) {
+    const ref = new RegExp(`\\$(?:\\{${name}\\}|${name}(?![A-Za-z0-9_]))`, 'g');
+    if (!command.match(ref)) continue;
+    const next = [];
+    for (const r of readings) for (const v of vals) next.push(r.replace(ref, () => v));
+    readings = next.slice(0, MAX_VARIABLE_READINGS);
+  }
+  return [...new Set(readings)].filter((r) => r !== command);
+}
 
 /**
  * The walker behind {@link findGitSegments}. Besides the main shell's git
@@ -791,25 +1121,59 @@ const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
  * judge it recursively. A quoted word is judged by its text: the shell removes
  * the quotes before git sees it (#1789 H1).
  *
+ * `trap <action> <signal>…` collects its action like a `-c` payload (#1944
+ * point 6): the shell runs it when the signal or EXIT comes.
+ *
  * @param {string} command
  * @param {string|null} cwd
+ * @param {{ braces?: boolean }} [options] - `braces`: read the words after bash
+ *   brace expansion (#1944 point 5, expandBraces) — the path-reset
+ *   reader only; the other rules keep the unexpanded words
  * @returns {{ calls: Array<{ segment: Array<object>, index: number, dir: string|null }>, payloads: string[] }}
  */
-function walkGitSegments(command, cwd) {
+function walkGitSegments(command, cwd, { braces = false } = {}) {
   const calls = [];
   const payloads = [];
-  const tokens = blocker.tokenizeCommand(command);
+  const raw = blocker.tokenizeCommand(command);
+  const tokens = braces ? blocker.expandBraces(raw) : raw;
   const substitutionAt = tokens.findIndex((t) => t.operator === 'substitution');
   const mainShell = substitutionAt === -1 ? tokens : tokens.slice(0, substitutionAt);
   const subshellAt = mainShell.findIndex((t) => t.operator === 'subshell');
-  const parts = subshellAt === -1
-    ? [{ tokens: mainShell, cdKnown: true }]
-    : [{ tokens: mainShell.slice(0, subshellAt), cdKnown: true }, { tokens: mainShell.slice(subshellAt), cdKnown: false }];
+  // #1944 point 3: the main shell is split ONCE, so a pipe into a subshell
+  // (`echo 'S' | ( sh )`) keeps its pipedFrom link; before, the split at the
+  // first subshell token cut it. A `cd` is known only in statements before
+  // that token (a statement there holds at least one of its tokens).
+  // NAMED CEILING (BV-004): only a shell that is the subshell's own first
+  // command keeps the link; `| (cd x && sh)`, `| if …; then sh; fi` and
+  // `| while read l; do eval "$l"; done` are unread. REVISIT TRIGGER: a
+  // reported or replayed discard through such a compound.
+  const beforeSubshell = subshellAt === -1 ? null : new Set(mainShell.slice(0, subshellAt));
+  const parts = [{ tokens: mainShell, cdKnown: true, beforeSubshell }];
   if (substitutionAt !== -1) parts.push({ tokens: tokens.slice(substitutionAt), cdKnown: false, substitution: true });
   let dir = cwd;
+  // Set once a segment may export a repo-moving GIT_* variable; every later git
+  // call of the line then runs in a directory the guard cannot know (#1834).
+  let envRedirected = false;
+  // #1944 point 1: the substituted line is the SAME line, so it is walked in
+  // the line's own directory (a payload would be read as dir-unknown). A chain
+  // (`G=git; H=$G; $H …`) substitutes again on the next level, so readings can
+  // fan out up to MAX_VARIABLE_READINGS per level; the bound is the hook's read
+  // budget, which fails closed (measured: 4 levels of 8 values, about 1.4 s).
+  for (const reading of literalVariableReadings(command)) {
+    const sub = walkGitSegments(reading, cwd, { braces });
+    calls.push(...sub.calls);
+    payloads.push(...sub.payloads);
+  }
   for (const part of parts) {
     if (part.substitution) dir = null;
     for (const segment of blocker.splitChainSegments(part.tokens)) {
+      const cdKnown = part.cdKnown && (!part.beforeSubshell || segment.some((t) => part.beforeSubshell.has(t)));
+      // #1940 point 6: data piped or here-stringed into a stdin shell
+      // (`echo 'git checkout -f' | sh`, `… | tee x | sh`, `( echo … ) | sh`)
+      // is a payload like a `bash -c` string — read by the blocker's
+      // pipedShellData, the reading its matcher uses.
+      chargeHookRead(segment.length);
+      for (const data of pipedData(segment)) payloads.push(data);
       // Every reading and both word views of a glued close (#1832 G1):
       // `3>&-echo git worktree remove …` runs git in zsh, `git worktree 3>&-z
       // remove …` is `worktree remove` in zsh. Directory tracking follows the
@@ -819,10 +1183,14 @@ function walkGitSegments(command, cwd) {
       const readings = verbReadingsOf(segment);
       const views = segment.some((t) => t.bashArgvWord !== undefined) ? [true, false] : [true];
       readings.forEach(({ verb, index }, n) => {
+        if (segmentRedirectsGitEnv(segment, verb, index)) envRedirected = true;
+        // #1940 point 1: the `env -S <string>` payload (also `-iS`,
+        // `--split-string[=]`) — resolveSegmentVerb's own payloads.
+        for (const p of readings[n].payloads ?? []) payloads.push(p);
         if (n === 0 && (verb === 'pushd' || verb === 'popd')) { dir = null; return; }
         if (n === 0 && verb === 'cd') {
           const operands = segment.slice(index + 1).filter((t) => t.quoted || !/^-[LPe@]+$/.test(t.text));
-          if (!part.cdKnown) dir = null;
+          if (!cdKnown) dir = null;
           else if (operands.length === 0) dir = os.homedir();
           else dir = operands.length === 1 ? literalDir(dir, operands[0]) : null;
           return;
@@ -831,17 +1199,21 @@ function walkGitSegments(command, cwd) {
           const words = blocker.argvWordsWithoutRedirects(segment, index + 1, { bash });
           if (DASH_C_SHELLS.has(verb)) {
             // One -c grammar for the guard and the pattern matcher (#1832 point 5).
-            const payload = blocker.shellCommandString(words);
-            if (payload !== null) payloads.push(payload);
+            payloads.push(...shellPayloads(verb, words, { zsh: verb === 'zsh', ksh: verb === 'ksh' }));
           } else if (verb === 'eval') {
             payloads.push(words.map((t) => t.text).join(' '));
+          } else if (verb === 'watch') {
+            payloads.push(...watchPayloads(words));
+          } else if (verb === 'trap') {
+            const action = trapAction(words);
+            if (action !== null) payloads.push(action);
           } else if (verb === 'git') {
             // Redirects are gone before git builds argv (`git >/dev/null push`):
             // every consumer reads the redirect-free words (Codex review C1).
             calls.push({
               segment: [...segment.slice(0, index + 1), ...words],
               index,
-              dir: envChdir(segment.slice(0, index), dir),
+              dir: envRedirected ? null : envChdir(segment.slice(0, index), dir),
             });
           }
         }
@@ -897,7 +1269,7 @@ function groupHasNoVerify(group, withValue) {
  * @returns {string|null}
  */
 function envChdir(prefix, dir) {
-  const envAt = prefix.findIndex((t) => t.text === 'env');
+  const envAt = prefix.findIndex((t) => !t.quoted && blocker.programName(t.text) === 'env');
   if (envAt === -1) return dir;
   let out = dir;
   for (let i = envAt + 1; i < prefix.length; i++) {
@@ -934,9 +1306,17 @@ function gitGlobals(segment, index, dir) {
       continue;
     }
     if (/^--config-env=core\.hookspath=/i.test(t.text)) { hooksPathOverridden = true; continue; }
+    if (t.text.startsWith('--config-env=')) {
+      if (configMovesWorktree(t.text.slice('--config-env='.length))) gitDir = null;
+      continue;
+    }
     if (GIT_OPTIONS_WITH_VALUE.has(t.text)) {
       const value = segment[++i]?.text ?? '';
-      if ((t.text === '-c' || t.text === '--config-env') && /^core\.hookspath=/i.test(value)) hooksPathOverridden = true;
+      const isConfig = t.text === '-c' || t.text === '--config-env';
+      if (isConfig && /^core\.hookspath=/i.test(value)) hooksPathOverridden = true;
+      // `-c core.worktree=/x` runs git in /x, not in the directory the guard
+      // measured (#1834 review): unknowable, like `--work-tree`.
+      if (isConfig && configMovesWorktree(value)) gitDir = null;
     }
   }
   return { dir: gitDir, subAt: i, hooksPathOverridden };
@@ -974,20 +1354,154 @@ function hookedGitCall(segment, index, dir) {
  *
  * @param {string} dir
  * @param {string[]} args
+ * @param {number} [timeout] - ms; callers on a shared budget pass what is left
  * @returns {string|null}
  */
-function gitRead(dir, args) {
+function gitRead(dir, args, timeout = 3000) {
   try {
     const out = execFileSync('git', ['-C', dir, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 3000,
+      timeout,
       maxBuffer: GIT_MAX_BUFFER,
     }).trim();
     return out.length > 0 ? out : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * The hook's ONE read budget (fix cycle 2, item 2): the words its payload and
+ * pipe-data readers (watchPayloads, walkGitSegments, unreadForcedDiscard,
+ * hasUnreadResetSegment) visit across the whole hook call, plus a wall clock
+ * from the first visit, minus the time spent waiting on git (#1952 point 1,
+ * see execFileSync below). The harness kills a hook after 5 s (hooks.json) and a
+ * killed hook lets the command through, so past the budget the line is
+ * judged unreadable instead (HookReadBudgetError → main) and DENIED, whatever
+ * it names: the rules after the readers never ran, so allowing would skip
+ * every other block rule (review round 3: `watch -Z`×50 before
+ * `g''it checkout -- x` or `psql -c 'DROP TABLE x'` was allowed). Replaces no
+ * depth cap; the caps below still fail closed.
+ * NAMED CEILING (BV-004): a harmless line that exhausts the budget is denied.
+ * REVISIT TRIGGER: a real command denied as "not readable within the guard's
+ * read budget" (0 of 6,565 replayed real commands came near it, slowest 368 ms).
+ */
+const HOOK_READ_WORK = 2_000_000;
+const HOOK_READ_MS = 2500;
+const hookRead = { work: 0, startedAt: 0, waitedMs: 0, deadlineHit: false };
+
+/**
+ * The whole hook's deadline, measured from process start (#1952 review W3):
+ * the harness kills the hook after 5 s (hooks.json) and a killed hook lets
+ * the command through. Git waits are off the read budget's clock, so this is
+ * what bounds them: every git call gets at most the time left, and once it
+ * is gone a git call fails as a timeout (each rule's own "not measurable"
+ * outcome: worktree-remove and path-reset deny, hooks-path allows), and a
+ * further read charge denies the line as unreadable.
+ */
+const HOOK_DEADLINE_MS = 4000;
+const hookTimeLeft = () => HOOK_DEADLINE_MS - process.uptime() * 1000;
+
+/**
+ * The native execFileSync, with the time spent waiting on the child kept off
+ * the read budget's clock (#1952 point 1): the rules run git between two
+ * charges (hooks-path, worktree-remove, path-reset measurements), and on a
+ * loaded host that wait denied a benign `git commit && git push` as "not
+ * readable within the guard's read budget". Each call's `timeout` is capped
+ * at the hook deadline's time left (HOOK_DEADLINE_MS); HOOK_READ_WORK is
+ * unchanged.
+ *
+ * @param {string} file
+ * @param {string[]} args
+ * @param {object} options
+ * @returns {string|Buffer}
+ */
+function execFileSync(file, args, options) {
+  const left = Math.floor(hookTimeLeft());
+  if (left <= 0) {
+    hookRead.deadlineHit = true;
+    const err = new Error('hook deadline spent');
+    err.code = 'ETIMEDOUT';
+    throw err;
+  }
+  const timeout = Math.min(options?.timeout ?? left, left);
+  const started = Date.now();
+  try {
+    return nativeExecFileSync(file, args, { ...options, timeout });
+  } catch (err) {
+    // A timeout the deadline imposed is the hook's, not the rule's: no rule may soften it (re-review W3).
+    if (timeout === left && (err?.code === 'ETIMEDOUT' || err?.signal === 'SIGTERM')) hookRead.deadlineHit = true;
+    throw err;
+  } finally {
+    // Only a wait inside the window counts: before the first charge the clock is not running.
+    if (hookRead.startedAt !== 0) hookRead.waitedMs += Date.now() - started;
+  }
+}
+
+/** Thrown when the hook's read budget is spent; main() turns it into a verdict. */
+class HookReadBudgetError extends Error {}
+
+/**
+ * The blocker's brace reading stopped at its word budget (#1956 fix cycle 1,
+ * BRACE_WORD_BUDGET in command-blocker.mjs): the match it reports is
+ * fail-closed, so the line is denied as not readable, with that reason,
+ * instead of under whichever rule asked first. #2006: the blocker names the
+ * budget it spent (`onBudgetSpent(cause)`, 'brace' or 'pipe'); a pipe or
+ * xargs flood is named as such, not as a brace expansion.
+ */
+class BraceBudgetError extends HookReadBudgetError {}
+
+/** @param {'brace' | 'pipe'} [cause] */
+function braceBudgetSpent(cause) {
+  throw new BraceBudgetError(cause === 'pipe' ? 'its piped or xargs data is more than the guard reads' : 'its brace expansion makes more words than the guard reads');
+}
+
+/**
+ * The line as it reads WITHOUT brace expansion (#1974 R1): every `{` that
+ * could open a brace list or sequence is escaped, so the blocker keeps the
+ * word literal. `${…}` and a brace group `{ …; }` (whitespace after `{`) stay
+ * as written. Used ONLY to name the rule of a line already denied past the
+ * brace budget — it never decides whether that line is allowed. NAMED CEILING
+ * (BV-004): the escape is applied at every quote level, so a `{` inside
+ * quotes reads as `\{`; the name can then be missing (budget deny instead) but
+ * the line stays denied. REVISIT TRIGGER: a budget deny on a line whose rule
+ * an operator expected to be named.
+ *
+ * @param {string} command
+ * @returns {string}
+ */
+function withoutBraceExpansion(command) {
+  return command.replace(/(?<![$\\])\{(?!\s)/g, '\\{');
+}
+
+/**
+ * Charge `n` units to the hook's read budget; throws HookReadBudgetError
+ * when it is spent.
+ *
+ * @param {number} n
+ */
+function chargeHookRead(n) {
+  if (hookRead.startedAt === 0) hookRead.startedAt = Date.now();
+  hookRead.work += n;
+  if (hookRead.work > HOOK_READ_WORK || Date.now() - hookRead.startedAt - hookRead.waitedMs > HOOK_READ_MS || hookTimeLeft() <= 0) {
+    throw new HookReadBudgetError('command not readable within the guard\'s read budget');
+  }
+}
+
+/**
+ * The stdin-shell data of a segment (blocker.pipedShellData), charged to the
+ * read budget; data past the blocker's own pipe-read budget is unread and
+ * fails closed the same way.
+ *
+ * @param {Array<object>} segment
+ * @returns {string[]}
+ */
+function pipedData(segment) {
+  const data = blocker.pipedShellData(segment);
+  if (data.unreadable) throw new HookReadBudgetError('piped shell data not readable within the guard\'s read budget');
+  chargeHookRead(1 + data.reduce((n, d) => n + d.length, 0) / 16);
+  return data;
 }
 
 /** Nesting depth of `bash -c` / `eval` payloads the worktree-remove rule follows (#1789 M1). */
@@ -1252,7 +1766,8 @@ function unsafeWorktreeRemoval(command, cwd) {
   // scanning goes on so a measured hit later in the command names the files.
   const notMeasurable = (call, shown, why) => {
     const label = `git worktree remove ${shown} — target not measurable (${why})`;
-    if (call.softenable) unmeasurable ??= { label, unmeasurable: true };
+    // A git read the hook deadline cut short is never softened to a warn (re-review W3 of #1952).
+    if (call.softenable && !hookRead.deadlineHit) unmeasurable ??= { label, unmeasurable: true };
     else hardUnmeasurable ??= { label, unmeasurable: false };
   };
   for (const call of findWorktreeRemoves(command, cwd)) {
@@ -1284,6 +1799,643 @@ function unsafeWorktreeRemoval(command, cwd) {
     return { label: `git worktree remove ${found.path} — would delete ignored ${verdict.valuable.slice(0, 3).join(', ')}${more}`, unmeasurable: false };
   }
   return hardUnmeasurable ?? unmeasurable;
+}
+
+/**
+ * #1917 point 2: the blocker's `git checkout --` pattern also matches a
+ * `git restore` worktree reset (for wave manifests). This rule reads and
+ * measures restore resets itself, so `pathResetVerdict`'s whole-line match
+ * must see checkout matches only — else every restore of a clean path would
+ * be denied as "form not readable". The HEAD-fallback blocker (since
+ * 534f571b) has the same `{ restore }` option and honours it, so both copies
+ * judge alike. Only the unread-SEGMENT check (`hasUnreadResetSegment`) asks
+ * with `restore: true` (UNREAD_SEGMENT_MATCH): it never sees `git checkout` /
+ * `git restore` segments, so a readable `git restore` cannot reach its deny, while
+ * `xargs git restore` gets the deny of its checkout twin (review R1).
+ */
+const RESET_RULE_MATCH = Object.freeze({ restore: false, onBudgetSpent: braceBudgetSpent });
+const UNREAD_SEGMENT_MATCH = Object.freeze({ restore: true, onBudgetSpent: braceBudgetSpent });
+/** The options of the G5 pattern-rule match (#1956 fix cycle 1: the brace budget's deny is named). */
+const RULE_MATCH = Object.freeze({ onBudgetSpent: braceBudgetSpent });
+
+/** A pathspec the guard cannot hand to `git status` as git would see it (#1834). */
+const UNREADABLE_PATHSPEC = /[$`{]|^~/;
+
+/**
+ * Total ms for every git call the path-reset rule makes on one command line
+ * (#1834 M4): the hook runs under a 5 s harness timeout with `--fail-closed`,
+ * so three 3 s measurements against a slow repo would end in a kill instead of
+ * a "not measurable" deny. Each call gets `min(3000, what is left)`; a spent
+ * budget runs no further git.
+ */
+const PATH_RESET_BUDGET_MS = 3500;
+
+/**
+ * A git call killed by its `timeout` (#1917 point 8): execFileSync reports
+ * ETIMEDOUT, or only the SIGTERM it sent.
+ */
+function timedOut(err) {
+  return err?.code === 'ETIMEDOUT' || err?.signal === 'SIGTERM';
+}
+
+/** ms left on a path-reset budget, capped at the 3 s single-call timeout. */
+function budgetLeft(budget) {
+  return Math.min(3000, budget.deadline - Date.now());
+}
+
+/** `HEAD`/`@` with reflog or peel suffixes: `HEAD@{0}`, `HEAD^{commit}`, `@^{tree}` (#1834 review). */
+const HEAD_SPELLING = /^(HEAD|@)(@\{[^{}]*\}|\^\{[^{}]*\})+$/;
+
+/**
+ * Classify a checkout/restore ref against HEAD (#1834 review): `same` (no
+ * ref, HEAD, or resolving to HEAD's commit — so `HEAD~0` or the checked-out
+ * branch name cannot turn a measured discard into a warning), `foreign` (a literal ref naming
+ * another or no commit — a warning), or `unknown` (not measurable — denied
+ * for a reset): a ref the shell still expands (`"$(git rev-parse HEAD)"`, a
+ * variable) is no "foreign" ref, and a HEAD spelling (`HEAD@{0}`,
+ * `HEAD^{commit}`) that cannot be resolved read-only cannot be told apart from HEAD.
+ *
+ * An unknown directory and a spent time budget (#1834 M4) are `unknown`: an unresolved ref is never
+ * read as "foreign", which would only warn.
+ *
+ * @param {string|null} ref
+ * @param {string|null} dir
+ * @param {{ deadline: number }} budget - the line's shared measurement budget
+ * A rev-parse killed by its timeout, or not run because the budget is gone,
+ * is `spent` (#1917 point 8): `unknown` with the deny text "time budget
+ * spent", the text measurePathReset gives — and never `foreign`, which a
+ * timed-out HEAD read beside a fast ref read used to produce.
+ *
+ * @returns {'same'|'foreign'|'unknown'|'spent'}
+ */
+function headRefKind(ref, dir, budget) {
+  // #1940 point 3: git reads the ref `-` as `@{-1}` (the branch checked out
+  // before). `rev-parse '-^{commit}'` fails, which read as `foreign` and only
+  // warned — after `git checkout -b x` on the same line `@{-1}` is HEAD's
+  // commit and the reset discards. Read as `@{-1}`, it is `unknown`: denied.
+  if (ref === '-') return headRefKind('@{-1}', dir, budget);
+  if (ref === null || ref === 'HEAD' || ref === '@') return 'same';
+  // An empty ref (a value option at the end of the words, `-s` with nothing
+  // after it) names no commit git would use: never `foreign`, which only warns.
+  if (ref === '') return 'unknown';
+  const headSpelling = HEAD_SPELLING.test(ref);
+  if (!headSpelling && NON_LITERAL_WORD.test(ref)) return 'unknown';
+  // An unknown directory (a redirected git, a `source`, a payload) cannot tell
+  // the checked-out branch from another ref: `unknown`, never `foreign` (MED-1).
+  if (dir === null) return 'unknown';
+  let spent = false;
+  const read = (args) => {
+    const left = budgetLeft(budget);
+    if (left <= 0) { spent = true; return null; }
+    try {
+      const out = execFileSync('git', ['-C', dir, ...args], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: left, maxBuffer: GIT_MAX_BUFFER,
+      }).trim();
+      return out.length > 0 ? out : null;
+    } catch (err) {
+      if (timedOut(err)) spent = true;
+      return null;
+    }
+  };
+  const head = read(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+  const other = read(['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]);
+  if (spent) return 'spent';
+  if (budgetLeft(budget) <= 0 && (head === null || other === null)) return 'spent';
+  if (head !== null && head === other) return 'same';
+  return headSpelling && (head === null || other === null) ? 'unknown' : 'foreign';
+}
+
+/**
+ * Whether a merge-side reset changes ONLY conflicted files (#1917 point 3),
+ * on the line's shared budget: `git ls-files --full-name -u -z -- <path>`
+ * per path collects the unmerged files, then one `git status --porcelain=v1
+ * -z` over the paths lists what is dirty. A file whose worktree column (Y)
+ * is not blank would be overwritten — git 2.56.0 (2026-11-03): `git checkout
+ * --ours -- dir/` and `git restore --ours dir/` restored the dirty,
+ * non-conflicted `dir/b.txt` (` M`) and left the staged-only `dir/s.txt`
+ * (`M `) alone. `conflicted` (every path has unmerged entries and every
+ * worktree-dirty file under them is unmerged — a warning), `unmerged-free`
+ * (otherwise — measured like a same-ref reset), `spent` (a read timed out or
+ * the budget is gone), `unknown` (a read failed). A directory or path
+ * measurePathReset cannot read is `unmerged-free`, so its own fail-closed
+ * reason names it. Both reads print repository-root-relative paths.
+ *
+ * @param {{ paths: Array<{ text: string }>, pathsFromFile: boolean }} reset
+ * @param {string|null} dir
+ * @param {{ deadline: number }} budget
+ * @returns {'conflicted'|'unmerged-free'|'spent'|'unknown'}
+ */
+function mergeConflictKind(reset, dir, budget) {
+  if (dir === null || reset.pathsFromFile || reset.paths.some((t) => UNREADABLE_PATHSPEC.test(t.text))) return 'unmerged-free';
+  const read = (args) => {
+    const left = budgetLeft(budget);
+    if (left <= 0) return { kind: 'spent' };
+    try {
+      return {
+        out: execFileSync('git', ['-C', dir, ...args], {
+          encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: left, maxBuffer: GIT_MAX_BUFFER,
+        }),
+      };
+    } catch (err) {
+      return { kind: timedOut(err) || budgetLeft(budget) <= 0 ? 'spent' : 'unknown' };
+    }
+  };
+  const unmerged = new Set();
+  for (const p of reset.paths) {
+    const r = read(['ls-files', '--full-name', '-u', '-z', '--', p.text]);
+    if (r.kind) return r.kind;
+    if (r.out.length === 0) return 'unmerged-free';
+    // `<mode> <sha> <stage>\t<path>`, NUL-terminated; a path holds no NUL.
+    for (const entry of r.out.split('\0')) {
+      const tab = entry.indexOf('\t');
+      if (tab !== -1) unmerged.add(entry.slice(tab + 1));
+    }
+  }
+  const s = read(['status', '--porcelain=v1', '-z', '--untracked-files=no', '--', ...reset.paths.map((t) => t.text)]);
+  if (s.kind) return s.kind;
+  const fields = s.out.split('\0');
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i];
+    if (entry.length < 4) continue;
+    if (/[RC]/.test(entry.slice(0, 2))) i++; // rename/copy: the next field is the origin
+    if (entry[1] !== ' ' && !unmerged.has(entry.slice(3))) return 'unmerged-free';
+  }
+  return 'conflicted';
+}
+
+/**
+ * Every path reset in the command (#1834): `git [globals] checkout [opts]
+ * [<ref>] -- <path…>` and `git [globals] restore [opts] [<path…>]`, each with
+ * the directory git runs in (null when unknowable, as for #1789: an unreadable
+ * `cd`, a substitution body, a `bash -c`/`eval` payload) and its kind:
+ * `same-ref` (no ref, HEAD, or a ref resolving to HEAD's commit — measured)
+ * or `foreign-ref` (another commit or a merge side — warned). Words are read
+ * by their text, quoted or not. A payload past MAX_PAYLOAD_DEPTH that names
+ * `checkout` or `restore` yields an unmeasurable same-ref call (fail-closed).
+ *
+ * @param {string} command
+ * @param {string|null} cwd
+ * @param {{ deadline: number }} budget - the line's shared measurement budget
+ * @param {number} [depth]
+ * @returns {Array<{ verb: string, kind: 'same-ref'|'foreign-ref', ref: string|null, mergeSide: boolean, dir: string|null, paths: Array<{ text: string }>, pathsFromFile: boolean }>}
+ */
+function findPathResets(command, cwd, budget, depth = 0) {
+  const resets = [];
+  const { calls, payloads } = walkGitSegments(command, cwd, { braces: true });
+  // #1957: a call that defines its own alias (`git -c alias.co=checkout co --
+  // a`) is also read with the alias resolved — an additional reading.
+  const aliasCalls = calls.flatMap((call) => {
+    const resolved = blocker.gitInlineAliasWords(call.segment.slice(call.index + 1), call.segment.slice(0, call.index));
+    return resolved === null ? [] : [{ ...call, segment: [...call.segment.slice(0, call.index + 1), ...resolved] }];
+  });
+  for (const { segment, index, dir } of [...calls, ...aliasCalls]) {
+    const { dir: gitDir, subAt } = gitGlobals(segment, index, dir);
+    const sub = segment[subAt]?.text;
+    // #1944 point 5: a brace word past the expansion cap in the subcommand
+    // slot, or after a discard verb, is not read — fail-closed, measured as
+    // a path the shell still expands (measurePathReset: not measurable).
+    const braceWord = segment.slice(index + 1).find((t) => t.braceUnreadable === true);
+    if (braceWord !== undefined && (PATH_RESET_SUBS.has(sub) || segment[subAt]?.braceUnreadable === true)) {
+      resets.push({ verb: PATH_RESET_SUBS.has(sub) ? sub : 'checkout', kind: 'same-ref', ref: null, mergeSide: false, dir: gitDir, paths: [braceWord], pathsFromFile: false, touchesWorktree: true, refUnreadable: false, refSpent: false });
+      continue;
+    }
+    if (!PATH_RESET_SUBS.has(sub)) continue;
+    const words = argvWords(segment, subAt + 1);
+    // #1939: a forced discard (`git checkout -f`, `git switch -f`, `git
+    // checkout-index -f`, `git rm -f`) is measured like a same-ref reset —
+    // the whole tracked tree when it names no path (readForcedDiscard).
+    const forced = sub === 'restore' ? null : blocker.readForcedDiscard(sub, words);
+    if (sub !== 'checkout' && sub !== 'restore') {
+      if (forced !== null) resets.push({ ...forced, kind: 'same-ref', dir: gitDir, touchesWorktree: true, refUnreadable: false, refSpent: false });
+      continue;
+    }
+    // NAMED CEILINGS (BV-004, #1940 points 4 and 7, measured 2026-11-03):
+    // (a) a git alias from a config file is not expanded — `co` is no
+    // subcommand read here; an inline one (`git -c alias.co=checkout co --
+    // a`) is read since #1957 (aliasCalls above). (b) Options from a variable or substitution (`O=--
+    // pathspec-from-file=l; git checkout $O`, `git checkout $(…)`) are words
+    // the shell builds later. (c) Options appended by xargs (`echo -- a |
+    // xargs git checkout`) come from stdin. (d) Data piped into `su` (`echo
+    // … | sudo su`): `su` is no stdin shell here, it reads a password — run
+    // by root it does not. A loose text census of the 22,905 replay commands
+    // (2026-11-03) matched 8 `-c alias.` lines, 5 `xargs git checkout|restore`
+    // and 0 `| su` — text matches, not measured discards. REVISIT TRIGGER for
+    // all four: a reported or replayed discard through the form.
+    // The blocker's pure argv reader (#1917 point 2), shared with the wave
+    // manifests. NAMED CEILING (BV-004): `git checkout <path>` without `--`
+    // is not judged, as before #1834; REVISIT TRIGGER: a replay hit of that
+    // form on a dirty path. `git checkout [<ref>] --pathspec-from-file=<f>`
+    // is read with or without `--` (#1937) and, its list file unread, denied
+    // as not measurable (measurePathReset) unless the ref is foreign — that
+    // warns like `git checkout origin/main -- a`. NAMED CEILING (BV-004): its `worktree` field
+    // (false only for an index-only `git restore --staged`) does not decide
+    // the measured verdict — a `--staged` reset is measured like any other,
+    // so a dirty worktree path denies it; treating it as harmless would
+    // loosen the guard and is a decision not taken here. REVISIT TRIGGER: a
+    // replay of `git restore --staged` denied on a dirty worktree path. It is
+    // kept as `touchesWorktree` only to tell which restore resets the
+    // manifest rule itself matches (pathResetVerdict, review cycle 2).
+    const read = blocker.readPathReset(sub, words);
+    if (read === null) {
+      if (forced !== null) resets.push({ ...forced, kind: 'same-ref', dir: gitDir, touchesWorktree: true, refUnreadable: false, refSpent: false });
+      continue;
+    }
+    const { worktree: touchesWorktree, ...reset } = read;
+    // A merge-side form (`-m`/`--ours`/`--theirs`/`-2`/`-3`/`--conflict=`
+    // or `--conflict <style>`, #1917 point 3, #1925 points 8a/9a) only
+    // takes another state on a CONFLICTED file; on any other
+    // file it discards uncommitted work like a same-ref reset. So it warns
+    // only when every file the reset would change is unmerged
+    // (mergeConflictKind), and is otherwise measured. Not measurable (unknown directory, a path the shell
+    // still expands, a failed or timed-out read) falls to measurePathReset,
+    // which denies — fail-closed. NAMED CEILING (BV-004): a merge side with a
+    // ref (`git checkout --ours main -- p`) is judged by the conflict alone.
+    const conflict = reset.mergeSide ? mergeConflictKind(reset, gitDir, budget) : null;
+    const refKind = conflict === 'conflicted' ? 'foreign'
+      : conflict === 'spent' || conflict === 'unknown' ? conflict
+        : headRefKind(reset.ref, gitDir, budget);
+    const kind = refKind === 'foreign' ? 'foreign-ref' : 'same-ref';
+    resets.push({ ...reset, kind, dir: gitDir, touchesWorktree, refUnreadable: refKind === 'unknown' || refKind === 'spent', refSpent: refKind === 'spent' });
+  }
+  for (const payload of payloads) {
+    if (depth >= MAX_PAYLOAD_DEPTH) {
+      if (/checkout|restore|switch|\brm\b|read-tree/.test(payload)) {
+        resets.push({ verb: 'checkout', kind: 'same-ref', ref: null, mergeSide: false, dir: null, paths: [{ text: '<nested payload>' }], pathsFromFile: false, builtByPayload: true });
+      }
+      continue;
+    }
+    // A payload (xargs data, a `-c` string, `eval`) is read with no directory
+    // on purpose; #2003 point 6: its reset is marked, so the deny names that
+    // reason instead of an "unreadable directory" the guard never tried to read.
+    for (const reset of findPathResets(payload, null, budget, depth + 1)) {
+      resets.push(reset.dir === null ? { ...reset, builtByPayload: true } : reset);
+    }
+  }
+  return resets;
+}
+
+/**
+ * Measure, read-only, whether a same-ref path reset would discard work
+ * (#1834): `git status --porcelain=v1 -z -- <paths>` in the call's directory.
+ * Untracked files are left out — resetting tracked content never touches
+ * them. Fail-closed like #1789: an unknown directory, a pathspec the shell may
+ * still expand, `--pathspec-from-file`, or a failing/timed-out status is "not
+ * measurable", and so is a reset reached after the line's time budget is
+ * spent (#1834 M4).
+ *
+ * @param {object} reset - one entry of findPathResets
+ * @param {{ deadline: number }} budget - the line's shared measurement budget
+ * @returns {{ dirty: string[] } | { unmeasurable: string } | { clean: true }}
+ */
+function measurePathReset(reset, budget) {
+  if (reset.dir === null) {
+    return { unmeasurable: reset.builtByPayload ? 'built by xargs or a shell payload, its directory is not measured' : 'unreadable directory' };
+  }
+  const left = budgetLeft(budget);
+  if (left <= 0) return { unmeasurable: 'time budget spent' };
+  if (reset.refUnreadable) return { unmeasurable: reset.refSpent ? 'time budget spent' : 'ref not resolvable read-only' };
+  if (reset.pathsFromFile) return { unmeasurable: '--pathspec-from-file' };
+  if (reset.stdin) return { unmeasurable: '--stdin' };
+  if (reset.paths.some((t) => UNREADABLE_PATHSPEC.test(t.text))) return { unmeasurable: 'path held in a variable or expansion' };
+  // #1939: a forced switch / `checkout-index -f -a` measures every tracked file.
+  const pathspec = reset.whole ? [] : ['--', ...reset.paths.map((t) => t.text)];
+  let out;
+  try {
+    out = execFileSync('git', ['-C', reset.dir, 'status', '--porcelain=v1', '-z', '--untracked-files=no', ...pathspec], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: left, maxBuffer: GIT_MAX_BUFFER,
+    });
+  } catch (err) {
+    // A timeout is the line's spent budget, named as the entry check names it (#1917 point 8).
+    if (timedOut(err) || budgetLeft(budget) <= 0) return { unmeasurable: 'time budget spent' };
+    return { unmeasurable: `git status failed: ${failureCause(err)}` };
+  }
+  const fields = out.split('\0');
+  const dirty = [];
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i];
+    if (entry.length < 4) continue;
+    if (/[RC]/.test(entry.slice(0, 2))) i++; // rename/copy: the next field is the origin
+    dirty.push(`${entry.slice(3)} (${entry.slice(0, 2).trim()})`);
+  }
+  return dirty.length > 0 ? { dirty } : { clean: true };
+}
+
+/** The deny reason of a same-ref path reset, naming the safe way (#1834). */
+const PATH_RESET_SAFE_WAY =
+  'The path carries uncommitted changes another session may be building, or the guard cannot measure it (PSA-003, #1834). ' +
+  'Save what you need first, then restore one file explicitly with `git show HEAD:<path> > <path>`, or let the operator commit or stash the changes in their own terminal.';
+
+/**
+ * The verdict of rule `git-checkout-discard` (#1834, ADR-0017 § Path reset):
+ * a same-ref reset (`git checkout [HEAD] -- <path>`, `git restore [--staged]
+ * <path>` without a foreign `--source`) is denied when a path carries
+ * uncommitted changes or cannot be measured, and allowed with a notice when
+ * every path is clean; a foreign-ref reset (`git checkout origin/main --
+ * <path>`, `--ours`/`--theirs`/`-m`, `git restore --source=<ref>`) only warns
+ * (HR-101: ~6 real ones a day). When the literal pattern (`git checkout --` in
+ * every spelling commandMatchesBlocked reads) matches but this reader found no
+ * same-ref checkout, the form is one it cannot see — denied, fail-closed.
+ *
+ * @param {string} command
+ * @param {string} cwd
+ * @param {string} pattern - the rule's pattern (`git checkout --`)
+ * @returns {{ deny: string|null, notices: string[] }}
+ */
+/**
+ * The text of one segment as the shell wrote it, quoted words re-quoted, so
+ * commandMatchesBlocked judges it as it judges a whole line.
+ *
+ * @param {Array<{ text: string, quoted?: boolean }>} segment
+ * @returns {string}
+ */
+function segmentText(segment) {
+  return segment.map((t) => (t.quoted ? `'${t.text.replace(/'/g, `'\\''`)}'` : t.text)).join(' ');
+}
+
+/**
+ * Whether a segment the reset reader does not read (#1834 review) carries the
+ * rule's pattern: `xargs git checkout --`, `find … -exec git checkout -- {} +`.
+ * The fallback deny is bound to the SEGMENT (guard-design.md: widening a
+ * matcher without narrowing its bypass), so a readable clean reset elsewhere
+ * on the line cannot lift it. A `git checkout` / `git restore` segment is read
+ * by findPathResets and skipped here; any other `git` segment is judged
+ * (#1925 point 2): `git bisect run git checkout -- a` and `git submodule
+ * foreach git restore a` carry a nested reset findPathResets does not read.
+ * `bash -c` / `eval` payloads are followed like there.
+ *
+ * @param {string} command
+ * @param {string} pattern
+ * @param {number} [depth]
+ * @returns {boolean}
+ */
+function hasUnreadResetSegment(command, pattern, depth = 0) {
+  const nested = (payload) => (depth >= MAX_PAYLOAD_DEPTH ? /checkout|restore/.test(payload) : hasUnreadResetSegment(payload, pattern, depth + 1));
+  for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
+    // #1940: piped stdin-shell data and `env -S` payloads are followed like `bash -c`.
+    chargeHookRead(segment.length);
+    if (pipedData(segment).some(nested)) return true;
+    for (const { verb, index, payloads = [] } of verbReadingsOf(segment)) {
+      if (payloads.some(nested)) return true;
+      if (verb === 'git') {
+        // The subcommand as findPathResets finds it: redirect-free words, git globals skipped.
+        const call = [...segment.slice(0, index + 1), ...argvWords(segment, index + 1)];
+        const sub = call[gitGlobals(call, index, null).subAt]?.text;
+        if (sub === 'checkout' || sub === 'restore') continue;
+        // #1957: findPathResets reads the inline-alias reading too.
+        const aliased = blocker.gitInlineAliasWords(call.slice(index + 1), segment.slice(0, index));
+        const aliasCall = aliased === null ? null : [...call.slice(0, index + 1), ...aliased];
+        const aliasSub = aliasCall?.[gitGlobals(aliasCall, index, null).subAt]?.text;
+        if (aliasSub === 'checkout' || aliasSub === 'restore') continue;
+      }
+      if (DASH_C_SHELLS.has(verb) || verb === 'eval' || verb === 'trap') {
+        const words = blocker.argvWordsWithoutRedirects(segment, index + 1);
+        const payloads = verb === 'eval' ? [words.map((t) => t.text).join(' ')] : verb === 'trap' ? [trapAction(words)] : shellPayloads(verb, words);
+        for (const payload of payloads) {
+          if (payload === null) continue;
+          if (depth >= MAX_PAYLOAD_DEPTH ? /checkout|restore/.test(payload) : hasUnreadResetSegment(payload, pattern, depth + 1)) return true;
+        }
+        continue;
+      }
+      if (blocker.commandMatchesBlocked(segmentText(segment), pattern, UNREAD_SEGMENT_MATCH)) return true;
+    }
+  }
+  return false;
+}
+
+/** The git subcommands findPathResets reads (#1834 path resets, #1939 forced discards, #1944 read-tree). */
+const PATH_RESET_SUBS = new Set(['checkout', 'restore', 'switch', 'checkout-index', 'rm', 'read-tree']);
+
+/** Verbs that run their (quoted) argument words as a command line (#1939). */
+const RUNNER_VERBS = new Set(['xargs', 'find', 'parallel', 'watch', 'flock']);
+
+/**
+ * The forced discard (#1939, blocker.readForcedDiscard) in a segment
+ * findPathResets does not read, or null: a `git` word after the verb of a
+ * non-git reading (`xargs git rm -f a`, `find … -exec git checkout-index -f {}
+ * +`, `echo git checkout -f` — fail-closed like the checkout twin's scan), a
+ * `git` word after `git bisect run` / `git submodule foreach`, and a quoted
+ * word of a runner (RUNNER_VERBS, `git submodule foreach`) read as a command
+ * line — then a direct `git` call in it counts too (`unread`). `bash -c` /
+ * `eval` payloads are followed; findPathResets reads their direct git calls.
+ * The git word of a reading findPathResets itself reads is skipped
+ * (`caffeinate -i git checkout -f`: readings `git` and `checkout`).
+ *
+ * Data piped into a stdin shell (`echo 'xargs git rm -f a' | sh`) and `env
+ * -S` payloads are followed like `bash -c` (#1940); their direct git calls
+ * findPathResets reads (walkGitSegments payloads).
+ *
+ * NAMED CEILING (BV-004): quoted words of other verbs stay data (`git commit
+ * -m "git rm -f x"`). REVISIT TRIGGER: a replay hit of a forced discard in a
+ * quoted word that a command runs.
+ *
+ * @param {string} command
+ * @param {boolean} [unread] - inside a runner's payload: direct git calls count
+ * @param {number} [depth]
+ * @returns {string|null} the form (`rm -f`, `checkout -f`, …)
+ */
+function unreadForcedDiscard(command, unread = false, depth = 0) {
+  if (depth > MAX_PAYLOAD_DEPTH) return /checkout|switch|\brm\b|read-tree/.test(command) ? 'checkout -f' : null;
+  const formAt = (words, at) => {
+    const hit = formOf([{ text: 'git' }, ...words.slice(at + 1)]);
+    if (hit !== null) return hit;
+    // #1957: `xargs git -c alias.z='rm -f' z` — the inline alias resolved.
+    const resolved = blocker.gitInlineAliasWords(words.slice(at + 1), words.slice(0, at));
+    return resolved === null ? null : formOf([{ text: 'git' }, ...resolved]);
+  };
+  const formOf = (call) => {
+    const { subAt } = gitGlobals(call, 0, null);
+    const sub = call[subAt]?.text;
+    if (!PATH_RESET_SUBS.has(sub) || sub === 'restore') return null;
+    const rest = [];
+    for (let k = subAt + 1; k < call.length; k++) {
+      if (call[k].text === ';' || (call[k].text === '+' && call[k - 1]?.text === '{}')) break;
+      rest.push(call[k]);
+    }
+    // A runner appends its arguments (`xargs git rm -f < list`): one
+    // placeholder path stands for them, as in the blocker's restore twin.
+    return blocker.readForcedDiscard(sub, [...rest, { text: '<runner argument>' }])?.verb ?? null;
+  };
+  // #1944 point 1: the line with its literal variable values substituted.
+  for (const reading of literalVariableReadings(command)) {
+    const hit = unreadForcedDiscard(reading, unread, depth + 1);
+    if (hit !== null) return hit;
+  }
+  // #1944 point 5: read after brace expansion (`xargs {git,rm,-f}`), as findPathResets does.
+  for (const segment of blocker.splitChainSegments(blocker.expandBraces(blocker.tokenizeCommand(command)))) {
+    chargeHookRead(segment.length);
+    // Reviews W3: a brace word not read (past the cap, or beside a
+    // substitution) can build any command (`{g{i..i}t,r{m..m},-f,a.txt}"$E"`),
+    // as the command word or behind any prefix (`env`, `caffeinate`, `arch`,
+    // `npx`, …), so its raw text proves nothing. It is denied as not measurable
+    // unless the segment's command word is a plain command that never runs its
+    // arguments (the blocker's unreadBraceWord, shared with the pattern
+    // matcher, #1956); git is not one of them.
+    // NAMED CEILING (BV-004): a harmless such word behind any other command
+    // (`sudo cp conf{,.$USER}`) is denied too. REVISIT TRIGGER: a real command
+    // denied by this reading.
+    const unreadBrace = blocker.unreadBraceWord(segment);
+    if (unreadBrace !== undefined) return `unread brace word ${unreadBrace.text.slice(0, 40)}`;
+    for (const data of pipedData(segment)) {
+      const hit = unreadForcedDiscard(data, unread, depth + 1);
+      if (hit !== null) return hit;
+    }
+    const readings = verbReadingsOf(segment);
+    const envSplit = segment.some((t, k) => !t.quoted && /^(?:-[A-Za-z]*S|--split-string(?:=|$))/.test(t.text)
+      && segment.slice(0, k).some((w) => !w.quoted && blocker.programName(w.text) === 'env'));
+    for (const { payloads = [] } of readings) {
+      for (const p of payloads) {
+        // Fix cycle 1 (R-F5), narrowed in fix cycle 2 (item 4): env expands
+        // `${NAME}` inside its `-S` string itself, so the value may be the
+        // force. Denied only for an env -S payload whose git SUBCOMMAND word
+        // is a discard verb and whose `${…}` word stands beside another
+        // operand (`checkout ${F} other`); a lone `checkout ${BR}` is the
+        // branch switch. NAMED CEILING (BV-004): `${…}` as the subcommand
+        // (`git ${SUB} -f`) or as the lone operand stays unread. REVISIT
+        // TRIGGER: a measured discard through either form.
+        if (envSplit && p.includes('${')) {
+          const hit = envVariableDiscard(p);
+          if (hit !== null) return hit;
+        }
+        const hit = unreadForcedDiscard(p, unread, depth + 1);
+        if (hit !== null) return hit;
+      }
+    }
+    const readGit = new Set();
+    let runner = false;
+    for (const { verb, index } of readings) {
+      if (verb !== 'git' || index < 0) continue;
+      const call = [...segment.slice(0, index + 1), ...argvWords(segment, index + 1)];
+      // #1955 (a2): a shell alias defined on the line runs words not read here.
+      if (blocker.gitShellAliasRun(call.slice(index + 1).map((t) => t.text), segment.slice(0, index))) return 'shell alias';
+      const sub = call[gitGlobals(call, index, null).subAt]?.text;
+      if (sub === 'bisect' || sub === 'submodule') runner = true;
+      else if (!unread) readGit.add(segment[index]);
+    }
+    for (const { verb, index } of readings) {
+      if (index < 0) continue;
+      if (DASH_C_SHELLS.has(verb) || verb === 'eval' || verb === 'trap') {
+        const words = blocker.argvWordsWithoutRedirects(segment, index + 1);
+        const payloads = verb === 'eval' ? [words.map((t) => t.text).join(' ')] : verb === 'trap' ? [trapAction(words)] : shellPayloads(verb, words);
+        for (const payload of payloads) {
+          const hit = payload === null ? null : unreadForcedDiscard(payload, unread, depth + 1);
+          if (hit !== null) return hit;
+        }
+        continue;
+      }
+      if (RUNNER_VERBS.has(verb)) runner = true;
+      const words = argvWords(segment, 0);
+      for (let j = 0; j < words.length; j++) {
+        if (blocker.programName(words[j].text) !== 'git' || readGit.has(words[j])) continue;
+        const hit = formAt(words, j);
+        if (hit !== null) return hit;
+      }
+    }
+    if (!runner) continue;
+    for (const tok of segment) {
+      if (!tok.quoted || !/\s/.test(tok.text)) continue;
+      const hit = unreadForcedDiscard(tok.text, true, depth + 1);
+      if (hit !== null) return hit;
+    }
+  }
+  return null;
+}
+
+/**
+ * The discard an `env -S` payload's `${NAME}` word may hold (fix cycle 2,
+ * item 4), or null: a git call whose subcommand word is `checkout`, `switch`,
+ * `checkout-index` or `rm` with any `${…}` argument. env expands the word
+ * itself, so `${F}` can be the force flag (`F=-f env -S 'git checkout ${F}'`,
+ * review round 3): fail-closed, also when it is only a branch name.
+ * NAMED CEILING (BV-004): `env -S 'git checkout ${BR}'` (a plain switch) is
+ * denied too. REVISIT TRIGGER: a real command denied by this reading.
+ *
+ * @param {string} payload
+ * @returns {string|null}
+ */
+function envVariableDiscard(payload) {
+  for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(payload))) {
+    chargeHookRead(segment.length);
+    for (const { verb, index } of verbReadingsOf(segment)) {
+      if (verb !== 'git' || index < 0) continue;
+      const call = [...segment.slice(0, index + 1), ...argvWords(segment, index + 1)];
+      const { subAt } = gitGlobals(call, index, null);
+      const sub = call[subAt]?.text;
+      if (sub === undefined || sub === 'restore' || !PATH_RESET_SUBS.has(sub)) continue;
+      if (call.slice(subAt + 1).some((t) => t.text.includes('${'))) return `${sub} -f`;
+    }
+  }
+  return null;
+}
+
+const ENV_ALIAS_REASON = 'git alias defined in the environment for a command the guard cannot follow';
+
+/**
+ * Does a segment of the line define a git alias in its leading environment for
+ * a command the guard does not follow (#1957 fix cycle 3,
+ * blocker.gitEnvAliasUnfollowed)? Only names the deny; the rule match is the
+ * blocker's.
+ *
+ * @param {string} command
+ * @returns {boolean}
+ */
+function envAliasUnfollowed(command) {
+  return blocker.splitChainSegments(blocker.tokenizeCommand(command)).some((s) => blocker.gitEnvAliasUnfollowed(s));
+}
+
+function pathResetVerdict(command, cwd, pattern) {
+  const patternMatched = blocker.commandMatchesBlocked(command, pattern, RESET_RULE_MATCH);
+  const notices = [];
+  let deny = null;
+  let unmeasurable = null;
+  const budget = { deadline: Date.now() + PATH_RESET_BUDGET_MS };
+  const resets = findPathResets(command, cwd, budget);
+  for (const reset of resets) {
+    // A list-file reset names its paths in a file the hook does not read (#1937).
+    const pathsShown = reset.whole ? '(every tracked file)' : reset.stdin ? '--stdin'
+      : reset.pathsFromFile && reset.paths.length === 0 ? '--pathspec-from-file=<list>' : `-- ${reset.paths.map((t) => t.text).join(' ')}`;
+    const shown = `git ${reset.verb}${reset.ref === null ? '' : ` ${reset.ref}`} ${pathsShown}`;
+    if (reset.kind === 'foreign-ref') {
+      notices.push(`${shown} sets the path(s) to another state (${reset.mergeSide ? 'a merge side' : `ref ${reset.ref}`}); uncommitted changes there are overwritten`);
+      continue;
+    }
+    const verdict = measurePathReset(reset, budget);
+    if ('dirty' in verdict) {
+      const more = verdict.dirty.length > 3 ? ` (+${verdict.dirty.length - 3} more)` : '';
+      deny ??= `${shown} — uncommitted changes in ${verdict.dirty.slice(0, 3).join(', ')}${more}`;
+    } else if ('unmeasurable' in verdict) {
+      unmeasurable ??= `${shown} — path not measurable (${verdict.unmeasurable})`;
+    } else {
+      notices.push(`${shown} — measured clean, nothing uncommitted is discarded`);
+    }
+  }
+  // The restore twin (review R1): `xargs git restore` or `git bisect run git
+  // restore a` is no reset findPathResets reads, as its checkout twin is not.
+  // Asked only when the checkout match missed; denied when no readable
+  // restore reset that the manifest rule itself matches (no source ref,
+  // touches the worktree — the blocker's restoreDiscardsWorktree reading)
+  // stands on the line, or an unread segment carries one. Review cycle 2: a
+  // foreign-ref or index-only restore on the same line no longer lifts the
+  // deny; a conflicted `git restore --ours a` still does (it is the match).
+  const restoreMatched = !patternMatched && blocker.commandMatchesBlocked(command, pattern, UNREAD_SEGMENT_MATCH);
+  const restoreExplained = resets.some((r) => r.verb === 'restore' && r.ref === null && r.touchesWorktree === true);
+  if (deny === null && unmeasurable === null && (
+    (patternMatched && (!resets.some((r) => r.kind === 'same-ref' && r.verb === 'checkout') || hasUnreadResetSegment(command, pattern)))
+    || (restoreMatched && (!restoreExplained || hasUnreadResetSegment(command, pattern))))) {
+    unmeasurable = envAliasUnfollowed(command) ? ENV_ALIAS_REASON
+      : `${patternMatched ? 'git checkout -- <path>' : 'git restore <path>'} — form not readable, path not measurable`;
+  }
+  // #1939: a forced discard the reader cannot reach (`xargs git rm -f`, `find
+  // … -exec git checkout -f \;`, `git bisect run git switch -f main`) is
+  // denied, bound to its own segment.
+  if (deny === null && unmeasurable === null) {
+    const unread = unreadForcedDiscard(command);
+    if (unread !== null) {
+      unmeasurable = unread.startsWith('unread brace word') ? `${unread} — the words it builds can be any command, not measurable`
+        : unread === 'shell alias' ? 'git -c alias.<name>=!<command> — runs a shell command the guard does not read, not measurable'
+          : `git ${unread} — inside a command runner, path not measurable`;
+    }
+  }
+  return { deny: deny ?? unmeasurable, notices };
 }
 
 /**
@@ -1560,6 +2712,10 @@ function isRmPathAllowed(targetPath, { projectDir, dir, trustTmpdir }, ruleAllow
   // /tmp prefix just because the project dir itself happens to live under /tmp
   // (the case on CI runners where os.tmpdir() === /tmp). #641.
   if (wasAbsolute) {
+    // #1901 4b: the POSIX temp roots confine `$TMPDIR`; on Windows the real
+    // temp dir (`C:\Users\x\AppData\Local\Temp`) sits under none of them.
+    if (process.platform === 'win32' && ruleAllowlist.some((e) => e === '$TMPDIR' || e === '${TMPDIR}')
+      && isWin32TempTarget(effective, { tmpdir: os.tmpdir(), realpath: fs.realpathSync.native })) return true;
     // Compare CANONICAL forms on both sides. Literal matching made the verdict
     // depend on which spelling of the same directory was typed (`/var/folders/…`
     // allowed, `/private/var/folders/…` blocked — #935 cause 2) and let a symlink
@@ -1577,6 +2733,51 @@ function isRmPathAllowed(targetPath, { projectDir, dir, trustTmpdir }, ruleAllow
   }
 
   return false;
+}
+
+/**
+ * A Windows path as a case-folded forward-slash drive path (`c:/users/x`), the
+ * MSYS spelling (`/c/users/x`) translated; null when it names no drive.
+ *
+ * @param {string} p
+ * @returns {string|null}
+ */
+function win32PathKey(p) {
+  let fwd = path.win32.normalize(p.replace(/^\/([a-zA-Z])(?=\/|$)/, '$1:')).replace(/\\/g, '/');
+  fwd = fwd.replace(/\/+$/, '');
+  return /^[a-zA-Z]:\//.test(fwd + '/') ? fwd.toLowerCase() : null;
+}
+
+/**
+ * Is an absolute `rm -rf` target inside the Windows temp dir (#1901 4b)? The
+ * roots are `tmpdir` and its real path; the target counts in its drive
+ * (`C:/…`) and its MSYS (`/c/…`) spelling, compared case-insensitively as
+ * NTFS does. Like the POSIX `$TMPDIR` confinement it must hold both as written
+ * and after resolving the deepest existing ancestor, so a junction under Temp
+ * cannot launder a target outside it. Injectable for tests: the hook cannot
+ * run as win32 off Windows.
+ *
+ * @param {string} target
+ * @param {{ tmpdir: string, realpath: (p: string) => string }} env
+ * @returns {boolean}
+ */
+export function isWin32TempTarget(target, { tmpdir, realpath }) {
+  const real = (p) => { try { return realpath(p); } catch { return null; } };
+  const roots = [tmpdir, real(tmpdir)].map((r) => (r ? win32PathKey(r) : null)).filter(Boolean);
+  const under = (key) => key !== null && roots.some((root) => key === root || key.startsWith(root + '/'));
+  const lexical = win32PathKey(target);
+  if (!under(lexical)) return false;
+  // Deepest existing ancestor, resolved; the remainder appended lexically.
+  let head = lexical;
+  let rest = '';
+  for (;;) {
+    const resolved = real(head);
+    if (resolved !== null) return under(win32PathKey(resolved + rest));
+    const cut = head.lastIndexOf('/');
+    if (cut <= 2) return false;
+    rest = head.slice(cut) + rest;
+    head = head.slice(0, cut);
+  }
 }
 
 /**
@@ -1733,6 +2934,17 @@ async function main() {
     return emitDeny('session-orchestrator: commands from the PowerShell tool are refused because the destructive-command rules can only read POSIX shell syntax. Run the command through the Bash tool (Git Bash) instead.');
   }
 
+  // #2032 — a line past the blocker's size bound is denied before any reader
+  // splits it: a reader that runs out of time or memory ends without a verdict,
+  // and the harness then lets the command through.
+  const oversized = blocker.oversizedCommand(command);
+  if (oversized !== null) {
+    return emitDeny(
+      `pre-bash-destructive-guard blocked this command for safety (fail-closed): ${oversized}.`,
+      'Split the command into smaller, simpler Bash calls and retry.'
+    );
+  }
+
   // G4 — policy load (#972: floor/overlay merge, not first-hit-wins).
   // The plugin-root policy is the FLOOR; a cwd/projectDir policy is an OVERLAY
   // that can only add rules or escalate severity — an empty or malformed
@@ -1754,237 +2966,295 @@ async function main() {
   if (!Array.isArray(rules)) return flushNotices(notices);
 
   // G5 — rule evaluation
-  for (const rule of rules) {
-    const { id, pattern, rationale = '' } = rule;
-    // #1881 — the hook profile may soften a block rule to warn (strict never does).
-    const severity = effectiveRuleSeverity(id, rule.severity);
+  // #1974 R1: the rules run as one function so a line past the brace budget
+  // can be read once more without brace expansion, only to NAME the rule.
+  // `command` is the reading the rules judge; `lineCommand` the line itself
+  // (telemetry hash). That re-read skips warn rules: they cannot name a deny.
+  const lineCommand = command;
+  const evaluateRules = async (command, { unexpanded = false } = {}) => {
+    for (const rule of rules) {
+      // #1956 fix cycle 1: the rules share the hook deadline too; a rule loop
+      // past it would be killed by the harness, which lets the command through.
+      if (hookTimeLeft() <= 0) throw new HookReadBudgetError('hook deadline spent before every rule ran');
+      const { id, pattern, rationale = '' } = rule;
+      // #1881 — the hook profile may soften a block rule to warn (strict never does).
+      const severity = effectiveRuleSeverity(id, rule.severity);
 
-    // #983 — redirect-truncate rules are decided by redirect TARGET via
-    // redirectRuleMatches, NEVER by the generic pattern path below: their
-    // `pattern: ">"` substring-matches virtually every redirect (measured
-    // interim FP: `bash -c 'echo a > b'` denied), so this branch must fully
-    // shadow the pattern match for this rule class.
-    if (rule.type === 'redirect-truncate') {
-      const modes = new Set(
-        Array.isArray(rule.modes) && rule.modes.length > 0 ? rule.modes : ['truncate']
-      );
-      const collected = blocker.extractRedirectTargets(command);
-      const entries = collected.filter((e) => modes.has(e.mode));
-      // Recursion-cap markers (#988 T2) carry `mode: null` by construction — a
-      // bare `modes.has(e.mode)` filter drops them, which would make the new
-      // marker unobservable here. Keep them alongside the mode-matching ones.
-      const unresolved = collected.filter(
-        (e) => e.unresolved && (e.mode === null || modes.has(e.mode))
-      );
-      if (unresolved.length > 0) {
-        // Variable/substitution operands are never match candidates (#641 FP
-        // class) — surface them instead of guessing; never block on a guess.
-        // Same for a payload subtree a recursion cap cut off: the cap stays,
-        // its effect stops being silent.
-        const reasons = [
-          ...new Set(unresolved.map((e) => e.reason ?? 'variable/substitution')),
-        ].join(', ');
-        // #995 — the #988-T2 recursion-cap marker used to reach stderr only, so
-        // under exit-0 a budget-exhausted command (`bash <33×-c>` hiding
-        // `> CLAUDE.md`) allowed with an INVISIBLE notice. Aggregate onto the
-        // visible channel; keep the stderr copy for parity.
-        const msg = `pre-bash-destructive-guard: unresolved redirect target (${reasons}) — not matched (fail-visible)`;
-        process.stderr.write(`⚠ ${msg}\n`);
-        notices.push(msg);
+      // #983 — redirect-truncate rules are decided by redirect TARGET via
+      // redirectRuleMatches, NEVER by the generic pattern path below: their
+      // `pattern: ">"` substring-matches virtually every redirect (measured
+      // interim FP: `bash -c 'echo a > b'` denied), so this branch must fully
+      // shadow the pattern match for this rule class.
+      if (rule.type === 'redirect-truncate') {
+        const modes = new Set(
+          Array.isArray(rule.modes) && rule.modes.length > 0 ? rule.modes : ['truncate']
+        );
+        const collected = blocker.extractRedirectTargets(command);
+        const entries = collected.filter((e) => modes.has(e.mode));
+        // Recursion-cap markers (#988 T2) carry `mode: null` by construction — a
+        // bare `modes.has(e.mode)` filter drops them, which would make the new
+        // marker unobservable here. Keep them alongside the mode-matching ones.
+        const unresolved = collected.filter(
+          (e) => e.unresolved && (e.mode === null || modes.has(e.mode))
+        );
+        if (unresolved.length > 0) {
+          // Variable/substitution operands are never match candidates (#641 FP
+          // class) — surface them instead of guessing; never block on a guess.
+          // Same for a payload subtree a recursion cap cut off: the cap stays,
+          // its effect stops being silent.
+          const reasons = [
+            ...new Set(unresolved.map((e) => e.reason ?? 'variable/substitution')),
+          ].join(', ');
+          // #995 — the #988-T2 recursion-cap marker used to reach stderr only, so
+          // under exit-0 a budget-exhausted command (`bash <33×-c>` hiding
+          // `> CLAUDE.md`) allowed with an INVISIBLE notice. Aggregate onto the
+          // visible channel; keep the stderr copy for parity.
+          const msg = `pre-bash-destructive-guard: unresolved redirect target (${reasons}) — not matched (fail-visible)`;
+          process.stderr.write(`⚠ ${msg}\n`);
+          notices.push(msg);
+        }
+        if (!blocker.redirectRuleMatches(rule, command, { repoRoot: projectDir })) continue;
+        if (severity !== 'block') {
+          const msg = `pre-bash-destructive-guard: redirect target matched (rule: ${id}) — ${rationale}`;
+          process.stderr.write(`⚠ ${msg}\n`);
+          notices.push(msg); // #995 — visible on the allow-with-notice channel
+          continue;
+        }
+        // Reason stays short (stdout-budget): operator + target, never the command.
+        const hit = findMatchedRedirectEntry(rule, entries, projectDir);
+        const label = hit ? `${REDIRECT_PROBE_OPS[hit.mode] ?? '>'} ${hit.target}` : pattern;
+        await blockCommand(label, id, rationale, lineCommand, sessionId);
+        continue; // unreachable (blockCommand never returns) — kept for clarity
       }
-      if (!blocker.redirectRuleMatches(rule, command, { repoRoot: projectDir })) continue;
-      if (severity !== 'block') {
-        const msg = `pre-bash-destructive-guard: redirect target matched (rule: ${id}) — ${rationale}`;
+
+      // #1401 — path-delete rules are decided by the DELETE/RENAME operand via
+      // firstDeniedDeleteTarget, never by the generic pattern path below (same
+      // full-shadow contract as redirect-truncate above: this rule's `pattern` is
+      // a human-readable label, and routing it through commandMatchesBlocked
+      // would match either nothing or every `rm`).
+      //
+      // Why a second surface at all: the redirect rule answers "what does this
+      // command WRITE". Nothing answered "what does it REMOVE" — so `rm -f
+      // .orchestrator/metrics/events.jsonl.1` was ALLOWED while `> ` on the same
+      // file was DENIED (measured 2026-09-19, #1401: 53,896 ledger lines lost).
+      if (rule.type === 'path-delete') {
+        const collected = blocker.extractDeleteTargets(command);
+        const cutOff = collected.filter(
+          (e) => e.unresolved && (e.reason === 'budget-exhausted' || e.reason === 'depth-exceeded')
+        );
+        if (cutOff.length > 0) {
+          // A recursion cap that drops payloads silently is a bypass, not a cap
+          // (#988 T2) — surface it on the VISIBLE channel (#995).
+          //
+          // Deliberately NARROWER than the redirect branch above, which also
+          // surfaces `variable/substitution` operands: `rm -rf "$WORK"` is the
+          // ORDINARY spelling of a temp cleanup, so notifying on it would fire on
+          // a large share of benign commands and train the operator to ignore the
+          // channel (host-resources.md § HR-101 — a signal may only warn if it is
+          // rare). A cut-off marker, by contrast, needs 32+ payload segments or
+          // 3 levels of nesting: pathological by construction. Unresolved
+          // operands stay fail-visible on stderr below; neither class ever blocks.
+          const reasons = [...new Set(cutOff.map((e) => e.reason))].join(', ');
+          const msg = `pre-bash-destructive-guard: delete-target traversal cut off (${reasons}) — not matched (fail-visible)`;
+          process.stderr.write(`⚠ ${msg}\n`);
+          notices.push(msg);
+        }
+        const unresolvedOperands = collected.filter(
+          (e) => e.unresolved && e.reason === 'variable/substitution'
+        );
+        if (unresolvedOperands.length > 0) {
+          process.stderr.write(
+            `ℹ pre-bash-destructive-guard: ${unresolvedOperands.length} delete target(s) carry a variable/substitution — not matched (rule: ${id})\n`
+          );
+        }
+        const hit = blocker.firstDeniedDeleteTarget(rule, collected, { repoRoot: projectDir });
+        if (!hit) continue;
+        if (severity !== 'block') {
+          const msg = `pre-bash-destructive-guard: protected delete target matched (rule: ${id}) — ${rationale}`;
+          process.stderr.write(`⚠ ${msg}\n`);
+          notices.push(msg);
+          continue;
+        }
+        // Reason stays short (stdout-budget): verb + target, never the command.
+        // The policy `rationale` is long by design (it carries the measurement
+        // trail); blockCommand puts only its first line in the systemMessage.
+        await blockCommand(`${hit.verb} ${hit.target}`, id, rationale, lineCommand, sessionId);
+        continue; // unreachable (blockCommand never returns) — kept for clarity
+      }
+
+      // #1732 — a `git commit`/`git push` that would run WITHOUT the repo's hooks,
+      // because a linked worktree lacks the generated hooks directory. Decided by
+      // the git call's directory and the repo's hooksPath, never by the generic
+      // pattern path below (its `pattern` is a label). An unknown directory is
+      // not judged.
+      if (rule.type === 'hooks-path-missing') {
+        const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
+        let hit = null;
+        // #1736 — up to three git reads per directory; `git commit && git push`
+        // in one worktree measures it once.
+        const measured = new Map();
+        for (const call of findHookedGitCalls(command, cwd)) {
+          if (call.dir === null) continue;
+          if (!measured.has(call.dir)) measured.set(call.dir, missingWorktreeHooks(call.dir));
+          const missing = measured.get(call.dir);
+          if (missing) { hit = { ...missing, subcommand: call.subcommand }; break; }
+        }
+        if (!hit) continue;
+        const label = `git ${hit.subcommand} in ${hit.worktree} — core.hooksPath ${hit.hooksPath} is missing there`;
+        if (severity !== 'block') {
+          const msg = `pre-bash-destructive-guard: ${label} (rule: ${id}) — ${rationale}`;
+          process.stderr.write(`⚠ ${msg}\n`);
+          notices.push(msg);
+          continue;
+        }
+        await blockCommand(label, id, rationale, lineCommand, sessionId);
+        continue; // unreachable (blockCommand never returns) — kept for clarity
+      }
+
+      // #1789 — a `git worktree remove` that would take gitignored state
+      // (STATE.md, handover, fleet train manifests) with it, or any forced one.
+      // Decided per call by its target, never by the generic pattern path below
+      // (its `pattern` is a label). Unlike #1732, an unreadable target is a hit:
+      // a removal the guard cannot judge is the dangerous direction.
+      if (rule.type === 'worktree-remove-unsafe') {
+        const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
+        const hit = unsafeWorktreeRemoval(command, cwd);
+        if (hit === null) continue;
+        const { label } = hit;
+        // #1881 — the profile may soften only an UNMEASURABLE target (110 of 136
+        // denials in 7 days); a measured hit keeps the policy severity.
+        const removalSeverity = hit.unmeasurable ? effectiveRuleSeverity(`${id}/unmeasurable`, rule.severity) : rule.severity;
+        if (removalSeverity !== 'block') {
+          const msg = `pre-bash-destructive-guard: ${label} (rule: ${id}) — ${rationale}`;
+          process.stderr.write(`⚠ ${msg}\n`);
+          notices.push(msg);
+          continue;
+        }
+        await blockCommand(label, id, rationale, lineCommand, sessionId);
+        continue; // unreachable (blockCommand never returns) — kept for clarity
+      }
+
+      // #1834 — path resets (`git checkout [<ref>] -- <path>`, `git restore`)
+      // are decided by a read-only measurement of the paths, not by the literal
+      // pattern alone: a same-ref reset is denied only over uncommitted changes
+      // (or when unmeasurable), a foreign-ref reset only warns. The rule stays
+      // untyped so wave manifests keep `git checkout --` (#1509, PSA-007).
+      if (id === 'git-checkout-discard') {
+        const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
+        const verdict = pathResetVerdict(command, cwd, pattern);
+        for (const notice of verdict.notices) {
+          const msg = `pre-bash-destructive-guard: ${notice} (rule: ${id})`;
+          process.stderr.write(`⚠ ${msg}\n`);
+          notices.push(msg);
+        }
+        if (verdict.deny === null) continue;
+        if (severity !== 'block') {
+          const msg = `pre-bash-destructive-guard: ${verdict.deny} (rule: ${id}) — ${rationale}`;
+          process.stderr.write(`⚠ ${msg}\n`);
+          notices.push(msg);
+          continue;
+        }
+        await blockCommand(verdict.deny, id, PATH_RESET_SAFE_WAY, lineCommand, sessionId);
+        continue; // unreachable (blockCommand never returns) — kept for clarity
+      }
+
+      // The rm-rf-destructive rule also fires for recursive+force rm flag variants
+      // the literal "rm -rf" pattern misses (`rm -r -f`, `rm -fr`) — #641 gap closure.
+      // #1944 point 1: each literal-variable reading is matched too (union).
+      const matched = [command, ...literalVariableReadings(command)].some((text) => (id === 'rm-rf-destructive'
+        ? (blocker.commandMatchesBlocked(text, pattern, RULE_MATCH) || commandHasRecursiveForceRm(text))
+        : blocker.commandMatchesBlocked(text, pattern, RULE_MATCH)));
+      if (!matched) continue;
+
+      if (severity === 'warn') {
+        // #1974 R1: on the unexpanded re-read only a block names the deny.
+        if (unexpanded) continue;
+        // Special: git-stash-any — only warn when stash is non-empty
+        if (id === 'git-stash-any') {
+          const nonEmpty = await isGitStashNonEmpty(projectDir);
+          if (!nonEmpty) {
+            // Empty stash — silent allow
+            continue;
+          }
+        }
+        const msg = `pre-bash-destructive-guard: '${pattern}' (rule: ${id}) — ${rationale}`;
         process.stderr.write(`⚠ ${msg}\n`);
         notices.push(msg); // #995 — visible on the allow-with-notice channel
-        continue;
-      }
-      // Reason stays short (stdout-budget): operator + target, never the command.
-      const hit = findMatchedRedirectEntry(rule, entries, projectDir);
-      const label = hit ? `${REDIRECT_PROBE_OPS[hit.mode] ?? '>'} ${hit.target}` : pattern;
-      await blockCommand(label, id, rationale, command, sessionId);
-      continue; // unreachable (blockCommand never returns) — kept for clarity
-    }
-
-    // #1401 — path-delete rules are decided by the DELETE/RENAME operand via
-    // firstDeniedDeleteTarget, never by the generic pattern path below (same
-    // full-shadow contract as redirect-truncate above: this rule's `pattern` is
-    // a human-readable label, and routing it through commandMatchesBlocked
-    // would match either nothing or every `rm`).
-    //
-    // Why a second surface at all: the redirect rule answers "what does this
-    // command WRITE". Nothing answered "what does it REMOVE" — so `rm -f
-    // .orchestrator/metrics/events.jsonl.1` was ALLOWED while `> ` on the same
-    // file was DENIED (measured 2026-09-19, #1401: 53,896 ledger lines lost).
-    if (rule.type === 'path-delete') {
-      const collected = blocker.extractDeleteTargets(command);
-      const cutOff = collected.filter(
-        (e) => e.unresolved && (e.reason === 'budget-exhausted' || e.reason === 'depth-exceeded')
-      );
-      if (cutOff.length > 0) {
-        // A recursion cap that drops payloads silently is a bypass, not a cap
-        // (#988 T2) — surface it on the VISIBLE channel (#995).
-        //
-        // Deliberately NARROWER than the redirect branch above, which also
-        // surfaces `variable/substitution` operands: `rm -rf "$WORK"` is the
-        // ORDINARY spelling of a temp cleanup, so notifying on it would fire on
-        // a large share of benign commands and train the operator to ignore the
-        // channel (host-resources.md § HR-101 — a signal may only warn if it is
-        // rare). A cut-off marker, by contrast, needs 32+ payload segments or
-        // 3 levels of nesting: pathological by construction. Unresolved
-        // operands stay fail-visible on stderr below; neither class ever blocks.
-        const reasons = [...new Set(cutOff.map((e) => e.reason))].join(', ');
-        const msg = `pre-bash-destructive-guard: delete-target traversal cut off (${reasons}) — not matched (fail-visible)`;
-        process.stderr.write(`⚠ ${msg}\n`);
-        notices.push(msg);
-      }
-      const unresolvedOperands = collected.filter(
-        (e) => e.unresolved && e.reason === 'variable/substitution'
-      );
-      if (unresolvedOperands.length > 0) {
-        process.stderr.write(
-          `ℹ pre-bash-destructive-guard: ${unresolvedOperands.length} delete target(s) carry a variable/substitution — not matched (rule: ${id})\n`
-        );
-      }
-      const hit = blocker.firstDeniedDeleteTarget(rule, collected, { repoRoot: projectDir });
-      if (!hit) continue;
-      if (severity !== 'block') {
-        const msg = `pre-bash-destructive-guard: protected delete target matched (rule: ${id}) — ${rationale}`;
-        process.stderr.write(`⚠ ${msg}\n`);
-        notices.push(msg);
-        continue;
-      }
-      // Reason stays short (stdout-budget): verb + target, never the command.
-      // The policy `rationale` is long by design (it carries the measurement
-      // trail); blockCommand puts only its first line in the systemMessage.
-      await blockCommand(`${hit.verb} ${hit.target}`, id, rationale, command, sessionId);
-      continue; // unreachable (blockCommand never returns) — kept for clarity
-    }
-
-    // #1732 — a `git commit`/`git push` that would run WITHOUT the repo's hooks,
-    // because a linked worktree lacks the generated hooks directory. Decided by
-    // the git call's directory and the repo's hooksPath, never by the generic
-    // pattern path below (its `pattern` is a label). An unknown directory is
-    // not judged.
-    if (rule.type === 'hooks-path-missing') {
-      const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
-      let hit = null;
-      // #1736 — up to three git reads per directory; `git commit && git push`
-      // in one worktree measures it once.
-      const measured = new Map();
-      for (const call of findHookedGitCalls(command, cwd)) {
-        if (call.dir === null) continue;
-        if (!measured.has(call.dir)) measured.set(call.dir, missingWorktreeHooks(call.dir));
-        const missing = measured.get(call.dir);
-        if (missing) { hit = { ...missing, subcommand: call.subcommand }; break; }
-      }
-      if (!hit) continue;
-      const label = `git ${hit.subcommand} in ${hit.worktree} — core.hooksPath ${hit.hooksPath} is missing there`;
-      if (severity !== 'block') {
-        const msg = `pre-bash-destructive-guard: ${label} (rule: ${id}) — ${rationale}`;
-        process.stderr.write(`⚠ ${msg}\n`);
-        notices.push(msg);
-        continue;
-      }
-      await blockCommand(label, id, rationale, command, sessionId);
-      continue; // unreachable (blockCommand never returns) — kept for clarity
-    }
-
-    // #1789 — a `git worktree remove` that would take gitignored state
-    // (STATE.md, handover, fleet train manifests) with it, or any forced one.
-    // Decided per call by its target, never by the generic pattern path below
-    // (its `pattern` is a label). Unlike #1732, an unreadable target is a hit:
-    // a removal the guard cannot judge is the dangerous direction.
-    if (rule.type === 'worktree-remove-unsafe') {
-      const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
-      const hit = unsafeWorktreeRemoval(command, cwd);
-      if (hit === null) continue;
-      const { label } = hit;
-      // #1881 — the profile may soften only an UNMEASURABLE target (110 of 136
-      // denials in 7 days); a measured hit keeps the policy severity.
-      const removalSeverity = hit.unmeasurable ? effectiveRuleSeverity(`${id}/unmeasurable`, rule.severity) : rule.severity;
-      if (removalSeverity !== 'block') {
-        const msg = `pre-bash-destructive-guard: ${label} (rule: ${id}) — ${rationale}`;
-        process.stderr.write(`⚠ ${msg}\n`);
-        notices.push(msg);
-        continue;
-      }
-      await blockCommand(label, id, rationale, command, sessionId);
-      continue; // unreachable (blockCommand never returns) — kept for clarity
-    }
-
-    // The rm-rf-destructive rule also fires for recursive+force rm flag variants
-    // the literal "rm -rf" pattern misses (`rm -r -f`, `rm -fr`) — #641 gap closure.
-    const matched = id === 'rm-rf-destructive'
-      ? (blocker.commandMatchesBlocked(command, pattern) || commandHasRecursiveForceRm(command))
-      : blocker.commandMatchesBlocked(command, pattern);
-    if (!matched) continue;
-
-    if (severity === 'warn') {
-      // Special: git-stash-any — only warn when stash is non-empty
-      if (id === 'git-stash-any') {
-        const nonEmpty = await isGitStashNonEmpty(projectDir);
-        if (!nonEmpty) {
-          // Empty stash — silent allow
-          continue;
+        // Best-effort telemetry — must never affect the warn/allow outcome.
+        try {
+          await emitEvent('orchestrator.destructive_guard.warned', {
+            ...(sessionId ? { session_id: sessionId } : {}),
+            rule: id,
+            command_hash: hashCommand(command),
+          });
+        } catch {
+          // Best-effort — telemetry must never block or alter the guard decision.
         }
+        // warn → allow (exit 0), continue checking remaining rules
+        continue;
       }
-      const msg = `pre-bash-destructive-guard: '${pattern}' (rule: ${id}) — ${rationale}`;
-      process.stderr.write(`⚠ ${msg}\n`);
-      notices.push(msg); // #995 — visible on the allow-with-notice channel
-      // Best-effort telemetry — must never affect the warn/allow outcome.
+
+      if (severity === 'block') {
+        // Special: rm-rf-destructive — path exception
+        if (id === 'rm-rf-destructive') {
+          const ruleAllowlist = Array.isArray(rule['path-allowlist']) ? rule['path-allowlist'] : [];
+          const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
+          const { targets, writeTargets } = parseRmTargets(command, cwd, pattern);
+          // Allowed only if allowed in every directory the shell may be in; an
+          // unread target never is (#1956 fix cycle 1).
+          const allowed = (t) => !t.unread && t.dirs.every((dir) => isRmPathAllowed(t.text, { projectDir, dir, trustTmpdir: t.trustTmpdir }, ruleAllowlist));
+          // Allow ONLY when there is at least one target AND every target is
+          // allowlisted. An unparseable command (no targets) or any non-allowlisted
+          // target → block (conservative). This makes mixed chains like
+          // `rm -rf /tmp/x; rm -rf src/` block on the src/ target.
+          //
+          // Every WRITE-redirect target of the same invocation must clear the SAME
+          // allowlist (with /dev/null carved out): `>` truncates its target before
+          // rm ever runs, so without this the allow path waved through
+          // `rm -rf /tmp/ok > src/important.ts` on the strength of an allowlisted
+          // rm operand. Protected artefacts (`> CLAUDE.md`) are ADDITIONALLY
+          // covered command-independently by rule 14 (redirect-truncate-protected)
+          // — two complementary layers from the two 2026-08-03 guard sessions.
+          const allAllowed =
+            targets.length > 0 &&
+            targets.every(allowed) &&
+            writeTargets.every((t) => isNullSink(t.text) || allowed(t));
+          if (allAllowed) {
+            // Safe paths only (.orchestrator/tmp, node_modules, /tmp, $TMPDIR) — allow
+            continue;
+          }
+          // #1883: an mktemp variable stays blocked, but say why and what works,
+          // so the agent stops re-spelling the removal. Measured 2026-10-31: a
+          // text-level grant proved only 1 of 94 real cleanups and had 6 bypasses
+          // (rebinding via zsh builtins, `$E` eval, PATH-hijacked mktemp, …).
+          if (/\bmktemp\b/.test(command) && targets.some((t) => BARE_VARIABLE_RE.test(t.text))) {
+            await blockCommand(pattern, id, `${rationale} ${MKTEMP_CLEANUP_HINT}`, lineCommand, sessionId);
+          }
+        }
+        // #1957 fix cycle 3: name the env-defined alias the guard cannot follow.
+        const why = pattern.startsWith('git ') && envAliasUnfollowed(command) ? `${ENV_ALIAS_REASON}. ${rationale}` : rationale;
+        await blockCommand(pattern, id, why, lineCommand, sessionId);
+      }
+      // Unknown severity → skip (conservative allow for unknown future severities)
+    }
+  };
+  try {
+    await evaluateRules(command);
+  } catch (e) {
+    if (!(e instanceof BraceBudgetError)) throw e;
+    // A named rule that matches the line read WITHOUT brace expansion blocks
+    // under its own name (blockCommand never returns). Anything else — no
+    // match, a warn-only match, or a read that throws — ends in the budget
+    // deny: a line past the brace budget is never allowed.
+    const reading = withoutBraceExpansion(command);
+    if (reading !== command) {
       try {
-        await emitEvent('orchestrator.destructive_guard.warned', {
-          ...(sessionId ? { session_id: sessionId } : {}),
-          rule: id,
-          command_hash: hashCommand(command),
-        });
+        await evaluateRules(reading, { unexpanded: true });
       } catch {
-        // Best-effort — telemetry must never block or alter the guard decision.
+        // the budget deny below stands
       }
-      // warn → allow (exit 0), continue checking remaining rules
-      continue;
     }
-
-    if (severity === 'block') {
-      // Special: rm-rf-destructive — path exception
-      if (id === 'rm-rf-destructive') {
-        const ruleAllowlist = Array.isArray(rule['path-allowlist']) ? rule['path-allowlist'] : [];
-        const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
-        const { targets, writeTargets } = parseRmTargets(command, cwd);
-        // Allowed only if allowed in every directory the shell may be in.
-        const allowed = (t) => t.dirs.every((dir) => isRmPathAllowed(t.text, { projectDir, dir, trustTmpdir: t.trustTmpdir }, ruleAllowlist));
-        // Allow ONLY when there is at least one target AND every target is
-        // allowlisted. An unparseable command (no targets) or any non-allowlisted
-        // target → block (conservative). This makes mixed chains like
-        // `rm -rf /tmp/x; rm -rf src/` block on the src/ target.
-        //
-        // Every WRITE-redirect target of the same invocation must clear the SAME
-        // allowlist (with /dev/null carved out): `>` truncates its target before
-        // rm ever runs, so without this the allow path waved through
-        // `rm -rf /tmp/ok > src/important.ts` on the strength of an allowlisted
-        // rm operand. Protected artefacts (`> CLAUDE.md`) are ADDITIONALLY
-        // covered command-independently by rule 14 (redirect-truncate-protected)
-        // — two complementary layers from the two 2026-08-03 guard sessions.
-        const allAllowed =
-          targets.length > 0 &&
-          targets.every(allowed) &&
-          writeTargets.every((t) => isNullSink(t.text) || allowed(t));
-        if (allAllowed) {
-          // Safe paths only (.orchestrator/tmp, node_modules, /tmp, $TMPDIR) — allow
-          continue;
-        }
-        // #1883: an mktemp variable stays blocked, but say why and what works,
-        // so the agent stops re-spelling the removal. Measured 2026-10-31: a
-        // text-level grant proved only 1 of 94 real cleanups and had 6 bypasses
-        // (rebinding via zsh builtins, `$E` eval, PATH-hijacked mktemp, …).
-        if (/\bmktemp\b/.test(command) && targets.some((t) => BARE_VARIABLE_RE.test(t.text))) {
-          await blockCommand(pattern, id, `${rationale} ${MKTEMP_CLEANUP_HINT}`, command, sessionId);
-        }
-      }
-      await blockCommand(pattern, id, rationale, command, sessionId);
-    }
-    // Unknown severity → skip (conservative allow for unknown future severities)
+    throw e;
   }
 
   // G6 — no blocking match. Flush the aggregated allow-with-notice channel
@@ -2043,6 +3313,14 @@ if (isMainModule(import.meta.url)) {
   // Top-level error handler — never let exit 1 leak, never fail open (#1671).
   // emitDeny is bound here: bootstrap() succeeded, and it never throws.
   main().catch((e) => {
+    // A spent read budget denies the line (fail-closed, review round 3).
+    if (e instanceof HookReadBudgetError) {
+      return emitDeny(
+        // #1956 fix cycle 1: a cause other than the generic one is named.
+        `pre-bash-destructive-guard could not read this command within its read budget${/read budget/.test(e.message) ? '' : ` (${e.message})`} and blocked it for safety (fail-closed).`,
+        'Split the command into smaller, simpler Bash calls and retry.'
+      );
+    }
     const detail = String(e?.message || e).split('\n')[0];
     process.stderr.write(`⚠ pre-bash-destructive-guard: internal error — ${detail}\n`);
     emitDeny(

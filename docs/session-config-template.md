@@ -87,7 +87,7 @@ Read by: `skills/session-start/SKILL.md` (Phase 4.5), `skills/session-plan/SKILL
 vcs: gitlab                            # github | gitlab — auto-detected from remote when unset
 gitlab-host: gitlab.example.com        # only if remote URL doesn't expose it
 mirror: github                         # session-end pushes to the `github` remote (none | github | curated; absent = push if remote exists; curated = public snapshot via scripts/github-export.mjs)
-cross-repos: [related-repo-1]          # repos under ~/Projects/ to snapshot at session-start
+cross-repos: [related-repo-1]          # bare name → ~/Projects/<name>; `/` or `~/` = path; rule: session-config-reference.md § cross-repos
 pencil: path/to/design.pen             # design-code alignment input
 ecosystem-health: true                 # toggle health-endpoint probes
 health-endpoints:                      # nested block form — content-scoped parse, see reference doc (#1174)
@@ -335,6 +335,33 @@ handover-gate:
 
 Read by: `scripts/lib/config/handover-gate.mjs`, `skills/session-end/SKILL.md` Phase 1.65.
 
+## Context Threshold
+
+`PostToolUse` hook that reads the session's own context size from its transcript (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens` of the last main-chain assistant line) and injects one hint at `prepare-k` („Übergabe-Datei vorbereiten, keine neue Welle mehr beginnen“) and one at `handover-k` („am nächsten MR-Schnitt übergeben“). Values in thousands of tokens. Warn-only; an unmeasurable context stays silent and is reported as „nicht messbar“ (issue #1960).
+
+```yaml
+context-threshold:
+  enabled: true                  # default true; profile-gate also applies
+  prepare-k: 700                 # thousand tokens — prepare the handover, start no new wave
+  handover-k: 800                # thousand tokens — hand over at the next MR cut (must exceed prepare-k)
+```
+
+Read by: `scripts/lib/config/context-threshold.mjs`, `hooks/post-tool-context-threshold.mjs`.
+
+## Agent Caps
+
+How many agents a session may run at once, and when a low-memory brake stops new ones. Leave it out to keep the defaults. Details: [session-config-reference § Agent Caps](session-config-reference.md#agent-caps).
+
+```yaml
+agent-caps:
+  process-starting: 6            # agents that can edit files; a number from 1, or off
+  reading: 6                     # read-only agents; a number from 1, or off
+  brake-engage-pct: 15           # no new process-starting agent below this % free memory; 1 to 99, or off
+  brake-release-pct: 20          # brake lets go above this %; 1 to 99, not below brake-engage-pct
+```
+
+Read by: `scripts/lib/config/agent-caps.mjs`, `hooks/pre-agent-cap.mjs`.
+
 ## Broken-Window Budget
 
 Opt-in gate in `/close` (session-end Phase 2.6). When enabled, it aggregates THIS session's "knowingly-broken shipments" (echo-stubs shipped under `enforcement: warn`, Phase 2.3/2.5 "Override and close" choices, MED/LOW findings routed to "Unresolved Review Findings", wave-level overridden findings) and files ONE hard-terminated closure issue per item (labels `broken-window` + `priority::high`, hard due-date). Non-blocking and idempotent (issue #730, Epic H / H5).
@@ -438,20 +465,20 @@ Read by: `scripts/lib/config.mjs`, `scripts/lib/config-schema.mjs`, `scripts/lib
 
 ## Evolve Extra Sources (#638)
 
-Opt-in EXTRA learning sources for `/evolve`. A `domain-regression` measurement (e.g. an eval-learn harness) runs OUT-OF-BAND and writes a sidecar JSON; `/evolve` then READS each declared sidecar and emits a `domain-regression` learning candidate per persistent regression flag. `/evolve` NEVER runs the measurement itself — this is a strict read-only consumption contract. Absent/empty ⇒ `[]` ⇒ no extra sources are read.
+Opt-in EXTRA learning sources for `/evolve`. A domain measurement (e.g. an eval-learn harness) or owner-decision export runs OUT-OF-BAND and writes a sidecar JSON; `/evolve` then READS each declared sidecar and emits `domain-regression` candidates for persistent regression flags or `owner-preference` candidates for qualifying owner-decision patterns. `/evolve` NEVER runs the measurement itself — this is a strict read-only consumption contract. Absent/empty ⇒ `[]` ⇒ no extra sources are read.
 
 ```yaml
 evolve:
   extra-sources:
     - path: eval/learn/reports/latest.json   # required; SAFE path (no shell metacharacters)
-      kind: regression-flags                  # enum: regression-flags (only value; unknown ⇒ entry dropped + WARN)
-      learning-type: domain-regression        # enum: domain-regression (only value; unknown ⇒ entry dropped + WARN)
+      kind: regression-flags                  # enum: regression-flags | owner-decisions (unknown ⇒ entry dropped + WARN)
+      learning-type: domain-regression        # enum: domain-regression | owner-preference (unknown/crossed pair ⇒ entry dropped + WARN)
 ```
 
 Field semantics:
-- **`path`** — repo-relative or absolute path to a sidecar JSON. Schema gate: `{ flags: [{ metric, baseline, recent, delta }] }`. An unknown/missing sidecar schema ⇒ skip + WARN.
-- **`kind`** — selects the sidecar parser. Only `regression-flags` is defined; an unknown value DROPS the entry with a stderr WARN (schema gate — `/evolve` never guesses a parser).
-- **`learning-type`** — stamps the emitted learning candidate. Only `domain-regression` is registered (in both the learnings TTL schema and the memory-proposals type enum); an unknown value DROPS the entry with a stderr WARN.
+- **`path`** — repo-relative path to a sidecar JSON; absolute paths and `..` segments are rejected. Schema-gated against the selected kind (see `docs/session-config-reference.md` § Evolve Extra Sources). An unknown/missing sidecar schema ⇒ skip + WARN.
+- **`kind`** — selects the sidecar parser: `regression-flags` (default) or `owner-decisions`. An unknown value DROPS the entry with a stderr WARN (schema gate — `/evolve` never guesses a parser).
+- **`learning-type`** — stamps the emitted learning candidate; defaults by kind: `regression-flags` → `domain-regression`, `owner-decisions` → `owner-preference`. Unknown values and crossed pairs DROP the entry with a stderr WARN. Both types have a 60-day TTL; `owner-preference` is analyzer-only and excluded from `PROPOSAL_TYPES`.
 
 Security: `path` rejects shell metacharacters; confinement at the read sink is the path-traversal guard. Like all command/path-bearing config, changes are commit-gated under the VCS-trust-anchor model.
 
@@ -858,6 +885,19 @@ handover-gate:
   enabled: true
   max-open-questions: 3
 
+# Context threshold hints (#1960) — PostToolUse, warn-only, thousand tokens
+context-threshold:
+  enabled: true
+  prepare-k: 700
+  handover-k: 800
+
+# Agent caps (#1959) — per-session agent limits and the low-memory brake
+agent-caps:
+  process-starting: 6
+  reading: 6
+  brake-engage-pct: 15
+  brake-release-pct: 20
+
 # Broken-Window Budget (#730/H5)
 broken-window-budget:
   enabled: false
@@ -921,8 +961,8 @@ offload-first: false                   # #1465: true = offloadable roles go to a
 evolve:
   extra-sources:
     - path: eval/learn/reports/latest.json   # required; SAFE path to a sidecar JSON
-      kind: regression-flags                  # enum: regression-flags (only value)
-      learning-type: domain-regression        # enum: domain-regression (only value)
+      kind: regression-flags                  # enum: regression-flags | owner-decisions
+      learning-type: domain-regression        # enum: domain-regression | owner-preference (defaults by kind)
 
 # Reconcile engine — FA3 advisory rule-proposal delivery (#696 / #697)
 reconcile:
@@ -1030,12 +1070,13 @@ loop-guard:
 # Always-on instruction-budget guard (#687) — session-start Phase 4, warn-only, growth-ratchet
 instruction-budget:
   enabled: true            # always-on directive-budget banner; off-by-config silences it
-  ceiling: 480             # structural-directive ceiling (baseline ~457; ratchet guards growth)
-  byte-ceiling: 114000     # byte ceiling for the SAME corpus (baseline ~108589, +5% headroom —
-                           # deliberately the same relative slack the directive ceiling carries,
-                           # so neither axis is accidentally the stricter one). Either axis alone
-                           # puts the banner over budget: a 9 KB prose rule with three bullets is
-                           # invisible to the directive count but costs real payload (#931a).
+  # Ceilings: do NOT copy numbers from here. Each ceiling key you set marks
+  # that axis as calibrated for THIS repo (#1995), and the plugin defaults were
+  # measured on the plugin's own corpus. Run
+  #   node "<plugin>/scripts/instruction-budget-calibrate.mjs"
+  # and replace this whole block with the one it prints (it sets ceiling,
+  # byte-ceiling, generated-byte-ceiling, path-scoped-byte-ceiling). Only the
+  # first instruction-budget block in the file is read.
   mode: warn               # warn (surface banner) | off (silent no-op)
 
 # Config-protection guard (ecc-analysis / #622)

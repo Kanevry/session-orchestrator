@@ -38,7 +38,7 @@
  * at depth ≥ 2 (already namespaced) are never enumerated nor moved.
  */
 
-import { promises as fs, existsSync } from 'node:fs';
+import { promises as fs, existsSync, lstatSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import {
   loadVaultRelocationRules,
@@ -193,6 +193,35 @@ Config: ${VAULT_RELOCATION_RULES_PATH}
 // ---------------------------------------------------------------------------
 
 /**
+ * List regular `*.md` files below `dir` with the semantics of
+ * `find <dir> [-maxdepth <maxDepth>] -type f -name '*.md'` (default -P), in a
+ * node:fs walk so native Windows needs no POSIX `find` (#1743):
+ * - only regular files (`-type f` on lstat): a symlink is never listed, and a
+ *   symlinked directory — `dir` itself included — is never descended;
+ * - the basename ends in `.md`, case-sensitively (`*` also matches a leading dot);
+ * - depth 1 = entries directly in `dir`; hidden directories are descended;
+ * - pre-order, directory-listing order, like find.
+ * Throws on an unreadable directory, where find would exit non-zero.
+ *
+ * @param {string} dir - absolute directory path
+ * @param {{ maxDepth?: number }} [opts]
+ * @returns {string[]} absolute file paths
+ */
+function listMarkdownFiles(dir, { maxDepth = Infinity } = {}) {
+  const out = [];
+  if (!lstatSync(dir).isDirectory()) return out;
+  const walk = (current, depth) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isFile() && entry.name.endsWith('.md')) out.push(full);
+      else if (entry.isDirectory() && depth < maxDepth) walk(full, depth + 1);
+    }
+  };
+  walk(dir, 1);
+  return out;
+}
+
+/**
  * Enumerate flat markdown files directly under <dir> (maxdepth 1, files only).
  * Files at depth >= 2 (already in a subdirectory) are never returned.
  *
@@ -202,27 +231,12 @@ Config: ${VAULT_RELOCATION_RULES_PATH}
 function enumerateFlatFiles(dir) {
   if (!existsSync(dir)) return [];
 
-  const result = spawnSync(
-    'find',
-    [dir, '-maxdepth', '1', '-type', 'f', '-name', '*.md'],
-    { encoding: 'utf8' },
-  );
-
-  if (result.error) {
-    process.stderr.write(
-      `${SCRIPT_NAME}: find not found on PATH (${result.error.code ?? result.error.message})\n`,
-    );
+  try {
+    return listMarkdownFiles(dir, { maxDepth: 1 });
+  } catch (error) {
+    process.stderr.write(`${SCRIPT_NAME}: cannot list ${path.basename(dir)}: ${error.code ?? error.message}\n`);
     process.exit(2);
   }
-  if (result.status !== 0) {
-    process.stderr.write(`${SCRIPT_NAME}: find failed: ${result.stderr}\n`);
-    process.exit(2);
-  }
-
-  return result.stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean);
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +460,7 @@ function addToSetIndex(map, key, value) {
 /**
  * Parse every vault session note (flat + already-namespaced) into the
  * `{ id, frontmatter }` shape that buildBackfillIndex consumes. Reuses the same
- * recursive find pass that buildSessionRepoIndex uses, so session files are read
+ * recursive walk (listMarkdownFiles) that buildSessionRepoIndex uses, so session files are read
  * once per concern (this pass is only run under --with-backfill).
  *
  * @param {string} sessionsDir - absolute path to 50-sessions/
@@ -456,20 +470,13 @@ async function collectParsedVaultSessions(sessionsDir) {
   const out = [];
   if (!existsSync(sessionsDir)) return out;
 
-  const result = spawnSync(
-    'find',
-    [sessionsDir, '-type', 'f', '-name', '*.md'],
-    { encoding: 'utf8' },
-  );
-  if (result.error || result.status !== 0) {
-    process.stderr.write(`${SCRIPT_NAME}: WARN: could not scan sessions for backfill: ${result.stderr || result.error?.message || 'unknown'}\n`);
+  let files;
+  try {
+    files = listMarkdownFiles(sessionsDir);
+  } catch (error) {
+    process.stderr.write(`${SCRIPT_NAME}: WARN: could not scan sessions for backfill: ${error.code ?? error.message}\n`);
     return out;
   }
-
-  const files = result.stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean);
 
   for (const filePath of files) {
     let content;
@@ -518,22 +525,14 @@ async function buildSessionRepoIndex(sessionsDir, opts = {}) {
   if (!existsSync(sessionsDir)) return index;
 
   // All session .md files: flat + in subdirs (already-namespaced)
-  const result = spawnSync(
-    'find',
-    [sessionsDir, '-type', 'f', '-name', '*.md'],
-    { encoding: 'utf8' },
-  );
-
-  if (result.error || result.status !== 0) {
+  let files;
+  try {
+    files = listMarkdownFiles(sessionsDir);
+  } catch (error) {
     // Non-fatal: return empty index, but warn so the operator knows source_session resolution is disabled
-    process.stderr.write(`${SCRIPT_NAME}: WARN: could not scan sessions for index — transitive source_session resolution disabled: ${result.stderr || result.error?.message || 'unknown'}\n`);
+    process.stderr.write(`${SCRIPT_NAME}: WARN: could not scan sessions for index — transitive source_session resolution disabled: ${error.code ?? error.message}\n`);
     return index;
   }
-
-  const files = result.stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean);
 
   for (const filePath of files) {
     let content;
@@ -1174,6 +1173,7 @@ if (invokedDirectly) {
 }
 
 export {
+  listMarkdownFiles,
   enumerateFlatFiles,
   buildSessionRepoIndex,
   classifyFile,

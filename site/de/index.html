@@ -19,13 +19,13 @@
 <meta property="og:image" content="https://session-orchestrator.com/de/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Session Orchestrator: Plan, Go, Close mit einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
+<meta property="og:image:alt" content="Session Orchestrator: Aus deiner Aufgabe wird geprüfte Arbeit. Die Befehle /session, /go und /close neben einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
 <meta property="og:locale" content="de_AT">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Session Orchestrator | Aus deiner Aufgabe wird geprüfte Arbeit">
 <meta name="twitter:description" content="Du sagst, was du willst. Dein Coding-Agent plant mit dir, arbeitet in geprüften Runden und übergibt an die nächste Session. Ein freies Open-Source-Plugin für Claude Code, Codex, Cursor und Pi.">
 <meta name="twitter:image" content="https://session-orchestrator.com/de/og.png">
-<meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close mit einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
+<meta name="twitter:image:alt" content="Session Orchestrator: Aus deiner Aufgabe wird geprüfte Arbeit. Die Befehle /session, /go und /close neben einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
 
 <!-- Entity consolidation (issue #1046): the site, the repository, the package
      and the person who maintains them are one entity with stable @id anchors.
@@ -126,18 +126,18 @@
       "mainEntity": [
         {
           "@type": "Question",
-          "name": "Ist das selbst ein Werkzeug, das Code schreibt?",
+          "name": "Ist das selbst eine KI, die Code schreibt?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Nein. Es ergänzt einen Ablauf zum Planen, Arbeiten und Prüfen der Ergebnisse. Den Code schreibt dein Code-Werkzeug. Welche Grenzen technisch durchgesetzt werden, hängt vom Werkzeug und der Konfiguration der Guards ab."
+            "text": "Nein. Es ergänzt einen Ablauf zum Planen, Arbeiten und Prüfen der Ergebnisse. Den Code schreibt dein Coding-Tool. Welche Grenzen technisch durchgesetzt werden, hängt vom Tool und der Konfiguration der Guards ab."
           }
         },
         {
           "@type": "Question",
-          "name": "Mit welchen Werkzeugen läuft es?",
+          "name": "Mit welchen Tools läuft es?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Claude Code führt die Guard-Hooks direkt aus. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex CLI bietet auswählbare Workflow-Skills und führt den Guard für zerstörerische Befehle als Bash-Hook aus, der blockiert; die Regeln für Schreibbereiche sind dort nur Anweisungen, weil Codex Dateien über apply_patch ändert und der Scope-Guard das nicht liest. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab."
+            "text": "Claude Code führt die Guard-Hooks direkt aus. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex CLI bietet auswählbare Workflow-Skills und führt den Guard für zerstörerische Befehle als Bash-Hook aus, der blockiert; die Regeln für Schreibbereiche sind dort nur Anweisungen, weil Codex Dateien über apply_patch ändert und der Guard das nicht liest. Parallele Agents gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab."
           }
         },
         {
@@ -145,7 +145,7 @@
           "name": "Kann ein Team es nutzen?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Ja. Jede Person installiert das Plugin in ihrem eigenen Code-Werkzeug. Die Session Config in CLAUDE.md und die Session-Einträge unter .orchestrator/ liegen im Repository und werden committet. So liest die Session der nächsten Person, was die letzte hinterlassen hat. Commits landen auf dem Branch, auf dem du bist; /close pusht diesen Branch. Einen neuen Branch legt es nur an, wenn du ein Worktree-Angebot annimmst oder /autopilot startest."
+            "text": "Ja. Jede Person installiert das Plugin in ihrem eigenen Coding-Tool. Die Session Config in CLAUDE.md und die Session-Aufzeichnungen unter .orchestrator/ liegen im Repository und werden committet. So liest die Session der nächsten Person, was die letzte hinterlassen hat. Commits landen auf dem Branch, auf dem du bist; /close pusht diesen Branch. Einen neuen Branch legt es nur an, wenn du ein Worktree-Angebot annimmst oder /autopilot startest."
           }
         },
         {
@@ -169,7 +169,7 @@
           "name": "Was ist der Unterschied zu Claude Code allein?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Es ergänzt einen wiederholbaren Ablauf: Projekt lesen, Umfang abstimmen, die Arbeit in Schritte mit festgelegten Dateien teilen und die Ergebnisse dazwischen prüfen. Der Session-Eintrag hält Fortschritt und offene Arbeit für die nächste Session fest."
+            "text": "Es ergänzt einen wiederholbaren Ablauf: Projekt lesen, Umfang abstimmen, die Arbeit in Schritte mit festgelegten Dateien teilen und die Ergebnisse dazwischen prüfen. Die Session-Aufzeichnung hält Fortschritt und offene Arbeit für die nächste Session fest."
           }
         },
         {
@@ -177,7 +177,7 @@
           "name": "Schickt es Daten irgendwohin?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Das Plugin läuft lokal ohne eigenes Konto. Optionale Nutzungsstatistik ist bis zu deiner Zustimmung ausgeschaltet. Beim Session-Start fragt es standardmäßig die npm-Registry nach Updates ab. Erfolgreiche Ergebnisse werden pro Repository 24 Stunden zwischengespeichert; schlägt die Anfrage oder das Speichern fehl, kann die nächste Session erneut anfragen. SO_DISABLE_UPDATE_CHECK=1 oder DO_NOT_TRACK=1 schaltet die Prüfung aus. Dein Code-Werkzeug und eingerichtete Dienste nutzen weiterhin ihre eigenen Netzwerkverbindungen. Diese Website nutzt cookiefreie Vercel Web Analytics, beschrieben in der Datenschutzerklärung."
+            "text": "Das Plugin läuft lokal ohne eigenes Konto. Optionale Nutzungsdaten sind bis zu deiner Zustimmung ausgeschaltet. Beim Session-Start fragt es standardmäßig die npm-Registry nach Updates ab. Erfolgreiche Ergebnisse werden pro Repository 24 Stunden zwischengespeichert; schlägt die Anfrage oder das Speichern fehl, kann die nächste Session erneut anfragen. SO_DISABLE_UPDATE_CHECK=1 oder DO_NOT_TRACK=1 schaltet die Prüfung aus. Dein Coding-Tool und eingerichtete Dienste nutzen weiterhin ihre eigenen Netzwerkverbindungen. Diese Website nutzt cookiefreie Vercel Web Analytics, beschrieben in der Datenschutzerklärung."
           }
         },
         {
@@ -193,7 +193,7 @@
           "name": "Was kostet es?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Für das Plugin nichts. Es ist kostenlos und Open Source unter der MIT-Lizenz. Dein Code-Werkzeug zahlst du weiterhin, und eine Session mit mehreren Agents und Runden verbraucht mehr von seinem Kontingent oder seinen Tokens als ein einzelner Chat."
+            "text": "Für das Plugin nichts. Es ist kostenlos und Open Source unter der MIT-Lizenz. Dein Coding-Tool zahlst du weiterhin, und eine Session mit mehreren Agents und Runden verbraucht mehr von seinem Kontingent oder seinen Tokens als ein einzelner Chat."
           }
         },
         {
@@ -222,13 +222,13 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261029">
+<link rel="stylesheet" href="/assets/site.css?v=20261107">
 </head>
 <body>
 <a class="skip" href="#main">Zum Inhalt</a>
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.17.0</span></span></a>
+    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.18.0</span></span></a>
     <nav class="nav" aria-label="Hauptnavigation"><a href="#how">Ablauf</a><a href="/de/commands">Befehle</a><a href="#install">Installieren</a><a href="/guide" hreflang="en">Anleitung</a><a href="/lead" hreflang="en">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
     <p class="lang"><a href="/"  lang="en">EN</a><a href="/de" aria-current="page" lang="de">DE</a></p>
     <details class="nav-menu"><summary>Menü</summary><nav class="nav" aria-label="Mobile Navigation"><a href="#how">Ablauf</a><a href="/de/commands">Befehle</a><a href="#install">Installieren</a><a href="/guide" hreflang="en">Anleitung</a><a href="/lead" hreflang="en">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
@@ -255,7 +255,7 @@
         </dl></details>
       </div>
       <figure class="hero-art">
-        <img src="/img/agent-production-800.webp" srcset="/img/agent-production-480.webp 480w, /img/agent-production-800.webp 800w, /img/agent-production-1536.webp 1536w" sizes="(min-width: 1360px) 622px, (min-width: 1101px) calc(50vw - 58px), (min-width: 960px) calc(50vw - 54px), (min-width: 601px) calc(100vw - 56px), calc(100vw - 40px)" width="1536" height="1024" fetchpriority="high" decoding="async" alt="Ein Mensch am Leitstand überblickt kleine Agenten beim Planen, beim parallelen Bauen, beim Prüfen und bei der Übergabe.">
+        <img src="/img/agent-production-800.webp" srcset="/img/agent-production-480.webp 480w, /img/agent-production-800.webp 800w, /img/agent-production-1536.webp 1536w" sizes="(min-width: 1360px) 622px, (min-width: 1101px) calc(50vw - 58px), (min-width: 960px) calc(50vw - 54px), (min-width: 601px) calc(100vw - 56px), calc(100vw - 40px)" width="1536" height="1024" fetchpriority="high" decoding="async" alt="Ein Mensch am Leitstand überblickt kleine Agents beim Planen, beim parallelen Bauen, beim Prüfen und bei der Übergabe.">
         <video hidden muted loop playsinline preload="none" aria-hidden="true" data-video-base="agent-production-motion"></video>
         <button class="motion-toggle" type="button" aria-pressed="false" hidden>Werkstatt bewegen</button>
         <figcaption>Agents bei der Arbeit an deiner Aufgabe · mit KI erstellt</figcaption>
@@ -274,7 +274,26 @@
           <li class="how-step" id="step-read">
             <h3><button class="how-step-btn" type="button"><span class="how-n">1</span>Lesen</button></h3>
             <p class="how-type"><span>Du tippst</span><code>/session feature add a CSV export</code></p>
-            <p>Es liest deinen Code, offene Issues, die letzten Commits und die letzte Session und schlägt dann einen Plan vor. <b>Noch hat sich nichts geändert.</b></p>
+            <p>Es liest deinen Code, offene Issues, die letzten Commits und die letzte Session und empfiehlt dann, woran du arbeitest. <b>Noch hat sich nichts geändert.</b></p>
+            <figure class="see-fig">
+              <div class="see-label">Was du danach siehst</div>
+              <div class="see-pane" role="img" aria-label="Session-Überblick. Typ: feature. Repository shop-dashboard auf Branch main. Git ist sauber, nichts ist ungepusht. 12 offene Issues, 2 davon mit hoher Priorität, und 1 offener Merge Request. Zustand: 0 TypeScript-Fehler, Tests grün, CI grün. Empfohlener Fokus, Option A: Issue 48, der CSV-Export, für sich allein, weil das deine Aufgabe ist und der betroffene Code Tests hat. Dann die Frage: Welchen Fokus soll diese Session haben? Option 1, empfohlen: Issue 48, CSV-Export. Ein Knopf, eine Export-Route, ein Test. Dient: Bestellungen als Tabelle, beobachtbar durch den neuen Export-Test. Option 2: Issue 48 und Issue 51, ein Datumsfilter. Gleicher Export-Code, etwa doppelte Arbeit. Dient: Export pro Monat, beobachtbar durch den Filter-Test. Option 3: Issue 57, langsame Bestellliste. Hohe Priorität, braucht eine eigene Session. Dient keinem benannten Outcome.">
+                <div class="sp-h">Session-Überblick</div>
+                <div>Typ: feature</div>
+                <div>Repo: shop-dashboard auf Branch main</div>
+                <div>Git: sauber, 0 ungepusht</div>
+                <div>VCS: 12 offene Issues (2 hoch), 1 offener MR</div>
+                <div>Zustand: TypeScript 0 Fehler | Tests: grün | CI: grün</div>
+                <div class="sp-h">Empfohlener Fokus</div>
+                <div>Option A (empfohlen): #48 CSV-Export für sich allein. Das ist deine Aufgabe, und der betroffene Code hat Tests.</div>
+                <div class="sp-q"><span class="sp-tag">Focus</span> Welchen Fokus soll diese Session haben?</div>
+                <div class="sp-opt"><span>1.</span><span><b>#48 CSV-Export <span class="sp-rec">(Recommended)</span></b><br>Ein Knopf, eine Export-Route, ein Test. Dient: Bestellungen als Tabelle; beobachtbar durch den neuen Export-Test.</span></div>
+                <div class="sp-opt"><span>2.</span><span><b>#48 + #51 Datumsfilter</b><br>Gleicher Export-Code, etwa doppelte Arbeit. Dient: Export pro Monat; beobachtbar durch den Filter-Test.</span></div>
+                <div class="sp-opt"><span>3.</span><span><b>#57 langsame Bestellliste</b><br>Hohe Priorität, braucht eine eigene Session. Dient: kein benanntes Outcome.</span></div>
+              </div>
+              <figcaption>Nachgebaut nach einem echten /session-Überblick, gekürzt; Repository und Zahlen sind erfunden.</figcaption>
+            </figure>
+            <p>Du wählst eine Option oder antwortest mit eigenen Worten. Dann zeigt es den Plan. Gebaut wird erst, wenn du <code>/go</code> tippst.</p>
           </li>
           <li class="how-step" id="step-plan">
             <h3><button class="how-step-btn" type="button"><span class="how-n">2</span>Planen</button></h3>
@@ -346,9 +365,10 @@
         <video controls preload="none" playsinline width="1920" height="1080" poster="/video/session-orchestrator-film-poster.webp">
           <source src="/video/session-orchestrator-film.webm" type="video/webm">
           <source src="/video/session-orchestrator-film.mp4" type="video/mp4">
+          <track kind="subtitles" src="/video/session-orchestrator-film.de.vtt" srclang="de" label="Deutsch" default>
           <p>Dein Browser kann dieses Video nicht abspielen. <a href="/video/session-orchestrator-film.mp4">Film herunterladen (MP4)</a>.</p>
         </video>
-        <figcaption>Dieselbe Session als 34-Sekunden-Film, mit Ton · mit KI erstellt (Einblendungen auf Englisch)</figcaption>
+        <figcaption>Dieselbe Session als 34-Sekunden-Film, mit Ton · mit KI erstellt (deutsche Untertitel, Einblendungen im Bild auf Englisch)</figcaption>
       </figure>
     </div>
   </section>
@@ -483,7 +503,7 @@ expires-at: 2027-01-12</code></pre></li>
           <tr role="row"><th scope="row" role="rowheader">Lead-Inbox-Seitenleiste</th><td role="cell" data-what="Lead-Inbox-Seitenleiste" data-label="Claude Code" class="t-yes">ja, ein Mod im <a href="/lead#start" hreflang="en">npm-Paket des Lead</a> (Early Access)</td><td role="cell" data-what="Lead-Inbox-Seitenleiste" data-label="Codex CLI">Sessions werden geführt; die Seitenleiste läuft in Claude Code</td><td role="cell" data-what="Lead-Inbox-Seitenleiste" data-label="Cursor IDE">nicht dokumentiert</td><td role="cell" data-what="Lead-Inbox-Seitenleiste" data-label="Pi">nicht dokumentiert</td></tr>
         </tbody>
       </table>
-      <p class="tools-note"><b>Bridge:</b> Bei Cursor und Pi laufen die Guards über einen kleinen Adapter, für die Befehle, die diese Tools melden. <b>Strict-Modus:</b> <code>enforcement: strict</code> in deiner Session Config setzen; mit dem Standard <code>warn</code> wird eine Änderung außerhalb der Dateiliste gemeldet, nicht blockiert.</p>
+      <p class="tools-note"><b>Brücke:</b> Bei Cursor und Pi laufen die Guards über einen kleinen Adapter, für die Befehle, die diese Tools melden. <b>Strict-Modus:</b> <code>enforcement: strict</code> in deiner Session Config setzen; mit dem Standard <code>warn</code> wird eine Änderung außerhalb der Dateiliste gemeldet, nicht blockiert.</p>
       <div class="reco-box">
         <p class="eyebrow">Meine Empfehlung</p>
         <p><b>Soll jeder Guard blockieren, und willst du die Lead-Inbox?</b> Nimm Claude Code. <b>Lieber Codex?</b> Du bekommst dieselben Befehle als Skills, Agents nebeneinander und den Befehls-Guard. Nur die Dateiliste pro Agent ist eine Anweisung, keine Sperre, weil Codex Dateien über <code>apply_patch</code> ändert. <b>Cursor oder Pi?</b> Alles funktioniert, ein Agent nach dem anderen.</p>
@@ -501,22 +521,31 @@ expires-at: 2027-01-12</code></pre></li>
           <p class="cmd"><code>claude plugin list --json</code><button class="copy" type="button" data-copy="claude plugin list --json">Kopieren</button></p>
           <p class="small">Suche den aktivierten Eintrag <code>session-orchestrator@kanevry</code>. Ersetze den Platzhalter unten durch dessen <code>installPath</code>. Fehlt der Eintrag oder ist er deaktiviert, kläre das zuerst über <code>/plugin</code>. Bei mehreren Treffern die aktive Installation prüfen.</p>
           <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo "dependencies present, nothing to do" || npm install; }</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo &quot;dependencies present, nothing to do&quot; || npm install; }">Kopieren</button></p></details></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Codex CLI</span><span class="meta">Klonen und Installer</span></summary><div class="install-body">
-          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Kopieren</button></p>
-          <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Kopieren</button></p>
-          <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Kopieren</button></p>
-          <p class="small">Braucht Codex CLI ab 0.144.4. Die Konfiguration steht in <code>AGENTS.md</code>. Öffne nach der Installation eine neue Aufgabe und prüfe die Plugin-Hooks über <code>/hooks</code>.</p>
-          <p class="small">Wähle die Session-Orchestrator-Skills: <code>$session-orchestrator:bootstrap</code>, danach <code>$session-orchestrator:session feature</code>, <code>$session-orchestrator:go</code> und <code>$session-orchestrator:close</code>. Siehe die <a href="/guide#first-session" hreflang="en">Anleitung zur ersten Session (Englisch)</a>.</p>
-          <p class="small"><b>Auf Codex blockieren die Bash-Guards, die Schreibgrenze nicht.</b> Der Guard für zerstörerische Befehle und die übrigen Bash-Guards laufen als Hooks, und Codex hält sich an ihre Ablehnung. Die Schreibgrenze bleibt eine Anweisung, weil Codex Dateien über <code>apply_patch</code> ändert und der Scope-Guard das nicht liest. Die Workflows und Qualitätsprüfungen laufen weiterhin.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Cursor IDE</span><span class="meta">Klonen und Installer</span></summary><div class="install-body">
+          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator">Kopieren</button></p>
+          <p class="cmd"><code>cd ~/Projects/session-orchestrator &amp;&amp; npm install &amp;&amp; node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="cd ~/Projects/session-orchestrator &amp;&amp; npm install &amp;&amp; node scripts/codex-install.mjs">Kopieren</button></p>
+          <p class="small">Braucht Codex CLI ab 0.160. Lass den Klon in <code>~/Projects/session-orchestrator</code> liegen: Für ein Update führst du dort <code>git pull &amp;&amp; npm install &amp;&amp; node scripts/codex-install.mjs</code> aus und startest danach eine neue Aufgabe.</p>
+          <details class="install-deps"><summary>Was der Installer ändert</summary>
+          <ul class="install-changes small">
+            <li><b>Für deinen Benutzer, in jedem Projekt:</b> eine gepackte Kopie des Plugins in <code>~/.cache/session-orchestrator/plugin-package/</code>, in Codex eingetragen als <code>session-orchestrator@kanevry</code>. Codex kopiert sie in seinen Plugin-Cache unter <code>~/.codex/plugins/cache/</code>.</li>
+            <li><b>Entfernt:</b> eine ältere Installation <code>session-orchestrator@local</code> oder <code>session-orchestrator@openai-curated</code>, falls du eine hast.</li>
+            <li><b>Nicht angefasst:</b> deine Projekte und die Freigabe der Hooks.</li>
+            <li><b>Pro Projekt, später:</b> Die Einrichtung unten schreibt <code>.orchestrator/</code> und einen Block <code>## Session Config</code> in <code>AGENTS.md</code>.</li>
+          </ul></details>
+          <p class="small"><b>Dann gibst du die Hooks frei.</b> Starte eine neue Codex-Aufgabe, tippe <code>/hooks</code>, lies die Hooks von Session Orchestrator und gib sie frei. Der Installer macht das nie für dich. Solange du sie nicht freigibst, laufen die Hooks nicht, und kein Guard von Session Orchestrator hält einen zerstörerischen Befehl auf.</p>
+          <p class="small"><b>Richte jedes Projekt einmal ein,</b> im Codex-Chat in diesem Projekt:</p>
+          <p class="cmd"><code>$session-orchestrator:bootstrap --fast --no-interview</code><button class="copy" type="button" data-copy="$session-orchestrator:bootstrap --fast --no-interview">Kopieren</button></p>
+          <p class="small">Danach <code>$session-orchestrator:session feature</code>, <code>$session-orchestrator:go</code> und <code>$session-orchestrator:close</code>. Das sind Skills im Codex-Chat; ein einfaches <code>/go</code> funktioniert nicht. Mehr in der <a href="/guide#codex" hreflang="en">Codex-Anleitung (Englisch)</a>.</p>
+          <p class="small"><b>Auf Codex blockieren die Bash-Guards, der Guard für Schreibbereiche nicht.</b> Der Guard für zerstörerische Befehle und die übrigen Bash-Guards laufen als Hooks, und Codex hält sich an ihre Ablehnung. Der Guard für Schreibbereiche bleibt eine Anweisung, weil Codex Dateien über <code>apply_patch</code> ändert und der Guard das nicht liest. Die Abläufe und Qualitätsprüfungen laufen weiterhin.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Cursor IDE</span><span class="meta">Klonen und Installer</span></summary><div class="install-body">
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Kopieren</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Kopieren</button></p>
           <p class="cmd"><code>node scripts/cursor-install.mjs /absolute/path/to/your/project</code><button class="copy" type="button" data-copy="node scripts/cursor-install.mjs /absolute/path/to/your/project">Kopieren</button></p>
           <p class="small"><b>Zielprojekt.</b> Gib den Projektpfad ausdrücklich an. Ohne Pfad verwendet der Installer das aktuelle Verzeichnis.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Pi</span><span class="meta">Paketmanager</span></summary><div class="install-body">
           <p class="cmd"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code><button class="copy" type="button" data-copy="npm install -g --ignore-scripts @earendil-works/pi-coding-agent">Kopieren</button></p>
           <p class="cmd"><code>pi install npm:session-orchestrator</code><button class="copy" type="button" data-copy="pi install npm:session-orchestrator">Kopieren</button></p>
-          <p class="small">Dieser Weg installiert seine Abhängigkeiten selbst; die Klone für Codex CLI und Cursor brauchen einmal <code>npm install</code>.</p></div></details></div><p class="install-guide">Noch nicht eingerichtet? <a href="/guide" hreflang="en">Die Anleitung (Englisch) führt dich durch Installation und Bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Unter der Haube</p><h2>Was durchgesetzt wird<br>und wo es aufhört.</h2></div><p>Welche Prüfungen laufen, was sie absichern und wo ihre Grenzen liegen. Mit Quellen im Repository.</p></div><details class="technical-detail" id="enforced"><summary>Prüfungen und ihre Quellen</summary><div class="detail-body">
+          <p class="small">Dieser Weg installiert seine Abhängigkeiten selbst; die Klone für Codex CLI und Cursor brauchen einmal <code>npm install</code>.</p></div></details></div><p class="install-guide">Noch nicht eingerichtet? <a href="/guide" hreflang="en">Die Anleitung (Englisch) führt dich durch Installation und Bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Unter der Haube</p><h2>Was durchgesetzt wird<br>und wo es aufhört.</h2></div><p>Welche Prüfungen laufen, was sie absichern und wo ihre Grenzen liegen. Mit Quellen im Repository.</p></div><p class="measured-line"><span class="n"><span class="num" data-metric="sessions">321</span></span><span>Sessions haben Session Orchestrator bisher mit sich selbst gebaut, gezählt im Session-Log des Maintainers (Entwicklungsaktivität, keine Nutzer). Gezählt am <span class="num" data-metric="counted-at">2026-11-10</span>. <a href="/_census.json">Zählbeleg ansehen</a> oder <a href="#measured">alle Zahlen</a>.</span></p><details class="technical-detail" id="enforced"><summary>Prüfungen und ihre Quellen</summary><div class="detail-body">
       <div class="grid-12">
         <div class="col-4">
-          <p class="lede">Ein Teil des Schutzes läuft als Code, ein Teil besteht aus Anweisungen an den Agenten. Die Wirkung hängt vom Werkzeug und der Konfiguration ab.</p>
+          <p class="lede">Ein Teil des Schutzes läuft als Code, ein Teil besteht aus Anweisungen an den Agenten. Die Wirkung hängt vom Tool und der Konfiguration ab.</p>
         </div>
         <div class="col-8">
       <table class="table proof">
@@ -526,19 +555,19 @@ expires-at: 2027-01-12</code></pre></li>
         </thead>
         <tbody>
           <tr>
-            <td data-label="Behauptung">Der Workflow legt den Schreibbereich jedes Agenten vor dem Start fest.</td>
+            <td data-label="Behauptung">Der Ablauf legt den Schreibbereich jedes Agenten vor dem Start fest.</td>
             <td data-label="Quelle"><code>scripts/validate-wave-scope.mjs --assert-disjoint</code></td>
           </tr>
           <tr>
-            <td data-label="Behauptung">Mit aktivem Scope-Hook auf Claude Code, Cursor oder Pi blockiert strict unterstützte Änderungen außerhalb des Bereichs, warn meldet sie und off deaktiviert die Prüfung. Codex setzt die Schreibgrenze nicht durch.</td>
+            <td data-label="Behauptung">Mit aktivem Scope-Hook auf Claude Code, Cursor oder Pi blockiert strict unterstützte Änderungen außerhalb des Bereichs, warn meldet sie und off deaktiviert die Prüfung. Codex setzt die Schreibbereiche nicht durch.</td>
             <td data-label="Quelle"><code>hooks/enforce-scope.mjs</code></td>
           </tr>
           <tr>
             <td data-label="Behauptung">Mit aktivem Hook für zerstörerische Befehle wenden Claude Code und Codex 14 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken.</td>
-            <td data-label="Quelle"><code>.orchestrator/policy/blocked-commands.json</code>, 17 Regeln</td>
+            <td data-label="Quelle"><code>.orchestrator/policy/blocked-commands.json</code>, 18 Regeln</td>
           </tr>
           <tr>
-            <td data-label="Behauptung">Sub-Agenten sind angewiesen, Staging und Commits dem Koordinator zu überlassen. Das ist eine Ablaufregel.</td>
+            <td data-label="Behauptung">Sub-Agents sind angewiesen, Staging und Commits dem Koordinator zu überlassen. Das ist eine Ablaufregel.</td>
             <td data-label="Quelle"><code>.claude/rules/parallel-sessions.md</code>, PSA-007</td>
           </tr>
           <tr>
@@ -554,9 +583,9 @@ expires-at: 2027-01-12</code></pre></li>
       <ul class="stack">
         <li>Unabhängig und von der Community gepflegt. <b>Nicht verbunden mit Anthropic, OpenAI oder Cursor und von keiner dieser Firmen unterstützt.</b></li>
         <li>Ausgeliefert wie es ist, ohne zugesicherte Reaktionszeiten, Pflege nach bestem Bemühen.</li>
-        <li>Lokal per Default, ohne eigenes Konto. Optionale Nutzungsstatistik ist ausgeschaltet; die npm-Update-Abfrage lässt sich separat deaktivieren.</li>
+        <li>Standardmäßig lokal, ohne eigenes Konto. Optionale Nutzungsdaten sind ausgeschaltet; die npm-Update-Abfrage lässt sich separat deaktivieren.</li>
         <li>macOS und Linux werden in der CI geprüft. Native Windows-Nutzung ist ungetestet; Shell-Hooks und der optionale MCP-Server brauchen WSL oder Git Bash.</li>
-        <li>Die Durchsetzung auf Hook-Ebene ist nicht auf jeder Umgebung gleich. Die Liste unten ist der aktuelle Stand, keine Roadmap. Die konfigurierten Qualitätsprüfungen laufen auf allen vier Werkzeugen.</li>
+        <li>Die Durchsetzung auf Hook-Ebene ist nicht auf jeder Umgebung gleich. Die Liste unten ist der aktuelle Stand, keine Roadmap. Die konfigurierten Qualitätsprüfungen laufen auf allen vier Tools.</li>
       </ul>
 
       <table class="kv">
@@ -571,39 +600,39 @@ expires-at: 2027-01-12</code></pre></li>
     </div></details><details class="technical-detail" id="measured"><summary>Repository-Zahlen mit Zählbeleg</summary><div class="detail-body">
 
       <div class="cards">
-        <div class="card"><p class="n">v<span class="num" data-metric="version">5.17.0</span></p><p class="l">aktuelle Version</p></div>
+        <div class="card"><p class="n">v<span class="num" data-metric="version">5.18.0</span></p><p class="l">aktuelle Version</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="skills">52</span></p><p class="l">Skills</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="commands">31</span></p><p class="l">Slash-Befehle</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typisierte Sub-Agenten</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="hooks">30</span></p><p class="l">Hook-Dateien</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="tests">824</span></p><p class="l">Testdateien</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="sessions">296</span></p><p class="l">Session-Aufzeichnungen im Repository</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="learnings">46</span></p><p class="l">Learnings in diesem Repository</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3510</span></p><p class="l">npm-Downloads, letzte 30 Tage</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="github-stars">52</span></p><p class="l">GitHub-Sterne</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typisierte Sub-Agents</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="hooks">33</span></p><p class="l">Hook-Dateien</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="tests">861</span></p><p class="l">Testdateien</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="sessions">321</span></p><p class="l">Session-Aufzeichnungen im Repository</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="learnings">44</span></p><p class="l">Learnings in diesem Repository</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3027</span></p><p class="l">npm-Downloads, letzte 30 Tage</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="github-stars">53</span></p><p class="l">GitHub-Sterne</p></div>
       </div>
 
-      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-11-01</span> bei Commit <span class="num" data-metric="counted-sha">7763efae</span>. Repository-Aufzeichnungen beschreiben Entwicklungsaktivität, keine aktiven Nutzer. Es zählen nur Sessions, die tatsächlich gelaufen sind, nicht jede Zeile im Session-Log; die Zahl ist deshalb kleiner als auf älteren Fassungen dieser Seite. npm-Downloads enthalten auch automatische Abrufe. <a href="/_census.json">Zählbeleg ansehen</a>.</p>
+      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-11-10</span> bei Commit <span class="num" data-metric="counted-sha">0b894e12</span>. Repository-Aufzeichnungen beschreiben Entwicklungsaktivität, keine aktiven Nutzer. Es zählen nur Sessions, die tatsächlich gelaufen sind, nicht jede Zeile im Session-Log; die Zahl ist deshalb kleiner als auf älteren Fassungen dieser Seite. npm-Downloads enthalten auch automatische Abrufe. <a href="/_census.json">Zählbeleg ansehen</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
       <div class="faq-layout">
       <div class="faq-intro">
       <p class="eyebrow">Häufige Fragen</p>
       <h2>Fragen, die Leute stellen</h2>
-      <p>Die Einrichtung für jedes Werkzeug steht in der <a href="/guide" hreflang="en">Anleitung (Englisch)</a>.</p>
+      <p>Die Einrichtung für jedes Tool steht in der <a href="/guide" hreflang="en">Anleitung (Englisch)</a>.</p>
       </div>
       <div class="faq">
         <details class="faq-item">
-          <summary>Ist das selbst ein Werkzeug, das Code schreibt?</summary>
-          <p>Nein. Es ergänzt einen Ablauf zum Planen, Arbeiten und Prüfen der Ergebnisse. Den Code schreibt dein Code-Werkzeug. Welche Grenzen technisch durchgesetzt werden, hängt vom Werkzeug und der Konfiguration der Guards ab.</p>
+          <summary>Ist das selbst eine KI, die Code schreibt?</summary>
+          <p>Nein. Es ergänzt einen Ablauf zum Planen, Arbeiten und Prüfen der Ergebnisse. Den Code schreibt dein Coding-Tool. Welche Grenzen technisch durchgesetzt werden, hängt vom Tool und der Konfiguration der Guards ab.</p>
         </details>
         <details class="faq-item">
-          <summary>Mit welchen Werkzeugen läuft es?</summary>
-          <p>Claude Code führt die Guard-Hooks direkt aus. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex CLI bietet auswählbare Workflow-Skills und führt den Guard für zerstörerische Befehle als Bash-Hook aus, der blockiert; die Regeln für Schreibbereiche sind dort nur Anweisungen, weil Codex Dateien über apply_patch ändert und der Scope-Guard das nicht liest. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab.</p>
+          <summary>Mit welchen Tools läuft es?</summary>
+          <p>Claude Code führt die Guard-Hooks direkt aus. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex CLI bietet auswählbare Workflow-Skills und führt den Guard für zerstörerische Befehle als Bash-Hook aus, der blockiert; die Regeln für Schreibbereiche sind dort nur Anweisungen, weil Codex Dateien über apply_patch ändert und der Guard das nicht liest. Parallele Agents gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab.</p>
         </details>
         <details class="faq-item">
           <summary>Kann ein Team es nutzen?</summary>
-          <p>Ja. Jede Person installiert das Plugin in ihrem eigenen Code-Werkzeug. Die Session Config in CLAUDE.md und die Session-Einträge unter <code>.orchestrator/</code> liegen im Repository und werden committet. So liest die Session der nächsten Person, was die letzte hinterlassen hat. Commits landen auf dem Branch, auf dem du bist; <code>/close</code> pusht diesen Branch. Einen neuen Branch legt es nur an, wenn du ein Worktree-Angebot annimmst oder <code>/autopilot</code> startest.</p>
+          <p>Ja. Jede Person installiert das Plugin in ihrem eigenen Coding-Tool. Die Session Config in CLAUDE.md und die Session-Aufzeichnungen unter <code>.orchestrator/</code> liegen im Repository und werden committet. So liest die Session der nächsten Person, was die letzte hinterlassen hat. Commits landen auf dem Branch, auf dem du bist; <code>/close</code> pusht diesen Branch. Einen neuen Branch legt es nur an, wenn du ein Worktree-Angebot annimmst oder <code>/autopilot</code> startest.</p>
         </details>
         <details class="faq-item">
           <summary>Was passiert mit meiner vorhandenen CLAUDE.md?</summary>
@@ -615,11 +644,11 @@ expires-at: 2027-01-12</code></pre></li>
         </details>
         <details class="faq-item">
           <summary>Was ist der Unterschied zu Claude Code allein?</summary>
-          <p>Es ergänzt einen wiederholbaren Ablauf: Projekt lesen, Umfang abstimmen, die Arbeit in Schritte mit festgelegten Dateien teilen und die Ergebnisse dazwischen prüfen. Der Session-Eintrag hält Fortschritt und offene Arbeit für die nächste Session fest.</p>
+          <p>Es ergänzt einen wiederholbaren Ablauf: Projekt lesen, Umfang abstimmen, die Arbeit in Schritte mit festgelegten Dateien teilen und die Ergebnisse dazwischen prüfen. Die Session-Aufzeichnung hält Fortschritt und offene Arbeit für die nächste Session fest.</p>
         </details>
         <details class="faq-item">
           <summary>Schickt es Daten irgendwohin?</summary>
-          <p>Das Plugin läuft lokal ohne eigenes Konto. Optionale Nutzungsstatistik ist bis zu deiner Zustimmung ausgeschaltet. Beim Session-Start fragt es standardmäßig die npm-Registry nach Updates ab. Erfolgreiche Ergebnisse werden pro Repository 24 Stunden zwischengespeichert; schlägt die Anfrage oder das Speichern fehl, kann die nächste Session erneut anfragen. SO_DISABLE_UPDATE_CHECK=1 oder DO_NOT_TRACK=1 schaltet die Prüfung aus. Dein Code-Werkzeug und eingerichtete Dienste nutzen weiterhin ihre eigenen Netzwerkverbindungen. Diese Website nutzt cookiefreie Vercel Web Analytics, beschrieben in der Datenschutzerklärung.</p>
+          <p>Das Plugin läuft lokal ohne eigenes Konto. Optionale Nutzungsdaten sind bis zu deiner Zustimmung ausgeschaltet. Beim Session-Start fragt es standardmäßig die npm-Registry nach Updates ab. Erfolgreiche Ergebnisse werden pro Repository 24 Stunden zwischengespeichert; schlägt die Anfrage oder das Speichern fehl, kann die nächste Session erneut anfragen. SO_DISABLE_UPDATE_CHECK=1 oder DO_NOT_TRACK=1 schaltet die Prüfung aus. Dein Coding-Tool und eingerichtete Dienste nutzen weiterhin ihre eigenen Netzwerkverbindungen. Diese Website nutzt cookiefreie Vercel Web Analytics, beschrieben in der Datenschutzerklärung.</p>
         </details>
         <details class="faq-item">
           <summary>Läuft es unter Windows?</summary>
@@ -627,7 +656,7 @@ expires-at: 2027-01-12</code></pre></li>
         </details>
         <details class="faq-item">
           <summary>Was kostet es?</summary>
-          <p>Für das Plugin nichts. Es ist kostenlos und Open Source unter der MIT-Lizenz. Dein Code-Werkzeug zahlst du weiterhin, und eine Session mit mehreren Agents und Runden verbraucht mehr von seinem Kontingent oder seinen Tokens als ein einzelner Chat.</p>
+          <p>Für das Plugin nichts. Es ist kostenlos und Open Source unter der MIT-Lizenz. Dein Coding-Tool zahlst du weiterhin, und eine Session mit mehreren Agents und Runden verbraucht mehr von seinem Kontingent oder seinen Tokens als ein einzelner Chat.</p>
         </details>
         <details class="faq-item">
           <summary>Kann es mein Projekt kaputt machen?</summary>
@@ -645,6 +674,6 @@ expires-at: 2027-01-12</code></pre></li>
 <footer class="foot"><div class="wrap"><div class="footer-main"><a class="brand" href="/de">session-orchestrator</a><p>Ein Open-Source-Projekt von <a href="https://www.gotzendorfer.at/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">Bernhard Götzendorfer</a>.</p></div><div class="footer-links"><nav aria-label="Weitere Links"><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a href="https://www.npmjs.com/package/session-orchestrator">npm</a><a href="/guide" hreflang="en">Anleitung (Englisch)</a><a href="/lead" hreflang="en">Lead-Session</a><a href="/llms.txt">llms.txt</a><a href="/impressum">Impressum</a><a href="/datenschutz">Datenschutz</a></nav><a class="support-link" href="https://paypal.me/Kanevry">Hilft dir das? Ein Kaffee ist willkommen.</a></div></div></footer>
 <script src="/_vercel/insights/script.js" defer></script>
 <script src="/assets/ui.js?v=20260910" defer></script>
-<script type="module" src="/assets/how.js?v=20261023"></script>
+<script type="module" src="/assets/how.js?v=20261109"></script>
 </body>
 </html>

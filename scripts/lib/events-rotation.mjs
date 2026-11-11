@@ -246,7 +246,7 @@ export function maybeRotate({ logPath, maxSizeMb, maxBackups, enabled } = {}) {
     mkdirSync(archiveDir, { recursive: true });
     const destination = uniqueArchivePath(archiveDir, firstTs, lastTs);
 
-    renameSync(logPath, destination);
+    renameSync(logPath, destination); // direct-rename:ok rotation moves the live log into the archive, no tmp write
     archivedAs = destination;
 
     const pruned = pruneArchives(archiveDir, maxBackups, archivedAs);

@@ -27,6 +27,10 @@ const INTERFACE_KEYS = new Set([
   'privacyPolicyURL',
   'termsOfServiceUrl',
   'termsOfServiceURL',
+  // #1930: the OpenAI plugin directory asks for a support contact page
+  // (developers.openai.com/plugins/deploy/submission-errors, read 2026-11-03).
+  'supportUrl',
+  'supportURL',
   'defaultPrompt',
   'brandColor',
   'composerIcon',
@@ -42,6 +46,7 @@ const REQUIRED_CODEX_EVENTS = [
   'SubagentStart',
   'SubagentStop',
   'Stop',
+  'SessionEnd',
 ];
 
 /**
@@ -62,12 +67,19 @@ const REQUIRED_CODEX_EVENTS = [
  * so an event key outside this set is rejected, and rejecting one key rejects
  * the manifest that carries it.
  *
- * **`SessionEnd` and `Interrupt` are NOT in it.** They are not merely unwired
- * here: at 0.144.4 they do not exist, and adding either to hooks-codex.json
- * risks taking every already-working hook down with it. Newer Codex releases
- * (0.148+ async hooks, 0.150+ `Interrupt`) are documented-but-unverified on
- * this host — re-measure against the shipped binary before widening this set,
- * never against a changelog.
+ * **`SessionEnd` was NOT in it at 0.144.4, and `Interrupt` still is not in
+ * this set.** Re-measured 2026-11-02 on codex-cli 0.160.1: both exist now
+ * (the binary embeds `session-end.command.input` and `interrupt.command.{input,
+ * output}`, 12 events in all), and `SessionEnd` fires at the end of a
+ * `codex exec` run with `{session_id, transcript_path (null when ephemeral),
+ * cwd, hook_event_name, reason: "other"}` and no `source` key. `SessionEnd` is
+ * therefore wired since #1919, which raises the Codex minimum to **0.160**:
+ * 0.144.4 rejects the key (and with it the whole manifest), 0.160.1 fires it,
+ * and the first version in between that accepts it is UNMEASURED — the 0.160
+ * floor is the measured one, not a tight one. `Interrupt` stays out: it is
+ * unmeasured as a firing event and nothing here handles it. Async hooks
+ * (0.148+) are still unmeasured; re-measure against the shipped binary before
+ * widening this set, never against a changelog.
  */
 export const CODEX_NATIVE_EVENTS = new Set([
   'SessionStart',
@@ -80,10 +92,11 @@ export const CODEX_NATIVE_EVENTS = new Set([
   'SubagentStart',
   'SubagentStop',
   'Stop',
+  'SessionEnd',
 ]);
 
 /**
- * Claude hook events this repo wires that Codex 0.144.4 has no counterpart for.
+ * Claude hook events this repo wires that Codex (0.160 minimum) has no counterpart for.
  * DERIVED from {@link CODEX_NATIVE_EVENTS} rather than hand-listed, so a new
  * Claude event is forbidden on Codex by construction until someone measures it
  * into the native set above.
@@ -118,6 +131,13 @@ const FORBIDDEN_CODEX_EVENTS = new Set(
  * the Claude name at the hook boundary. These names are the MODEL-facing tool
  * vocabulary, not the hook `tool_name` values. Bash-gated handlers need no
  * map; the apply_patch -> Edit/Write side was not re-measured.
+ *
+ * #1913 (2026-11-01): the Edit/Write PreToolUse guards are reached on Codex
+ * through the adapter `hooks/codex-apply-patch-guard.mjs` (matcher
+ * `apply_patch`), which parses the patch and runs each guard as a child process
+ * on a synthesized Edit/Write payload per touched file. The `apply_patch`
+ * payload shape is derived from binary strings and a contributor report, not
+ * from a logged payload (see `scripts/lib/codex/apply-patch-parse.mjs`).
  */
 export const CODEX_TOOL_NAMES = Object.freeze([
   'shell',
@@ -130,9 +150,12 @@ export const CODEX_TOOL_NAMES = Object.freeze([
 
 /**
  * Hook handlers that read an Edit/Write `tool_input.file_path` payload. Codex
- * emits `apply_patch` payloads of a different shape, so wiring one of these into
- * hooks-codex.json produces a handler that silently never fires. Exported so the
- * contract test can assert the census rather than re-list it.
+ * emits `apply_patch` payloads of a different shape, so wiring one of these
+ * DIRECTLY into hooks-codex.json produces a handler that silently never fires.
+ * The PreToolUse ones (enforce-scope, config-protection) run on Codex through
+ * `hooks/codex-apply-patch-guard.mjs` instead (#1913); the PostToolUse ones have
+ * no adapter. Exported so the contract test can assert the census rather than
+ * re-list it.
  */
 export const DISALLOWED_EDIT_HANDLERS = [
   'enforce-scope.mjs',
@@ -335,6 +358,8 @@ function validateInterface(value, root, errors) {
     'privacyPolicyURL',
     'termsOfServiceUrl',
     'termsOfServiceURL',
+    'supportUrl',
+    'supportURL',
   ]) {
     if (value[key] !== undefined)
       validateHttpsUrl(value[key], `$.manifest.interface.${key}`, errors);
@@ -455,7 +480,7 @@ function validateHooksFile(value, root, expectedBaseVersion, errors) {
         errors,
         `$.hooksFile.hooks.${eventName}`,
         'unsupported-event',
-        `Claude-only event '${eventName}' is unsupported by Codex 0.144.4`,
+        `Claude-only event '${eventName}' is unsupported by Codex 0.160`,
       );
     } else if (!REQUIRED_CODEX_EVENTS.includes(eventName)) {
       addError(
@@ -611,7 +636,7 @@ function validateHandler(handler, path, eventName, root, expectedBaseVersion, er
       errors,
       `${path}.command`,
       'unsupported-edit-payload',
-      `${handlerRelativePath} does not support canonical Codex apply_patch payloads`,
+      `${handlerRelativePath} does not support canonical Codex apply_patch payloads; Edit/Write PreToolUse guards are reached through hooks/codex-apply-patch-guard.mjs (#1913)`,
     );
   }
 

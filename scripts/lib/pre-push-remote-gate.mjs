@@ -18,6 +18,11 @@ const log = (message) => process.stderr.write(`pre-push: ${message}\n`);
 // pushed SHA again and reject extra source files before invoking the real gate.
 // A nonce-bound receipt separates command failures from offload's overlapping
 // transport exit codes. No receipt is ever interpreted as a passing gate.
+// `node` in the result is the WRAPPER's Node version, carried into the Full Gate
+// receipt (#1897). Ceiling (BV-004): the gate is `npm run quality-gate` spawned
+// with the same env/PATH, so it resolves the same `node`; an npm script that
+// pinned another interpreter would be recorded under the wrong version.
+// REVISIT TRIGGER: a gate host whose npm runs scripts under a node other than PATH's.
 function remoteCommand(sha, nonce) {
   return `
     const { spawnSync } = require('node:child_process');
@@ -29,7 +34,7 @@ function remoteCommand(sha, nonce) {
             /^GIT_/.test(key) && !/^GIT_(AUTHOR_|COMMITTER_|EDITOR$|ASKPASS$|SSH$|SSH_COMMAND$|TERMINAL_PROMPT$|EXEC_PATH$)/.test(key)) delete env[key];
       }
     const git = (...args) => spawnSync('git', args, { env, encoding: 'utf8' });
-    let result = { nonce, sha, exit_code: 1, report: null };
+    let result = { nonce, sha, node: process.version, exit_code: 1, report: null };
     const checkout = git('checkout', '--quiet', '--detach', sha);
     const head = git('rev-parse', 'HEAD');
     const tracked = git('status', '--porcelain', '--untracked-files=no');
@@ -117,6 +122,40 @@ function cleanRerun(test) {
     new Set(files).size === files.length && failedFiles.every((f) => files.includes(f));
 }
 
+/** A `process.version` shape, the only remote Node version a receipt records. */
+const NODE_VERSION = /^v\d+\.\d+\.\d+$/;
+const TREE_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/**
+ * Record a verified green remote Full Gate as a receipt (#1897) in the store of
+ * `ledgerRoot` — the real checkout; `tree` is the hook's temp clone, deleted on
+ * exit. Keyed on `<sha>^{tree}`, never HEAD: offload adds a snapshot commit.
+ * The definition is resolved from the pushed tree's own runner with the REMOTE
+ * Node version, plus the any-node key and the `pushed-tree` provenance (the
+ * remote checked out exactly the SHA on a clean tracked tree) that the pre-push
+ * reader requires (ceilings C9, C12 in gate-receipt.mjs). Both modules load
+ * lazily, so the blocking verdict never
+ * depends on their import graph. `writeReceipt` refuses a non-receipt-worthy
+ * envelope itself. Never throws: a failed write costs a later re-run, nothing else.
+ *
+ * @returns {Promise<boolean>} whether a receipt was written
+ */
+async function recordRemoteReceipt({ tree, sha, ledgerRoot, node, report, alias }) {
+  try {
+    if (typeof node !== 'string' || !NODE_VERSION.test(node)) return false;
+    const rev = spawnSync('git', ['-C', tree, 'rev-parse', '--verify', '--quiet', `${sha}^{tree}`], { encoding: 'utf8' });
+    const treeHash = rev.status === 0 ? String(rev.stdout).trim() : '';
+    if (!TREE_ID.test(treeHash)) return false;
+    const { resolveDefinitionInputs } = await import('../run-quality-gate.mjs');
+    const { gateDefinition, gateDefinitionAnyNode, PUSHED_TREE_CONTEXT, writeReceipt } = await import('./gate-receipt.mjs');
+    const inputs = resolveDefinitionInputs({ repoRoot: tree, configJson: null, variant: 'full-gate', node });
+    return writeReceipt({ repoRoot: ledgerRoot, tree: treeHash, definition: gateDefinition(inputs),
+      definitionAnyNode: gateDefinitionAnyNode(inputs), context: PUSHED_TREE_CONTEXT, envelope: report, host: alias });
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Run the full quality gate for `sha` on a remote host via offload (the body of the
  * pre-push router, #1712). Exit-code contract of `code`: 0 verified, 1 blocked,
@@ -129,6 +168,9 @@ function cleanRerun(test) {
  * @param {NodeJS.ProcessEnv} [opts.env] source of the SO_GATE_HOSTS override
  * @param {boolean} [opts.emit=true] emit `orchestrator.quality_gate.*` — false for
  *   callers whose `sha` is not a pushed commit (snapshot probe)
+ * @param {boolean} [opts.recordReceipt=false] write a Full Gate receipt into `ledgerRoot`'s
+ *   store after a verified green run (#1897) — only the pre-push caller; the snapshot
+ *   probe's `sha` is no pushed commit and keeps the default
  * @param {string} [opts.jobPrefix='pre-push'] offload job name prefix
  * @param {(message: string) => void} [opts.log]
  * @param {{ write: (chunk: string) => unknown }} [opts.stdout=process.stdout] sink for the remote
@@ -136,7 +178,7 @@ function cleanRerun(test) {
  * @param {{ write: (chunk: string) => unknown }} [opts.stderr=process.stderr] sink for the remote run's stderr
  * @returns {Promise<{ code: number, passed: boolean, alias: string | null, report: object | null, hostSource: string }>}
  */
-export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, emit = true, jobPrefix = 'pre-push', log: logFn = log,
+export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, emit = true, recordReceipt = false, jobPrefix = 'pre-push', log: logFn = log,
   stdout = process.stdout, stderr = process.stderr }) {
   let hosts;
   let hostSource = 'config';
@@ -162,7 +204,12 @@ export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, 
     logFn(`checking remote readiness (${alias}).`);
     const doctor = spawnSync('offload', ['doctor', '-H', alias, '--brief', '--no-probe'],
       { encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024 });
-    if (doctor.error?.code === 'ENOENT') break;
+    if (doctor.error?.code === 'ENOENT') {
+      // Name why every remote route is gone before the fallback/blocked line below (#1743).
+      // Native Windows always lands here: offload is a bash script, Node starts no offload.exe.
+      logFn('offload cannot start (not on PATH; native Windows has no offload.exe) — no remote route.');
+      break;
+    }
     if (!gateReady(doctor)) {
       const token = gateReadyToken(doctor);
       logFn(`remote ${alias} not ready (exit ${doctor.status ?? doctor.error?.code}${token ? `, gate-ready=${token}` : ''}) — trying next route.`);
@@ -219,6 +266,7 @@ export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, 
         ...(rerunSkipped ? { rerun_skipped: rerunSkipped } : {}),
       }, { repoRoot: ledgerRoot });
     } catch { /* telemetry cannot change the blocking verdict */ }
+    if (passed && recordReceipt) await recordRemoteReceipt({ tree, sha, ledgerRoot, node: receipt.node, report, alias });
     logFn(`remote quality gate ${passed ? 'passed' : 'FAILED — Push blocked'} (${alias}).`);
     return { code: passed ? 0 : 1, passed, alias, report: report ?? null, hostSource };
   }
@@ -234,7 +282,7 @@ export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, 
 
 async function main() {
   const [tree, sha, ledgerRoot] = process.argv.slice(2);
-  const r = await runRemoteGate({ tree, sha, ledgerRoot });
+  const r = await runRemoteGate({ tree, sha, ledgerRoot, recordReceipt: true });
   return r.code;
 }
 

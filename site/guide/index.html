@@ -14,13 +14,13 @@
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Session Orchestrator: Plan, Go, Close with a robotics illustration.">
+<meta property="og:image:alt" content="Session Orchestrator: From your task to checked work. The commands /session, /go and /close beside an illustration of an agent workshop under human direction.">
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Guide: install session-orchestrator and run a session">
 <meta name="twitter:description" content="Install Session Orchestrator on Claude Code, Codex CLI, Cursor or Pi. Requirements, first-session commands, platform limits and troubleshooting.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
-<meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close with a robotics illustration.">
+<meta name="twitter:image:alt" content="Session Orchestrator: From your task to checked work. The commands /session, /go and /close beside an illustration of an agent workshop under human direction.">
 <link rel="icon" href="/favicon.svg">
 <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
 
@@ -95,7 +95,7 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261029">
+<link rel="stylesheet" href="/assets/site.css?v=20261107">
 <link rel="stylesheet" href="/assets/guide.css?v=20261026a">
 </head>
 <body class="guide-page">
@@ -103,7 +103,7 @@
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.17.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.18.0</span></span></a>
     <nav class="nav" aria-label="Main">
       <a href="/#how">How it works</a>
       <a href="/commands">Commands</a>
@@ -206,22 +206,33 @@
   <section class="sec tool-sec" id="codex" aria-labelledby="codex-h">
     <div class="wrap">
       <h2 id="codex-h">Codex CLI</h2>
-      <p class="lede">Everything works here, with one difference: the file list is an instruction. Codex edits files through <code>apply_patch</code>, which the file-scope guard does not read. The guard for dangerous commands blocks.</p>
+      <p class="lede">Everything works here, with one difference: the file list is an instruction. Codex edits files through <code>apply_patch</code>, which the file-scope guard does not read. The destructive-command guard blocks.</p>
       <ol class="steps">
         <li>
           <h3>You need <span class="where">Terminal</span></h3>
-          <p>Node.js 24 or later, a Git repository and Codex CLI 0.144.4 or later.</p>
+          <p>Node.js 24 or later, a Git repository and Codex CLI 0.160 or later (check with <code>codex --version</code>).</p>
         </li>
         <li>
           <h3>Install <span class="where">Terminal</span></h3>
-          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Copy</button></p>
-          <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Copy</button></p>
-          <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Copy</button></p>
-          <p>Then start a fresh Codex task and review the plugin hooks once with <code>/hooks</code>.</p>
+          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator">Copy</button></p>
+          <p class="cmd"><code>cd ~/Projects/session-orchestrator &amp;&amp; npm install &amp;&amp; node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="cd ~/Projects/session-orchestrator &amp;&amp; npm install &amp;&amp; node scripts/codex-install.mjs">Copy</button></p>
+          <p>Keep the clone in <code>~/Projects/session-orchestrator</code>. To update later, run <code>git pull &amp;&amp; npm install &amp;&amp; node scripts/codex-install.mjs</code> there, then start a fresh task.</p>
+          <p>What the installer changes:</p>
+          <ul>
+            <li><b>For your user, in every project:</b> a packed copy of the plugin in <code>~/.cache/session-orchestrator/plugin-package/</code>, added to Codex as <code>session-orchestrator@kanevry</code>. Codex copies it into its plugin cache under <code>~/.codex/plugins/cache/</code>.</li>
+            <li><b>Removed:</b> an older <code>session-orchestrator@local</code> or <code>session-orchestrator@openai-curated</code> install, if you have one.</li>
+            <li><b>Not touched:</b> your projects, and the approval of the hooks.</li>
+          </ul>
         </li>
         <li>
-          <h3>Set up once <span class="where">Chat in your coding tool</span></h3>
-          <p class="cmd"><code>$session-orchestrator:bootstrap</code><button class="copy" type="button" data-copy="$session-orchestrator:bootstrap">Copy</button></p>
+          <h3>Approve the hooks <span class="where">Chat in your coding tool</span></h3>
+          <p>Start a fresh Codex task, or restart Codex. Type <code>/hooks</code>, read the Session Orchestrator hooks and approve them. The installer never does this for you.</p>
+          <p>Until you approve them, the hooks do not run, so no Session Orchestrator guard blocks a destructive command. If the hooks seem silent later, open <code>/hooks</code> again and check that they are approved.</p>
+        </li>
+        <li>
+          <h3>Set up once per project <span class="where">Chat in your coding tool</span></h3>
+          <p class="cmd"><code>$session-orchestrator:bootstrap --fast --no-interview</code><button class="copy" type="button" data-copy="$session-orchestrator:bootstrap --fast --no-interview">Copy</button></p>
+          <p>Run it in the Codex chat inside your project. It writes <code>.orchestrator/</code> and a <code>## Session Config</code> block in <code>AGENTS.md</code>. It may still ask for the setup tier and the project type; then answer those two questions. To choose every setting yourself, run <code>$session-orchestrator:bootstrap</code> and answer the interview.</p>
         </li>
         <li>
           <h3>Your first session <span class="where">Chat in your coding tool</span></h3>
@@ -337,7 +348,7 @@
         <div>
           <p>macOS and Linux are covered by CI. Native Windows is untested; the shell hooks and the optional MCP server need WSL or Git Bash. Some optional workflows (the plugin validator, some wave-scope snippets, the MCP server) also need <code>jq</code>.</p>
           <p>Your settings live in the project&rsquo;s instruction file: <code>CLAUDE.md</code> on Claude Code and Cursor, <code>AGENTS.md</code> on Codex CLI and Pi. The contents are the same.</p>
-          <p>Each tool keeps its own session notes (<code>STATE.md</code> in <code>.claude/</code>, <code>.codex/</code>, <code>.cursor/</code> or <code>.pi/</code>). Session records and lessons in <code>.orchestrator/metrics/</code> are shared, and so are the issues. Switching tools keeps your history.</p>
+          <p>Each tool keeps its own session state (<code>STATE.md</code> in <code>.claude/</code>, <code>.codex/</code>, <code>.cursor/</code> or <code>.pi/</code>). Session records and lessons in <code>.orchestrator/metrics/</code> are shared, and so are the issues. Switching tools keeps your history.</p>
         </div>
       </details>
 
@@ -365,7 +376,7 @@ enforcement: warn</pre>
       <details class="technical-detail" id="guards">
         <summary><h3>What the guards block, and where they stop</h3></summary>
         <div>
-          <p>The guard for dangerous commands follows <code>.orchestrator/policy/blocked-commands.json</code>: 14 blocking and 4 warning rules. It blocks hard resets, discarding checkouts, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code> and deleting the session records. It warns on soft resets, stash and <code>git push --force-with-lease</code>.</p>
+          <p>The destructive-command guard follows <code>.orchestrator/policy/blocked-commands.json</code>: 14 blocking and 4 warning rules. It blocks hard resets, discarding checkouts, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code> and deleting the session records. It warns on soft resets, stash and <code>git push --force-with-lease</code>.</p>
           <table class="table">
             <caption class="sr">Guard behaviour per coding tool</caption>
             <thead>
@@ -387,7 +398,7 @@ enforcement: warn</pre>
         <div>
           <p>Read the reason in the message first. Most blocks protect work you did not create.</p>
           <p>If you really mean it, set <code>allow-destructive-ops: true</code> in the Session Config for that maintenance and remove it afterwards. Left in place, it turns the guard off for every later session.</p>
-          <p>If a legitimate edit is blocked by the file list, check the plan and the other agents&rsquo; files before you add the path. <code>enforcement: off</code> turns off the file-list check only, not the guard for dangerous commands.</p>
+          <p>If a legitimate edit is blocked by the file list, check the plan and the other agents&rsquo; files before you add the path. <code>enforcement: off</code> turns off the file-scope and blocked-command checks, not the destructive-command guard.</p>
         </div>
       </details>
 
@@ -414,7 +425,7 @@ enforcement: warn</pre>
               <tr><th scope="col">Resource</th><th scope="col">What it covers</th></tr>
             </thead>
             <tbody>
-              <tr><td><a href="https://github.com/Kanevry/session-orchestrator#readme">README</a></td><td>Install, architecture, components</td></tr>
+              <tr><td><a href="https://github.com/Kanevry/session-orchestrator#readme">README</a></td><td>Install, how it works, first session</td></tr>
               <tr><td><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/codex-setup.md">Codex CLI setup</a></td><td>Refresh, limits, hooks</td></tr>
               <tr><td><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/cursor-setup.md">Cursor IDE setup</a></td><td>Bridge and limits</td></tr>
               <tr><td><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/pi-setup.md">Pi setup</a></td><td>Install forms and limits</td></tr>

@@ -52,7 +52,7 @@
 import { readFileSync, writeFileSync, existsSync, statSync, lstatSync, mkdirSync, readdirSync, rmSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { isUserInvocableSkill } from './lib/user-invocable-skills.mjs';
 import { listCommandFiles, listSkillDirs } from './lib/plugin-surface.mjs';
 import { execFileSync } from './lib/native-command.mjs';
@@ -168,7 +168,7 @@ export function toPortableFrontmatter(source, skillName) {
  * @returns {string}
  */
 export function renderMirror(skillName, portableFm, canonical = `skills/${skillName}/SKILL.md`) {
-  const front = yaml.dump(portableFm, { lineWidth: -1, noRefs: true, quotingType: '"' });
+  const front = yaml.dump(portableFm, { lineWidth: -1, noRefs: true, quoteStyle: 'double' });
   const command = canonical.startsWith('commands/');
   const lines = [
     '---',

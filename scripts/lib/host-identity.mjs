@@ -29,17 +29,15 @@
  *   }
  */
 
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, chmod, unlink } from 'node:fs/promises';
 import {
   existsSync,
   readFileSync,
-  writeFileSync,
-  renameSync,
   chmodSync,
   mkdirSync,
-  unlinkSync,
 } from 'node:fs';
 import { digestSha256WithSalt } from './crypto-digest-utils.mjs';
+import { writeJsonAtomicSync, renameWithRetry, envelopeToError } from './io.mjs';
 import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
 import path from 'node:path';
 import os from 'node:os';
@@ -205,11 +203,15 @@ function _hostAliasesFile() {
 const HOST_ALIASES_MAX = 16;
 
 /**
- * Synchronous atomic JSON write with an explicit mode. The async twin
- * `_writeJsonAtomic` below cannot serve the alias ledger: every caller of
- * {@link recordHostAlias} sits on a SYNCHRONOUS lock path. `io.mjs`'s
- * `writeJsonAtomicSync` is not reused because it offers no mode argument, and
- * 0o600 is the whole point of a file that lives beside `host-private.json`.
+ * Synchronous atomic JSON write with an explicit mode, for the alias ledger:
+ * every caller of {@link recordHostAlias} sits on a SYNCHRONOUS lock path, so
+ * the async `_writeJsonAtomic` below cannot serve it. Delegates to `io.mjs`'s
+ * `writeJsonAtomicSync` (Windows rename retry + tmp cleanup, #1865), which
+ * takes the 0o600 `mode` at the tmp file's CREATE — never a chmod after the
+ * rename, so the ledger beside `host-private.json` is never briefly
+ * world-readable. The tmp sibling's name carries 48 random bits, so it cannot
+ * be pre-planted as a symlink (the hole the old predictable `tmp-<pid>-<ms>`
+ * name closed with `wx`). Throws on failure, as the private copy did.
  *
  * @param {string} filePath
  * @param {*} data
@@ -217,22 +219,13 @@ const HOST_ALIASES_MAX = 16;
  */
 function _writeJsonAtomicSync(filePath, data, mode) {
   // 0o700: the ledger lives in the private config dir, which must not come out
-  // 0777 under umask 000 (#1629).
+  // 0777 under umask 000 (#1629). The helper's own mkdir is then a no-op.
   mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    // `flag: 'wx'` + `mode` on the CREATE, never a chmod after the rename.
-    // Two distinct holes closed: `wx` fails with EEXIST rather than following a
-    // pre-planted symlink at the (predictable) tmp path, so an attacker cannot
-    // redirect the write; and the mode is applied at creation, so the file is
-    // never briefly world-readable between `writeFileSync` and `chmodSync` —
-    // the window in which the ledger beside `host-private.json` was readable.
-    writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode, flag: 'wx' });
-    renameSync(tmp, filePath);
-  } catch (err) {
-    try { unlinkSync(tmp); } catch { /* best effort */ }
-    throw err;
-  }
+  const res = writeJsonAtomicSync(filePath, data, {
+    tmpPrefix: `.${path.basename(filePath)}.tmp`,
+    mode,
+  });
+  if (!res.ok) throw envelopeToError(res);
   // Belt-and-braces for the pre-existing-target case: `rename` keeps the
   // SOURCE inode, so the mode above already governs — this only repairs a
   // umask-widened mode on platforms that ignore the create mode.
@@ -492,9 +485,15 @@ async function _writeJsonAtomic(filePath, data, { mode, dirMode } = {}) {
   await mkdir(path.dirname(filePath), dirMode === undefined ? { recursive: true } : { recursive: true, mode: dirMode });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   // mode at creation closes the 0666 window before the chmod below (#1632).
-  await writeFile(tmp, JSON.stringify(data, null, 2) + '\n', mode === undefined ? 'utf8' : { encoding: 'utf8', mode });
-  const { rename } = await import('node:fs/promises');
-  await rename(tmp, filePath);
+  // The tmp is staged here, not in `atomicWriteText`, because that helper takes
+  // no create mode; the rename goes through the shared win32 retry (#1865).
+  try {
+    await writeFile(tmp, JSON.stringify(data, null, 2) + '\n', mode === undefined ? 'utf8' : { encoding: 'utf8', mode });
+    await renameWithRetry(tmp, filePath);
+  } catch (err) {
+    try { await unlink(tmp); } catch { /* best effort: never mask err */ }
+    throw err;
+  }
   if (mode !== undefined) {
     try { await chmod(filePath, mode); } catch { /* best effort */ }
   }

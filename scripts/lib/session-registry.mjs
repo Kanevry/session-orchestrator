@@ -50,6 +50,7 @@ import { digestSha256 } from './crypto-digest-utils.mjs';
 import { appendFileSync, chmodSync, mkdirSync, realpathSync } from 'node:fs';
 
 import { utcTimestamp, appendJsonl } from './common.mjs';
+import { renameWithRetry } from './io.mjs';
 import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
 import { FUTURE_HEARTBEAT_TOLERANCE_MS } from './session-lock.mjs';
 
@@ -152,8 +153,16 @@ async function _writeJsonAtomic(filePath, data, { mode = 0o600 } = {}) {
   const tmp = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
   // A process that dies between writeFile and rename leaves this tmp file
   // behind permanently; sweepZombies' ORPHANED_TMP_RE branch removes it.
-  await fs.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode }); // no 0666 window (#1632)
-  await fs.rename(tmp, filePath);
+  // The tmp is staged here, not via atomicWriteText: that helper has no `mode`
+  // option and its tmp name would escape ORPHANED_TMP_RE. renameWithRetry adds
+  // the win32 retry (GH#79 / #1865); a failed write unlinks its own tmp.
+  try {
+    await fs.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode }); // no 0666 window (#1632)
+    await renameWithRetry(tmp, filePath);
+  } catch (err) {
+    try { await fs.unlink(tmp); } catch { /* never created, or already gone */ }
+    throw err;
+  }
   try { await fs.chmod(filePath, mode); } catch { /* best effort */ }
 }
 
@@ -364,14 +373,34 @@ export async function heartbeat(sessionId, patch = {}) {
   return updated;
 }
 
-/** Read every valid heartbeat entry (ignoring malformed files). */
-export async function readRegistry() {
+/**
+ * Read every valid heartbeat entry, failing loudly when the registry directory
+ * itself cannot be listed (#1941).
+ *
+ * Only ENOENT (the active dir was never created) is a measured "no entries"
+ * and yields `[]`; any other `readdir` failure (EACCES, ENOTDIR, EMFILE, …)
+ * is rethrown unchanged, so a caller that reports a count can tell "read,
+ * zero" from "not read".
+ *
+ * Ceiling (BV-004): an individual entry file that cannot be read or parsed is
+ * still skipped silently, exactly as in readRegistry(), so a corrupt or
+ * unreadable `<id>.json` undercounts without making the read fail. Entries are
+ * written via tmp+rename, so a half-written file is not the expected cause.
+ * Revisit-Trigger: a measured undercount traced to a skipped entry file, or a
+ * consumer that must report per-file read gaps — then return the skip count
+ * beside the entries instead of throwing on one bad file.
+ *
+ * @returns {Promise<object[]>} valid entries.
+ * @throws {NodeJS.ErrnoException} the original `readdir` error when its code is not ENOENT.
+ */
+export async function readRegistryStrict() {
   const dir = activeDir();
   let names;
   try {
     names = await fs.readdir(dir);
-  } catch {
-    return [];
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return [];
+    throw err;
   }
   const entries = [];
   for (const name of names) {
@@ -380,6 +409,21 @@ export async function readRegistry() {
     if (_validEntry(parsed)) entries.push(parsed);
   }
   return entries;
+}
+
+/**
+ * Read every valid heartbeat entry (ignoring malformed files). Fail-open: any
+ * failure to list the registry directory yields `[]`. Callers that must tell
+ * "read, zero entries" from "not read" use {@link readRegistryStrict}.
+ *
+ * @returns {Promise<object[]>}
+ */
+export async function readRegistry() {
+  try {
+    return await readRegistryStrict();
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -397,19 +441,60 @@ export async function readRegistry() {
  * @param {number} [opts.now]  ms-since-epoch (test seam)
  * @returns {boolean}
  */
-export function isRegistryEntryFresh(entry, { freshnessMin = 15, now = Date.now() } = {}) {
+export function isRegistryEntryFresh(entry, { freshnessMin = REGISTRY_FRESHNESS_MIN, now = Date.now() } = {}) {
   if (!_validEntry(entry)) return false;
   return _ageMinutes(entry.last_heartbeat, now) <= freshnessMin;
+}
+
+/**
+ * Default registry freshness window in minutes — the one threshold
+ * {@link isRegistryEntryFresh}, {@link detectPeers} and
+ * {@link registryEntryLiveness} share. Exported so a consumer that renders a
+ * liveness verdict never invents a second threshold (#1850).
+ */
+export const REGISTRY_FRESHNESS_MIN = 15;
+
+/**
+ * Three-state liveness of a registry entry, judged on its heartbeat with the
+ * SAME rule as {@link isRegistryEntryFresh} (#1850):
+ *   - `live`    — heartbeat within `freshnessMin` minutes;
+ *   - `stale`   — heartbeat measurable and older than that;
+ *   - `unknown` — no valid entry, or a heartbeat that measures nothing
+ *                 (unparseable, or stamped beyond the future tolerance).
+ * `unknown` is never folded into `stale`: a missing measurement is not a
+ * verdict that the session ended.
+ *
+ * @param {object|null|undefined} entry
+ * @param {{freshnessMin?:number, now?:number}} [opts]
+ * @returns {{state:'live'|'stale'|'unknown', ageMin:number|null}}
+ */
+export function registryEntryLiveness(entry, { freshnessMin = REGISTRY_FRESHNESS_MIN, now = Date.now() } = {}) {
+  if (!_validEntry(entry)) return { state: 'unknown', ageMin: null };
+  const ageMin = _ageMinutes(entry.last_heartbeat, now);
+  if (!Number.isFinite(ageMin)) return { state: 'unknown', ageMin: null };
+  return { state: ageMin <= freshnessMin ? 'live' : 'stale', ageMin };
 }
 
 /**
  * Live peers on this host — excludes self and entries whose last_heartbeat is
  * older than `freshnessMin` minutes. Stale entries remain on disk (sweep is
  * the only thing that removes them).
+ *
+ * Fail-open by default: an unlistable registry yields `[]`, which suits a
+ * caller that only needs a peer LIST. A caller that turns the result into a
+ * COUNT passes `strict: true` (#1946): the read then goes through
+ * {@link readRegistryStrict} and rejects on any readdir failure except ENOENT,
+ * so "not read" never reaches an event as a measured 0.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.sessionId]  Own session id, excluded.
+ * @param {number} [opts.freshnessMin=15]
+ * @param {boolean} [opts.strict=false]  Reject instead of returning `[]` when the registry cannot be listed.
+ * @returns {Promise<object[]>}
  */
-export async function detectPeers({ sessionId, freshnessMin = 15 } = {}) {
+export async function detectPeers({ sessionId, freshnessMin = REGISTRY_FRESHNESS_MIN, strict = false } = {}) {
   const now = Date.now();
-  const all = await readRegistry();
+  const all = strict ? await readRegistryStrict() : await readRegistry();
   return all.filter((e) => {
     if (sessionId && e.session_id === sessionId) return false;
     return _ageMinutes(e.last_heartbeat, now) <= freshnessMin;
@@ -484,6 +569,8 @@ export async function sweepZombies({ thresholdMin = 60, now = Date.now() } = {})
           await appendJsonl(sweepLogPath(), {
             timestamp: new Date(now).toISOString(),
             session_id: parsed?.session_id ?? null,
+            // lead report 2026-11-10: preserve the registration's hardware class for detection.
+            host_class: parsed?.host_class ?? null,
             file: name,
             age_minutes: Number.isFinite(age) ? Math.round(age) : null,
             reason: orphanedTmp ? 'orphaned-tmp' : valid ? 'stale-heartbeat' : 'malformed-entry',

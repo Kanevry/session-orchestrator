@@ -31,8 +31,8 @@
       "pattern": "git checkout --",
       "severity": "block",
       "allow-override-flag": null,
-      "sources": ["PSA-003", "#155"],
-      "rationale": "Discards uncommitted file changes that another session may be actively building. Blocked per PSA-003 to protect in-progress work."
+      "sources": ["PSA-003", "#155", "#1834", "ADR-0017"],
+      "rationale": "Discards uncommitted file changes that another session may be actively building (PSA-003). Since #1834 the guard measures every path reset read-only (git status --porcelain=v1 -z -- <path>): git checkout [HEAD] -- <path> and git restore [--staged] <path> without a foreign --source are denied when a path carries uncommitted changes or cannot be measured, allowed with a notice when clean; git checkout <other ref> -- <path>, --ours/--theirs/-m and git restore --source=<ref> only warn (HR-101: 175 replay hits in 30 days). ADR-0017 § Path reset."
     },
     {
       "id": "git-clean-force",

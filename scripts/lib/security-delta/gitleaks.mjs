@@ -88,7 +88,10 @@ export function buildGitleaksArgs(version, { repoRoot, range, reportPath, config
     version[0] > GIT_SUBCOMMAND_SINCE[0] ||
     (version[0] === GIT_SUBCOMMAND_SINCE[0] && version[1] >= GIT_SUBCOMMAND_SINCE[1]);
   const common = [
-    `--log-opts=${range}`,
+    // `-m`: without it `git log -p` prints no diff for merge commits, so a
+    // secret born in a merge itself is never scanned (#1967, gitleaks 8.30.1:
+    // 0 findings without, 4 with, `git` and `detect` forms alike).
+    `--log-opts=-m ${range}`,
     '--redact=100',
     '--report-format',
     'json',

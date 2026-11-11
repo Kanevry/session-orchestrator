@@ -64,6 +64,8 @@ This runs BEFORE the local session-lock acquire in Phase 1.2 — the preamble's 
 - `PROMOTION_OFFER` with user picking "Manuell — in-place daneben" → append Deviation, continue to Phase 1
 - `PROMOTION_OFFER` with user picking "Abbrechen" → exit cleanly
 
+**Native liveness overlay (#1052 A3b).** The SessionStart peer banner carries the registry view (repo, branch, mode, wave) and says liveness is not available in the hook. On Claude Code, call `ListAgents` once here and lay its `busy`/`idle` state over the banner's peer lines, naming which peers `SendMessage` reaches. Join rule, degradation and wording: `skills/_shared/parallel-aware-preamble.md` § Native Liveness Overlay. Display only, never a gate (CSM-004).
+
 **Implementation reference:** `skills/_shared/parallel-aware-preamble.md § Implementation`.
 **AUQ reference:** `skills/_shared/parallel-aware-auq.md`.
 
@@ -127,8 +129,17 @@ try {
 Run these checks as ONE parallel Bash block — background the independent git ops with `&` and `wait`:
 
 ```bash
-# Refresh remote-tracking refs BEFORE reading them. Without this, `origin/main`
-# is a snapshot from the last fetch or clone, and every ahead/behind derivation
+# The canonical line is the upstream `main` is configured to track, not a
+# remote that happens to be called `origin` (#1846): a clone can carry the
+# curated public snapshot as `origin` and the canonical GitLab remote under
+# another name, with `main` tracking that one. `main@{upstream}` keeps a remote
+# name containing `/` intact; without a configured upstream (or without a local
+# `main`) it falls back to `origin/main`, the previous behaviour.
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name 'main@{upstream}' 2>/dev/null) || UPSTREAM=origin/main
+UPSTREAM_REMOTE=$(git config branch.main.remote 2>/dev/null) || UPSTREAM_REMOTE=origin
+
+# Refresh remote-tracking refs BEFORE reading them. Without this, the upstream
+# ref is a snapshot from the last fetch or clone, and every ahead/behind derivation
 # below silently compares against stale data — a repo can read "in sync" while
 # the real remote is many commits ahead. Best-effort and non-blocking: connect
 # timeouts are bounded (no `timeout(1)` — it is absent on macOS by default) and
@@ -136,16 +147,16 @@ Run these checks as ONE parallel Bash block — background the independent git o
 # leaving the previous behaviour of reading whatever refs are on disk.
 GIT_SSH_COMMAND='ssh -o ConnectTimeout=5 -o BatchMode=yes' \
   git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=5 \
-  fetch --quiet --prune 2>/dev/null || true
+  fetch --quiet --prune "$UPSTREAM_REMOTE" 2>/dev/null || true
 
 # Independent ops — launch in parallel, collect output via tmpfiles
 git branch -a > /tmp/so-branches.$$ &
 git log --oneline -N > /tmp/so-commits.$$ &        # N from Session Config `recent-commits` (default 20)
 git status --short > /tmp/so-status.$$ &
 # `--left-right --count A...B` emits "<behind>\t<ahead>": commits reachable only
-# from origin/main, then only from HEAD. The older `git log origin/main..HEAD`
+# from the upstream, then only from HEAD. The older `git log origin/main..HEAD`
 # form could express ahead ONLY, so "behind" was structurally unreportable.
-git rev-list --left-right --count origin/main...HEAD > /tmp/so-divergence.$$ 2>/dev/null &
+git rev-list --left-right --count "$UPSTREAM...HEAD" > /tmp/so-divergence.$$ 2>/dev/null &
 wait
 # Then read the 4 tmpfiles in a single step and derive: branch state, recent commits,
 # unpushed/uncommitted, open branches. Clean up tmpfiles once derivations are done:
@@ -154,7 +165,7 @@ rm -f /tmp/so-branches.$$ /tmp/so-commits.$$ /tmp/so-status.$$ /tmp/so-divergenc
 
 Checks to run (derived from the collected output):
 
-1. **Branch state**: current branch (from `branch -a`), ahead/behind origin (from the `divergence` tmpfile — field 1 is behind, field 2 is ahead). Report BOTH directions. A non-zero behind count means the local branch is missing remote work: surface it, because agents reading repo instructions from a stale checkout will follow superseded guidance. An empty `divergence` tmpfile means no `origin/main` ref resolved (no remote, or a differently-named default branch) — report that as unknown, never as zero.
+1. **Branch state**: current branch (from `branch -a`), ahead/behind the upstream (from the `divergence` tmpfile — field 1 is behind, field 2 is ahead; name the `$UPSTREAM` you compared against, e.g. `gitlab/main`). Report BOTH directions. A non-zero behind count means the local branch is missing remote work: surface it, because agents reading repo instructions from a stale checkout will follow superseded guidance. An empty `divergence` tmpfile means no upstream ref resolved (no remote, or a differently-named default branch) — report that as unknown, never as zero.
 2. **Recent commits**: parse `commits` tmpfile — identify last session's work by commit patterns
 3. **Unpushed/uncommitted**: `status` tmpfile + the ahead field of the `divergence` tmpfile combined
 4. **Open branches**: parse `branch -a` tmpfile, identify which are mergeable to develop/main
@@ -238,8 +249,10 @@ Reads `.orchestrator/host.json` and runs a live resource snapshot via `resource-
 
 ## Phase 5: Cross-Repo Status (if configured)
 
-For each repo in `cross-repos`:
-1. `cd ~/Projects/<repo> && git log --oneline -5 && git status --short`
+**Resolving a `cross-repos` entry.** An entry that starts with `/` or `~/`, or is an absolute Windows path such as `C:\…`, is a path and is used as written (a leading `~` expands to the home directory). Any other entry is a bare repository name and resolves to `~/Projects/<name>`. A resolved folder that does not exist is a hint, never an error: print `cross-repos: <entry> — no folder at <resolved path>, skipped` and continue with the remaining entries, never abort and never search a parent directory.
+
+For each entry in `cross-repos` (resolved by `resolveCrossRepoEntry()` in `scripts/lib/config/cross-repo.mjs`):
+1. `cd <resolved path> && git log --oneline -5 && git status --short` — on a missing folder print the rule's hint and continue with the next entry
 2. Check for open issues that reference this repo
 3. Note any branches that should be merged
 

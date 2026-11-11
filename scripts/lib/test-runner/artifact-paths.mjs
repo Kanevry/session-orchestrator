@@ -2,6 +2,8 @@
  * test-runner/artifact-paths.mjs — Pure path builders for test-run artifacts.
  *
  * All functions are side-effect free. Callers are responsible for mkdir.
+ * The builders return repo-relative paths, joined with `/` on every host
+ * (#1742); Node's fs accepts `/` on Windows too.
  *
  * Exports:
  *   RUN_ID_PATTERN               → RegExp  accepted run-id shape
@@ -64,7 +66,7 @@ export function makeRunId() {
  */
 export function runDirPath(runId) {
   // ledger-root: per-run artifact dir of this working tree, kept local
-  return path.join(TEST_RUNS_REL, assertRunId(runId));
+  return path.posix.join(TEST_RUNS_REL, assertRunId(runId));
 }
 
 /**
@@ -73,7 +75,7 @@ export function runDirPath(runId) {
  * @returns {string}
  */
 export function findingsPath(runId) {
-  return path.join(runDirPath(runId), 'findings.jsonl');
+  return path.posix.join(runDirPath(runId), 'findings.jsonl');
 }
 
 /**
@@ -82,7 +84,7 @@ export function findingsPath(runId) {
  * @returns {string}
  */
 export function reportPath(runId) {
-  return path.join(runDirPath(runId), 'report.md');
+  return path.posix.join(runDirPath(runId), 'report.md');
 }
 
 /**
@@ -91,7 +93,7 @@ export function reportPath(runId) {
  * @returns {string}
  */
 export function screenshotsDir(runId) {
-  return path.join(runDirPath(runId), 'screenshots');
+  return path.posix.join(runDirPath(runId), 'screenshots');
 }
 
 /**
@@ -100,7 +102,7 @@ export function screenshotsDir(runId) {
  * @returns {string}
  */
 export function axSnapshotsDir(runId) {
-  return path.join(runDirPath(runId), 'ax-snapshots');
+  return path.posix.join(runDirPath(runId), 'ax-snapshots');
 }
 
 /**
@@ -109,7 +111,7 @@ export function axSnapshotsDir(runId) {
  * @returns {string}
  */
 export function consoleLogPath(runId) {
-  return path.join(runDirPath(runId), 'console.log');
+  return path.posix.join(runDirPath(runId), 'console.log');
 }
 
 /**

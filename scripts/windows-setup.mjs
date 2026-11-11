@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /** Opt-in native MCP configuration for an installed Windows plugin. */
-import { copyFileSync, existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { envelopeToError, writeJsonAtomicSync } from './lib/io.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
 export function configureNativeMcp(pluginRoot, { node = process.execPath, platform = process.platform } = {}) {
@@ -28,9 +29,10 @@ export function configureNativeMcp(pluginRoot, { node = process.execPath, platfo
   if (existsSync(backup)) throw new Error(`Backup already exists: ${backup}; inspect it before reconfiguring.`);
   config.mcpServers['session-orchestrator'] = { ...current, command: node, args: [server] };
   copyFileSync(file, backup);
-  const temporary = `${file}.windows-setup-${process.pid}`;
-  writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, { flag: 'wx' });
-  renameSync(temporary, file);
+  // Shared writer: the win32 rename retry matters here most — an open editor or
+  // a running MCP host holding .mcp.json made a bare renameSync fail (#1865).
+  const written = writeJsonAtomicSync(file, config, { tmpPrefix: '.mcp.json.windows-setup' });
+  if (!written.ok) throw envelopeToError(written);
   return { changed: true, file, backup };
 }
 

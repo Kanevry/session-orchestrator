@@ -10,11 +10,12 @@
  * writers serialise mechanically rather than relying on PSA-004 discipline.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
-import { dirname, resolve as resolvePath } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, resolve as resolvePath } from 'node:path';
 import { parseStateMd, serializeStateMd } from './yaml-parser.mjs';
 import { withStateMdLock } from '../session-lock.mjs';
 import { resolveStateDir } from '../platform.mjs';
+import { atomicWriteWithBackup, envelopeToError } from '../io.mjs';
 // Hook-closure note: own-session.mjs imports only node:* and the import-free
 // session-lock-shape.mjs, both already in the hook import set.
 import { readProcessLocalSessionIds } from '../session-identity/own-session.mjs';
@@ -427,14 +428,10 @@ export function evaluateFrontmatterSafe(after) {
  * @param {string} contents
  */
 function writeFileAtomic(filePath, contents) {
-  const dir = dirname(filePath);
-  mkdirSync(dir, { recursive: true });
-  // Sibling tmp name uses high-entropy suffix to avoid collisions across
-  // concurrent attempts. Tmp + rename is atomic on the same filesystem (POSIX).
-  const tmpSuffix = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-  const tmpFile = `${filePath}.tmp.${tmpSuffix}`;
-  writeFileSync(tmpFile, contents, { encoding: 'utf8' });
-  renameSync(tmpFile, filePath);
+  // Shared writer (#1865): sibling `<name>.tmp.<12 hex>`, win32 rename retry,
+  // tmp cleanup on failure. Throws like the old inline version did.
+  const res = atomicWriteWithBackup(filePath, contents, { tmpPrefix: `${basename(filePath)}.tmp` });
+  if (!res.ok) throw envelopeToError(res);
 }
 
 /**

@@ -291,19 +291,24 @@ export function scoreVerificationEvidence(ctx) {
   }
 
   const failing = gates.filter(isFailedGateEvent);
+  // A receipt reuse (#1897) is a gate event that ran nothing; it counts, but the
+  // evidence says so. Appended only when present (R = 0 → byte-identical), and
+  // never between `in window` and `, all exit_code=0` (EVIDENCE_PATTERNS.gateAllGreen).
+  const reused = gates.filter((e) => isPlainObject(e.reused_from)).length;
+  const reusedNote = reused > 0 ? ` ${reused} of them reused a receipt (reused_from), not run.` : '';
   if (failing.length === 0) {
     return {
       id,
       method,
       status: 'pass',
-      evidence: `attribution: time-window. ${gates.length} quality_gate event(s) in window, all exit_code=0, none timed_out or recorded failed.`,
+      evidence: `attribution: time-window. ${gates.length} quality_gate event(s) in window, all exit_code=0, none timed_out or recorded failed.${reusedNote}`,
     };
   }
   return {
     id,
     method,
     status: 'fail',
-    evidence: `attribution: time-window. ${gates.length} quality_gate event(s) in window; ${failing.length} failed (non-zero exit_code, timed_out or quality_gate.failed).`,
+    evidence: `attribution: time-window. ${gates.length} quality_gate event(s) in window; ${failing.length} failed (non-zero exit_code, timed_out or quality_gate.failed).${reusedNote}`,
   };
 }
 
@@ -419,11 +424,14 @@ export function scoreGateHealth(ctx) {
   // A failed run that still exited 0 (killed, or recorded `.failed`) carries a
   // marker, so the judge's `last_full_gate_exit=0` is not read as a green finish.
   const flag = lastFailed && last.exit_code === 0 ? ', last failed-flag=true' : '';
+  // Receipt reuses (#1897) ran nothing; named, never counted as a `key=N` token.
+  const reused = fullGates.filter((e) => isPlainObject(e.reused_from)).length;
+  const reusedNote = reused > 0 ? `, ${reused} reused a receipt` : '';
   return {
     id,
     method,
     status: lastFailed ? 'fail' : 'pass',
-    evidence: `attribution: time-window. ${fullGates.length} full-gate event(s) in window; last exit_code=${last.exit_code}${flag}.`,
+    evidence: `attribution: time-window. ${fullGates.length} full-gate event(s) in window; last exit_code=${last.exit_code}${flag}${reusedNote}.`,
   };
 }
 

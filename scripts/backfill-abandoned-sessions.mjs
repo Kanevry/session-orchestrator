@@ -42,6 +42,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { backfillAbandonedSession, isUuid } from './lib/session-close-backfill.mjs';
+import { BACKFILL_COMPLETED_EVENT, NO_RUN_ACTION } from './lib/session-schema/work-evidence.mjs';
 import { SCAN_CHUNK_BYTES, emitEvent, eventsFilePath, listEventSourcesNewestFirst, tombstoneGap } from './lib/events.mjs';
 import { ARCHIVE_DIR_NAME } from './lib/events-schema.mjs';
 import { getProjectDir, resolveEventsLedgerRoot } from './lib/platform.mjs';
@@ -156,7 +157,8 @@ function readJsonl(filePath) {
  *
  * @param {{ repoRoot: string, runningIds?: Iterable<string> }} args
  *   `runningIds` — extra ids known to be running, excluded by raw OR semantic id.
- * @returns {Array<{ sessionId: string, semanticSessionId: string|null }>}
+ * @returns {Array<{ sessionId: string, semanticSessionId: string|null, noRun?: true }>}
+ *   `noRun` — an earlier backfill emitted `skipped-no-run` for this raw id (#1975).
  */
 export function planSessions({ repoRoot, runningIds = [] }) {
   return planWithGaps({ repoRoot, runningIds }).plan;
@@ -190,6 +192,12 @@ function planWithGaps({ repoRoot, runningIds: extraRunningIds = [] }) {
   const semanticFromLock = new Map();
   const semanticFromEnded = new Map();
   const seen = new Set();
+  // #1975: raw ids an earlier backfill already judged no-run (the SessionEnd
+  // hook or a previous run of this path emitted the outcome). Without this
+  // mark every no-run session stays a candidate forever and spends the
+  // SessionStart limit on the same verdict again.
+  // A later `session.started` of the same raw id clears the mark (below).
+  const noRunIds = new Set();
   /** Distinct `session.started` ids in FIRST-SEEN (chronological) order. */
   const startedIds = [];
 
@@ -215,7 +223,15 @@ function planWithGaps({ repoRoot, runningIds: extraRunningIds = [] }) {
           semanticFromEnded.set(ev.session_id, ev.semantic_session_id);
         }
       }
+      if (ev.event === BACKFILL_COMPLETED_EVENT && ev.action === NO_RUN_ACTION && typeof ev.session_id === 'string') {
+        noRunIds.add(ev.session_id);
+      }
       if (ev.event !== SESSION_STARTED || typeof ev.session_id !== 'string') return;
+      // A start AFTER the verdict (`claude --resume` re-uses the raw id) opens
+      // work the verdict never saw: the session is a candidate again (#926 —
+      // the crash case this path exists for). Before the `seen` check, since
+      // the resumed id was seen at its first start.
+      noRunIds.delete(ev.session_id);
       if (seen.has(ev.session_id)) return;
       seen.add(ev.session_id);
       startedIds.push(ev.session_id);
@@ -243,7 +259,7 @@ function planWithGaps({ repoRoot, runningIds: extraRunningIds = [] }) {
     const semanticSessionId = semanticByUuid.get(sessionId) ?? null;
     if (runningIds.has(sessionId)
       || (semanticSessionId !== null && runningIds.has(semanticSessionId))) continue;
-    plan.push({ sessionId, semanticSessionId });
+    plan.push({ sessionId, semanticSessionId, ...(noRunIds.has(sessionId) ? { noRun: true } : {}) });
   }
   return { plan, historyGaps };
 }
@@ -557,6 +573,11 @@ export async function runMigration({
     : null;
 
   for (const item of plan) {
+    // -- #1975: already judged no-run → skip WITHOUT entering the core --------
+    if (item.noRun === true) {
+      summary.skipped[NO_RUN_ACTION] = (summary.skipped[NO_RUN_ACTION] ?? 0) + 1;
+      continue;
+    }
     // -- Cheap pre-filter: already recorded → skip WITHOUT entering the core --
     const known = cheapRecordId(item);
     if (
@@ -614,6 +635,11 @@ export async function runMigration({
           if (res.deadByAge) summary.dead_by_age += 1;
         }
         break;
+      case NO_RUN_ACTION:
+        summary.skipped[NO_RUN_ACTION] = (summary.skipped[NO_RUN_ACTION] ?? 0) + 1;
+        // The mark the next run's plan reads (above); dry-run appends nothing.
+        if (apply) await emitBackfillCompleted(repoRoot, item, res);
+        break;
       case 'error':
         summary.errors += 1;
         break;
@@ -641,7 +667,7 @@ export async function runMigration({
 async function emitBackfillCompleted(repoRoot, item, res) {
   try {
     await emitEvent(
-      'orchestrator.session.backfill_completed',
+      BACKFILL_COMPLETED_EVENT,
       {
         kind: 'abandoned',
         action: typeof res?.action === 'string' ? res.action : 'unknown',

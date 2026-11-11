@@ -28,8 +28,8 @@
  * coordinator that skipped the step. `orchestrator.scope.unbound_manifest` is
  * what makes the silent case countable; 0 hits repo-wide before this file.
  *
- * The binding itself is NOT recomputed here. It is exactly one
- * `attributionForRecord()` call, which reads `.orchestrator/session.lock` and
+ * The binding itself is NOT recomputed here. `attributionForRecord()` reads
+ * `.orchestrator/session.lock` and
  * confirms the raw `session_id` against this process's own identity before
  * returning anything — under a peer-owned lock it returns `{}` rather than the
  * peer's ids. Duplicating that logic would be the one-fact-two-copies class this
@@ -39,7 +39,9 @@
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { attributionForRecord, emitEvent } from './lib/events.mjs';
-import { MANIFEST_SESSION_KEYS } from './lib/session-identity/own-session.mjs';
+import { MANIFEST_SESSION_KEYS, readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
+import { resolveOwnLockRootFor } from './lib/own-lock-root.mjs';
+import { repositoryCommonDir } from './lib/platform.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
 const HELP = `Usage: node scripts/wave-scope-binding.mjs [--merge] [--wave N] [--role R] [--repo-root DIR]
@@ -72,7 +74,21 @@ Output:
  *   empty values omitted
  */
 export function resolveBinding(repoRoot) {
-  const attribution = attributionForRecord(repoRoot) ?? {};
+  let attribution = attributionForRecord(repoRoot) ?? {};
+  if (!attribution.session_id) {
+    const [sessionId] = readProcessLocalSessionIds();
+    if (sessionId) {
+      // #1980: a worktree can use its main checkout's lock, but a host-wide
+      // registry pointer must not bind an unrelated --repo-root. #1981: compared
+      // by common dir, which is the same at any depth of a working copy. An
+      // unreadable root answers '' and cannot establish repository identity.
+      const lockRoot = resolveOwnLockRootFor({ sessionId, cwd: repoRoot }).root;
+      const repository = repositoryCommonDir(repoRoot);
+      if (repository && repository === repositoryCommonDir(lockRoot)) {
+        attribution = attributionForRecord(lockRoot) ?? {};
+      }
+    }
+  }
   /** @type {{ session_id?: string, semantic_session_id?: string }} */
   const out = {};
   const session = typeof attribution.session_id === 'string' ? attribution.session_id.trim() : '';

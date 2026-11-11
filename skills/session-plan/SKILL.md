@@ -396,6 +396,7 @@ Present the plan in this format:
 
 ### Wave 2: Impl-Core ([N agents], parallel, isolation: [worktree|none])
 - Agent 1: [task] → [files] → [acceptance criteria] → `subagent_type: [resolved agent]`
+  Erwartung: [optional, one sentence — the result you expect; session-end reports result vs. this, #1950]
 ...
 - File scope overlap: [none | list conflicting files and which agents]
 

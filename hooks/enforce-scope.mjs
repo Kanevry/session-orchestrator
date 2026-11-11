@@ -115,6 +115,8 @@ let resolveProjectDir;
 // The launch dir the harness states — platform.mjs's one definition of the env
 // chain, so the relocation trace below cannot drift from the clamp (#1504).
 let launchDirFromEnv;
+// #1977 — maps a linked worktree to the checkout whose auto-memory the harness loads.
+let verifiedMainCheckout;
 // #1504 point 6 — the manifest that governs THIS session; bound from scope-gate below.
 let findOwnScopeFile;
 let resolveScopeContext;
@@ -212,7 +214,7 @@ async function bootstrap() {
 
   ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
   ({ isPathInside, relativeFromRoot } = modules.pathUtils);
-  ({ resolveProjectDir, launchDirFromEnv } = modules.platform);
+  ({ resolveProjectDir, launchDirFromEnv, verifiedMainCheckout } = modules.platform);
   ({ pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
   ({ readJson } = modules.common);
   ({
@@ -308,9 +310,9 @@ async function main() {
   // A better signal REPLACES a worse one (`host-resources.md` § HR-102).
   //
   // The trade this buys, accepted rather than hidden: a session that wrote a
-  // PEER's id into its OWN manifest (it lost the `bootstrapLock()` race, so
-  // `sessionAttribution()` handed it the peer's lock id) now reads `'foreign'`
-  // and its own guard stands down. The defense is on the WRITER side — the
+  // PEER's id into its OWN manifest (it lost the `bootstrapLock()` race and took
+  // the id from the lock without the process-local check) reads
+  // `'foreign'` and its own guard stands down. The defense is on the WRITER side — the
   // manifest writer must omit the `session` keys when the lock does not name it
   // (`skills/wave-executor/wave-loop.md` § Scope Manifest, "Verify the binding
   // names YOU before you write it") — not on this reader.
@@ -540,10 +542,12 @@ async function main() {
     //
     // NARROWNESS (security boundary — no wider allow than this one directory):
     //   - Only the memory dir of THIS repo, as the harness names it. That name
-    //     is NOT unique: `encodeProjectDir()` maps both `/` and `.` to `-`, so
-    //     `/x/a.b` and `/x/a-b` share one memory dir — a harness-level collision
-    //     this gate inherits and cannot narrow. Every OTHER sibling repo's
-    //     memory dir stays denied.
+    //     is NOT unique: `encodeProjectDir()` maps every non-alphanumeric
+    //     character (`/`, `.`, `_`, …) to `-`, exactly as Claude Code names the
+    //     folder (measured 2026-11-08, see the encoder), so `/x/a.b`, `/x/a_b`
+    //     and `/x/a-b` share one memory dir — a harness-level collision this
+    //     gate inherits and cannot narrow. Every OTHER sibling repo's memory
+    //     dir stays denied.
     //   - Containment is exact-prefix on the REALPATH-resolved candidate, so
     //     `..` segments and symlink tricks cannot widen it.
     //   - Evaluated only on the out-of-root branch: the in-repo gates (Gate 7,
@@ -567,6 +571,8 @@ async function main() {
     // not grant the path (Discovery's `allowedPaths: []`) that is a DENY.
     // #1492: the LAUNCH dir too — the harness keys auto-memory on the path it
     // was launched with, which after `EnterWorktree` is no longer the root.
+    // #1977: a root that is a linked worktree counts as its main checkout, see
+    // {@link ownMemoryDirs}.
     const memoryDirs = await ownMemoryDirs([resolveProjectDir(), manifestRoot]);
     const caller = classifyCaller(input);
     if (!context.isolated && caller !== 'subagent' && memoryDirs.some((dir) => isInsideDir(resolvedPath, dir))) {
@@ -866,6 +872,14 @@ async function mtimeMsOf(file) {
  * (the launch dir WAS the root then); the session-root entries name the
  * worktree this session works in. A sibling repo's root encodes to none of them.
  *
+ * #1977: a root that is a linked worktree is REPLACED by its main checkout,
+ * because Claude Code keeps auto-memory under the main repo. Measured
+ * 2026-11-08, claude 2.1.319: three worktree project folders hold no `memory`,
+ * the main repo's does, and that MEMORY.md was injected into the worktree
+ * session. Replaced, not added, so the folder nobody reads stops being granted.
+ * Only a back-pointer-verified worktree maps (`verifiedMainCheckout`); any other
+ * root keeps its own entry, as before.
+ *
  * Returns `[]` when the encoder cannot be loaded, so the caller falls through to
  * its deny (fail-closed).
  *
@@ -889,7 +903,9 @@ async function ownMemoryDirs(candidateRoots) {
     } catch { /* non-existent home — the raw form is all there is */ }
     const homes = new Set([home, homeReal]);
     const roots = new Set(
-      candidateRoots.filter((p) => typeof p === 'string' && p.length > 0),
+      candidateRoots
+        .filter((p) => typeof p === 'string' && p.length > 0)
+        .map((root) => verifiedMainCheckout(root) || root),
     );
     const dirs = [];
     for (const h of homes) {

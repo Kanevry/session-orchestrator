@@ -160,8 +160,8 @@ Same error message returned 3 times, with the agent attempting the same fix (or 
 **Error-Class Taxonomy:** When Error-Echo fires, the coordinator classifies the error into exactly one of:
 
 - `edit-format-friction` — error text contains `old_string not found`, `not unique`, or whitespace-related mismatches.
-- `scope-denied` — hook exit code 2 / scope-violation message from `enforce-wave-scope.sh`.
-- `command-blocked` — denial from `enforce-commands.sh` (blocked command list).
+- `scope-denied` — hook exit code 2 / scope-violation message from `hooks/enforce-scope.mjs`.
+- `command-blocked` — denial from `hooks/enforce-commands.mjs` (blocked command list).
 - `other` — fallback when none of the above match.
 
 The `error_class` value is used by the stagnation event-write rule in `wave-loop.md` § "Review Agent Outputs". The taxonomy belongs to Error Echo **alone** — the four patterns below and above it omit the field entirely rather than falling back to `other`.

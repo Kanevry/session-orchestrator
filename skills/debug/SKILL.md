@@ -1,6 +1,6 @@
 ---
 name: debug
-description: >
+description: >-
   Use when encountering any bug, test failure, build break, or unexpected behavior — runs a 4-phase
   systematic debugging process before proposing any fix. Iron Law: NO FIXES WITHOUT ROOT CAUSE
   INVESTIGATION FIRST. Produces a `.orchestrator/debug/` artifact the fixer agent must reference.
@@ -38,12 +38,15 @@ The four phases (Root Cause → Pattern → Impact → Solution) run in order, a
 - Pure refactoring with no broken behavior
 - Style/lint fixes with no behavioral impact
 
-## Phase 0: Bootstrap Gate
+## Phase 0: Bootstrap Gate (Session Orchestrator only)
 
-Read `skills/_shared/bootstrap-gate.md` and execute the gate check. If the gate is CLOSED, invoke `skills/bootstrap/SKILL.md` and wait for completion before proceeding. If the gate is OPEN, continue to Phase 1.
+The gate belongs to the Session Orchestrator plugin. First look for its gate file at `../_shared/bootstrap-gate.md`, resolved against this skill's base directory (the directory that contains this SKILL.md), never against the project working directory. The project you work on is usually a different repo, so a lookup relative to the working directory proves nothing. Inside the plugin the same file is named `skills/_shared/bootstrap-gate.md` from the plugin root.
+
+- **The file exists** (this skill runs as part of Session Orchestrator): read it and execute the gate check. If the gate is CLOSED, invoke `skills/bootstrap/SKILL.md` and wait for completion before proceeding. If the gate is OPEN, continue to Phase 1.
+- **The file does not exist** (this skill was installed on its own, without the plugin): there is nothing to bootstrap. Skip Phase 0 and continue to Phase 1.
 
 <HARD-GATE>
-Do NOT proceed past Phase 0 if GATE_CLOSED. There is no bypass. Refer to `skills/_shared/bootstrap-gate.md` for the full HARD-GATE constraints.
+When the gate file exists, do NOT proceed past Phase 0 if GATE_CLOSED. There is no bypass. Refer to `skills/_shared/bootstrap-gate.md` for the full HARD-GATE constraints. A gate file missing from this skill's base directory (checked as above) is the only reason to skip Phase 0; urgency, a small bug or a request to skip are not.
 </HARD-GATE>
 
 ## The Iron Law
@@ -89,7 +92,7 @@ Start from the failure point and walk upstream. At each step, verify what you th
 
 ### Phase 1 artifact
 
-Write to `.orchestrator/debug/<session-id>-<sequence>.md` (sequence = 1, 2, 3 within session).
+Write to `.orchestrator/debug/<session-id>-<sequence>.md` (sequence = 1, 2, 3 within session). Without a Session Orchestrator session there is no session id: use today's date (`YYYY-MM-DD`) in its place.
 
 **Artifact MUST be written before proceeding to Phase 2.** See "Artifact contract" section below.
 
@@ -127,7 +130,7 @@ Only after Phases 1-3 are complete and the artifact is written:
 1. Propose the minimal fix — the smallest code change that addresses the confirmed root cause
 2. Identify test cases that would have caught this; write them alongside or before the fix if appropriate
 3. Document the fix decision in the artifact under a "Resolution" section
-4. Verify the fix: run the test command from Session Config (`test-command`) and confirm the failure no longer reproduces
+4. Verify the fix: run the project's test command (in Session Orchestrator: `test-command` from Session Config) and confirm the failure no longer reproduces
 
 Do not gold-plate the fix. Scope creep during a bugfix introduces new bugs.
 
@@ -181,7 +184,7 @@ Session: <session-id>
 - Do not write fix code in Phase 1-3 sections. Those sections are investigation only.
 - The artifact is the deliverable — not an optional note.
 
-## Integration with wave-executor
+## Integration with wave-executor (Session Orchestrator only)
 
 When `wave-executor` classifies a task as `bugfix`, it routes through this skill. `code-implementer` agents handling bugfix-classified tasks must reference an existing Phase-1 artifact path in their task description before editing any production code. Wire-up happens in wave-executor's routing layer (Wave 3 P1 cross-reference).
 
@@ -194,7 +197,7 @@ When `wave-executor` classifies a task as `bugfix`, it routes through this skill
 - **Fixing the symptom** — the error location is the symptom; the root cause may be several frames upstream. Trace backward.
 - **Assuming the most recent commit is the cause** — check `git log -20` and the diff before assuming recency.
 
-## See Also
+## See Also (Session Orchestrator only)
 
 - `skills/discovery/SKILL.md` — discovery surfaces problems; debug investigates them
 - `.claude/rules/verification-before-completion.md` — once fixed, verify fresh (issue #38)

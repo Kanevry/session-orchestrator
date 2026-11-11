@@ -35,7 +35,8 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
+import { yamlHasDocument } from './yaml-has-document.mjs';
 
 export const VAULT_MIGRATION_RULES_PATH = join(
   homedir(),
@@ -82,7 +83,8 @@ export function loadVaultMigrationRules(filePath = VAULT_MIGRATION_RULES_PATH) {
 
   let parsed;
   try {
-    parsed = yaml.load(raw);
+    // js-yaml 5 (#2015): a source without a document throws; keep the v4 'not a mapping' path.
+    parsed = yamlHasDocument(raw) ? yaml.load(raw) : undefined;
   } catch (err) {
     return {
       config: getDefaults(),

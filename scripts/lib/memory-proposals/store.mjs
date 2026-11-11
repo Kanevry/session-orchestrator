@@ -23,7 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { serializeProposal } from './schema.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { tryAcquireFileLock, releaseFileLock } from '../file-lock.mjs';
-import { writeJsonAtomicSync } from '../io.mjs';
+import { renameSyncWithRetry, writeJsonAtomicSync } from '../io.mjs';
 import { resolveLedgerRoot } from '../ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
@@ -332,7 +332,10 @@ function appendOverflow(repoRoot, overflowPath, line) {
     }
   }
   writeOverflowExclusive(temporary, lineBytes, oldMode);
-  fs.renameSync(temporary, overflowPath);
+  // The temp and the directory fsync stay here (the shared writers carry
+  // neither); only the final rename goes through the shared win32 retry. The
+  // call-time `fs.renameSync` keeps the module's fs object as the seam.
+  renameSyncWithRetry(temporary, overflowPath, { fs: { renameSync: fs.renameSync } });
   syncOverflowDirectory(directory);
 }
 

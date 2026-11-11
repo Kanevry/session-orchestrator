@@ -25,7 +25,7 @@ Extract learnings from session history.
 
 ### Step 3.1b: Read Extra Sources (#638)
 
-When `evolve.extra-sources` is configured in Session Config (default `[]` ⇒ this step is a no-op), `/evolve` consumes OUT-OF-BAND domain measurement sidecars to surface `domain-regression` learnings.
+When `evolve.extra-sources` is configured in Session Config (default `[]` ⇒ this step is a no-op), `/evolve` consumes OUT-OF-BAND domain measurement sidecars to surface `domain-regression` or `owner-preference` learnings.
 
 **READ-ONLY contract:** `/evolve` NEVER runs the domain measurement. The measurement (e.g. an eval-learn regression harness) runs elsewhere and writes a sidecar JSON; this step only READS that sidecar's output. Never shell out to produce the sidecar from here.
 
@@ -33,12 +33,31 @@ For each configured `extra-sources` entry `{path, kind, learning-type}`:
 
 1. **Read the sidecar** at `path` (parser-validated as repo-relative, with absolute paths and `..` escape segments dropped before this step, then resolved against the repo root). If the file is missing or unreadable, **skip with a WARN** (`evolve: extra-source not found: <path>`) — do not abort the whole run.
 2. **Schema-gate** the sidecar against the `kind`'s expected shape. For `kind: regression-flags` the schema is `{ flags: [ { metric, baseline, recent, delta } ] }`. If the parsed JSON does not match (missing `flags` array, or a flag missing a required field), **skip with a WARN** (`evolve: extra-source <path> failed regression-flags schema gate`) — never guess at a different shape.
-3. **Emit one `domain-regression` learning candidate per flag that is PERSISTENT** — i.e. the same `metric` regressed across ≥2 consecutive sessions (cross-reference prior sessions' sidecar reads or the existing learnings store for the same `subject`). A one-off flag is noise; only a persistent regression earns a candidate.
+   For `kind: owner-decisions` (paired only with `learning-type: owner-preference`), require the producer's unchanged JSON shape:
+
+   ```json
+   { "schema_version": 1, "erzeugt_am": "<ISO>", "seit": "<ISO|null>",
+     "population": { "abschluesse_gelesen": 0, "owner_entscheide": 0, "nicht_bestimmbar": 0 },
+     "muster": [ { "klasse": "<string>", "repo": "<name>", "entscheide": 0, "empfehlung_gefolgt": 0, "empfehlung_abgewichen": 0, "nicht_bestimmbar": 0, "wartezeit_median_s": 0 } ] }
+   ```
+
+   All fields are required: `schema_version` must equal `1`; `erzeugt_am` must be an ISO timestamp and `seit` an ISO timestamp or JSON `null` (the placeholder above denotes these alternatives); `population` must contain the three nonnegative integer counters; `muster` must be an array whose entries contain string `klasse` and `repo`, nonnegative integer decision counters, and a finite nonnegative numeric `wartezeit_median_s`. `klasse: ohne-klasse` is valid. Invalid JSON or any schema mismatch skips the source with a WARN (`evolve: extra-source <path> failed owner-decisions schema gate`); never rename fields or guess another shape.
+3. **For `regression-flags`, emit one `domain-regression` learning candidate per flag that is PERSISTENT** — i.e. the same `metric` regressed across ≥2 consecutive sessions (cross-reference prior sessions' sidecar reads or the existing learnings store for the same `subject`). A one-off flag is noise; only a persistent regression earns a candidate.
    - `type`: `learning-type` from the entry (registered enum value `domain-regression`)
    - `subject`: the flag's `metric`
    - `insight`: a human-readable regression statement (e.g. "metric `<metric>` regressed: baseline <baseline> → recent <recent> (delta <delta>) persisting across ≥2 sessions")
    - `evidence`: `baseline → recent` (the concrete data points from the sidecar)
    - `confidence` / `expires_at`: derived via the existing confidence + decay infrastructure (Step 3.5), exactly as for the built-in learning types. `domain-regression` carries a 60-day TTL (`LEARNING_TTL_DAYS`).
+   **For `owner-decisions`, emit one `owner-preference` candidate per qualifying `muster` entry:** let `y = empfehlung_gefolgt + empfehlung_abgewichen` and `x = empfehlung_abgewichen`; require `y >= 10` and `x / y >= 0.30`. Never count `nicht_bestimmbar` toward the determinable population or use `entscheide` as the denominator. This threshold replaces the regression persistence criterion for this kind.
+   - `type`: `owner-preference`
+   - `subject`: `<klasse>-<repo>` (use a hyphen so the Vault slug retains both class and repo)
+   - `insight`: "Bei <klasse> in <repo> wich der Owner in x von y bestimmbaren Entscheiden von der Empfehlung ab" (substitute the class, repo, and concrete `x` / `y` counts)
+   - `evidence`: all pattern numbers (`entscheide`, `empfehlung_gefolgt`, `empfehlung_abgewichen`, `nicht_bestimmbar`, `wartezeit_median_s`), the determinable count and deviation rate, plus the full `population` and `erzeugt_am` from the sidecar
+   - `confidence` / `expires_at`: the existing infrastructure in Step 3.5; TTL is 60 days, as for `domain-regression`; this type is not agent-proposable.
+
+   The export is cumulative: unchanged `y` and `x` counters for a pattern in a subsequent `/evolve` run are not new evidence and must not increase confidence, even when `erzeugt_am` changes. Compare these counters with the existing learning evidence before applying any reinforcement in Steps 3.3 or 3.5.
+
+   An `owner-preference` learning is only a recommendation for future recommendation logic and never an authorization or a change to any approval requirement.
 4. Candidates flow into the SAME Step 3.4 AskUserQuestion confirmation + Step 3.5 write path as the built-in learning types — there is no separate write path.
 
 ### Step 3.2: Pattern Extraction
@@ -217,7 +236,7 @@ For confirmed learnings, use atomic rewrite strategy:
 4. Append new learnings with the **canonical schema_version:1 shape** — every field is required (#303):
    - `schema_version`: **1** (integer, ALWAYS — never omit)
    - `id`: UUID v4 string generated via `node -e "const {randomUUID}=require('crypto');process.stdout.write(randomUUID())"` or `uuidgen | tr '[:upper:]' '[:lower:]'`. MUST be a non-empty UUID string. **Never omit** — missing `id` causes 100% mirror-skip (#303).
-   - `type`: one of `fragile-file`, `effective-sizing`, `recurring-issue`, `scope-guidance`, `deviation-pattern`, `stagnation-class-frequency`, `hardware-pattern`, `autopilot-effectiveness`, `autonomy-verdict`, `domain-regression` (#638 — only when sourced from `evolve.extra-sources`, see Step 3.1b)
+   - `type`: one of `fragile-file`, `effective-sizing`, `recurring-issue`, `scope-guidance`, `deviation-pattern`, `stagnation-class-frequency`, `hardware-pattern`, `autopilot-effectiveness`, `autonomy-verdict`, `domain-regression`, `owner-preference` (#638 — only when sourced from `evolve.extra-sources`, see Step 3.1b)
    - `subject`: the pattern subject
    - `insight`: human-readable description of the pattern. **MUST be `insight`** — do NOT use `description` or `recommendation` (legacy alias keys that vault-mirror cannot read; see #303).
    - `evidence`: specific data points that support the pattern

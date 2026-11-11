@@ -7,10 +7,8 @@
 
 import {
   readFile,
-  writeFile,
   appendFile,
   mkdir,
-  rename,
   copyFile,
   readdir,
   unlink,
@@ -21,6 +19,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { withFileLock } from '../file-lock.mjs';
+import { atomicWriteText, envelopeToError } from '../io.mjs';
 import { digestSha256 } from '../crypto-digest-utils.mjs';
 import {
   validateLearning,
@@ -803,9 +802,10 @@ export async function rewriteLearnings(
       }
     }
 
-    const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-    await writeFile(tmp, body, 'utf8');
-    await rename(tmp, filePath);
+    // Shared writer (#1865): win32 rename retry + tmp cleanup on failure. The
+    // backup + keep-N rotation above stays here (per-store policy).
+    const written = await atomicWriteText(filePath, body, { tmpPrefix: `${path.basename(filePath)}.tmp` });
+    if (!written.ok) throw envelopeToError(written);
 
     // Receipts (#1516): an ingested inbox record stays hidden even if a later
     // rewrite drops it from the live store without archiving it. Archived

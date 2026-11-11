@@ -13,7 +13,8 @@
  *   G3 — regex match /\bnode\b.*\bmemory-propose\.mjs\b/i (no match → exit 0)
  *   G4 — resolve session_id (from stdin payload or .orchestrator/current-session.json)
  *   G5 — resolve wave (from the active wave-scope.json `wave` field, default 0)
- *   G6 — derive a NON-REVERSIBLE argv summary: sha256 command_hash + known flag
+ *   G6 — derive a NON-REVERSIBLE argv summary: keyed host-local HMAC command_hash
+ *        (`hmac:<16hex>`, hooks/_lib/command-hash.mjs, #1880) + known flag
  *        NAMES + raw length. The command text itself never leaves this process.
  *   G7 — append event JSON line to .orchestrator/metrics/events.jsonl
  *   Always: exit 0 (never block)
@@ -23,7 +24,6 @@
  */
 
 import { isShellCommandTool, readStdin, emitAllow } from '../scripts/lib/io.mjs';
-import crypto from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -37,6 +37,9 @@ import {
 } from '../scripts/lib/session-identity/own-session.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+// `command_hash`: keyed host-local HMAC since #1880 (was an unsalted sha256
+// prefix, reversible by dictionary). Replaced `argv_truncated` in #1415.
+import { hashCommand } from './_lib/command-hash.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
@@ -80,38 +83,6 @@ const KNOWN_FLAGS = Object.freeze([
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * sha256(command), truncated to 16 hex characters.
- *
- * WORD-FOR-WORD the `hashCommand()` of `hooks/enforce-commands.mjs:69` (itself
- * taken from `hooks/pre-bash-destructive-guard.mjs:253`, which mirrors
- * `loop-guard.mjs` `hashArgs()`). Deliberately duplicated rather than shared:
- * a PreToolUse hook must not gain another loadable module that can fail at
- * start — three lines are cheaper than a load error on the hot path. Verified
- * before duplicating that no helper is EXPORTED at any of those sites.
- *
- * WHY THE HASH IS HERE (#1415, 2026-09-21): until today this hook wrote a
- * merely flag-redacted `argv_truncated` (512 chars of command text) into
- * `orchestrator.memory.propose_invoked` — an `events.jsonl` line (gitignored
- * here via `.gitignore:57`; consumer repos may track it) and,
- * with the webhook configured, a network payload. Redaction covered only the
- * five `--insight/--subject/--evidence/--content/--reason` values and said so
- * in its own caveat: `$VAR`, `$(cat secret)` and any value written elsewhere
- * on the line passed through. This was the THIRD and last open site of the
- * class closed by `8f15f77b` (enforce-commands) and #1404 (staging-fence).
- *
- * The hash keeps the event COUNTABLE and GROUPABLE — repeat invocations of the
- * same command still collapse to one key — which is the only property any
- * consumer needed. Measured 2026-09-21 (`rg argv_truncated` over `scripts/
- * hooks/ skills/ docs/`): ZERO production readers, the field's only consumers
- * were this hook's own tests.
- *
- * @param {string} command
- * @returns {string}
- */
-function hashCommand(command) {
-  return crypto.createHash('sha256').update(command).digest('hex').slice(0, 16);
-}
 
 /**
  * The subset of KNOWN_FLAGS that appears in the command, in KNOWN_FLAGS order.
@@ -134,8 +105,13 @@ function flagsPresent(command) {
  * The working directory as a value that carries no absolute host path (#1439).
  *
  * Relative to `projectDir` (`.` when equal); a directory OUTSIDE the project is
- * written as `sha256:<12 hex>` of its resolved path instead — still groupable,
- * never the path itself. Until 2026-09-25 this was `process.cwd()` verbatim,
+ * written as a keyed mark of its resolved path instead — still groupable on one
+ * host, never the path itself. The mark is `hashCommand('cwd:' + realCwd)`, i.e.
+ * `hmac:<16 hex>` under the host-local key (`v0-hmac:<16 hex>` when the key file
+ * is unusable), since #1915; before, an unsalted `sha256:<12 hex>` prefix that a
+ * guessable path (`/Users/<name>/…`) reverses by dictionary. The `cwd:` prefix
+ * separates the domains: a directory and a `command_hash` of the same text never
+ * share a mark. Until 2026-09-25 this was `process.cwd()` verbatim,
  * i.e. `/Users/<name>/…` in an events.jsonl line (gitignored here via
  * `.gitignore:57`; consumer repos may track it) and, with the webhook
  * configured, in a network payload. No production reader consumes `cwd`.
@@ -146,7 +122,7 @@ function flagsPresent(command) {
  * A path that cannot be resolved falls back to `path.resolve` — never throws.
  *
  * A project dir that is no project boundary — the filesystem root, the home
- * dir, or an ancestor of it (`/Users`) — also gets the hash form: relative to
+ * dir, or an ancestor of it (`/Users`) — also gets the keyed form: relative to
  * `/` the cwd reads `Users/<name>/…`, i.e. the username in a webhook-bound
  * event, the very leak the relative form exists to prevent. The ancestor test
  * is path-segment-wise (`path.relative`), so `/Users/al` is NOT an ancestor of
@@ -167,8 +143,9 @@ function relativeCwd(cwd, projectDir) {
   const realProject = real(projectDir);
   const rel = path.relative(realProject, realCwd);
   if (rel === '') return '.';
-  // Same sha256 recipe as `command_hash`, cut to 12 hex.
-  const hashed = `sha256:${hashCommand(realCwd).slice(0, 12)}`;
+  // Keyed, domain-separated mark (#1915): the `command_hash` recipe (#1880)
+  // over `cwd:<path>`, so a cwd never shares a mark with an equal command text.
+  const hashed = hashCommand(`cwd:${realCwd}`);
   if (escapes(rel)) return hashed;
   if (path.dirname(realProject) === realProject) return hashed; // filesystem root
   let home = null;

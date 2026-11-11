@@ -82,12 +82,14 @@ const present = (v) => v !== undefined && v !== null;
 /**
  * Session attribution for this CLI's events.
  *
- * The explicit `SO_PROJECT_DIR` argument is LOAD-BEARING, not decoration:
- * `readLock()` (via `lockPathFor`) defaults to `process.cwd()`, NOT to
- * `SO_PROJECT_DIR`. Calling `sessionAttribution()` bare would therefore read the
- * lock of whatever directory the process happens to run in while the ledger line
- * lands under `CLAUDE_PROJECT_DIR` — attributing a record to a session that
- * never wrote it. Same root for both halves or neither.
+ * The explicit root matters only when it differs from the root `emitEvent()`
+ * would resolve itself. Here it does not: `emitEvent()` is called 2-arg, so it
+ * fills the same fields from `attributionForRecord(getProjectDir())`, and this
+ * spread produces identical values (`events.mjs` `emitEvent`, #1989). It is kept
+ * so the root is explicit at the call site and stays correct if `emitEvent()`
+ * is ever given another root. What the argument does guard: a BARE
+ * `sessionAttribution()` reads the lock of `process.cwd()` (`lockPathFor`), not
+ * `SO_PROJECT_DIR`, so the root must be named, never defaulted.
  *
  * @returns {{session_id?: string, semantic_session_id?: string}}
  */

@@ -6,6 +6,7 @@
   "types": "./types/index.d.ts",
   "userConfig": {
     "strictness": { "title": "Strictness profile", "type": "string", "description": "Strictness profile shown in the status line and returned by $.so.profile(). locker: rule traps and scope collisions only warn. ausgewogen (default): rule traps are refused and a scope collision asks first. streng: rule traps and scope collisions are refused. On every profile, secret-printing commands are refused and outward actions ask twice in an interactive session.", "options": ["locker", "ausgewogen", "streng"], "default": "ausgewogen" },
+    "outwardHeadless": { "title": "Outward actions without a surface", "type": "string", "description": "allow (default): in a run with no surface (plain claude -p) outward actions run with a receipt. deny: they are refused with a receipt. A hurdle, not a guarantee: protected branches and CI stay authoritative.", "options": ["allow", "deny"], "default": "allow" },
     "soRoot": { "title": "Session Orchestrator path", "type": "string", "description": "Optional absolute path to the Session Orchestrator installation", "required": false }
   }
 }

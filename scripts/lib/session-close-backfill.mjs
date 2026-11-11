@@ -74,7 +74,7 @@ import { eventsFilePath, scanEventsBackwards } from './events.mjs'; // eventsFil
 // re-literalled: `VALID_SESSION_PROFILES` is its SSOT (GitLab #1252).
 import { VALID_SESSION_PROFILES } from './session-schema/constants.mjs';
 // #1835: leaf module, stdlib only — counts what a stub did, decides when that counts as measured.
-import { emptyWorkCounts, countWorkEvent, addSkillCalls, workEvidenceFor } from './session-schema/work-evidence.mjs';
+import { emptyWorkCounts, countWorkEvent, addSkillCalls, workEvidenceFor, isNoRunEvidence, NO_RUN_ACTION, SO_RUN_EVENT, SO_RUN_SKILLS, SKILL_HOOK_PLATFORMS } from './session-schema/work-evidence.mjs';
 // #1835 MITTEL-A: a Skill tool call writes no event, only a skill-invocations row.
 import { DEFAULT_SKILL_INVOCATIONS_PATH } from './skill-invocations-schema.mjs';
 
@@ -108,7 +108,7 @@ const EVENT_LOCK_ACQUIRED = 'orchestrator.session.lock.acquired';
  * carries `session_profile` at all, so an abandoned ultradeep run was
  * indistinguishable from an abandoned deep one.
  */
-const EVENT_SHAPE_RESOLVED = 'orchestrator.session.shape_resolved';
+const EVENT_SHAPE_RESOLVED = SO_RUN_EVENT;
 // Both names for one generation (GitLab #1234): `hooks/on-stop.mjs` now emits
 // `orchestrator.turn.stopped` as the canonical name and keeps the legacy
 // `orchestrator.session.stopped` (with `deprecated: true`) beside it until
@@ -287,6 +287,8 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
   // True while the readings above come from an UNDATED record — kept only for
   // lack of a dated one, and surfaced so the caller can mark it low-confidence.
   let shapeUndated = false;
+  // #1975: any matched shape_resolved — the mark of an SO run, dated or not.
+  let soRunSeen = false;
 
   // First pass — bridge the UUID set + carry mode + semantic id. lock.acquired
   // is the original bridge; session.ended is the #1167 addition;
@@ -312,6 +314,7 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
       semanticFromEvents = ev.semantic_session_id;
     }
     if (isShape) {
+      soRunSeen = true;
       const ts = typeof ev.timestamp === 'string' ? Date.parse(ev.timestamp) : NaN;
       if (!Number.isNaN(ts)) {
         // Dated record: ordinary latest-wins.
@@ -397,6 +400,7 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
     shapeSessionType,
     shapeSessionProfile,
     shapeUndated,
+    soRunSeen,
     semanticFromLock,
     semanticFromEvents,
     startedAt,
@@ -648,11 +652,19 @@ function isCandidateDeadByAge({ relaxDeadByAge, assumeDeadBeforeMs, lastEventMs,
  *
  * @param {string[]} filePaths
  * @param {(p: string, enc: string) => string} [readFileSync]
- * @returns {{ counts: Map<string, number>, readable: boolean }}
+ * `soRunIds` (#1975) — the session ids with at least one row whose skill is in
+ * `SO_RUN_SKILLS` (`/session` or session-start was invoked). Rows with a null
+ * `session_id` (session-start's own Phase 1.05 self-report) join nothing.
+ * `present` — at least one of the files exists and was read (ENOENT everywhere
+ * is no measurement of "no Skill call", see `isNoRunEvidence`).
+ *
+ * @returns {{ counts: Map<string, number>, readable: boolean, present: boolean, soRunIds: Set<string> }}
  */
 export function countSkillInvocationsAcrossFiles(filePaths, readFileSync = fs.readFileSync) {
   const maxPerKey = new Map(); // key → { sessionId, n }
+  const soRunIds = new Set();
   let readable = true;
+  let present = false;
   for (const filePath of filePaths) {
     let raw;
     try {
@@ -661,6 +673,7 @@ export function countSkillInvocationsAcrossFiles(filePaths, readFileSync = fs.re
       if (err?.code !== 'ENOENT') readable = false;
       continue;
     }
+    present = true;
     const perFile = new Map();
     for (const line of String(raw).split('\n')) {
       if (line.trim() === '') continue;
@@ -672,6 +685,7 @@ export function countSkillInvocationsAcrossFiles(filePaths, readFileSync = fs.re
       }
       if (row === null || typeof row !== 'object' || row.event !== 'selected') continue;
       if (typeof row.session_id !== 'string' || row.session_id === '') continue;
+      if (SO_RUN_SKILLS.includes(row.skill)) soRunIds.add(row.session_id);
       const key = JSON.stringify([row.timestamp ?? null, row.skill ?? null, row.session_id, row.event]);
       const entry = perFile.get(key) ?? { sessionId: row.session_id, n: 0 };
       entry.n += 1;
@@ -684,7 +698,7 @@ export function countSkillInvocationsAcrossFiles(filePaths, readFileSync = fs.re
   }
   const counts = new Map();
   for (const { sessionId, n } of maxPerKey.values()) counts.set(sessionId, (counts.get(sessionId) ?? 0) + n);
-  return { counts, readable };
+  return { counts, readable, present, soRunIds };
 }
 
 /**
@@ -708,20 +722,28 @@ export function countSkillInvocationsAcrossFiles(filePaths, readFileSync = fs.re
  * worktree's skill-invocations.jsonl holds rows for its raw id.
  * Never throws.
  *
- * @returns {{ n: number, readable: boolean }}
+ * `soRun` (#1975): a `SO_RUN_SKILLS` row of this raw id was read. `false`
+ * only when a ledger exists, was read, and the session's platform registers
+ * the skill hook (`SKILL_HOOK_PLATFORMS`); otherwise `null` (unknown), which
+ * `isNoRunEvidence` never reads as no-run.
+ *
+ * @returns {{ n: number, readable: boolean, soRun: boolean|null }}
  */
 function skillCallsFor(readFileSync, repoRoot, gathered) {
   try {
     if (!(gathered.uuids instanceof Set) || gathered.uuids.size !== 1 || typeof gathered.startedAt !== 'string') {
-      return { n: 0, readable: true };
+      return { n: 0, readable: true, soRun: null };
     }
     const [uuid] = gathered.uuids;
     const roots = [...new Set([resolveEventsLedgerRoot(repoRoot), path.resolve(repoRoot)])];
-    const { counts, readable } = countSkillInvocationsAcrossFiles(roots.map((root) => path.join(root, DEFAULT_SKILL_INVOCATIONS_PATH)), readFileSync);
-    if (!readable) return { n: 0, readable: false };
-    return { n: counts.get(uuid) ?? 0, readable: true };
+    const { counts, readable, present, soRunIds } = countSkillInvocationsAcrossFiles(roots.map((root) => path.join(root, DEFAULT_SKILL_INVOCATIONS_PATH)), readFileSync);
+    if (!readable) return { n: 0, readable: false, soRun: null };
+    const n = counts.get(uuid) ?? 0;
+    if (soRunIds.has(uuid)) return { n, readable: true, soRun: true };
+    const measured = present && SKILL_HOOK_PLATFORMS.includes(gathered.platform);
+    return { n, readable: true, soRun: measured ? false : null };
   } catch {
-    return { n: 0, readable: false };
+    return { n: 0, readable: false, soRun: null };
   }
 }
 
@@ -1311,15 +1333,24 @@ export async function backfillAbandonedSession({
       }
 
       // -- Synthesize + validate (round-trip gate) BEFORE any disk mutation ---
+      const skillCalls = skillCallsFor(readFileSync, repoRoot, gathered);
       const record = synthesizeRecord({
         recordId,
         synthetic,
         gathered,
         nowMs,
-        skillCalls: skillCallsFor(readFileSync, repoRoot, gathered),
+        skillCalls,
         rawSessionId: isUuid(sessionId) ? sessionId : null,
       });
       if (recordId !== semanticRecordId) record.semantic_session_id = semanticRecordId;
+      // #1975 — a session that never ran SO (no /session or session-start
+      // skill call, no shape_resolved, no agent, no wave; measured evidence
+      // only) is not an aborted run: no stub. The outcome event is the durable
+      // mark the SessionStart path and the census read (`isNoRunEvidence` owns
+      // the rule; dry-run reports it the same way).
+      if (isNoRunEvidence(record.work_evidence, { shapeResolved: gathered.soRunSeen === true, soRunSkill: skillCalls.soRun })) {
+        return { action: NO_RUN_ACTION, sessionId: recordId };
+      }
       let validated;
       try {
         validated = validateSession(record);

@@ -1,0 +1,30 @@
+{
+  "comment": "Skills shipped in the OpenAI skills-only package (#1931, #1966). Reasoning and census: docs/distribution/openai-skills-only.md. Only skills that work without hooks and without files outside their own directory belong here. A skill that needs a file from elsewhere declares it under \"include\": the export copies it (or only the named \"sections\") to \"to\" inside the skill and rewrites the skill's mentions of \"from\" in the exported copy only.",
+  "measuredAt": "2026-11-06T16:39:12Z",
+  "measuredAtCommit": "0a357b2a",
+  "skills": [
+    {
+      "name": "debug",
+      "reason": "Two files (SKILL.md, soul.md). The bootstrap gate runs only when the Session Orchestrator plugin's gate file is present, so inside Session Orchestrator nothing changes and outside it there is nothing to bootstrap; the test command, the session id and the See Also pointers have stated fallbacks or are marked as plugin-only."
+    },
+    {
+      "name": "deepen",
+      "reason": "Single file plus one declared include: the Judge order and Brief B sections of skills/plan/prd-premortem-panel.md, cut out at export time so there is one source; AskUserQuestion has a stated fallback for an answering person (the block with numbered options), and a lead-guided run executes the rewrite instead of waiting (#1976).",
+      "include": [
+        {
+          "from": "skills/plan/prd-premortem-panel.md",
+          "to": "references/prd-premortem-panel.md",
+          "sections": ["Judge order", "Brief B — Deepen"]
+        }
+      ]
+    },
+    {
+      "name": "eli5",
+      "reason": "Single file; both rules of the skill are stated inline, the owner.yaml lookup has a documented fallback, and the AskUserQuestion preview is an optional second channel, not a precondition."
+    },
+    {
+      "name": "grill",
+      "reason": "Two files (SKILL.md, soul.md) that state their rules inline; every question has a numbered-list route for harnesses without a question tool, the owner.yaml lookups have documented fallbacks, and the sibling skills it hands off to are optional advice, not preconditions."
+    }
+  ]
+}

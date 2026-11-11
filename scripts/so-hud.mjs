@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify, parseArgs } from 'node:util';
 import { measure } from './lib/so-hud/runtime.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { renameWithRetry } from './lib/io.mjs';
 import { parseSessionId } from './lib/session-id.mjs';
 import { execFile } from './lib/native-command.mjs';
 const exec = promisify(execFile);
@@ -34,7 +35,7 @@ export async function main(argv, deps = {}) {
       await fs.chmod(dir, 0o700);
       const target = path.join(dir, 'so-root');
       const temp = `${target}.${process.pid}.tmp`;
-      try { await fs.writeFile(temp, `${SO_ROOT}\n`, { mode: 0o600, flag: 'wx' }); await fs.rename(temp, target); }
+      try { await fs.writeFile(temp, `${SO_ROOT}\n`, { mode: 0o600, flag: 'wx' }); await renameWithRetry(temp, target); }
       finally { await fs.unlink(temp).catch(() => {}); }
     } catch { error('so-hud: Registrierung fehlgeschlagen\n'); return 2; }
     if (!values.json) return 0;

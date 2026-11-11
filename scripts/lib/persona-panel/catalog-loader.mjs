@@ -41,7 +41,7 @@
 
 import { readFile, readdir, lstat } from 'node:fs/promises';
 import path from 'node:path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 import { findProjectRoot } from '../common.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
@@ -98,6 +98,26 @@ const FORBIDDEN_SCHEMA_KEYS = new Set([
 
 /** Per-criterion length cap (operator-authored prompt-injection guard). */
 const MAX_CRITERION_CHARS = 512;
+
+/**
+ * Markdown-body limits for `## Mission` and `## Context Files` (#1857). The
+ * body is operator-authored prompt material, so every value is bounded.
+ *
+ * MAX_MISSION_CHARS is 2000, not 600: the shipped `templates/personas/*.v1.md`
+ * missions measure 398..1061 chars (2026-11-01, measured with parsePersonaBody;
+ * 7 of 10 exceed 600), and a tighter cap would make loadCatalog reject the very
+ * templates the plugin ships.
+ */
+const MAX_MISSION_CHARS = 2000;
+const MAX_CONTEXT_FILES = 8;
+const MAX_CONTEXT_REF_CHARS = 256;
+
+/** Control characters other than TAB/LF/CR (allowed in mission prose). */
+// eslint-disable-next-line no-control-regex
+const MISSION_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+/** Any control character — never allowed in a context-file reference. */
+// eslint-disable-next-line no-control-regex
+const ANY_CONTROL_RE = /[\u0000-\u001f\u007f]/;
 
 /**
  * Default repo-relative directory containing persona spec files.
@@ -312,6 +332,130 @@ export function validatePersonaSpec(rawSpec, sourcePath) {
 }
 
 // ---------------------------------------------------------------------------
+// parsePersonaBody (#1857)
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the text under a level-2 heading, up to the next level-1/2 heading
+ * outside a code fence. `null` when the heading is absent.
+ *
+ * @param {string} body
+ * @param {string} heading — heading text without the leading `## `
+ * @returns {string|null}
+ */
+function extractBodySection(body, heading) {
+  const lines = body.replace(/\r\n?/g, '\n').split('\n');
+  let inSection = false;
+  let found = false;
+  let inFence = false;
+  const out = [];
+  for (const line of lines) {
+    const isFence = /^\s*(```|~~~)/.test(line);
+    if (!inFence && /^#{1,2}\s/.test(line)) {
+      if (inSection) break;
+      if (line.replace(/^#{1,2}\s+/, '').trim().toLowerCase() === heading.toLowerCase()) {
+        inSection = true;
+        found = true;
+        continue;
+      }
+    }
+    if (isFence) inFence = !inFence;
+    if (inSection) out.push(line);
+  }
+  return found ? out.join('\n').trim() : null;
+}
+
+/** "None." (any case, optional dot) marks an intentionally empty section. */
+function isEmptySection(text) {
+  return text === null || text === '' || /^none\.?$/i.test(text);
+}
+
+/**
+ * Parse the `## Mission` and `## Context Files` sections of a persona body.
+ *
+ * Context-file list items are either a vault ref `[[path/to/note]]`
+ * (→ `{kind:'vault', ref}`) or a project-relative path, optionally wrapped in
+ * backticks (→ `{kind:'project', path}`); text after the reference is ignored.
+ *
+ * Pure function: no I/O.
+ *
+ * @param {string} body — Markdown body (frontmatter already stripped)
+ * @param {string} sourcePath — persona file path (for error messages)
+ * @returns {{ok: true, mission: string, context_files: Array<{kind:'vault', ref:string}|{kind:'project', path:string}>}
+ *          | {ok: false, errors: Array<{path:string, rule:string, message:string}>}}
+ */
+export function parsePersonaBody(body, sourcePath) {
+  const errors = [];
+  const pushError = (p, rule, message) => {
+    errors.push({ path: p, rule, message: `${message} (in ${sourcePath})` });
+  };
+  const text = typeof body === 'string' ? body : '';
+
+  // Mission
+  const missionRaw = extractBodySection(text, 'Mission');
+  const mission = isEmptySection(missionRaw) ? '' : missionRaw;
+  if (mission.length > MAX_MISSION_CHARS) {
+    pushError('mission', 'maxLength', `mission exceeds ${MAX_MISSION_CHARS} chars (got ${mission.length})`);
+  }
+  if (MISSION_CONTROL_RE.test(mission)) {
+    pushError('mission', 'format', 'mission must not contain control characters');
+  }
+
+  // Context Files
+  const ctxRaw = extractBodySection(text, 'Context Files');
+  const contextFiles = [];
+  if (!isEmptySection(ctxRaw)) {
+    const items = ctxRaw
+      .split('\n')
+      .map((l) => /^\s*(?:[-*+]|\d+\.)\s+(.*)$/.exec(l))
+      .filter((m) => m !== null)
+      .map((m) => m[1].trim())
+      .filter((t) => t !== '');
+    if (items.length > MAX_CONTEXT_FILES) {
+      pushError('context_files', 'maxItems', `context files exceed ${MAX_CONTEXT_FILES} entries (got ${items.length})`);
+    }
+    items.slice(0, MAX_CONTEXT_FILES).forEach((item, i) => {
+      const p = `context_files[${i}]`;
+      const vault = /^\[\[([^\]]*)\]\]/.exec(item);
+      let kind;
+      let value;
+      if (vault !== null) {
+        kind = 'vault';
+        value = vault[1].split('|')[0].trim(); // drop an Obsidian `|alias`
+      } else {
+        kind = 'project';
+        const ticked = /^`([^`]*)`/.exec(item);
+        value = ticked !== null ? ticked[1].trim() : item.split(/\s+/)[0];
+      }
+      if (value === '') {
+        pushError(p, 'type', 'context file reference must be non-empty');
+        return;
+      }
+      if (value.length > MAX_CONTEXT_REF_CHARS) {
+        pushError(p, 'maxLength', `context file reference exceeds ${MAX_CONTEXT_REF_CHARS} chars`);
+        return;
+      }
+      if (ANY_CONTROL_RE.test(value)) {
+        pushError(p, 'format', 'context file reference must not contain control characters');
+        return;
+      }
+      if (value.split(/[\\/]/).includes('..')) {
+        pushError(p, 'path-traversal', `context file reference must not contain ".." segments (got ${JSON.stringify(value)})`);
+        return;
+      }
+      if (path.isAbsolute(value) || /^[A-Za-z]:/.test(value) || /^[\\/~]/.test(value)) {
+        pushError(p, 'absolute-path', `context file reference must be relative (got ${JSON.stringify(value)})`);
+        return;
+      }
+      contextFiles.push(kind === 'vault' ? { kind, ref: value } : { kind, path: value });
+    });
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, mission, context_files: contextFiles };
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
@@ -419,13 +563,20 @@ async function loadOnePersonaFile(absPath) {
   }
 
   const validation = validatePersonaSpec(fm.frontmatter, absPath);
-  if (!validation.ok) {
-    return { ok: false, sourcePath: absPath, errors: validation.errors };
+  const bodyParse = parsePersonaBody(fm.body, absPath);
+  if (!validation.ok || !bodyParse.ok) {
+    return {
+      ok: false,
+      sourcePath: absPath,
+      errors: [...(validation.ok ? [] : validation.errors), ...(bodyParse.ok ? [] : bodyParse.errors)],
+    };
   }
 
   return {
     ok: true,
-    persona: validation.persona,
+    // A NEW object: `frontmatter` stays the raw parse, so computePromptHash
+    // (model + frontmatter + body) is unaffected by the derived body fields.
+    persona: { ...validation.persona, mission: bodyParse.mission, context_files: bodyParse.context_files },
     frontmatter: fm.frontmatter,
     body: fm.body,
     sourcePath: absPath,

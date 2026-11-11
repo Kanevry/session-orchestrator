@@ -1,7 +1,8 @@
 # UX Rubric v1
 
 > Readable specification of the 4 UX checks applied by the `ux-evaluator` agent.
-> Stable spec — v2 will live as a sibling `rubric-v2.md` in this same directory.
+> Frozen spec. New runs use `rubric-v2.md` in this directory (#1961: human checks first,
+> these four checks only as its footnote); v1 stays for reading runs stamped `"v1"`.
 > The `findings.jsonl` metadata record carries `rubric_version: "v1"` so consumers
 > can distinguish evaluations run against different rubric revisions.
 

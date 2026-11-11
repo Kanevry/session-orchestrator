@@ -121,7 +121,7 @@ inferences remain distinct.
 Before each Q&A wave, dispatch 2-3 `Agent()` tool calls in a single message (parallel execution) with `subagent_type: "Explore"`:
 
 1. **Market/online context agent** — searches for relevant market data, best practices, competitor analysis, or technical patterns depending on the questions to be asked. Tools: WebSearch, WebFetch.
-2. **Baseline analysis agent** — reads projects-baseline templates, rules, and scripts at `$BASELINE_PATH` to discover available options (archetypes, styles, configurations). Tools: Read, Glob, Grep. Skip it when `plan-baseline-path` is unset (on `/plan new` the public path reads the bundled templates instead, `mode-new.md` Phase 0): print "No `plan-baseline-path` configured — baseline analysis agent skipped." and dispatch the remaining agents.
+2. **Baseline analysis agent** — reads the templates, rules, and scripts of the configured baseline at `$BASELINE_PATH` to discover available options (archetypes, styles, configurations). Tools: Read, Glob, Grep. Skip it when `plan-baseline-path` is unset (on `/plan new` the public path reads the bundled templates instead, `mode-new.md` Phase 0): print "No `plan-baseline-path` configured — baseline analysis agent skipped." and dispatch the remaining agents.
 3. **Repo context agent** (skip for `/plan new` wave 1) — analyzes the current repository for existing patterns, file structure, dependencies, and conventions. Tools: Read, Glob, Grep.
 
 **Raw material before digest.** Brief the repo and baseline agents to start from the rawest reachable material, not from what has already been summarised: the code path that actually runs (caller census), the installed artifact or platform contract, live event or process data, a real run's output, the git history of the area. Issue text and docs come second. Two asks are mandatory in Wave 1:
@@ -133,13 +133,17 @@ Example dispatch:
 ```
 Agent({ subagent_type: "Explore", description: "Research market context for [topic]",
   prompt: "Search online for [topic]. Report findings with pros/cons for each option." })
-Agent({ subagent_type: "Explore", description: "Analyze baseline templates",
-  prompt: "Read projects-baseline at $BASELINE_PATH/templates/. List available archetypes, their README descriptions, and key features." })
+Agent({ subagent_type: "Explore", description: "Analyze baseline templates",   // private branch only: dispatch when plan-baseline-path is configured, else skip (see item 2 above)
+  prompt: "Read the configured baseline at $BASELINE_PATH/templates/. List available archetypes, their README descriptions, and key features." })
 Agent({ subagent_type: "Explore", description: "Analyze repo context",
   prompt: "Explore current repo for [relevant patterns]. Report affected files and existing conventions." })
 ```
 
 Wait for ALL agents to complete before proceeding. Use `run_in_background: false` for all agents.
+
+**Research budget.** Every Explore agent prompt ends with its budget, stated as a number: a web agent (market, tech-stack, failure-mode, benchmark) gets at most 6 WebSearch and 6 WebFetch calls (12 web calls), 15 Read/Glob/Grep calls and about 4 minutes; a baseline, repo or cross-repo agent gets only the local figure (15 Read/Glob/Grep calls, about 4 minutes). The agent reports the calls it used and, when it stopped at the budget, a line `Not checked: <topics>`. In headless and autonomous runs the budget is fixed and never raised. In interactive runs these are the defaults; the operator may raise them before a wave by saying so, and the recap (§ 3.4) states the new figure. These numbers are a proposal checked against one measured run (2026-11-02, #1811/#1922, headless fresh-install probe): four `/plan new` web agents made 217 web calls (101 WebSearch + 116 WebFetch) in 40 minutes without reaching a PRD; under this budget the same four agents stop at 48.
+
+**At budget, continue.** A budget stop is not a failure. Synthesise from the findings in hand and carry each `Not checked: …` item into the `Next check` of the finding it limits ([Research Evidence Contract](../_shared/research-evidence.md)). Never re-dispatch the same agent for the same question, and never add a web agent to make up for the stop.
 
 ### Ranking Candidate Subfeatures
 
@@ -204,6 +208,7 @@ Maintain a running summary of all answers across waves. After each wave, output 
 2. Visibility: internal
 3. Audience: B2B customers
 4. ...
+Research: <N> agents, <used>/<budget> web calls (as reported by the agents), <stopped> stopped at budget, not checked: <topics or "none">
 ```
 
 This ensures transparency and allows the user to correct any misunderstanding before the next wave.
@@ -513,7 +518,7 @@ Skip this step if issue creation was cancelled at § 6.3 ("Cancel") — there is
 - **ALWAYS research before asking** — dispatch Explore agents before every Q&A wave. Questions without research backing are guesses.
 - **ALWAYS mark Option 1 as recommended** — with `(Recommended)` in the label. Every question must have a clear recommendation.
 - **ALWAYS use AskUserQuestion** — never present options as plain text. The structured UI is mandatory.
-- **Autonomous runs**: headless, autopilot, or a session the operator has told to decide on its own. Do not stop at an AUQ there. Answer each question with Option 1 when its evidence holds, and record the decision, its reasons and the rejected options as a comment on the Epic. Decisions the operator reserves (external effect, money, accounts, deleting data, security exceptions, irreversible product calls) go to the operator's decision queue and are marked "waits on owner" on the Epic. The Q&A still runs: the research, the recap and the recorded answers are the audit trail.
+- **Autonomous runs**: headless, autopilot, or a session the operator has told to decide on its own. Do not stop at an AUQ there. Answer each question with Option 1 when its evidence holds, and record the decision, its reasons and the rejected options as a comment on the Epic. That comment also carries the `Research:` line of each wave's recap (§ 3.4) and the research wall-clock minutes for the run. Decisions the operator reserves (external effect, money, accounts, deleting data, security exceptions, irreversible product calls) go to the operator's decision queue and are marked "waits on owner" on the Epic. The Q&A still runs: the research, the recap and the recorded answers are the audit trail.
 - **ALWAYS save documents before creating issues** — the PRD/retro document is the source of truth. Issues reference it.
 - **ALWAYS commit the PRD before creating issues** — see Phase 5.5 (HARD-GATE). A saved-but-uncommitted document is unverifiable by any downstream session; commit to HEAD is the trust boundary, not disk-write.
 - **Security** — never include internal paths, IPs, or infrastructure details in output documents. Read sensitive baseline areas for context but filter from outputs.

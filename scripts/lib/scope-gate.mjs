@@ -11,10 +11,11 @@
  * Cross-cutting invariant for all exports below — see #554 A2.
  */
 
-import { existsSync, readFileSync, realpathSync, lstatSync, openSync, fstatSync, readSync, closeSync, constants } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, lstatSync, fstatSync, readSync, closeSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveSessionRoot, isolatedAgentCheckout, registeredWorktreeRoots } from './platform.mjs';
+import { openNoFollowSync } from './no-follow-open.mjs';
 
 import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './command-blocker.mjs';
 
@@ -140,7 +141,8 @@ export function resolveScopeContext({ cwd, ownIds, classify }) {
       try {
         const before = lstatSync(file);
         if (!before.isFile() || before.size > 1024 * 1024) return { ...context, error: 'unsafe-coordinator-scope' };
-        fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        // Refuse final symlinks: a redirected manifest must never supply coordinator authority (#1749).
+        fd = openNoFollowSync(file);
         const opened = fstatSync(fd);
         if (!opened.isFile() || opened.ino !== before.ino || opened.dev !== before.dev || opened.size > 1024 * 1024) return { ...context, error: 'unsafe-coordinator-scope' };
         const buffer = Buffer.alloc(1024 * 1024 + 1);
@@ -968,8 +970,14 @@ function expandKnownPathPrefix(value, quoted, ctx, parts) {
     // string) as `$PWD/f`. A quote boundary inside `$PWD` / `${PWD}` ends the
     // reference there, so it is not provably PWD. The name's end is the `/`
     // PWD_PREFIX_RE requires, so `$PWDX/f` never gets here.
+    // Leading zero-length parts (an empty `""` before the reference, which the
+    // lexer keeps since #1899) contribute no text, so `""$PWD/f` is `$PWD/f`
+    // to bash; skip only LEADING ones — an empty part inside the reference
+    // (`$""PWD/f`, a locale string) still ends it. The tilde check below keeps
+    // `parts[0]`: bash does not expand `~` after `""` (`""~/f` is literal).
+    const first = exact ? parts.find((p) => p.text.length > 0) : undefined;
     const expands = exact
-      ? (parts[0].quote === 'none' || parts[0].quote === 'double') && parts[0].text.length >= refLength
+      ? first !== undefined && (first.quote === 'none' || first.quote === 'double') && first.text.length >= refLength
       : ctx.noBackslash && (!quoted || ctx.noSingleQuote);
     if (!ctx.pwdKnown || !expands) return value;
     if (rest.length === 0 || rest.includes('$')) return value; // dir only / nested expansion → skip
@@ -2590,11 +2598,22 @@ const CANONICAL_PREFIX_CACHE = new Map();
  * `/etc` and `/var` are not symlinks, so the canonical pass is a no-op there and
  * the literal verdicts carry the whole load.
  *
+ * DRIVE ROOTS (#1742). The walk climbs with the NATIVE `dirname`, which stops at
+ * `C:\` / `C:/`; `path.posix.dirname` climbed past it to the drive-relative
+ * `C:`, whose realpath is the drive's CURRENT directory, not its root. A
+ * resolved root that already ends in `/` (`/`, `C:/`) takes the suffix without
+ * a second slash — the `real === '/'` test missed `C:/` and produced `C://…`.
+ *
  * @param {string} absPath
+ * @param {{realpath?: (p: string) => string, pathApi?: {dirname: Function, basename: Function, sep: string}}} [io]
+ *   test seam for the win32 walk on a POSIX host; an injected call bypasses the cache
  * @returns {string}
  */
-export function canonicalizeGrantPrefix(absPath) {
-  const cached = CANONICAL_PREFIX_CACHE.get(absPath);
+export function canonicalizeGrantPrefix(absPath, io) {
+  const realpath = io?.realpath ?? realpathSync.native;
+  const pathApi = io?.pathApi ?? path;
+  const cacheable = io === undefined;
+  const cached = cacheable ? CANONICAL_PREFIX_CACHE.get(absPath) : undefined;
   if (cached !== undefined) return cached;
 
   // Assigned on BOTH loop exits (resolved, or nothing on this branch resolves);
@@ -2605,22 +2624,22 @@ export function canonicalizeGrantPrefix(absPath) {
   const missing = [];
   for (;;) {
     try {
-      const real = realpathSync.native(current).split(path.sep).join('/');
+      const real = realpath(current).split(pathApi.sep).join('/');
       const suffix = [...missing].reverse().join('/');
-      result = suffix.length === 0 ? real : `${real === '/' ? '' : real}/${suffix}`;
+      result = suffix.length === 0 ? real : `${real.endsWith('/') ? real.slice(0, -1) : real}/${suffix}`;
       break;
     } catch {
-      const parent = path.posix.dirname(current);
+      const parent = pathApi.dirname(current);
       if (parent === current) {
         result = absPath; // nothing on this branch resolves — keep the literal
         break;
       }
-      missing.push(path.posix.basename(current));
+      missing.push(pathApi.basename(current));
       current = parent;
     }
   }
 
-  CANONICAL_PREFIX_CACHE.set(absPath, result);
+  if (cacheable) CANONICAL_PREFIX_CACHE.set(absPath, result);
   return result;
 }
 
@@ -2655,9 +2674,11 @@ export function canonicalizeGrantPrefix(absPath) {
  * literal spelling). Returns `null` for every ordinary relative entry.
  *
  * @param {string} entry
- * @param {{resolve?: (absPath: string) => string}} [opts] — canonicaliser for an
- *   absolute path; MUST tolerate a non-existent path (resolve the nearest
- *   existing ancestor, or return the input unchanged).
+ * @param {{resolve?: (absPath: string) => string, platform?: string}} [opts] —
+ *   `resolve`: canonicaliser for an absolute path; MUST tolerate a non-existent
+ *   path (resolve the nearest existing ancestor, or return the input unchanged).
+ *   `platform`: the `process.platform` value deciding the UNC exemption
+ *   (default: the running platform).
  * @returns {{verdict: 'error'|'warn', code: string, message: string}|null}
  */
 export function gradeScopeEntry(entry, opts = {}) {
@@ -2671,6 +2692,7 @@ export function gradeScopeEntry(entry, opts = {}) {
   if (windowsDrive) entry = entry.replace(/\\/g, '/');
   const bag = opts !== null && typeof opts === 'object' ? opts : {};
   const resolver = typeof bag.resolve === 'function' ? bag.resolve : null;
+  const platform = typeof bag.platform === 'string' ? bag.platform : process.platform;
   /** @param {string} p @returns {string} */
   const canonicalize = (p) => {
     if (resolver === null) return p;
@@ -2734,6 +2756,17 @@ export function gradeScopeEntry(entry, opts = {}) {
     ? p.replace(/\\/g, '/').replace(/^([a-z]):/, (_, d) => `${d.toUpperCase()}:`)
     : p);
   /**
+   * Trailing separators are not a spelling (Codex MED-1, #1861 home rung; #1867
+   * Rung 7): realpath drops the `/` of a directory-prefix grant, which Gate 5b
+   * honours as a subtree, so both sides are compared without it. A bare root
+   * (`/`, `C:/`) keeps its separator.
+   * @param {string} p @returns {string}
+   */
+  const trimTrailing = (p) => {
+    const trimmed = p.replace(/\/+$/, '');
+    return trimmed === '' || /^[A-Za-z]:$/.test(trimmed) ? p : trimmed;
+  };
+  /**
    * Rung 7's verdict, shared with the home rung (#1861). `comparedLength` is the
    * length of the literal prefix that was compared; everything after it is
    * re-attached to the suggestion, so a trailing `/` (the directory-prefix form
@@ -2748,12 +2781,45 @@ export function gradeScopeEntry(entry, opts = {}) {
       `("${literalPrefix}" resolves to "${canonical}"), so this grant can match NOTHING; ` +
       `write ${canonical}${normalized.slice(comparedLength)} instead`,
   });
+  /**
+   * #1916: every check above compares `normalized`, but Gate 5b feeds the RAW
+   * entry to {@link pathMatchesPattern} (`startsWith` / glob), which never
+   * collapses `.` segments or doubled separators — `/private/tmp//x/` and
+   * `/private/tmp/./x/**` match nothing there while grading `warn` here.
+   * `path.posix.normalize` keeps a trailing `/`, so the subtree form survives
+   * into the suggestion. Placed after the refusal rungs (denylist, refused home
+   * shape, canonical denylist) so their message wins; before every honoured one.
+   *
+   * UNC exemption: `path.posix.normalize` folds a leading `//` to `/`, but on
+   * Windows Gate 5b keeps it — measured 2026-11-02 (node, path.win32):
+   * `\\srv\share\x` resolves to `//srv/share/x` after the separator split, and
+   * pathMatchesPattern matches both `//srv/share/` and `//srv/share/**` there.
+   * So exactly two leading `/` followed by a server name are a UNC prefix, not
+   * a doubled separator; any `//` or `.` after it is still non-normalized.
+   * Bound to the platform (LOW-2): on POSIX the realpath candidate never
+   * starts with `//` and pathMatchesPattern returns false for such a grant, so
+   * there a leading `//` is a doubled separator like any other
+   * (`//private/tmp/x/**` → `error / non-normalized`, suggestion
+   * `/private/tmp/x/**`), not `warn … honoured by Gate 5b` (#1916).
+   * @returns {{verdict: 'error', code: string, message: string}|null}
+   */
+  const expectedSpelling = platform === 'win32' && /^\/\/[^/]/.test(entry) ? `/${normalized}` : normalized;
+  const nonNormalized = () => (expectedSpelling === entry ? null : {
+    verdict: 'error',
+    code: 'non-normalized',
+    message:
+      `contains a non-normalized absolute path: ${entry} — hooks/enforce-scope.mjs Gate 5b ` +
+      `matches the grant as written and never collapses "." segments or doubled "/", so this ` +
+      `grant can match NOTHING; write ${expectedSpelling} instead`,
+  });
 
   const home = classifyHomeGrant(rootless);
   if (home !== null) {
     if (home.verdict === 'error') {
       return { verdict: 'error', code: 'home-grant', message: `${home.reason}: ${entry}` };
     }
+    const unnormalizedHome = nonNormalized();
+    if (unnormalizedHome !== null) return unnormalizedHome;
     // #1861 (GH#82): this rung used to return `warn` unchecked, so a grant
     // written through a junction under the user folder, or in another letter
     // case, read as "honoured by Gate 5b" while Gate 5b (native realpath,
@@ -2769,7 +2835,6 @@ export function gradeScopeEntry(entry, opts = {}) {
     // a subtree, so both sides are compared without it and the suggestion
     // re-attaches it. A home grant always has ≥3 segments, so trimming never
     // reaches the root.
-    const trimTrailing = (p) => p.replace(/\/+$/, '');
     const literalHome = trimTrailing(literalPrefix);
     const homeRoot = literalHome.split('/').slice(0, 2).join('/');
     const canonicalRoot = comparable(canonicalize(homeRoot));
@@ -2803,7 +2868,17 @@ export function gradeScopeEntry(entry, opts = {}) {
     };
   }
 
-  if (comparable(canonicalPrefix) !== comparable(literalPrefix)) return nonCanonical(canonicalPrefix);
+  const unnormalized = nonNormalized();
+  if (unnormalized !== null) return unnormalized;
+
+  // #1867: compared without trailing separators, like the home rung — a literal
+  // `/data/real/` whose realpath is `/data/real` is canonical, and a symlinked
+  // `/data/link/` is suggested as `/data/real/` (the subtree form survives).
+  const literalTrimmed = trimTrailing(literalPrefix);
+  const canonicalTrimmed = trimTrailing(comparable(canonicalPrefix));
+  if (canonicalTrimmed !== comparable(literalTrimmed)) {
+    return nonCanonical(canonicalTrimmed, literalTrimmed.length);
+  }
 
   // KNOWN DIVERGENCE, carried over from #1402 and still message-only: `*` is the
   // sole wildcard this check knows, while {@link isGlobScopeEntry} ALSO counts a

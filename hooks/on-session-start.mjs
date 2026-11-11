@@ -34,6 +34,7 @@ import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { ensureOrchestratorIgnore } from './_lib/orchestrator-ignore.mjs';
@@ -167,6 +168,22 @@ function shortSessionId(id) {
 }
 
 /**
+ * #1850 — liveness of a registry-only peer, from the registry's own heartbeat.
+ * Reuses `registryEntryLiveness()` (same threshold as discovery's freshness
+ * filter), so the banner can never call a peer "finished" while the registry
+ * says it is alive. `entry` is the registry record for the peer's session id,
+ * or undefined when it was not readable (→ `unknown`).
+ *
+ * @param {object|undefined} entry
+ * @param {Function} livenessFn  `registryEntryLiveness` from session-registry.
+ * @returns {{state:'live'|'stale'|'unknown', ageMin:number|null}}
+ */
+function registryPeerLiveness(entry, livenessFn) {
+  if (!entry || typeof livenessFn !== 'function') return { state: 'unknown', ageMin: null };
+  return livenessFn(entry);
+}
+
+/**
  * GH#67 — render the provenance marker for ONE mechanically-detected peer.
  *
  * `discoverActiveSessions()` annotates registry-sourced peers additively
@@ -184,10 +201,18 @@ function shortSessionId(id) {
  * @param {{registryOnly?:boolean, lockSuperseded?:boolean, lockOwnerId?:string|null}} peer
  * @returns {string} '' for a lock-sourced peer, else a bracketed marker.
  */
-function supersessionMarker(peer) {
+function supersessionMarker(peer, liveness = { state: 'unknown', ageMin: null }) {
   if (!peer || peer.registryOnly !== true) return '';
-  if (peer.lockSuperseded === true) return ' [registry-only, superseded]';
-  return ' [registry-only]';
+  if (peer.lockSuperseded !== true) return ' [registry-only]';
+  // #1850 — "superseded" alone read as "finished" and an operator acted on it
+  // while the peer was alive. The heartbeat decides the wording; the lock hint
+  // only names who holds the lock.
+  if (liveness.state === 'live') {
+    const owner = shortSessionId(peer.lockOwnerId ?? '');
+    return ` [registry-only, lock held by ${owner}; peer heartbeat ${Math.floor(liveness.ageMin)} min ago — LIVE, coordinate before editing]`;
+  }
+  if (liveness.state === 'stale') return ' [registry-only, superseded]';
+  return ' [registry-only, superseded; liveness not measurable]';
 }
 
 /**
@@ -253,16 +278,24 @@ function flushBanner() {
 /**
  * Run a git command in cwd; return trimmed stdout. Returns null on failure
  * (including a timeout, when `timeoutMs` is given).
+ *
+ * #1934 — null alone cannot tell a timeout from "no repository" or "git
+ * missing" (all three yield `branch: 'unknown'`), so a timeout additionally
+ * calls `onTimeout`. `err.killed === true` is what execFile sets when it
+ * killed the child for exceeding `timeout` (measured git 2.56.0: SIGTERM after
+ * the bound); an exit code or ENOENT leaves it false.
  * @param {string[]} args
  * @param {string} cwd
  * @param {number} [timeoutMs] — kill the git child after this many ms (0 = no limit)
+ * @param {(() => void)|null} [onTimeout] — called once when the child was killed by the timeout
  * @returns {Promise<string|null>}
  */
-async function gitOutput(args, cwd, timeoutMs = 0) {
+async function gitOutput(args, cwd, timeoutMs = 0, onTimeout = null) {
   try {
     const { stdout } = await execFileAsync('git', args, { cwd, timeout: timeoutMs });
     return stdout.trim();
-  } catch {
+  } catch (err) {
+    if (err?.killed === true) onTimeout?.();
     return null;
   }
 }
@@ -649,12 +682,18 @@ async function deriveSemanticCandidate({ projectRoot, mode }) {
     // The merge is necessary because the host-wide registry is the single source
     // of truth for cross-repo uniqueness — two unrelated repos on the same host
     // would otherwise collide on the same default `<branch>-<date>-<mode>-1` id.
-    // Best-effort: both sources may fail; we proceed with whatever we get.
-    const { readRegistry } = await import('../scripts/lib/session-registry.mjs');
+    // Worktree-local discovery stays best-effort. The registry read is strict
+    // (#1946): an unlistable registry (EACCES, ENOTDIR, EMFILE) would drop every
+    // cross-repo candidate and could mint a label another live session already
+    // holds. On that failure the label stays null (the documented best-effort
+    // state the caller already handles) rather than risking a collision; a
+    // never-created registry (ENOENT) is a measured empty set.
+    const { readRegistryStrict } = await import('../scripts/lib/session-registry.mjs');
     const [localSessions, registryEntries] = await Promise.all([
       discoverActiveSessions(projectRoot).catch(() => []),
-      readRegistry().catch(() => []),
+      readRegistryStrict().catch(() => null),
     ]);
+    if (registryEntries === null) return null;
 
     // Registry census (#1066 AC1): the registry keeps the two identity forms in
     // SEPARATE fields — `session_id` is the RAW id (a UUID on Claude Code) and
@@ -696,7 +735,7 @@ async function deriveSemanticCandidate({ projectRoot, mode }) {
  * session-start hook never blocks.
  * @returns {Promise<{host: object, resources: object}|null>}
  */
-async function emitHostBanner(projectRoot) {
+async function emitHostBanner(projectRoot, sessionId) {
   try {
     const [{ getHostFingerprint }, { probe }] = await Promise.all([
       import('../scripts/lib/host-identity.mjs'),
@@ -704,7 +743,7 @@ async function emitHostBanner(projectRoot) {
     ]);
     const [host, resources] = await Promise.all([
       getHostFingerprint(projectRoot).catch(() => null),
-      probe({ skipProcessCounts: false }).catch(() => null),
+      probe({ skipProcessCounts: false, sessionId }).catch(() => null),
     ]);
     if (!host || !resources) return null;
 
@@ -836,10 +875,126 @@ function maybeQueueConsentNudge() {
 }
 
 // ---------------------------------------------------------------------------
+// Time budget (#1920)
+// ---------------------------------------------------------------------------
+
+/**
+ * The SessionStart kill timeout of each harness, in ms — the `timeout` (s) of
+ * the `on-session-start.mjs` entry in that harness's manifest: `hooks/hooks.json`
+ * (claude, 10), `hooks/hooks-codex.json` (codex, 5 — Codex runs these hooks
+ * synchronously), `hooks/hooks-cursor.json` (cursor, 5), `hooks/hooks-pi.json`
+ * (pi, 5). `tests/hooks/on-session-start-budget.test.mjs` reads the four
+ * manifests and fails when this table drifts from them.
+ */
+export const SESSION_START_TIMEOUT_MS = Object.freeze({ claude: 10000, codex: 5000, cursor: 5000, pi: 5000 });
+
+/**
+ * The harness timeout and the deadline in force for `platform`: the point (ms
+ * since process start, `performance.now()`) after which no OPTIONAL step is
+ * started any more, so the started event and the banner are written before
+ * the harness kills the hook. An unknown platform gets the SMALLEST timeout
+ * (fail toward skipping earlier, never toward being killed).
+ *
+ * Derivation: deadline = 0.75 × timeout (claude 7500, the 5 s harnesses 3750).
+ * On a loaded Windows host (2026-11-03, Claude, 10 s) 8 of 15 fresh starts ran
+ * past 10 s and lost both the event and the banner; the successful ones took
+ * 7.4–9.4 s. The 25 % reserve covers the required tail (payload, emit, flush,
+ * heartbeat), the `sh` launcher in front of node and the overrun of an
+ * admitted step past its admission estimate (see the CEILING below).
+ * `performance.now()` counts from process start, so Node boot and the imports
+ * are inside the budget.
+ *
+ * CEILING: one share for every host and harness, judged against advisory
+ * bounds. Revisit on either measurable signal: (a) `fresh SessionStart` runs
+ * of `scripts/ci/windows-smoke.mjs` still ending with exit 124 (the hook was
+ * killed although the deadline fired — reserve too small), or (b) more than
+ * ~10 % of `orchestrator.session.started` events carrying `hook_skipped`
+ * (HR-101: the deadline fires as routine and starves the optional steps).
+ * A killed start writes no event, so (a) is the only record of the kills.
+ *
+ * @param {string} platform  the resolved harness (`getPlatform()`)
+ * @returns {{ timeoutMs: number, deadlineMs: number }}
+ */
+export function hookBudget(platform) {
+  const timeoutMs = SESSION_START_TIMEOUT_MS[platform] ?? Math.min(...Object.values(SESSION_START_TIMEOUT_MS));
+  return { timeoutMs, deadlineMs: Math.round(timeoutMs * 0.75) };
+}
+
+/** Timeout for the git calls the hook needs before the event (#1920). */
+const GIT_TIMEOUT_MS = 2000;
+
+/** Timeout for each of the two upstream git calls (#1668). */
+const UPSTREAM_TIMEOUT_MS = 1000;
+
+/*
+ * CEILING (#1920): the bounds the steps are admitted with are ADVISORY
+ * admission estimates, not enforced limits — nothing stops a step at its
+ * bound. `BACKFILL_BOUND_MS` is declared here, not enforced by the module;
+ * `cold_start`, `reap` and `sweep` are admitted with 0 (no bound known);
+ * `PROBE_BUDGET_MS` is per-probe WORK time, and probes that block
+ * synchronously overrun it (`scripts/lib/session-start-probes.mjs`, its
+ * 2026-09-11 note: 17 non-network probes reported ≈5.8 s `durationMs`).
+ * Measured wall time of the whole probe run on this repo's ledger (macOS,
+ * unloaded, 2026-11-03, `orchestrator.probes.completed` `duration_ms`, n=130):
+ * p50 918 ms, p90 1080 ms, max 2170 ms — inside `PROBE_BUDGET_MS` +
+ * `PROBE_MARGIN_MS` = 2500 ms there; a loaded host can exceed it. The overrun
+ * is what the deadline's 25 % reserve absorbs; revisit with the signals named
+ * at `hookBudget()`.
+ */
+
+/**
+ * Admission estimate for `backfillOnSessionStart()`. The module exports no
+ * total bound (only `SESSION_START_ARCHIVE_SCAN_BUDGET_MS` = 500 for its
+ * archive scan); ~2000 ms is the cost #1920 measured and declared for it.
+ */
+const BACKFILL_BOUND_MS = 2000;
+
+/**
+ * Added to `PROBE_BUDGET_MS`: the synchronous probes block the event loop and
+ * cannot be stopped once started, so they need room beyond their own budget.
+ */
+const PROBE_MARGIN_MS = 500;
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 async function main() {
+  // #1920 — per-phase durations for the started event. Each key holds the ms
+  // since the previous mark (the first, `boot`, since process start).
+  const phaseMs = {};
+  let phaseMark = 0;
+  const markPhase = (key) => {
+    const now = performance.now();
+    phaseMs[key] = Math.round(now - phaseMark);
+    phaseMark = now;
+  };
+  // #1920 — optional steps not started because they would end past the
+  // deadline. `boundMs` is the step's declared upper bound; an unknown bound
+  // (a module without the constant) counts as 0, i.e. skip only once the
+  // deadline has passed.
+  //
+  // getPlatform() ALREADY implements the SO_PLATFORM override as step 1 of its
+  // precedence — and, unlike a bare `??`, it validates the value against the
+  // four-platform allowlist and trims it. The former `process.env.SO_PLATFORM ??
+  // getPlatform()` therefore added nothing except the empty-string trap
+  // (`.claude/rules/development.md` § Env-var fallback whitespace trap): a key
+  // exported as `SO_PLATFORM=` is not nullish, so `??` short-circuited and this
+  // hook stamped `platform: ''` on the session event and handed '' down to the
+  // update probe. Measured 2026-09-06 by the codex test below.
+  // #1920: resolved here, before the first gate, because the deadline is the
+  // harness's own SessionStart timeout (Codex/Cursor/Pi kill at 5 s, Claude 10 s).
+  const platform = getPlatform();
+  const { timeoutMs: hookTimeoutMs, deadlineMs: hookDeadlineMs } = hookBudget(platform);
+  const skipped = [];
+  const overBudget = (step, boundMs) => {
+    const bound = Number.isFinite(boundMs) ? boundMs : 0;
+    if (performance.now() + bound <= hookDeadlineMs) return false;
+    skipped.push(step);
+    return true;
+  };
+  markPhase('boot');
+
   // #1605 — the root depends on the payload `source`/`cwd`/`session_id`, so the
   // optional stdin payload is read BEFORE the first writer below. Best-effort:
   // readStdinJson resolves null on a closed/empty/unparseable stdin and caps
@@ -854,21 +1009,36 @@ async function main() {
   // so the runtime state never shows up in `git status`. Bootstrapped repos
   // pay two existsSync and nothing else. Never throws.
   await ensureOrchestratorIgnore(projectRoot);
+  markPhase('input');
+
+  // #1934 — which git call (required toplevel/branch, deadline-gated head_sha/upstream) hit its timeout, in call order, from the
+  // vocabulary toplevel|branch|head_sha|upstream. OMITTED from the event when
+  // empty (absent ≠ measured-empty), like `hook_skipped`. `branch` keeps its
+  // 'unknown' fallback; this field is what tells a timeout apart from no repo.
+  // Ceiling: a toplevel timeout leaves `topLevel` null, so `needsBootstrap`
+  // below reads false and an un-bootstrapped repo gets the "Next step" line
+  // instead of the /bootstrap hint on that start. Revisit when an event with
+  // `hook_git_timeouts` containing `toplevel` is seen on an un-bootstrapped repo.
+  const gitTimeouts = [];
+  const recordGitTimeout = (step) => () => { if (!gitTimeouts.includes(step)) gitTimeouts.push(step); };
 
   // Resolve project name: basename of git toplevel, falling back to cwd basename.
-  const topLevel = await gitOutput(['rev-parse', '--show-toplevel'], projectRoot);
+  // #1920: bounded — a timeout returns null like any git failure (cwd basename).
+  const topLevel = await gitOutput(['rev-parse', '--show-toplevel'], projectRoot, GIT_TIMEOUT_MS, recordGitTimeout('toplevel'));
   const projectName = topLevel
     ? topLevel.split(/[/\\]/).filter(Boolean).pop() ?? 'unknown'
     : projectRoot.split(/[/\\]/).filter(Boolean).pop() ?? 'unknown';
 
   // Resolve current branch; fall back to "unknown" when detached HEAD or no git.
-  const branch = (await gitOutput(['branch', '--show-current'], projectRoot)) ?? 'unknown';
+  const branch = (await gitOutput(['branch', '--show-current'], projectRoot, GIT_TIMEOUT_MS, recordGitTimeout('branch'))) ?? 'unknown';
 
   // #1443 — the commit this session started on, the fallback source for
   // `session_start_ref` (STATE.md's `session-start-ref` had no writer). Kept
   // only when it is a full object name; no repo, an unborn HEAD or a missing
   // git leaves it null and the payload key is OMITTED, never fabricated.
-  const rawHeadSha = await gitOutput(['rev-parse', 'HEAD'], projectRoot);
+  const rawHeadSha = overBudget('head_sha', GIT_TIMEOUT_MS)
+    ? null
+    : await gitOutput(['rev-parse', 'HEAD'], projectRoot, GIT_TIMEOUT_MS, recordGitTimeout('head_sha'));
   const headSha = rawHeadSha && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(rawHeadSha) ? rawHeadSha : null;
 
   // #1668 — the upstream state at start, so emit-session can tell a stale
@@ -878,16 +1048,32 @@ async function main() {
   // a non-numeric count → BOTH keys omitted (not measured), never 0.
   let upstreamSha = null;
   let behind = null;
-  if (headSha) {
+  if (headSha && !overBudget('upstream', UPSTREAM_TIMEOUT_MS)) {
     const [rawUpstream, rawBehind] = await Promise.all([
-      gitOutput(['rev-parse', '--verify', '--quiet', '@{u}^{commit}'], projectRoot, 1000),
-      gitOutput(['rev-list', '--count', 'HEAD..@{u}'], projectRoot, 1000),
+      gitOutput(['rev-parse', '--verify', '--quiet', '@{u}^{commit}'], projectRoot, UPSTREAM_TIMEOUT_MS, recordGitTimeout('upstream')),
+      gitOutput(['rev-list', '--count', 'HEAD..@{u}'], projectRoot, UPSTREAM_TIMEOUT_MS, recordGitTimeout('upstream')),
     ]);
     if (rawUpstream && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(rawUpstream) && rawBehind && /^\d+$/.test(rawBehind)) {
       upstreamSha = rawUpstream;
       behind = Number(rawBehind);
     }
   }
+  markPhase('git');
+
+  // v3.1.0 multi-session registry (#168). All steps best-effort — failures
+  // must never break the hook, which is informational-only.
+  // #1091 — the native SessionStart `source` (Claude Code: startup|resume|
+  // clear|compact), plus the linkage decision resolveSessionId() derived from
+  // it (see SAME_LOGICAL_SESSION_SOURCES). Both are surfaced on the event so
+  // #1091 gets its measurement instead of an inference.
+  // #1641: the Claude Code process survives /clear while the raw id and the
+  // semantic label are minted anew — its pid is the witness that a live lock,
+  // or the current-session.json entry (#1746), is our own predecessor's.
+  // Admitted only as this hook's direct parent: a Codex child of a Claude
+  // session inherits the variable.
+  const claudePid = readClaudePid();
+  const { sessionId, semanticSessionId, mode, nativeSource, resumeLinkage, predecessorSessionId, predecessorProcess } =
+    await resolveSessionId(input, projectRoot, claudePid);
 
   // v3.1.0 env-aware banner (opt-out via enable-host-banner: false in Session Config).
   // The ask-via-tool nudge rides the same opt-out flag — both are coordinator
@@ -906,7 +1092,7 @@ async function main() {
     && !existsSync(path.join(topLevel, '.orchestrator', 'bootstrap.lock'))
     && !existsSync(path.join(projectRoot, '.orchestrator', 'bootstrap.lock'));
   if (hostBannerEnabled) {
-    bannerData = await emitHostBanner(projectRoot);
+    bannerData = await emitHostBanner(projectRoot, sessionId);
     // AUQ-001 in plain words (#1559): name the command when nothing is
     // blocked, read available answers from config / STATE.md / git, and ask
     // only when blocked — then with the question tool, never as a prose list.
@@ -927,7 +1113,8 @@ async function main() {
   // defaults so this code is safe to ship before the config schema lands.
   try {
     const coldStartCfg = await readColdStartConfig(projectRoot);
-    if (coldStartCfg.enabled !== false) {
+    // #1920: past the deadline the marker stays and re-arms on the next start.
+    if (coldStartCfg.enabled !== false && !overBudget('cold_start', 0)) {
       const decision = await detectColdStart({
         repoRoot: projectRoot,
         nudgeAfterHours: coldStartCfg['nudge-after-hours'] ?? 1,
@@ -949,30 +1136,9 @@ async function main() {
       }
     }
   } catch { /* silent — cold-start nudge must never block the hook */ }
+  markPhase('banner');
 
-  // v3.1.0 multi-session registry (#168). All steps best-effort — failures
-  // must never break the hook, which is informational-only.
-  // #1091 — the native SessionStart `source` (Claude Code: startup|resume|
-  // clear|compact), plus the linkage decision resolveSessionId() derived from
-  // it (see SAME_LOGICAL_SESSION_SOURCES). Both are surfaced on the event so
-  // #1091 gets its measurement instead of an inference.
-  // #1641: the Claude Code process survives /clear while the raw id and the
-  // semantic label are minted anew — its pid is the witness that a live lock,
-  // or the current-session.json entry (#1746), is our own predecessor's.
-  // Admitted only as this hook's direct parent: a Codex child of a Claude
-  // session inherits the variable.
-  const claudePid = readClaudePid();
-  const { sessionId, semanticSessionId, mode, nativeSource, resumeLinkage, predecessorSessionId, predecessorProcess } =
-    await resolveSessionId(input, projectRoot, claudePid);
-  // getPlatform() ALREADY implements the SO_PLATFORM override as step 1 of its
-  // precedence — and, unlike a bare `??`, it validates the value against the
-  // four-platform allowlist and trims it. The former `process.env.SO_PLATFORM ??
-  // getPlatform()` therefore added nothing except the empty-string trap
-  // (`.claude/rules/development.md` § Env-var fallback whitespace trap): a key
-  // exported as `SO_PLATFORM=` is not nullish, so `??` short-circuited and this
-  // hook stamped `platform: ''` on the session event and handed '' down to the
-  // update probe. Measured 2026-09-06 by the codex test below.
-  const platform = getPlatform();
+  // `platform` is resolved at the top of main() (#1920: the deadline needs it).
 
   // Epic #583 P3 — mechanical session.lock writer (closes D1+D2+D4 gaps).
   // Bootstrap the session-lock so discoverActiveSessions() picks us up even
@@ -988,7 +1154,18 @@ async function main() {
       sessionId,
       semanticSessionId,
       mode,
-      ttlHours: 4,
+      // #1889/#1919 — on Codex (minimum 0.160) a one-shot `codex exec` run
+      // releases its lock at its Stop (on-stop.mjs, keyed on the rollout
+      // marker in scripts/lib/codex/rollout-meta.mjs), and every session,
+      // interactive ones included, releases and deregisters at SessionEnd
+      // (on-session-end.mjs, wired in hooks-codex.json; fired on codex-cli
+      // 0.160.1, measured 2026-11-02). A crash or a kill skips SessionEnd, and
+      // then only the TTL reaps the lock (`isLockLive` reads
+      // `lock.ttl_hours`), so 0.5 h bounds a leaked lock. CEILING: a
+      // single Codex turn, or an idle gap between two turns, longer than
+      // 30 min makes a live interactive session look stale — Stop is the
+      // only heartbeat on Codex (no UserPromptSubmit is wired there).
+      ttlHours: platform === 'codex' ? 0.5 : 4,
       nativeSource,
       // The raw session_id the last session start in this checkout recorded —
       // our own previous run unless a peer started here since. It is the
@@ -1019,15 +1196,18 @@ async function main() {
   // by the reaper's live-lock guard (fresh heartbeat) AND the currentSessionId
   // guard, so this can never touch it. Best-effort: any failure is swallowed —
   // the hook is informational-only and must never block.
-  try {
-    const { reapRepoLock } = await import('../scripts/lib/lock-reaper.mjs');
-    await reapRepoLock({
-      repoRoot: projectRoot,
-      currentSessionId: sessionId,
-      dryRun: false,
-      reapMode: 'auto-own-repo',
-    });
-  } catch { /* hook must remain non-blocking */ }
+  if (!overBudget('reap', 0)) {
+    try {
+      const { reapRepoLock } = await import('../scripts/lib/lock-reaper.mjs');
+      await reapRepoLock({
+        repoRoot: projectRoot,
+        currentSessionId: sessionId,
+        dryRun: false,
+        reapMode: 'auto-own-repo',
+      });
+    } catch { /* hook must remain non-blocking */ }
+  }
+  markPhase('lock');
 
   // Epic #926 — close-through backfill at SessionStart (decoupled from /close).
   // hooks/on-session-end.mjs already backfills, but SessionEnd only fires on a
@@ -1048,19 +1228,27 @@ async function main() {
   //
   // Best-effort like every other probe here: any failure is swallowed so a
   // backfill problem can never block a session start.
-  try {
-    const { backfillOnSessionStart } = await import('../scripts/backfill-abandoned-sessions.mjs');
-    await backfillOnSessionStart({ repoRoot: projectRoot, ownSessionIds: [sessionId, semanticSessionId] });
-  } catch { /* hook must remain non-blocking */ }
+  // #1920: skipped when it could end past the deadline — the next start or
+  // SessionEnd backfills instead.
+  if (!overBudget('backfill', BACKFILL_BOUND_MS)) {
+    try {
+      const { backfillOnSessionStart } = await import('../scripts/backfill-abandoned-sessions.mjs');
+      await backfillOnSessionStart({ repoRoot: projectRoot, ownSessionIds: [sessionId, semanticSessionId] });
+    } catch { /* hook must remain non-blocking */ }
+  }
+  markPhase('backfill');
 
   let peers = [];
+  let peersMeasured = false;
   // GH#67 consumer half — how many mechanically-detected peers were registry-
   // sourced entries that a LIVE lock at this root supersedes. Counted for the
   // session.started payload below; NEVER subtracted from any peer count
   // (HR-106: the banner reports the number the verdict judged).
-  let mechanicalPeersSuperseded = 0;
+  // #1934: null = not measured (discovery did not run or failed) → the payload
+  // OMITS `peers_superseded`; only a completed discoverActiveSessions() sets it.
+  let mechanicalPeersSuperseded = null;
   try {
-    await sweepZombies().catch(() => ({ removed: [], logged: 0 }));
+    if (!overBudget('sweep', 0)) await sweepZombies().catch(() => ({ removed: [], logged: 0 }));
     try {
       await registerSelf({
         sessionId,
@@ -1082,14 +1270,30 @@ async function main() {
       // Do NOT throw, do NOT write to stderr: the hook is informational-only.
       logSweepEvent({ event: 'register-failed', session_id: sessionId, error: err?.message ?? String(err) });
     }
-    peers = await detectPeers({ sessionId }).catch(() => []);
-  } catch { /* swallow — hook must remain non-blocking */ }
+    // #1946 — strict read: an unlistable registry (EACCES, ENOTDIR, EMFILE)
+    // leaves `peersMeasured` false, so `peer_count` and `recent_starts_count`
+    // are OMITTED from the event instead of reporting the empty list as 0.
+    peers = await detectPeers({ sessionId, strict: true });
+    peersMeasured = true;
+  } catch { /* swallow — hook must remain non-blocking; not measured */ }
   // #1650 — foreign starts inside the window. detectPeers() already excludes
   // self, and its 15-min freshness covers the 5-min window (see helper JSDoc).
-  const recentStarts = countRecentStarts(peers, { windowMin: START_WAVE_WINDOW_MIN });
+  const recentStarts = peersMeasured ? countRecentStarts(peers, { windowMin: START_WAVE_WINDOW_MIN }) : null;
 
   // Append a peer line to the host banner when a banner was already emitted
   // and at least one peer is live on this host.
+  //
+  // #1934 — why the display gates here and below (peer lines, navigator,
+  // mechanical peer lines, probe lines, update line, deadline line) key on
+  // `bannerData` and not on `hostBannerEnabled`: NOT a technical need —
+  // pushBanner()/flushBanner() assemble the systemMessage without it. It is a
+  // display choice: these lines extend the Host/Resources header and stay
+  // silent with it, so `bannerData` null (opt-out OR `emitHostBanner()` failing
+  // on its own) silences them too. Only the measurements must not ride it.
+  // Ceiling: on a failed host probe the peer-collision lines are lost along
+  // with the header. Switching to `hostBannerEnabled` would show them headless
+  // and changes behaviour on that path. Revisit on an operator report or a
+  // measurement of a peer-collision line lost to a failed host probe.
   if (bannerData && peers.length > 0) {
     // #1052 A3a — split peers by the axis that actually decides behaviour.
     //
@@ -1174,20 +1378,53 @@ async function main() {
   // banners coexist: the v3.1.0 line above is per-host; this one is per-repo
   // (mechanical, worktree-scoped) and uses the merged lock + registry source.
   //
-  // Gated on `bannerData` (i.e., enable-host-banner: true) to respect the
-  // documented opt-out semantics — a user who silenced session-start
-  // banners has opted out of ALL session-start banners, including this one.
-  // The mechanical lock + STATE.md peer-guard remain active regardless;
-  // only the operator-visibility banner is silenced.
-  // Best-effort: any failure (import, listWorktrees timeout, etc.) is
-  // swallowed — the banner is purely informational.
-  if (bannerData) {
+  // #1934: the MEASUREMENT runs whatever the display preference, like the
+  // probes below — `enable-host-banner: false` (or a failed host probe, both
+  // leave `bannerData` null) silences only the `pushBanner` lines and the
+  // display-only registry liveness read. Before, the whole block was gated on
+  // `bannerData` and the event carried an unmeasured `peers_superseded: 0`.
+  // The mechanical lock + STATE.md peer-guard remain active regardless.
+  // Best-effort: any failure (import, discovery throws) is swallowed and
+  // leaves `peers_superseded` OMITTED (not measured), never 0.
+  //
+  // #1920: skipped when its race timeout could end past the deadline; the
+  // payload then OMITS `peers_superseded` too.
+  markPhase('peers');
+  let discoveryMod = null;
+  try {
+    discoveryMod = await import('../scripts/lib/session-discovery.mjs');
+  } catch { /* best effort — not measured, never blocks */ }
+  if (discoveryMod && !overBudget('discovery', discoveryMod.DEFAULT_DISCOVERY_TIMEOUT_MS)) {
     try {
-      const { discoverActiveSessions } = await import('../scripts/lib/session-discovery.mjs');
-      const allActive = await discoverActiveSessions(projectRoot);
+      const { discoverActiveSessionsMeasured } = discoveryMod;
+      const { sessions: allActive, registryRead, worktreesListed } = await discoverActiveSessionsMeasured(projectRoot);
       const mechanicalPeers = allActive.filter((s) => s.sessionId !== sessionId);
-      mechanicalPeersSuperseded = mechanicalPeers.filter((p) => p.lockSuperseded === true).length;
-      if (mechanicalPeers.length > 0) {
+      // #1941: discovery resolves with a PARTIAL set when its worktree listing
+      // loses the race (lock-only fallback, registry never read) or the
+      // registry read fails. Only registry-sourced peers can carry
+      // `lockSuperseded`, so a count over that subset is not a measurement:
+      // leave it null → `peers_superseded` OMITTED. The banner lines below keep
+      // showing whatever was found.
+      if (registryRead && worktreesListed) {
+        mechanicalPeersSuperseded = mechanicalPeers.filter((p) => p.lockSuperseded === true).length;
+      }
+      // #1850 — the registry heartbeat of every superseded registry-only peer,
+      // read once. A read failure leaves the map empty → `unknown`, never
+      // "finished". Display only, so skipped without a banner.
+      let registryById = new Map();
+      let livenessFn = null;
+      if (bannerData && mechanicalPeersSuperseded > 0) {
+        try {
+          const reg = await import('../scripts/lib/session-registry.mjs');
+          livenessFn = reg.registryEntryLiveness;
+          registryById = new Map((await reg.readRegistry()).map((e) => [e.session_id, e]));
+        } catch { /* best effort — unknown liveness */ }
+      }
+      const livenessOf = (p) => registryPeerLiveness(registryById.get(p.sessionId), livenessFn);
+      const supersededLiveness = mechanicalPeers
+        .filter((p) => p.registryOnly === true && p.lockSuperseded === true)
+        .map((p) => livenessOf(p).state);
+      if (bannerData && mechanicalPeers.length > 0) {
         // #1137 part 1 — say WHERE, not just how many. discoverActiveSessions()
         // walks EVERY path `git worktree list` reports, which includes worktrees
         // another coordinator parked outside this working copy (e.g. under
@@ -1210,17 +1447,30 @@ async function main() {
             // a lock written without the field yields undefined here, while
             // sessionFromRegistryEntry() always defaults it to 'session'.
             const mode = typeof p.mode === 'string' && p.mode.length > 0 ? `:${p.mode}` : '';
-            return `${where}:${shortSessionId(p.sessionId)}${mode}${supersessionMarker(p)}`;
+            return `${where}:${shortSessionId(p.sessionId)}${mode}${supersessionMarker(p, livenessOf(p))}`;
           })
           .join(', ');
         const overflow = mechanicalPeers.length > 3 ? ` +${mechanicalPeers.length - 3} more` : '';
         pushBanner(`🔍 Mechanical peer-detection: ${mechanicalPeers.length} active in this repo's worktree set (${summary}${overflow})`);
-        if (mechanicalPeersSuperseded > 0) {
-          pushBanner(`   ${mechanicalPeersSuperseded} of them registry-only and superseded by this root's live lock — likely a finished task without SessionEnd (GH#67). Still counted above: the session lock is advisory.`);
+        // #1850 — one explanation line per liveness class, so this block never
+        // contradicts the "coordinate before editing" line above: only a
+        // MEASURED stale heartbeat may be called a likely finished task.
+        const nLive = supersededLiveness.filter((st) => st === 'live').length;
+        const nStale = supersededLiveness.filter((st) => st === 'stale').length;
+        const nUnknown = supersededLiveness.filter((st) => st === 'unknown').length;
+        if (nLive > 0) {
+          pushBanner(`   ${nLive} of them registry-only without this root's lock, but the registry heartbeat is fresh — LIVE: coordinate before editing, do not treat as finished (#1850).`);
+        }
+        if (nStale > 0) {
+          pushBanner(`   ${nStale} of them registry-only and superseded by this root's live lock — likely a finished task without SessionEnd (GH#67). Still counted above: the session lock is advisory.`);
+        }
+        if (nUnknown > 0) {
+          pushBanner(`   ${nUnknown} of them registry-only and superseded by this root's live lock; liveness not measurable — treat as live until shown otherwise. Still counted above: the session lock is advisory.`);
         }
       }
     } catch { /* best effort — banner is informational, never blocks */ }
   }
+  markPhase('discovery');
 
   // Phase 4 measurement probes — the mechanical caller (#1128).
   //
@@ -1253,13 +1503,18 @@ async function main() {
   // display preference would rebuild that blind spot behind a config key.
   if (process.env.SO_DISABLE_STARTUP_PROBES !== '1') {
     try {
-      const { runSessionStartProbes } = await import('../scripts/lib/session-start-probes.mjs');
-      const probeRun = await runSessionStartProbes({ repoRoot: projectRoot });
-      if (bannerData) {
-        for (const line of probeRun.bannerLines) pushBanner(line);
+      const { runSessionStartProbes, PROBE_BUDGET_MS } = await import('../scripts/lib/session-start-probes.mjs');
+      // #1920: the synchronous probes cannot be stopped once started — start
+      // them only when their budget plus a margin still fits.
+      if (!overBudget('probes', PROBE_BUDGET_MS + PROBE_MARGIN_MS)) {
+        const probeRun = await runSessionStartProbes({ repoRoot: projectRoot });
+        if (bannerData) {
+          for (const line of probeRun.bannerLines) pushBanner(line);
+        }
       }
     } catch { /* hook must remain non-blocking */ }
   }
+  markPhase('probes');
 
   // Plugin-update probe (#nnn, d7 R2) — "is the plugin that is RUNNING behind
   // the plugin that is PUBLISHED?".
@@ -1280,37 +1535,78 @@ async function main() {
   // cache and kill-switch behaviour live in the module.
   let pluginUpdate = null;
   try {
-    const { checkPluginUpdate } = await import('../scripts/lib/plugin-update-banner.mjs');
-    pluginUpdate = await checkPluginUpdate({
-      cacheDir: path.join(projectRoot, '.orchestrator', 'runtime'),
-      // The probe's own fallback is env-only (SO_PLATFORM, then each harness's
-      // compat var) and cannot run detectPlatform()'s step 4, the marker-
-      // directory walk from cwd. This hook already resolved the platform at the
-      // top of run() through exactly that full precedence, so handing it over
-      // makes the remedy instruction MEASURED rather than guessed — a Codex or
-      // Cursor consumer with no compat var set would otherwise be told to run
-      // `/plugin update`, a command its harness does not have.
-      platform,
-    });
+    const { checkPluginUpdate, isUpdateCheckDisabled, readCachedLatest, FETCH_TIMEOUT_MS } =
+      await import('../scripts/lib/plugin-update-banner.mjs');
+    const updateCacheDir = path.join(projectRoot, '.orchestrator', 'runtime');
+    const updateNow = Date.now();
+    // #1934: a fresh cache answers without the network, so it needs no fetch
+    // time — the fetch bound is reserved only on a cache miss. Before, a start
+    // at 6 s skipped the check although the cache could have answered.
+    const cacheFresh = !isUpdateCheckDisabled() && readCachedLatest({ cacheDir: updateCacheDir, now: updateNow }) !== null;
+    // #1920: a switched-off check is not a skipped one — it runs (and returns
+    // at once) as before; only a wanted check is gated on the deadline.
+    if (isUpdateCheckDisabled() || cacheFresh || !overBudget('update_check', FETCH_TIMEOUT_MS)) {
+      pluginUpdate = await checkPluginUpdate({
+        cacheDir: updateCacheDir,
+        now: updateNow,
+        // Admitted on the cache alone: a cache-only fetcher, so a file that
+        // vanishes between the two reads can never start a request past the
+        // deadline (the check then stays silent, as on any fetch failure).
+        ...(cacheFresh ? { fetchImpl: async () => null } : {}),
+        // The probe's own fallback is env-only (SO_PLATFORM, then each harness's
+        // compat var) and cannot run detectPlatform()'s step 4, the marker-
+        // directory walk from cwd. This hook already resolved the platform at the
+        // top of run() through exactly that full precedence, so handing it over
+        // makes the remedy instruction MEASURED rather than guessed — a Codex or
+        // Cursor consumer with no compat var set would otherwise be told to run
+        // `/plugin update`, a command its harness does not have.
+        platform,
+      });
+    }
     if (pluginUpdate && bannerData) pushBanner(pluginUpdate.message);
   } catch { /* hook must remain non-blocking */ }
+  markPhase('update_check');
+
+  // #1920 — one line naming what the deadline skipped, gated like every other
+  // section (the measurement in the event is not).
+  if (skipped.length > 0 && bannerData) {
+    const steps = skipped.map((s) => s.replace('_', ' ')).join(', ');
+    const atSec = (performance.now() / 1000).toFixed(1);
+    const budgetSec = hookTimeoutMs / 1000;
+    pushBanner(`ℹ SessionStart: ${steps} skipped — hook at ${atSec} s of its ${budgetSec} s budget (#1920)`);
+  }
 
   const payload = {
     platform,
     project: projectName,
     branch,
     session_id: sessionId,
-    peer_count: peers.length,
+    // #1946: OMITTED when the registry could not be read (not measured).
+    ...(peersMeasured ? { peer_count: peers.length } : {}),
     // GH#67 — additive: how many mechanically-detected peers a live lock at
     // this root supersedes. `peer_count` is deliberately unchanged; this field
     // makes the supersession rate measurable instead of inferred (HR-105).
-    peers_superseded: mechanicalPeersSuperseded,
+    // #1934: OMITTED whenever discovery did not complete (not measured).
+    ...(mechanicalPeersSuperseded !== null ? { peers_superseded: mechanicalPeersSuperseded } : {}),
     // #1650 — start-wave signal (HR-105): foreign registry entries whose
     // started_at lies within the last `recent_starts_window_min` minutes.
-    recent_starts_count: recentStarts,
-    recent_starts_window_min: START_WAVE_WINDOW_MIN,
+    // #1946: OMITTED together with its window when the registry was unread.
+    ...(recentStarts !== null
+      ? { recent_starts_count: recentStarts, recent_starts_window_min: START_WAVE_WINDOW_MIN }
+      : {}),
   };
   if (headSha) payload.head_sha = headSha;
+  // #1889 — measurement for the Codex lock leak: which root the lock went to
+  // relative to the hook's cwd, and whether an inherited launch-dir variable
+  // (read first by resolveProjectDir) was present. Booleans only — never the
+  // values. Codex-only, OMITTED elsewhere.
+  if (platform === 'codex') {
+    payload.claude_project_dir_set = Boolean(process.env.CLAUDE_PROJECT_DIR);
+    payload.codex_project_dir_set = Boolean(process.env.CODEX_PROJECT_DIR);
+    try {
+      payload.lock_root_matches_cwd = path.resolve(projectRoot) === path.resolve(resolveSessionRoot(input?.cwd));
+    } catch { /* unmeasurable — omitted */ }
+  }
   if (upstreamSha !== null) {
     payload.upstream_sha = upstreamSha;
     payload.behind = behind;
@@ -1376,11 +1672,20 @@ async function main() {
     // into a standing 10%-firing-rate audit.
     payload.ram_available_gb = bannerData.resources.ram_available_gb ?? null;
     payload.memory_pressure_pct_free = bannerData.resources.memory_pressure_pct_free ?? null;
-    payload.peer_sessions_count = bannerData.resources.peer_sessions_count ?? null;
+    // #1946: null from the probe = registry not readable → key OMITTED, so a
+    // reader never sees an unmeasured count; a number (0 included) is written.
+    if (typeof bannerData.resources.peer_sessions_count === 'number') {
+      payload.peer_sessions_count = bannerData.resources.peer_sessions_count;
+    }
   }
   // #1183 — a malformed record throws EventValidationError BEFORE any side
   // effect (scripts/lib/events.mjs); this hook must never abort on that, so
   // the emit is wrapped rather than left to propagate.
+  // #1920 — where the time went, and what the deadline skipped. `hook_skipped`
+  // is OMITTED when nothing was skipped (absent ≠ measured-empty).
+  payload.hook_phase_ms = { ...phaseMs, total: Math.round(performance.now()) };
+  if (skipped.length > 0) payload.hook_skipped = [...skipped];
+  if (gitTimeouts.length > 0) payload.hook_git_timeouts = [...gitTimeouts];
   try {
     await emitEvent('orchestrator.session.started', payload);
   } catch { /* telemetry never blocks the hook (#1183) */ }
