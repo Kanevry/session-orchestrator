@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-10T23:18:48.019Z",
-  "head": "58d9de6a65ec1c9ba8cad63d0dd4e1021e06a118",
+  "generated_at": "2026-11-11T08:15:28.872Z",
+  "head": "6a1b7502b78c96d9aa8b19d7572462c4569daf4c",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",

@@ -139,4 +139,30 @@ jobs:
         run: npm audit signatures
 
       - name: Publish with provenance
-        run: npm publish --provenance --access public
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          # Only two strict shapes are published. A plain X.Y.Z goes to `latest`. A
+          # prerelease X.Y.Z-<id>.N (e.g. 5.18.1-probe.0, the #1906 rehearsal) goes out
+          # under dist-tag <id>, so `latest` never moves to it; <id> is lowercase,
+          # at least two characters, not `latest`; the common range shapes `x`, `v<digit>…`
+          # and `vx` fail early here. This is not a complete range test: npm itself refuses
+          # any tag that semver.validRange reads as a range (e.g. `vv1`) before it publishes
+          # (lib/commands/publish.js), so such a run fails without publishing either way.
+          # Anything else, including build metadata (release.mjs only ever writes X.Y.Z)
+          # and npm's loose forms (`1.2.3beta.0`), fails here, before npm normalises the
+          # version: fail closed, nothing is published.
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            npm publish --provenance --access public
+          elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-([a-z][a-z0-9-]+)\.[0-9]+$ ]]; then
+            # Copy the capture first: every later [[ =~ ]] overwrites BASH_REMATCH.
+            dist_tag="${BASH_REMATCH[1]}"
+            if [ "$dist_tag" = latest ] || [[ "$dist_tag" =~ ^v[0-9x] ]]; then
+              echo "::error::prerelease $version yields an unusable dist-tag ($dist_tag)"
+              exit 1
+            fi
+            echo "prerelease $version -> dist-tag $dist_tag"
+            npm publish --provenance --access public --tag "$dist_tag"
+          else
+            echo "::error::version $version is neither X.Y.Z nor X.Y.Z-<id>.N with a lowercase <id> of two or more characters"
+            exit 1
+          fi
