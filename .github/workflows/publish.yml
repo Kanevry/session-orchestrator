@@ -12,10 +12,14 @@
 #             or `--direct`; the run is a no-op and succeeds), 404 →
 #             publish=true, anything else → the job fails.
 #   publish — only when guard says publish=true. Bound to the environment
-#             `npm-publish`, whose required reviewer approves the run: that is
-#             the human gate. npm trusts the OIDC identity GitHub issues to
-#             this repository, this workflow file and that environment, so no
-#             npm token or secret exists here.
+#             `npm-publish`, which admits only `v*` tags (deployment policy)
+#             and, since 2026-11-11, has no required reviewer: on the owner's
+#             word releases run unattended (#1906). npm trusts the OIDC
+#             identity GitHub issues to this repository, this workflow file
+#             and that environment, so no npm token or secret exists here.
+#             What stands in for the click: the tag rule, this guard, and the
+#             pre-push hook, which lets a `github` tag through only on a proven
+#             curated snapshot or a version-only probe on one.
 #
 # `scripts/release.mjs --publish --trusted` hands the publish
 # to this workflow and verifies the result, provenance included, on the

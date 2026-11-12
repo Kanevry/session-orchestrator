@@ -514,6 +514,16 @@ under four contracts, all of them consequences of the four merge rules above:
    absorbed date stays absorbed after its prose is gone, and all 7 live
    sentences carry that number.
 
+**The `description:` is reported, never rewritten (#2023).** It is authored
+summary prose — it may enumerate the very lessons a rewrite removes — and no
+sweep can regenerate it honestly. Every `reason: 'expired-entries'` rewrite
+therefore carries `descriptionReview: { removedHeadings, remainingEntries,
+countWord? }`; `countWord` (`{ found, value, remaining }`) appears only when the
+description's first count word (English two–twelve, German zwei–zwölf) or bare
+number 2–99 differs from the remaining entry count. The CLI prints one
+`description <file>:` line per such plan and passes the field unchanged in
+`--json`; the hint is a matcher, not a parser, so a human edits the description.
+
 `--apply` emits `orchestrator.rules.expiry_sweep_applied` after the writes
 succeed (see `docs/events-schema.md`); a dry run emits nothing.
 

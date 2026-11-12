@@ -201,6 +201,16 @@ async function main(argv) {
     for (const s of plan.skipped) process.stdout.write(`  skipped ${s.file}: ${s.reason}\n`);
     for (const p of plan.plans) {
       if (p.advisory) process.stdout.write(`  advisory ${p.file}: ${p.advisory}\n`);
+      // #2023: the sweep never rewrites `description:`, so name what it dropped.
+      const r = p.descriptionReview;
+      if (r) {
+        const hint = r.countWord
+          ? `description nennt "${r.countWord.found}" (${r.countWord.value}), ${r.countWord.remaining} Eintrag/Einträge bleiben`
+          : 'description prüfen';
+        process.stdout.write(
+          `  description ${p.file}: entfernt ${r.removedHeadings.map((h) => `"${h}"`).join(', ')} — ${hint}\n`,
+        );
+      }
     }
   }
 

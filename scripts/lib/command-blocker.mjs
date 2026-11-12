@@ -693,6 +693,8 @@ function resolveFdOperandRedirects(tokens) {
 
 /** A function-definition head `name()` — its body is a compound command. */
 const FUNCTION_HEAD_RE = /^[^\s()$`'"]+\(\)$/;
+// A dequoted glued head whose name had quotes: any name without parentheses (#2037).
+const QUOTED_GLUED_HEAD_RE = /^[^()]*\(\)$/;
 
 /**
  * Is the word at index `end` of `sink` (default: the NEXT word pushed) in
@@ -942,6 +944,9 @@ function lexTokens(command, heredocNesting) {
   };
   let started = false;     // a token is in progress
   let sawQuote = false;    // any char of the current token came from inside quotes
+  // #2038 class 4: a quote opened in the current token, even an empty one
+  // (`!''`): the word is no reserved word, though no char came from inside.
+  let quoteOpened = false;
   // Leading UNQUOTED `{` characters of the current token (#1707 point 2). For a
   // token that is otherwise quoted (`{"unlink"`) the `quoted` flag cannot say
   // whether its first `{` was bare, so the count rides on the token.
@@ -1021,12 +1026,14 @@ function lexTokens(command, heredocNesting) {
       if (subs.length > 0) Object.defineProperty(tok, 'substitutions', { value: subs, enumerable: false });
       if (dataWord) Object.defineProperty(tok, 'data', { value: true, enumerable: false });
       if (ifsSplit) Object.defineProperty(tok, 'ifsSplit', { value: true, enumerable: false });
+      if (quoteOpened && !sawQuote) Object.defineProperty(tok, 'quoteMark', { value: true, enumerable: false });
       sink.push(tok);
       text = '';
       parts = [];
       subs = [];
       started = false;
       sawQuote = false;
+      quoteOpened = false;
       dataWord = false;
       braceLead = 0;
     }
@@ -1037,8 +1044,8 @@ function lexTokens(command, heredocNesting) {
   // word in progress (`x=` in `x=$(…)`, or the double-quoted run around
   // `"$(…)"`) is parked in the frame and resumed on close.
   const openSubstitution = (kind, start) => {
-    stack.push({ kind, start, text, parts, subs, started, sawQuote, dataWord, braceLead, state, sink, arithDepth, caseStates, heredocData });
-    text = ''; parts = []; subs = []; started = false; sawQuote = false; dataWord = false; braceLead = 0; state = 'normal'; arithDepth = 0; caseStates = []; heredocData = false;
+    stack.push({ kind, start, text, parts, subs, started, sawQuote, quoteOpened, dataWord, braceLead, state, sink, arithDepth, caseStates, heredocData });
+    text = ''; parts = []; subs = []; started = false; sawQuote = false; quoteOpened = false; dataWord = false; braceLead = 0; state = 'normal'; arithDepth = 0; caseStates = []; heredocData = false;
     sink = [];
   };
 
@@ -1057,7 +1064,7 @@ function lexTokens(command, heredocNesting) {
     hoisted.push({ text: ';', quoted: false, operator: 'substitution' });
     for (const t of sink) hoisted.push(t);
     const bodyHeldHeredoc = heredocData;
-    ({ text, parts, subs, started, sawQuote, dataWord, braceLead, state, sink, arithDepth, caseStates, heredocData } = frame);
+    ({ text, parts, subs, started, sawQuote, quoteOpened, dataWord, braceLead, state, sink, arithDepth, caseStates, heredocData } = frame);
     const raw = command.slice(frame.start, end);
     const at = text.length;
     addText(raw, state === 'double' ? 'double' : 'none'); started = true;
@@ -1239,14 +1246,14 @@ function lexTokens(command, heredocNesting) {
       continue;
     }
 
-    if (ch === "'") { state = 'single'; started = true; continue; }
+    if (ch === "'") { state = 'single'; started = true; quoteOpened = true; continue; }
     if (ch === '"') {
       // A zero-length part records where the quoted run starts even when it
       // stays empty: `res$""et` is the locale string `$""`, read empty (#1899).
       if (parts[parts.length - 1]?.quote !== 'double') parts.push({ text: '', quote: 'double' });
-      state = 'double'; started = true; continue;
+      state = 'double'; started = true; quoteOpened = true; continue;
     }
-    if (ch === '$' && command[i + 1] === "'") { state = 'ansi'; started = true; i++; continue; }
+    if (ch === '$' && command[i + 1] === "'") { state = 'ansi'; started = true; quoteOpened = true; i++; continue; }
     // A locale string `$"…"` keeps its `$` here (zsh's reading, `a$rb`): which
     // text bash passes depends on a message catalog, so a consumer that resolves
     // a path (scope-gate) must not read it as known. The pattern rules judge
@@ -1347,8 +1354,13 @@ function lexTokens(command, heredocNesting) {
           // #1679: an adjacent compound body must start a fresh token too:
           // `f(){unlink X;}` / `f()(unlink X)`. Only a bare, unquoted head in
           // command position qualifies; argument text must stay an argument.
+          // #2037: a quoted name too (`'f'(){…}`, `""()(…)`, `e'val'(){…}`), as
+          // long as `(` and `)` themselves are bare (bareParenAt): zsh 5.9 and
+          // bash define the function. Splitting only adds a body reading.
           const bodyOpener = command[i + 1];
-          if (!sawQuote && FUNCTION_HEAD_RE.test(text) && inCommandPosition() &&
+          // A word text of just `()` began with an empty quote pair (`''`, `""`, which
+          // set no sawQuote): a bare leading `(` would have opened a subshell.
+          if ((sawQuote || text === '()' ? QUOTED_GLUED_HEAD_RE.test(text) : FUNCTION_HEAD_RE.test(text)) && inCommandPosition() &&
               (bodyOpener === '{' || bodyOpener === '(')) {
             flush();
             if (bodyOpener === '{') {
@@ -1557,8 +1569,9 @@ function lexTokens(command, heredocNesting) {
     // #983 redirect token class), so this branch only ever sees a bare chain `&`.
     if (ch === ';' || ch === '|' || ch === '&') {
       flush();
-      // `;;` / `;&` / `;;&` end an arm: the next word at this level is a pattern.
-      if (ch === ';' && (command[i + 1] === ';' || command[i + 1] === '&') && caseTop() === 'body') {
+      // `;;` / `;&` / `;;&` end an arm, and so does zsh's `;|` (#2037: zsh 5.9
+      // tests the next pattern after it): the next word at this level is a pattern.
+      if (ch === ';' && (command[i + 1] === ';' || command[i + 1] === '&' || command[i + 1] === '|') && caseTop() === 'body') {
         setCaseTop('pattern');
       }
       let op = ch;
@@ -1800,12 +1813,30 @@ const ZSH_SHORT_BODY_HEADS = new Set(['if', 'elif', 'while', 'until']);
 function splitSegments(tokens) {
   const pipeRead = newPipeRead();
   pipeRead.exhausted = tokens.some((t) => t.nestingCapped === true);
-  const base = splitSegmentReadings(tokens, pipeRead);
-  // #2033: preserve every old reading. Only statements with syntax relevant
-  // to stdin normalization pay for the additional structural pass. `repeat`
-  // too (#2036): only that pass gives its sublist body the pipe into it.
-  if (!tokens.some((t) => t.redirect || t.subshellSide || t.text === 'function' || t.text === 'repeat' || t.text.includes('(') || STDIN_PREFIX_WORDS.has(t.text))) return base;
-  return unionReadings(base, splitSegmentReadings(tokens, pipeRead, true));
+  const outerQuotedEqNames = quotedEqNames;
+  try {
+    // Nested lines read inside a pass (eval payloads, substitutions) start
+    // from the old name rule again; only the head-state pass relaxes it.
+    quotedEqNames = false;
+    const base = splitSegmentReadings(tokens, pipeRead);
+    // #2033: preserve every old reading. Only statements with syntax relevant
+    // to stdin normalization pay for the additional structural pass. `repeat`
+    // too (#2036): only that pass gives its sublist body the pipe into it.
+    if (!tokens.some((t) => t.redirect || t.subshellSide || t.text === 'function' || t.text === 'repeat' || t.text.includes('(') || STDIN_PREFIX_WORDS.has(t.text))) return base;
+    const structural = unionReadings(base, splitSegmentReadings(tokens, pipeRead, true));
+    // #2052: the base pass of the redirect and delete collectors reads
+    // without the head-state statements (collectBaseFirst).
+    if (headStateOff) {
+      headStateSkipped++;
+      return structural;
+    }
+    // #2038 fix cycle 1: the shared open-head reading is a third pass, unioned
+    // beside the other two, so it adds statements and never removes one.
+    quotedEqNames = true;
+    return unionReadings(structural, splitSegmentReadings(tokens, pipeRead, 2));
+  } finally {
+    quotedEqNames = outerQuotedEqNames;
+  }
 }
 
 function splitSegmentReadings(tokens, pipeRead, structural = false) {
@@ -2087,11 +2118,16 @@ const NO_CLOSERS = new Set();
  * @returns {{ segments: Array<Array<object>>, softCut: boolean, bareClosed: boolean, bareSeen: boolean }}
  */
 function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false, structural = false, inherited = null) {
+  // #2038 fix cycle 1: the shared open-head reading is a THIRD reading
+  // (`structural === 2`), unioned beside the unchanged #2033 structural one
+  // (splitSegments), so it can only add statements, never remove one.
+  const headState = structural === 2;
   const functionHead = (words) => isFunctionHead(words) || (structural && structuralFunctionHead(words) !== undefined);
   const headName = (words) => structural ? structuralFunctionHead(words) ?? functionHeadName(words) : functionHeadName(words);
   const headAliases = (head) => typeof head === 'string' ? [head]
     : structural ? structuralHeadNames(head) ?? [headName(head)] : [headName(head)];
-  const compoundPrefix = (words) => isCompoundPrefix(words) || (structural && (functionHead(words) || commandPrefix(words).index === words.length));
+  const compoundPrefix = (words) => isCompoundPrefix(words) ||
+    (structural && (functionHead(words) || commandPrefix(words).index === words.length || (headState && redirectedHead(words) !== null)));
   let softCut = false;
   let bareClosed = false;
   let bareSeen = false;
@@ -2200,10 +2236,10 @@ function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false
       return;
     }
     const context = { functions, callBudget, evalDepth: depth + 1, sources, pipe: source.pipedFrom ?? null };
-    const read = splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose, true, context);
+    const read = splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose, headState ? 2 : true, context);
     for (const stmt of read.segments) callViews.push(stmt);
     if (!bareClose && read.bareSeen && !pipeRead.viewsCut) {
-      const bare = splitSegmentsReading(tokens, true, pipeRead, true, true, context);
+      const bare = splitSegmentsReading(tokens, true, pipeRead, true, headState ? 2 : true, context);
       for (const stmt of bare.segments) callViews.push(stmt);
     }
   };
@@ -2293,9 +2329,52 @@ function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false
   // statement `f`. The name is armed at the `)` and stays armed across
   // newlines (`f ()⏎{`); the next body opener opens its body.
   let spacedHead = null;
+  // #2037: a function head carried across `time` or `!` to the compound
+  // opener behind them (`f() time { … }`, `function f ! { … }`); any
+  // operator drops it.
+  let carryHead = null;
+  // #2038: the open function head is ONE state that every body opener reads
+  // through bodyHead(): the statement itself when it is a head, a head with
+  // redirects between it and its body (`f() <<< S { … }`, headRedirect), the
+  // head armed by `f ()`/a newline (armedHead), or the head carried across
+  // `time`/`!` (carryHead). The stdin sources of that prefix chain reach the
+  // opener as the redirect spans `!` keeps in `current` (see the keyword
+  // branch), which leadingSources then reads at the opener.
+  let headRedirect = null;
+  // NAMED CEILING (BV-004): at most HEAD_REDIRECT_TOKENS_MAX tokens behind a
+  // head are checked for being redirects only; past it the head is assumed
+  // without the check (fail closed: a non-redirect word there over-reads, the
+  // deny side). REVISIT TRIGGER: a real command denied through that over-read.
+  const HEAD_REDIRECT_TOKENS_MAX = 32;
+  function redirectedHead(words) {
+    if (!headState || headRedirect?.owner !== words) return null;
+    const { at } = headRedirect;
+    if (words.length - at > HEAD_REDIRECT_TOKENS_MAX) return words.slice(0, at);
+    for (let k = at; k < words.length; k++) {
+      if (words[k].heredocBody) continue;
+      if (!words[k].redirect) return null;
+      k = redirectSpanEnd(words, k);
+    }
+    return words.slice(0, at);
+  }
+  const bodyHead = (armed) => {
+    if (functionHead(current)) return current;
+    const redirected = redirectedHead(current);
+    if (redirected !== null) return redirected;
+    if (current.length === 0 && armed !== null) return armed;
+    if (structural && carryHead !== null && (current.length === 0 || compoundPrefix(current))) return carryHead;
+    return null;
+  };
+  let pendingListOp = false;
   let pendingSpacedHead = null;
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
+    // #2037: `&&`, `||` or `|` stays pending across newlines and here-doc
+    // bodies (blank lines and comments lex to newlines), so a list continued
+    // there keeps a zsh `repeat` sublist open (zsh 5.9). O(1) per token.
+    const listOpBefore = pendingListOp;
+    if (!tok.quoted && tok.operator !== 'newline' && (tok.text === '&&' || tok.text === '||' || tok.text === '|')) pendingListOp = true;
+    else if (tok.operator !== 'newline' && !tok.heredocBody) pendingListOp = false;
     const afterClose = closedGroup;
     closedGroup = null;
     const coprocJustDropped = afterCoproc;
@@ -2318,7 +2397,11 @@ function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false
         current = [];
         casePattern.stage = 'body';
         continue;
-      } else if (casePattern.stage === 'body' && tok.text === ';' && tokens[i - 1]?.text === ';') {
+      } else if (casePattern.stage === 'body' && (headState
+        ? !tok.quoted && tokens[i - 1]?.text === ';' && !tokens[i - 1].quoted && (tok.text === ';' || tok.text === '|' || tok.text === '&')
+        : tok.text === ';' && tokens[i - 1]?.text === ';')) {
+        // #2037/#2038 class 3: zsh's `;|` and `;&` end an arm like `;;`, as
+        // the lexer's own case automaton reads them.
         casePattern.stage = 'pattern';
       }
     }
@@ -2333,8 +2416,11 @@ function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false
       // `f() ( … )`: the head is written as a statement of its own here, and
       // the subshell behind it is the body (#2027 point 2).
       const newlineHead = tok.operator === 'newline' && functionHead(current) ? current : null;
+      const carried = carryHead;
+      carryHead = null;
       const subshellHead = tok.subshellSide === 'open' && functionHead(current) ? current
-        : tok.subshellSide === 'open' && armedHead !== null ? armedHead : null;
+        : tok.subshellSide === 'open' && armedHead !== null ? armedHead
+          : tok.subshellSide === 'open' && carried !== null && compoundPrefix(current) ? carried : null;
       // `f (` + `)` right behind it: an empty pair after a name is a head.
       const emptyPairName = tok.subshellSide === 'open' && tokens[i + 1]?.subshellSide === 'close'
         ? (structural ? structuralSpacedNames(current) : spacedHeadName(current)) : null;
@@ -2344,13 +2430,15 @@ function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false
       // prints A B A B (zsh 5.9), so `&&`/`||` keep its scope open (#2036).
       // A newline right after `&&`/`||`/`|` continues the list (zsh 5.9 runs
       // `<<< S repeat 1 true &&⏎ cat` with S), so it keeps the sublist open too.
-      const continuesList = tok.operator === 'newline' && !tokens[i - 1]?.quoted &&
-        (tokens[i - 1]?.text === '&&' || tokens[i - 1]?.text === '||' || tokens[i - 1]?.text === '|');
+      const continuesList = tok.operator === 'newline' && listOpBefore;
       if (structural && tok.text !== '|' && tok.text !== '&&' && tok.text !== '||' && tok.subshellSide !== 'open' && !continuesList) closeRepeats();
       if (tok.subshellSide === 'open') {
         openCompound();
         if (subshellHead !== null) openBody(subshellHead);
         if (emptyPairName !== null) pendingSpacedHead = emptyPairName;
+        // #2038: `function f '' g⏎() { … }` — the head armed by the newline
+        // stays armed across its empty `()`.
+        else if (headState && armedHead !== null && current.length === 0 && tokens[i + 1]?.subshellSide === 'close') pendingSpacedHead = armedHead;
       } else if (tok.subshellSide === 'close') {
         closeCompound();
         if (pendingSpacedHead !== null && tokens[i - 1]?.subshellSide === 'open') spacedHead = pendingSpacedHead;
@@ -2439,7 +2527,9 @@ function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false
         !operators.has(count.text)) {
       if (structural) {
         // #2036 cause 2: `f() repeat 1 sh` — the repeat scope is the body.
-        const head = functionHead(current) ? current : (current.length === 0 ? armedHead : null);
+        const head = headState ? bodyHead(armedHead) ?? carryHead
+          : functionHead(current) ? current : (current.length === 0 && armedHead !== null ? armedHead : carryHead);
+        carryHead = null;
         leadingSources = stdinSourceSpans(current, 0);
         openCompound();
         repeatScopes.push(compoundPipes.length);
@@ -2475,15 +2565,40 @@ function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false
     // call, so drop the head and judge the body in command position like a bare
     // brace group. Before, `f() { unlink <ledger>; }; f` resolved to verb `f()`.
     // `time` / `time -p` before a compound command is dropped the same way.
-    if (!tok.quoted && COMMAND_POSITION_KEYWORDS.has(tok.text) &&
+    // #2037 review: behind a keyword head `!` is one more name (`function f !
+    // { … }` defines f and `!` in zsh 5.9), not a negation.
+    // Only while the head is still open (every word a bare name): after a
+    // glued `f()` the head is complete and `!` negates the body (`function f()
+    // ! { … }` runs `! { … }` in zsh 5.9), which the carry below reads.
+    const bangName = structural && tok.text === '!' && current.length >= 2 && current[0].text === 'function' && !current[0].quoted &&
+      literalHeadWords(current, 1);
+    // #2038 class 4: right behind the `function` keyword an empty quote part
+    // (`function !'' { … }`) makes the word a name, not a reserved word. Only
+    // there (fix cycle 1): elsewhere the keyword reading stays beside the
+    // plain-word one (union rule, ADR-0017), and zsh 5.9 opens a group at `{''`
+    // (`f() time {''; cat; }` reads the pipe).
+    const quotedName = headState && tok.quoteMark && tok.text !== '{' &&
+      current.length === 1 && current[0].text === 'function' && !current[0].quoted;
+    if (!tok.quoted && !quotedName && !bangName && COMMAND_POSITION_KEYWORDS.has(tok.text) &&
         (current.length === 0 || compoundPrefix(current))) {
       // #2036 cause 2: `f() if …; fi`, `f() while …; done`, `function f until
       // …` — any compound opener is a body, not only `{` (zsh 5.9 and bash).
       const bodyOpener = tok.text === '{' || (structural && COMPOUND_OPENERS.has(tok.text));
-      const head = bodyOpener && functionHead(current) ? current
-        : bodyOpener && armedHead !== null && current.length === 0 ? armedHead : null;
+      const head = !bodyOpener ? null : headState ? bodyHead(armedHead) ?? carryHead
+        : functionHead(current) ? current
+          : armedHead !== null && current.length === 0 ? armedHead
+            : structural && carryHead !== null ? carryHead : null;
+      if (structural && tok.text === '!') {
+        carryHead = headState ? bodyHead(armedHead) ?? carryHead
+          : functionHead(current) ? current : (current.length === 0 && armedHead !== null ? armedHead : carryHead);
+      } else if (head !== null) carryHead = null;
       if (structural && COMPOUND_OPENERS.has(tok.text)) leadingSources = stdinSourceSpans(current, 0);
-      current = [];
+      // #2038 class 1: `!` negates the rest of the statement, so the stdin
+      // sources of its prefix (`< <(…) time ! { sh; }`) stay in front of it.
+      // They are charged to the line's view budget: `<<< x ! ` repeated would
+      // copy a growing prefix at each `!`; past the cap the line fails closed.
+      const kept = headState && tok.text === '!' ? stdinSourceSpans(current, 0) : [];
+      current = kept.length > 0 && chargeViewTokens(pipeRead, kept.length) ? kept : [];
       if (ZSH_SHORT_BODY_HEADS.has(tok.text)) shortBodyHead = true;
       if (tok.text === 'coproc') afterCoproc = true;
       if (tok.text === '{') openGroups++;
@@ -2523,7 +2638,8 @@ function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false
       bareClosed = true;
       if (tok.text !== '}') bareClosers.add(i);
       if (oneWordGroup) {
-        const head = functionHead(current) ? current : null;
+        const head = headState ? bodyHead(armedHead) : (functionHead(current) ? current : null);
+        if (head !== null && head === carryHead) carryHead = null;
         if (structural) leadingSources = stdinSourceSpans(current, 0);
         current = [];
         openGroups++;
@@ -2548,7 +2664,9 @@ function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false
     // openers, so the word behind them is the segment head.
     const glued = gluedBraceOpenerCount(tok);
     if (glued > 0 && (current.length === 0 || compoundPrefix(current))) {
-      const head = functionHead(current) ? current : (current.length === 0 ? armedHead : null);
+      // #2038 class 2: a glued opener reads the same open head (`f() time {:; sh;}`).
+      const head = headState ? bodyHead(armedHead) : (functionHead(current) ? current : (current.length === 0 ? armedHead : null));
+      if (head !== null && head === carryHead) carryHead = null;
       const { braceLead: _consumed, ...rest } = tok;
       if (structural) leadingSources = stdinSourceSpans(current, 0);
       current = [{ ...rest, text: tok.text.slice(glued) }];
@@ -2569,14 +2687,35 @@ function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false
     if (armedHead !== null && current.length === 0 && !tok.redirect && tok.operator === undefined) {
       for (const name of headAliases(armedHead)) defineFunction(name, { start: segments.length, end: segments.length + 1, segments });
       if (loopOpener) loopHead = armedHead;
+      if (structural && !tok.quoted && tok.text === 'time') carryHead = armedHead;
     }
+    // #2037 review: a keyword head ends at a glued `name()` too (`function f g()
+    // cmd`), and a short body defines every name of a multi-name head (zsh 5.9).
+    const keywordGlued = structural && current.length >= 3 && current[0].text === 'function' && !current[0].quoted &&
+      gluedHeadName(current.at(-1)) !== null && literalHeadUntilLast(current, 1);
     if (((current.length === 1 && !current[0].quoted && FUNCTION_HEAD_RE.test(current[0].text)) ||
          (structural && typeof structuralFunctionHead(current) === 'string' &&
-           !(current[0]?.text === 'function' && !current[0].quoted))) && !tok.redirect) {
-      const name = headName(current);
-      if (name !== null) defineFunction(name, { start: segments.length, end: segments.length + 1, segments });
+           !(current[0]?.text === 'function' && !current[0].quoted)) || keywordGlued) && !tok.redirect) {
+      const shortBody = { start: segments.length, end: segments.length + 1, segments };
+      for (const name of structural ? structuralHeadNames(current) ?? [headName(current)] : [headName(current)]) {
+        if (name !== null) defineFunction(name, shortBody);
+      }
       if (loopOpener) loopHead = current;
+      if (structural && !tok.quoted && tok.text === 'time') carryHead = current;
       current = [];
+    } else if (headState && !tok.quoted && !tok.redirect && tok.text === 'time' && redirectedHead(current) !== null) {
+      // Fix cycle 1: `f() 4>/dev/null time { cat; }` — zsh 5.9 reads the pipe,
+      // so a head with redirects carries across `time` like a bare head.
+      const head = redirectedHead(current);
+      const shortBody = { start: segments.length, end: segments.length + 1, segments };
+      for (const name of headAliases(head)) if (name !== null) defineFunction(name, shortBody);
+      carryHead = head;
+      current = [];
+    }
+    if (loopOpener && loopHead === null && carryHead !== null &&
+        (current.length === 0 || commandPrefix(current).index === current.length)) {
+      loopHead = carryHead;
+      carryHead = null;
     }
     // `function f for …`: the keyword head is no short body above, so the
     // opener check below would see it as the statement's first words.
@@ -2615,6 +2754,9 @@ function splitSegmentsReading(tokens, cutSoftAlways, pipeRead, bareClose = false
       openCompound();
       if (loopHead !== null) openBody(loopHead);
       if (structural && tok.text === 'case') casePatterns.push({ depth: compoundPipes.length, stage: 'subject' });
+    }
+    if (headState && tok.redirect && current.length > 0 && headRedirect?.owner !== current && functionHead(current)) {
+      headRedirect = { owner: current, at: current.length };
     }
     current.push(tok);
   }
@@ -2774,10 +2916,32 @@ function prefixWordNames(words, prefix, out) {
   for (let k = 0; k < end; k++) {
     const tok = words[k];
     if (tok.redirect) { k = redirectSpanEnd(words, k); continue; }
-    if (tok.heredocBody || !STDIN_PREFIX_WORDS.has(tok.text)) continue;
+    if (tok.heredocBody) continue;
+    // #2037: `f\=g` and `'f=g'` look like assignments to isAssignmentWord, but
+    // a quoted or escaped `NAME=` run is a command word in bash and zsh, so a
+    // function of that name runs. Read it as a call too (union).
+    if (assignmentLookalike(tok) && !out.includes(tok.text)) { out.push(tok.text); continue; }
+    if (!STDIN_PREFIX_WORDS.has(tok.text)) continue;
     if (!suppress && !out.includes(tok.text)) out.push(tok.text);
     suppress = tok.text === 'command' || tok.text === 'builtin';
   }
+}
+
+/**
+ * A word isAssignmentWord accepts although its `NAME=` run is not all bare
+ * text (`f\=g`, `'f'=g`): bash and zsh assign only from a bare run (#2037).
+ * @param {{ text: string, quoted?: boolean, parts?: Array<{ text: string, quote: string }> }} tok
+ * @returns {boolean}
+ */
+function assignmentLookalike(tok) {
+  if (!tok.parts || !isAssignmentWord(tok)) return false;
+  let left = tok.text.indexOf('=') + 1;
+  for (const part of tok.parts) {
+    if (left <= 0) break;
+    if (part.quote !== 'none') return true;
+    left -= part.text.length;
+  }
+  return false;
 }
 
 /**
@@ -2834,12 +2998,47 @@ function structuralFunctionHead(head) {
   if (tok.redirect || tok.operator) return undefined;
   const tail = tok.parts?.at(-1);
   const bareSuffix = (suffix) => tok.text.endsWith(suffix) && (!tok.quoted || (tail?.quote === 'none' && tail.text.endsWith(suffix)));
-  if (head.length === from + 1 && bareSuffix('()') && literalFunctionName(tok, 2)) return tok.text.slice(0, -2);
+  if (head.length === from + 1) {
+    const name = gluedHeadName(tok);
+    if (name !== null) return name;
+  }
   if (head.length === from + 2 && bareSuffix('(') && head[from + 1].text === ')' &&
       !head[from + 1].quoted && literalFunctionName(tok, 1)) return tok.text.slice(0, -1);
   if (keyword && literalHeadWords(head, 1)) return head[1].text;
+  // #2037: `function f '' g() { … }` and `f 'g'() if …`: `()` glued to the
+  // last of several names (zsh 5.9 defines every name).
+  if (head.length >= from + 2 && literalHeadUntilLast(head, from) && gluedHeadName(head.at(-1)) !== null) return tok.text;
   return undefined;
 }
+
+/**
+ * The name of a word that is a whole glued head `name()`, the `()` bare
+ * (`f()`, `'f'()`, `''()`), or null.
+ * @param {object} tok
+ * @returns {string | null}
+ */
+function gluedHeadName(tok) {
+  if (!tok || tok.redirect || tok.operator || !tok.text.endsWith('()')) return null;
+  const tail = tok.parts?.at(-1);
+  if (tok.quoted && !(tail?.quote === 'none' && tail.text.endsWith('()'))) return null;
+  return literalFunctionName(tok, 2) ? tok.text.slice(0, -2) : null;
+}
+
+/**
+ * #2038: true only while splitSegments runs its head-state pass; every other
+ * caller keeps the old name rule. Synchronous, saved and restored around each
+ * splitSegments call, so a nested line read inside the pass starts false.
+ */
+let quotedEqNames = false;
+
+/**
+ * #2052: true only while collectBaseFirst runs its base pass. splitSegments
+ * then skips the head-state pass and returns the readings it had before #2038;
+ * `headStateSkipped` counts the lines whose head-state pass it skipped.
+ * Synchronous, saved and restored around the base pass.
+ */
+let headStateOff = false;
+let headStateSkipped = 0;
 
 /** Literal quotes protect metacharacters; double quotes still expand $ and `. */
 function literalFunctionName(tok, suffix = 0) {
@@ -2849,12 +3048,23 @@ function literalFunctionName(tok, suffix = 0) {
   // longer voids the other names of the head. Only quotes make an empty word
   // (the lexer leaves `quoted` false on it), so no further check is needed.
   if (suffix === 0 && tok.text.length === 0) return true;
+  // #2037: `''()`, `""()`, `$''()` — an empty quoted name right before a bare
+  // `()`; an escaped `\\(\\)` has no bare tail and stays no name.
+  if (suffix > 0 && tok.text.length === suffix) {
+    const tail = tok.parts?.at(-1);
+    return tail?.quote === 'none' && tail.text === tok.text;
+  }
   if (tok.text.length <= suffix) return false;
   let left = tok.text.length - suffix;
+  // #2038: behind a quoted part a bare `=` is literal (`'f'=g` assigns nothing
+  // in bash or zsh, assignmentLookalike), so it no longer voids the name — in
+  // the head-state pass only (quotedEqNames), beside the old reading.
+  let afterQuote = false;
   for (const part of tok.parts ?? [{ text: tok.text, quote: tok.quoted ? 'single' : 'none' }]) {
     const text = part.text.slice(0, left);
     left -= text.length;
-    if (part.quote === 'none' && /[\s()$`'"=<>|&;{}]/.test(text)) return false;
+    if (part.quote === 'none' && (quotedEqNames && afterQuote ? /[\s()$`'"<>|&;{}]/ : /[\s()$`'"=<>|&;{}]/).test(text)) return false;
+    if (part.quote !== 'none') afterQuote = true;
     if (part.quote === 'double' && /[$`]/.test(text)) return false;
     if (left === 0) break;
   }
@@ -2864,14 +3074,25 @@ function literalFunctionName(tok, suffix = 0) {
 // A head grows one word at a time. Validate each appended word once, avoiding
 // an O(N²) scan for `function f1 f2 … fN { … }`.
 const LITERAL_HEAD_MEMO = new WeakMap();
-function literalHeadWords(head, from) {
+function literalHeadMemo(head, from) {
   let memo = LITERAL_HEAD_MEMO.get(head);
   if (!memo || memo.from !== from) {
-    memo = { from, end: from, valid: true };
+    memo = { from, end: from, firstInvalid: -1 };
     LITERAL_HEAD_MEMO.set(head, memo);
   }
-  while (memo.valid && memo.end < head.length) memo.valid = literalFunctionName(head[memo.end++]);
-  return memo.valid && head.length > from;
+  // Past the first invalid word only the end moves on: O(1) per word.
+  for (; memo.end < head.length; memo.end++) {
+    if (memo.firstInvalid < 0 && !literalFunctionName(head[memo.end])) memo.firstInvalid = memo.end;
+  }
+  return memo;
+}
+function literalHeadWords(head, from) {
+  return literalHeadMemo(head, from).firstInvalid < 0 && head.length > from;
+}
+/** Every word from `from` but the last is a literal name (#2037). */
+function literalHeadUntilLast(head, from) {
+  const { firstInvalid } = literalHeadMemo(head, from);
+  return firstInvalid < 0 || firstInvalid === head.length - 1;
 }
 
 /** Only used once at the empty parenthesis pair or the body opener. */
@@ -2881,6 +3102,9 @@ function structuralSpacedNames(head) {
 }
 function structuralHeadNames(head) {
   if (head.names) return head.names;
+  const from = head[0]?.text === 'function' && !head[0].quoted ? 1 : 0;
+  const glued = head.length >= from + 2 ? gluedHeadName(head.at(-1)) : null;
+  if (glued !== null && literalHeadUntilLast(head, from)) return [...head.slice(from, -1).map((t) => t.text), glued];
   if (head[0]?.text === 'function' && !head[0].quoted && literalHeadWords(head, 1)) {
     return head.slice(1).map((t) => t.text);
   }
@@ -3062,7 +3286,11 @@ function functionCallViews(segments, fn, caller, callerPipe, pipeRead, budget, o
     return;
   }
   const views = new Map();
-  for (let i = fn.start; i < (fn.end ?? segments.length); i++) {
+  // A short body that calls itself (`f() f <<< S`) is called while its own
+  // statement is being written: its range may reach past what exists yet, so
+  // the walk stops at the written statements instead of reading past them.
+  const end = Math.min(fn.end ?? segments.length, segments.length);
+  for (let i = fn.start; i < end; i++) {
     const stmt = segments[i];
     if (stmt.length === 0) continue;
     budget.tokens += stmt.length + sources.length;
@@ -8696,6 +8924,40 @@ function collectWithBraces(collect, text, options, out, depth, budget) {
 }
 
 /**
+ * The entries of a target collector for one command, base readings first
+ * (#2052). The base pass reads every line without the head-state pass (#2038),
+ * as before it, with a full MAX_PAYLOAD_EVALUATIONS budget. Only when it
+ * skipped that pass on some line does a second pass read with it, on a budget
+ * of its own, and add its entries. In one shared pass the head-state
+ * statements came first in depth order and spent the budget, a later base
+ * payload came back `budget-exhausted`, and the hook lets that through
+ * (fail-visible): `bash -c "f() { bash -c :; }; echo x | f; …"` four times,
+ * then `bash -c ': > CLAUDE.md'`, was denied before #2038 and allowed with it.
+ * Union only, so no entry of the base pass is lost. NAMED CEILING (BV-004): a
+ * line with a head-state pass costs up to twice the evaluations of one pass.
+ * REVISIT TRIGGER: the hook over its time budget on such a line (#2047).
+ *
+ * @param {Function} collect - collectRedirectTargets or collectDeleteTargets
+ * @param {string} command
+ * @returns {Array<object>} the collected entries without exact repeats
+ */
+function collectBaseFirst(collect, command) {
+  const out = [];
+  const outer = headStateOff;
+  const skipped = headStateSkipped;
+  headStateOff = true;
+  try {
+    collectWithBraces(collect, command, {}, out, 0, { remaining: MAX_PAYLOAD_EVALUATIONS, brace: newBraceBudget() });
+  } finally {
+    headStateOff = outer;
+  }
+  if (!outer && headStateSkipped !== skipped) {
+    collectWithBraces(collect, command, {}, out, 0, { remaining: MAX_PAYLOAD_EVALUATIONS, brace: newBraceBudget() });
+  }
+  return uniqueEntries(out);
+}
+
+/**
  * The chain segments the pattern matcher judges for one token list: those of
  * the tokens as written and, when a word brace-expands, those of the
  * brace-expanded reading (#1956, expandBraces; ADR-0017 rule (a): `{git,reset,
@@ -9400,10 +9662,8 @@ function uniqueEntries(entries) {
  */
 export function extractRedirectTargets(command) {
   if (typeof command !== 'string' || command.length === 0) return [];
-  const out = [];
   // #1970: the brace-expanded reading too (`>{CLAUDE.md,x}`, `{dd,of=CLAUDE.md}`).
-  collectWithBraces(collectRedirectTargets, command, {}, out, 0, { remaining: MAX_PAYLOAD_EVALUATIONS, brace: newBraceBudget() });
-  return uniqueEntries(out);
+  return collectBaseFirst(collectRedirectTargets, command);
 }
 
 /**
@@ -10139,10 +10399,8 @@ function collectDeleteTargets(segments, out, depth, budget) {
  */
 export function extractDeleteTargets(command) {
   if (typeof command !== 'string' || command.length === 0) return [];
-  const out = [];
   // #1970: the brace-expanded reading too (`{rm,-f,<ledger>}`, `rm {-f,<ledger>}`).
-  collectWithBraces(collectDeleteTargets, command, {}, out, 0, { remaining: MAX_PAYLOAD_EVALUATIONS, brace: newBraceBudget() });
-  return uniqueEntries(out);
+  return collectBaseFirst(collectDeleteTargets, command);
 }
 
 /**

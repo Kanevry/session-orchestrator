@@ -251,10 +251,76 @@ function formatDroppedFilePaths(dropped) {
 }
 
 /**
+ * Tokens (lower-case, without their period) after which a period followed by
+ * whitespace does NOT end a sentence. Single letters, dotted letter runs
+ * (`z.B`, `e.g`) and pure numbers are handled by shape in {@link endsAbbreviation}.
+ */
+const ABBREVIATIONS = new Set([
+  'bzw', 'ca', 'vgl', 'ggf', 'inkl', 'exkl', 'nr', 'usw', 'etc', 'evtl', 'bspw',
+  'sog', 'zzgl', 'abs', 'bzgl', 'max', 'min', 'vs', 'cf', 'approx', 'no',
+]);
+
+/**
+ * How many chars before a candidate period {@link endsAbbreviation} sees. The
+ * token plus a split pair's first half ("z. B.") fit easily; only a split pair
+ * after a whitespace-free run this long could be misread at the window edge.
+ */
+const ABBREVIATION_WINDOW = 256;
+
+/**
+ * True when the text up to (excluding) a period ends in an abbreviation token.
+ *
+ * @param {string} before text preceding the period
+ * @returns {boolean}
+ */
+function endsAbbreviation(before) {
+  const raw = before.match(/\S*$/)?.[0] ?? '';
+  const token = raw.replace(/^[("'„“‚‘[]+/, '');
+  if (token === '') return false;
+  if (/^\p{Ll}$/u.test(token)) return true; // "z.", "d.", "u.", "v. 2"
+  // An upper-case letter only as the second half of a split pair ("z. B.",
+  // "u. U."); on its own it may end a sentence ("breaks Y. Next").
+  if (/^\p{Lu}$/u.test(token)) {
+    return /(^|[\s("'„“‚‘[])\p{L}\.\s+$/u.test(before.slice(0, before.length - raw.length));
+  }
+  if (/^\p{L}(\.\p{L})+$/u.test(token)) return true; // "z.B", "e.g", "i.e", "u.a"
+  // Ordinals ("am 3. November", "31. Oktober"); a year or a longer number
+  // ("seit 2026. Danach") still ends the sentence.
+  if (/^\d{1,2}$/.test(token)) return true;
+  return ABBREVIATIONS.has(token.toLowerCase());
+}
+
+/**
+ * Return the first sentence of `text`: everything before the first period that
+ * is followed by whitespace and does not close an abbreviation (#2018).
+ *
+ * Ceiling (BV-004): a heuristic, not a sentence tokenizer. A sentence that
+ * really ends on a listed abbreviation, a lower-case letter or a one- or two-digit number ("…
+ * etc. Next", "Schritt 3. Next") is merged with the following one, and an
+ * upper-case initial ("J. Smith") still splits;
+ * the DESCRIPTION_MAX truncation bounds the damage. Revisit if generated
+ * descriptions show run-on headlines.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function firstSentence(text) {
+  const boundary = /\.(?=\s)/g;
+  let match;
+  while ((match = boundary.exec(text)) !== null) {
+    // Only the last ABBREVIATION_WINDOW chars decide; passing the whole prefix
+    // made every candidate period rescan it (quadratic: 100 KB of "a. " took 6 s).
+    const before = text.slice(Math.max(0, match.index - ABBREVIATION_WINDOW), match.index);
+    if (!endsAbbreviation(before)) return text.slice(0, match.index);
+  }
+  return text;
+}
+
+/**
  * Build a single-line, frontmatter-safe description from a learning.
  *
  * Source precedence: `insight` → `title` → `subject`. Takes the first sentence
- * (split on `. `), strips ALL newlines and control chars, collapses internal
+ * ({@link firstSentence}, abbreviation-aware), strips ALL newlines and control chars, collapses internal
  * whitespace, and hard-truncates to {@link DESCRIPTION_MAX} chars (appending
  * `…` when it had to cut).
  *
@@ -267,10 +333,8 @@ function buildDescription(learning) {
       ? learning.insight
       : learning.title || learning.subject || '';
 
-  // First sentence — split on '. ' so the headline stays terse.
-  const firstSentence = String(source).split('. ')[0];
-
-  const cleaned = firstSentence
+  // First sentence only, so the headline stays terse.
+  const cleaned = firstSentence(String(source))
     .replace(CONTROL_CHARS_RE, ' ')
     .replace(/\s+/g, ' ')
     .trim()

@@ -612,6 +612,65 @@ function rewriteHeaderOnly(parsed, target) {
 }
 
 /**
+ * Count words a frontmatter `description:` may use to enumerate its entries,
+ * mapped to their value. German forms may carry an `-er`/`-en` inflection.
+ *
+ * `ein`/`eine`/`one` are deliberately absent: they double as the indefinite
+ * article, and a rewrite always leaves at least one entry, so they could only
+ * ever produce a false mismatch (live: `description: Eine Lead-gefuehrte
+ * Session …`, measured 2026-11-11).
+ */
+const COUNT_WORDS = new Map([
+  ['two', 2], ['three', 3], ['four', 4], ['five', 5], ['six', 6], ['seven', 7],
+  ['eight', 8], ['nine', 9], ['ten', 10], ['eleven', 11], ['twelve', 12],
+  ['zwei', 2], ['drei', 3], ['vier', 4], ['fünf', 5], ['fuenf', 5], ['sechs', 6],
+  ['sieben', 7], ['acht', 8], ['neun', 9], ['zehn', 10], ['elf', 11],
+  ['zwölf', 12], ['zwoelf', 12],
+]);
+
+/**
+ * The first count word or bare number 2–99 in a description. Lookarounds keep
+ * dates, versions and issue refs (`2026-11-11`, `5.18`, `#12`) from matching.
+ *
+ * Ceiling (BV-004): a hint, not a parser — it reads only the FIRST count token
+ * and cannot tell "three lessons" from "the three places this repo …" or a
+ * number counting something other than entries. Revisit trigger: a reported
+ * false mismatch on a real rewrite, or a description language not listed.
+ */
+const COUNT_TOKEN_RE = new RegExp(
+  `(?<![\\p{L}\\d#.\\-])(${[...COUNT_WORDS.keys()].join('|')})(?:er|en)?(?![\\p{L}\\d])` +
+    '|(?<![\\p{L}\\d#.\\-])([2-9]|[1-9]\\d)(?![\\p{L}\\d.\\-])',
+  'iu',
+);
+
+/**
+ * The review hint for a rewrite that removes `### ` entries (#2023). The sweep
+ * never rewrites `description:` — it is authored summary prose — so it reports
+ * the removed headings and, when the description states a count that no longer
+ * holds, that mismatch.
+ *
+ * @param {string} content          the file as it stands BEFORE the rewrite
+ * @param {string[]} removedHeadings headings of the entries the rewrite drops
+ * @param {number} remainingEntries `### ` entries left after the rewrite
+ * @returns {{removedHeadings: string[], remainingEntries: number, countWord?: {found: string, value: number, remaining: number}}}
+ */
+function descriptionReview(content, removedHeadings, remainingEntries) {
+  const review = { removedHeadings, remainingEntries };
+  let description;
+  try {
+    description = parseGlobsFrontmatter(content).meta.description;
+  } catch {
+    return review; // frontmatter the loader rejects — headings alone still help
+  }
+  if (typeof description !== 'string') return review;
+  const m = COUNT_TOKEN_RE.exec(description);
+  if (!m) return review;
+  const value = m[1] !== undefined ? COUNT_WORDS.get(m[1].toLowerCase()) : Number(m[2]);
+  if (value === remainingEntries) return review;
+  return { ...review, countWord: { found: m[0], value, remaining: remainingEntries } };
+}
+
+/**
  * The plan for a file with NO expired entry: a byte-identical `keep`, or — when
  * the header sits below the earliest absorbed date — a minimal `header-raise`
  * rewrite. Shared by both no-expiry branches (the `no-1to1-mapping` skip and
@@ -927,6 +986,11 @@ export async function planRuleExpirySweep(opts = {}) {
       newAbsorbedCount: parsed.pairs.length,
       bytesAfter: Buffer.byteLength(nextContent, 'utf8'),
       nextContent,
+      descriptionReview: descriptionReview(
+        content,
+        expired.map((e) => e.entry.heading),
+        parsed.entries.length - expired.length,
+      ),
     });
   }
 

@@ -44,6 +44,9 @@
  *                           session's own teardown events are skipped
  *                           (`CLOSING_DIAGNOSTIC_EVENTS`): they postdate its
  *                           ledger record by construction.
+ *                           So are tool-written events no session emitted
+ *                           (`SESSIONLESS_TOOL_EVENTS`, #2024 — e.g. the
+ *                           offload tool's `orchestrator.offload.synced`).
  *   - `deltaHours`        = (lastForeignEventAt − lastLedgerAt) / 1h, only
  *                           meaningful when > 0 (foreign activity happened
  *                           AFTER the last ledger entry).
@@ -203,6 +206,42 @@ const CLOSING_DIAGNOSTIC_EVENTS = new Map([
   ['orchestrator.wave.completed', 'on-session-end'],
   ['orchestrator.wave.final_refused', 'on-session-end'],
 ]);
+
+/**
+ * Events written by an external TOOL, not by a session — a different category
+ * from `CLOSING_DIAGNOSTIC_EVENTS` (a session's own teardown), kept apart so
+ * neither list widens the other (#2024).
+ *
+ * `orchestrator.offload.synced`: sole emitter is
+ * `projects-baseline/scripts/remote-offload/offload` `log_sync_event()`, which
+ * appends one line to the MAIN checkout's events ledger on every
+ * `offload sync` — including the pre-push gate of pushes made outside any
+ * session (merge trains, manual pushes). The line carries no `session_id`,
+ * `semantic_session_id` or `emitted_by`, so it proves no session was active
+ * (live 2026-11-10: a 131.8h alert whose only event that day was this one,
+ * while `backfill-abandoned-sessions.mjs --dry-run` found 0 to backfill).
+ * Skipping it loses nothing: a session that uses offload also leaves its own
+ * `orchestrator.turn.stopped` / `orchestrator.agent.stopped` events, even when
+ * it ends by `kill -9`.
+ *
+ * Ceiling (BV-004): other tool-written events without a session are not
+ * listed. Revisit trigger: the HR-105 firing-rate audit of this probe stays
+ * above ~10% after this change (measured 2026-11-11 over 7 repos: 44 of 427
+ * starts warn/alert = 10.3%).
+ */
+const SESSIONLESS_TOOL_EVENTS = new Set(['orchestrator.offload.synced']);
+
+/**
+ * True for a `SESSIONLESS_TOOL_EVENTS` line that names no session. The name
+ * alone is not enough: should the emitter ever attach a `session_id` or
+ * `semantic_session_id`, that line is a session's activity again and counts
+ * (#2045). Caller guarantees `record` is a non-null object.
+ *
+ * @param {object} record
+ */
+function isSessionlessToolEvent(record) {
+  return SESSIONLESS_TOOL_EVENTS.has(record.event) && !record.session_id && !record.semantic_session_id;
+}
 
 /**
  * True when an events.jsonl record is one of the session's own closing
@@ -380,7 +419,8 @@ function lastLedgerEntry(records) {
  * `session_id` filter. Malformed lines and lines with a missing/invalid
  * `timestamp` are skipped, and so is a previous session's own teardown output
  * (`isClosingDiagnostic()`), which postdates that session's ledger record by
- * construction.
+ * construction, and a tool-written event that no session emitted
+ * (`SESSIONLESS_TOOL_EVENTS`, #2024).
  *
  * Known ceiling (BV-004) — post-close TURNS still count: a session that keeps
  * talking after its `/close` wrote the ledger record emits
@@ -414,6 +454,7 @@ function newestForeignEvent(lines, cutoffMs) {
     if (!Number.isFinite(ms)) continue;
     if (ms >= cutoffMs) continue; // not "foreign" — belongs to (or postdates) the current session
     if (isClosingDiagnostic(record)) continue; // a previous session's teardown, not activity
+    if (isSessionlessToolEvent(record)) continue; // tool-written, no session behind it (#2024)
     if (best === null || ms > best.ms) best = { iso: record.timestamp, ms };
   }
   return best;
