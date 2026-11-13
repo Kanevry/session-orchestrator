@@ -14,8 +14,9 @@ export { resolveExecutable, resolveGitBash };
 const winPath = path.win32;
 
 /**
- * Windows cannot spawn npm's .cmd shim without cmd.exe. Run its JavaScript
- * entrypoint with this Node instead, preserving each argument literally.
+ * Windows cannot spawn npm's or npx's .cmd shim without cmd.exe. Run the
+ * JavaScript entrypoint (npm-cli.js / npx-cli.js, both in npm's bin folder)
+ * with this Node instead, preserving each argument literally.
  * Supports Node's bundled npm (including nvm-windows) and npm on PATH.
  * Every other bare name on Windows resolves through `resolveExecutable`;
  * Unix returns `{cmd, args}` unchanged.
@@ -28,16 +29,18 @@ export function resolveNativeCommand(cmd, args, {
   platform = process.platform, execPath = process.execPath, env = process.env, exists = existsSync, cwd = process.cwd(),
 } = {}) {
   if (platform !== 'win32') return { cmd, args };
-  if (!/^npm(?:\.cmd)?$/i.test(cmd)) return { cmd: resolveExecutable(cmd, { platform, env, cwd, exists }), args };
+  const npmTool = /^(npm|npx)(?:\.cmd)?$/i.exec(cmd);
+  if (!npmTool) return { cmd: resolveExecutable(cmd, { platform, env, cwd, exists }), args };
+  const entry = `${npmTool[1].toLowerCase()}-cli.js`;
   // Node's own directory first, then PATH entries under the same filters as
   // resolveExecutable: never select npm from the working repo or a dependency.
   const pathDirs = pathEntries(env).filter((dir) => isTrustedPathEntry(dir, cwd));
   for (const dir of [winPath.dirname(execPath), ...pathDirs]) {
     if (!winPath.isAbsolute(dir)) continue;
-    const cli = winPath.join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    const cli = winPath.join(dir, 'node_modules', 'npm', 'bin', entry);
     if (exists(cli)) return { cmd: execPath, args: [cli, ...args] };
   }
-  throw Object.assign(new Error('Cannot locate npm-cli.js beside Node or on PATH; install npm with Node.js.'), { code: 'ENOENT' });
+  throw Object.assign(new Error(`Cannot locate ${entry} beside Node or on PATH; install npm with Node.js.`), { code: 'ENOENT' });
 }
 
 /** The working directory a spawn will use, as a path string (Node also accepts a file: URL). */

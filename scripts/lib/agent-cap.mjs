@@ -13,7 +13,9 @@
  *   `<dirname(transcript)>/<session>/subagents/` — the same started-signal as
  *   `wave-loop-dispatch.md` § Started-Set Verification, never the launch ack.
  *   The sidecar carries `agentType` and `toolUseId`.
- * - FINISHED: decided by an injected `isFinished(entry)` probe. The hook passes
+ * - FINISHED: first the sidecar's own `"finished": true`, which the harness
+ *   writes when the agent ends and drops again while a resumed agent runs
+ *   (measured 2026-11-12, #2049). Otherwise an injected `isFinished(entry)` probe. The hook passes
  *   `makeFinishedProbe()` of `hooks/pre-task-scope-disjoint.mjs` — one liveness
  *   reading for both dispatch guards (terminal `<task-notification>` carrier,
  *   synchronous `tool_result`, SendMessage resume re-opens; no evidence → 30 min
@@ -253,12 +255,15 @@ export function subagentsDirOf(transcriptPath) {
  * A missing directory is an empty list; an unreadable sidecar is skipped.
  * `lastActivityMs` is the mtime of the agent's own `agent-<id>.jsonl` beside
  * the sidecar, or the sidecar's mtime when that transcript is absent/unstattable.
+ * `finished` is true only when the sidecar carries `"finished": true`, which the
+ * harness writes when the agent ends (absent while it runs; #2049). Any other
+ * value proves nothing.
  *
  * @param {string|null|undefined} transcriptPath — the main session transcript
  * @param {{ readdirFn?: (p: string) => string[], readFn?: (p: string, enc: string) => string,
  *   statFn?: (p: string) => { mtimeMs: number } }} [io]
  * @returns {Array<{ agentId: string, agentType: string, useId: string, desc: string, at: string,
- *   lastActivityMs: number }>}
+ *   lastActivityMs: number, finished: boolean }>}
  */
 export function listStartedAgents(transcriptPath, io = {}) {
   const dir = subagentsDirOf(transcriptPath);
@@ -294,6 +299,7 @@ export function listStartedAgents(transcriptPath, io = {}) {
       desc: typeof meta.description === 'string' ? meta.description : '',
       at: new Date(mtimeMs).toISOString(),
       lastActivityMs,
+      finished: meta.finished === true,
     });
   }
   return out;
@@ -326,12 +332,13 @@ export function liveClaims(claims, sidecarUseIds, now, selfUseId = '') {
 /**
  * Count running agents per class.
  *
+ * An entry with `finished === true` (sidecar proof, #2049) is not running.
  * With a finite `now`, an entry whose `lastActivityMs` is older than
  * {@link STALE_RUNNING_MS} is not running regardless of `isFinished`. A
  * missing, non-finite or future-dated (beyond clock skew) `lastActivityMs`
  * leaves the decision to `isFinished` alone. Without `now` the bound is off.
  *
- * @param {Array<{ agentType: string, useId: string, desc: string, at: string, lastActivityMs?: number }>} started
+ * @param {Array<{ agentType: string, useId: string, desc: string, at: string, lastActivityMs?: number, finished?: boolean }>} started
  * @param {Array<{ cls: string }>} claims — from {@link liveClaims}
  * @param {{ isFinished: (entry: object) => boolean, classify: (type: string) => string, now?: number }} fns
  * @returns {{ prozessstartend: number, lesend: number }}
@@ -339,6 +346,7 @@ export function liveClaims(claims, sidecarUseIds, now, selfUseId = '') {
 export function countRunning(started, claims, { isFinished, classify, now }) {
   const counts = { [CLASS_STARTING]: 0, [CLASS_READING]: 0 };
   for (const entry of started) {
+    if (entry?.finished === true) continue;
     const last = entry?.lastActivityMs;
     if (Number.isFinite(now) && Number.isFinite(last) && last <= now + ACTIVITY_SKEW_MS
       && now - last > STALE_RUNNING_MS) continue;

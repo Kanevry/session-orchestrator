@@ -5,12 +5,6 @@ metadata:
   user-invocable: "true"
   model: inherit
   color: green
-allowed-tools:
-  - Read
-  - Grep
-  - Glob
-  - Bash
-  - Write
 ---
 
 # write-executable-plan

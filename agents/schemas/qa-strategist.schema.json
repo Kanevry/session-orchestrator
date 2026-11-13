@@ -5,7 +5,7 @@
   "description": "Machine-readable summary returned by the qa-strategist agent after a test-coverage gap analysis. Mirrors the Output Format section of agents/qa-strategist.md.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict", "report_path", "gap_counts", "source_files_reviewed", "test_files_reviewed"],
+  "required": ["verdict", "gap_counts", "source_files_reviewed", "test_files_reviewed"],
   "properties": {
     "verdict": {
       "type": "string",
@@ -15,7 +15,7 @@
     "report_path": {
       "type": "string",
       "minLength": 1,
-      "description": "Relative path to the human-readable gap report written to .orchestrator/audits/."
+      "description": "Optional. Relative path under .orchestrator/audits/ where the coordinator stores the reviewer's returned human-readable gap report; the read-only reviewer does not write it."
     },
     "gap_counts": {
       "type": "object",

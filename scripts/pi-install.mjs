@@ -11,12 +11,13 @@
  * the package registration path without a global Pi install.
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { die } from './lib/common.mjs';
+import { atomicWriteWithBackup } from './lib/io.mjs';
 import { spawnSync } from './lib/native-command.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -80,9 +81,45 @@ function upsertPackage(settings, source) {
   return next;
 }
 
-function writeSettings(filePath, settings) {
-  mkdirSync(path.dirname(filePath), { recursive: true });
-  writeFileSync(filePath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+// GH#88: tmp+rename, so a write that fails after the open leaves the old file
+// (and every foreign package entry in it) intact instead of truncated. A
+// symlinked settings file, dangling or not, is written through to its target:
+// a rename onto the link path would replace the link with a regular file. An
+// existing file keeps its permission bits (it may hold other packages'
+// credentials); the tmp file is created with them, so there is no wider
+// window. Ceiling: the umask still applies at creation, so it can only narrow.
+function writeTarget(filePath) {
+  let target = filePath;
+  for (let hops = 0; hops < 40; hops += 1) {
+    let stat;
+    try {
+      stat = lstatSync(target);
+    } catch {
+      return target;
+    }
+    if (!stat.isSymbolicLink()) return target;
+    // The kernel resolves a relative link target (`..` included) against the
+    // link's REAL directory, not the path it was reached by (GNU stow layouts).
+    let linkDir;
+    try {
+      linkDir = realpathSync(path.dirname(target));
+    } catch (e) {
+      die(`Cannot resolve the directory of symlink ${target}: ${e.message}`);
+    }
+    target = path.resolve(linkDir, readlinkSync(target));
+  }
+  die(`Too many symlink levels resolving ${filePath}`);
+}
+
+// `target` comes from writeTarget(), the same resolution the read used, so
+// read and write always hit the same file.
+function writeSettings(target, settings) {
+  const mode = existsSync(target) ? statSync(target).mode & 0o777 : undefined;
+  const res = atomicWriteWithBackup(target, JSON.stringify(settings, null, 2) + '\n', {
+    tmpPrefix: '.settings.json.tmp',
+    mode,
+  });
+  if (!res.ok) die(`Failed to write ${target}: ${res.error}`);
 }
 
 function isDirectory(filePath) {
@@ -133,8 +170,9 @@ if (!settingsOnly) {
   }
 }
 
-const settings = upsertPackage(readSettings(settingsPath), source);
-writeSettings(settingsPath, settings);
+const settingsFile = writeTarget(settingsPath);
+const settings = upsertPackage(readSettings(settingsFile), source);
+writeSettings(settingsFile, settings);
 
 process.stdout.write('Done. Session Orchestrator registered as a Pi package.\n');
 process.stdout.write('\n');

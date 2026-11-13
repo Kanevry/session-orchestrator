@@ -140,7 +140,7 @@ executes when ALL of the following are true:
 - `baseline-ref` is present in Session Config (e.g., `baseline-ref: main`)
 - `GITLAB_TOKEN` env var is set
 - The session-orchestrator plugin includes `scripts/lib/fetch-baseline.mjs`
-- A GitLab host is resolvable (`gitlab-host` Session Config key or `GITLAB_HOST` env)
+- `GITLAB_HOST` env var is set (the committed `gitlab-host` Session Config key is never used for the token request)
 
 When triggered, this step pulls the canonical `.claude/rules/*.md` and (optionally) `.claude/agents/*.md` files directly from the baseline GitLab project (project 52 by default) into the new repo, then writes `.claude/.baseline-fetch.lock` recording the fetch.
 
@@ -170,9 +170,12 @@ BASELINE_REF=$(echo "$CONFIG" | jq -r '."baseline-ref" // empty')
 BASELINE_PROJECT_ID=$(echo "$CONFIG" | jq -r '."baseline-project-id" // "52"')
 
 # The .mjs fetcher requires a GitLab host (it fails closed with no private default).
-# Resolve it from Session Config (`gitlab-host`) or the GITLAB_HOST env var — never a hardcoded default.
+# GITLAB_TOKEN goes to that host, so it comes only from this machine's GITLAB_HOST
+# env var — never from the target repo's committed `gitlab-host` Session Config key.
 GITLAB_HOST_CFG=$(echo "$CONFIG" | jq -r '."gitlab-host" // empty')
-export GITLAB_HOST="${GITLAB_HOST:-$GITLAB_HOST_CFG}"
+if [[ -z "${GITLAB_HOST:-}" && -n "$GITLAB_HOST_CFG" ]]; then
+  echo "Note: the committed gitlab-host is not used for the token request; set GITLAB_HOST in the environment to fetch from it"
+fi
 
 if [[ -n "$BASELINE_REF" && -n "${GITLAB_TOKEN:-}" && -n "${GITLAB_HOST:-}" && -f "$PLUGIN_ROOT/scripts/lib/fetch-baseline.mjs" ]]; then
   # Default rule manifest — superset will harmlessly 404 individual files
@@ -214,19 +217,48 @@ NODE
   # (1=auth, 2=404, 3=network). There is no batch and no lock-write in the CLI — the
   # bootstrap layer orchestrates the per-rule loop and writes the lock itself.
   SUCCESS_LOG=$(mktemp)
+  _REAL_REPO_ROOT=$(cd "$REPO_ROOT" && pwd -P)
   while IFS= read -r rule_path; do
     [[ -z "$rule_path" ]] && continue
+    _RULE_TARGET="$REPO_ROOT/$rule_path"
+    _RULE_DIR=$(dirname "$_RULE_TARGET")
+    # Never write through a symlink: refuse a symlinked or directory target and any
+    # symlinked directory between REPO_ROOT and the target.
+    _RULE_UNSAFE=false
+    if [[ -L "$_RULE_TARGET" || -d "$_RULE_TARGET" ]]; then _RULE_UNSAFE=true; fi
+    _RULE_WALK="$REPO_ROOT"
+    IFS='/' read -ra _RULE_PARTS <<< "$(dirname "$rule_path")"
+    for _part in "${_RULE_PARTS[@]}"; do
+      if [[ -z "$_part" || "$_part" = . ]]; then continue; fi
+      if [[ "$_part" = .. ]]; then _RULE_UNSAFE=true; break; fi
+      _RULE_WALK="$_RULE_WALK/$_part"
+      if [[ -L "$_RULE_WALK" ]]; then _RULE_UNSAFE=true; break; fi
+    done
+    if [[ "$_RULE_UNSAFE" = true ]]; then
+      echo "baseline-fetch: $rule_path is a symlink or lies under one — skipped" >&2
+      continue
+    fi
     _RULE_CREATED=false
-    [[ -e "$REPO_ROOT/$rule_path" || -L "$REPO_ROOT/$rule_path" ]] || _RULE_CREATED=true
-    mkdir -p "$REPO_ROOT/$(dirname "$rule_path")"
+    [[ -e "$_RULE_TARGET" ]] || _RULE_CREATED=true
+    mkdir -p "$_RULE_DIR"
+    case "$(cd "$_RULE_DIR" && pwd -P)/" in
+      "$_REAL_REPO_ROOT"/*) ;;
+      *) echo "baseline-fetch: $rule_path resolves outside the repository — skipped" >&2; continue ;;
+    esac
+    # Fetch into a temp file beside the target; only a complete, non-empty body
+    # replaces the rule, so a failed fetch keeps the previous copy.
+    _RULE_TMP=$(mktemp "$_RULE_DIR/.baseline-fetch.XXXXXX") || continue
     if node "$PLUGIN_ROOT/scripts/lib/fetch-baseline.mjs" \
-         "$BASELINE_PROJECT_ID" "$rule_path" "$BASELINE_REF" > "$REPO_ROOT/$rule_path"; then
+         "$BASELINE_PROJECT_ID" "$rule_path" "$BASELINE_REF" > "$_RULE_TMP" \
+       && [[ -s "$_RULE_TMP" && ! -L "$_RULE_TARGET" && ! -d "$_RULE_TARGET" ]] \
+       && chmod "$(printf '%04o' $(( 0666 & ~0$(umask) )))" "$_RULE_TMP" \
+       && mv -f "$_RULE_TMP" "$_RULE_TARGET"; then
       printf '%s\n' "$rule_path" >> "$SUCCESS_LOG"
       if [[ "$_RULE_CREATED" = true ]]; then BOOTSTRAP_FILES+=("$rule_path"); fi
     else
-      # A 404 (or any error) for one rule must not abort the batch — drop the empty
-      # target the redirect created and continue with the next manifest line.
-      rm -f "$REPO_ROOT/$rule_path"
+      # A 404 (or any error) for one rule must not abort the batch — drop only the
+      # temp file and continue with the next manifest line.
+      rm -f "$_RULE_TMP"
     fi
   done < "$RULES_MANIFEST"
 
@@ -235,10 +267,22 @@ NODE
     LOCK_FILE="$REPO_ROOT/.claude/.baseline-fetch.lock"
     _FETCH_LOCK_CREATED=false
     [[ -e "$LOCK_FILE" || -L "$LOCK_FILE" ]] || _FETCH_LOCK_CREATED=true
-    mkdir -p "$REPO_ROOT/.claude"
-    FETCHED_JSON="$FETCHED_JSON" BASELINE_PROJECT_ID="$BASELINE_PROJECT_ID" \
-      BASELINE_REF="$BASELINE_REF" LOCK_FILE="$LOCK_FILE" \
-      node --input-type=module -e "
+    # Same rule as the rule loop: never write through a symlinked lock or .claude/,
+    # and replace the lock only from a complete temp file inside .claude/.
+    _LOCK_TMP=""
+    if [[ -L "$REPO_ROOT/.claude" || -L "$LOCK_FILE" || -d "$LOCK_FILE" ]]; then
+      echo "baseline-fetch: .claude/.baseline-fetch.lock is a symlink or lies under one — lock not written" >&2
+    else
+      mkdir -p "$REPO_ROOT/.claude"
+      case "$(cd "$REPO_ROOT/.claude" && pwd -P)/" in
+        "$_REAL_REPO_ROOT"/*) _LOCK_TMP=$(mktemp "$REPO_ROOT/.claude/.baseline-fetch.lock.XXXXXX") || _LOCK_TMP="" ;;
+        *) echo "baseline-fetch: .claude/ resolves outside the repository — lock not written" >&2 ;;
+      esac
+    fi
+    if [[ -n "$_LOCK_TMP" ]] \
+       && FETCHED_JSON="$FETCHED_JSON" BASELINE_PROJECT_ID="$BASELINE_PROJECT_ID" \
+          BASELINE_REF="$BASELINE_REF" LOCK_FILE="$_LOCK_TMP" \
+          node --input-type=module -e "
       import { writeFileSync } from 'node:fs';
       const files = JSON.parse(process.env.FETCHED_JSON);
       const lock = {
@@ -249,9 +293,16 @@ NODE
         files,
       };
       writeFileSync(process.env.LOCK_FILE, JSON.stringify(lock, null, 2) + '\n');
-    "
-    echo "Wrote .claude/.baseline-fetch.lock ($(wc -l < "$SUCCESS_LOG" | tr -d ' ') files)"
-    if [[ "$_FETCH_LOCK_CREATED" = true ]]; then BOOTSTRAP_FILES+=(.claude/.baseline-fetch.lock); fi
+    " \
+       && [[ -s "$_LOCK_TMP" && ! -L "$LOCK_FILE" && ! -d "$LOCK_FILE" ]] \
+       && chmod "$(printf '%04o' $(( 0666 & ~0$(umask) )))" "$_LOCK_TMP" \
+       && mv -f "$_LOCK_TMP" "$LOCK_FILE"; then
+      echo "Wrote .claude/.baseline-fetch.lock ($(wc -l < "$SUCCESS_LOG" | tr -d ' ') files)"
+      if [[ "$_FETCH_LOCK_CREATED" = true ]]; then BOOTSTRAP_FILES+=(.claude/.baseline-fetch.lock); fi
+    else
+      if [[ -n "$_LOCK_TMP" ]]; then rm -f "$_LOCK_TMP"; fi
+      echo "WARNING: .claude/.baseline-fetch.lock was not written; the fetched rules are in place" >&2
+    fi
   else
     echo "WARNING: baseline fetch produced no files; rules will arrive via Clank sync MRs (legacy path)" >&2
   fi
@@ -385,6 +436,7 @@ Append the missing patterns:
 _GI_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
 _GI="$_GI_ROOT/.gitignore"
 _GI_MISSING=()
+_GI_UNREADABLE=false
 # Never add a file consumers COMMIT here: .orchestrator/bootstrap.lock, policy/, steering/, the *.jsonl ledgers.
 _GI_PATTERNS=(
   '.orchestrator/metrics/*.jsonl.lock*' '.file.lock.*'
@@ -418,11 +470,21 @@ _GI_PATTERNS=(
 if [[ -z "$_GI_ROOT" ]]; then
   # No repo root: never fall back to "/.gitignore" (a stray file at / when run as root).
   echo "store-lock-ignore: no repository root (REPO_ROOT unset, not inside a repo) — skipped" >&2
+elif [[ ! -e "$_GI" ]]; then
+  _GI_MISSING=("${_GI_PATTERNS[@]}")
 else
   for _pat in "${_GI_PATTERNS[@]}"; do
     # A CRLF .gitignore stores "pattern\r" — count that as present, or every run appends a duplicate block.
-    grep -qxF -- "$_pat" "$_GI" 2>/dev/null || grep -qxF -- "$_pat"$'\r' "$_GI" 2>/dev/null || _GI_MISSING+=("$_pat")
+    _gi_rc=0; grep -qxF -- "$_pat" "$_GI" 2>/dev/null || _gi_rc=$?
+    if [[ $_gi_rc -eq 1 ]]; then _gi_rc=0; grep -qxF -- "$_pat"$'\r' "$_GI" 2>/dev/null || _gi_rc=$?; fi
+    # grep exit 2 = the file could not be read (a denial `-r` does not see, e.g. a Windows ACL).
+    if [[ $_gi_rc -gt 1 ]]; then _GI_UNREADABLE=true; break; fi
+    if [[ $_gi_rc -eq 1 ]]; then _GI_MISSING+=("$_pat"); fi
   done
+  if [[ "$_GI_UNREADABLE" = true ]]; then
+    echo "store-lock-ignore: $_GI could not be read — append skipped" >&2
+    _GI_MISSING=()
+  fi
 fi
 # An unreadable .gitignore (e.g. mode 0200) defeats both the presence check and the newline check — leave it alone.
 if [[ -n "$_GI_ROOT" && ! -L "$_GI" && ( ! -e "$_GI" || -r "$_GI" ) && ${#_GI_MISSING[@]} -gt 0 ]]; then

@@ -6,12 +6,6 @@ metadata:
   argument-hint: "[url | manifest-path]"
   model: inherit
   color: magenta
-allowed-tools:
-  - Read
-  - Grep
-  - Glob
-  - Bash
-  - Write
 ---
 
 # ux-grill

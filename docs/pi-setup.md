@@ -10,7 +10,7 @@ Guide for using Session Orchestrator with [Pi](https://pi.dev/docs/latest).
 
 ## Installation
 
-### Option 1: npm package (primary, once published)
+### Option 1: npm package (primary)
 
 ```bash
 pi install npm:session-orchestrator
@@ -50,7 +50,7 @@ cd ~/Projects/session-orchestrator
 node scripts/pi-install.mjs --global --settings-only
 ```
 
-Global mode writes `~/.pi/agent/settings.json`.
+Global mode writes `~/.pi/agent/settings.json`; set `PI_AGENT_HOME` to write `settings.json` under that directory instead (`scripts/pi-install.mjs`).
 
 ## Configuration
 
@@ -78,17 +78,24 @@ The package manifest in `package.json` exposes:
 - `pi.skills`: `./skills`
 - `pi.prompts`: `./pi/prompts/*.md` generated from `commands/*.md` plus every skill whose `user-invocable` is `true` or absent (Claude Code's picker reading; `check-skills` requires the key to be stated)
 
-The extension uses `hooks/hooks-pi.json` and `scripts/lib/pi-hook-bridge.mjs` to translate Pi events into the existing hook stdin contract.
+The extension uses `hooks/hooks-pi.json` and `scripts/lib/pi-hook-bridge.mjs` to translate Pi events into the existing hook stdin contract. Two gaps in that translation:
+
+- **Session id:** the bridge reads one only from `event.sessionId`, `event.session_id` or `ctx.sessionId`; whether Pi supplies any of them is not measured. `on-session-start.mjs` adopts the value only when it is a UUID; for any other value, or none, it generates a random UUID, so each start gets a new id.
+- **Transcript path:** `transcript_path` is not passed on, so hooks that read it have no source on Pi.
+
+Output of non-blocking hooks is not delivered, see [Hook Coverage](#hook-coverage).
 
 ## Hook Coverage
 
 | Pi event | Session Orchestrator equivalent | Status |
 |---|---|---|
-| `session_start` | `SessionStart` | enabled |
-| `session_shutdown` | `SessionEnd` | enabled |
-| `tool_call` | `PreToolUse` | enabled for `bash`, `edit`, `write` |
-| `tool_result` | `PostToolUse` | enabled |
-| `agent_end` | `Stop` | enabled |
+| `session_start` | `SessionStart` | hooks run (side effects only) |
+| `session_shutdown` | `SessionEnd` | hooks run (side effects only) |
+| `tool_call` | `PreToolUse` | enabled for `bash`, `edit`, `write`; blocks are shown |
+| `tool_result` | `PostToolUse` | hooks run (side effects only) |
+| `agent_end` | `Stop` | hooks run (side effects only) |
+
+"Side effects only" means the hooks execute and keep their effects (session lock, events, ledger), but their output reaches neither the user nor the model. The extension returns only `{ block, reason }` or nothing (`pi/extensions/session-orchestrator.ts`) and never reads the hook results (`results` in `scripts/lib/pi-hook-bridge.mjs`), so on Pi these do not arrive: the session-start banner and SessionStart context, `post-edit-validate`, the import probe, and `post-bash-write-verify` (including its secret-output warning). Only `tool_call` blocks are visible. Wiring: `hooks/hooks-pi.json`.
 
 Not yet mapped in v1: `PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `SubagentStop`, and `CwdChanged`.
 
@@ -112,12 +119,14 @@ After reload, use the same commands:
 | State directory | `.claude/` | `.codex/` | `.pi/` |
 | Tool guard event | `PreToolUse` | `PreToolUse` | `tool_call` bridge |
 | Agent dispatch | Native Agent tool | Codex subagents / typed roles | Sequential v1 |
+| Hook hints and banners | Not covered here | Not covered here | Not delivered (only `tool_call` blocks are visible) |
+| Session id | Not covered here | Not covered here | Used only if Pi sends one in UUID form (not measured); any other value, or none, gets a random UUID per start |
 
 ## Troubleshooting
 
 - **Prompts or skills not visible**: verify the project is trusted in Pi, then restart or reload.
 - **Package not loaded**: confirm `.pi/settings.json` or `~/.pi/agent/settings.json` contains the local checkout path under `packages`.
 - **Hooks not firing**: confirm `package.json` still has the `pi.extensions` entry and `hooks/hooks-pi.json` exists.
-- **No import-probe warning after an edit**: Pi wires the probe through `tool_result`; file eligibility, ESLint resolution, and `no-undef` configuration still apply. See [import-probe coverage and ESLint troubleshooting](USER-GUIDE.md#import-probe-warnings-and-missing-eslint).
+- **No import-probe warning after an edit**: expected on Pi. The probe is wired through `tool_result` and runs, but its warning is never shown, because the extension does not forward hook output (see [Hook Coverage](#hook-coverage)). A missing warning therefore says nothing about the edit; use the project's lint and tests. File eligibility, ESLint resolution, and `no-undef` configuration still apply to whether the probe finds anything. See [import-probe coverage and ESLint troubleshooting](USER-GUIDE.md#import-probe-warnings-and-missing-eslint).
 - **Config ignored**: ensure the file has a `## Session Config` header in `AGENTS.md` or `CLAUDE.md`.
 - **Runtime error from hooks**: run `npm install` in the Session Orchestrator checkout so hook dependencies are present.

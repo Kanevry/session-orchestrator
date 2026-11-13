@@ -186,9 +186,15 @@ function isOwnRuntimeArtifact(porcelainPath) {
  * (largest: big.bin 5MB)" against an actual 18 MB, low enough to fall under the
  * report threshold entirely. `-z` is NUL-separated and never quotes.
  *
+ * Sizing honours one caller deadline (#84): when `host.deadline` passes before
+ * every path is sized, the size is reported as NOT MEASURED — never as a
+ * partial sum, never as silence that reads like "no ballast".
+ *
  * @param {string} repoRoot
  * @param {number} ballastMb
- * @param {{platform?: string}} [host] platform seam for regression tests
+ * @param {{platform?: string, deadline?: number, clock?: () => number}} [host]
+ *   platform and clock seams for regression tests; `deadline` (epoch ms on
+ *   `clock`) bounds the whole sizing pass
  * @returns {object[]}
  */
 export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB, host = {}) {
@@ -215,8 +221,18 @@ export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB, ho
   // more than the finding is worth on a large tree.
   let totalBytes = 0;
   const heaviest = [];
-  const sizes = duBytesBatch(repoRoot, ignoredPaths, host);
-  for (const p of ignoredPaths) {
+  const { sizes, expired } = duBytesBatch(repoRoot, ignoredPaths, host);
+  if (expired) {
+    // Third state, distinct from "measured" and from "git unreadable" (silent
+    // above): the sum is incomplete, so no total and no threshold verdict.
+    findings.push({
+      check: 'ignored-ballast',
+      fixable: false,
+      measured: false,
+      message: `size of ${ignoredPaths.length} ignored path(s) not measured — sizing ran out of the probe time budget (ballast unknown, not zero)`,
+    });
+  }
+  for (const p of expired ? [] : ignoredPaths) {
     const bytes = sizes.get(stripTrailingSlash(p));
     if (bytes === undefined) continue;
     totalBytes += bytes;
@@ -281,22 +297,39 @@ function stripTrailingSlash(p) {
  * BSD and GNU `du` both define `-l` as "count sizes many times if hard linked".
  * @param {string} repoRoot
  * @param {string[]} relPaths porcelain paths relative to repoRoot
- * @param {{platform?: string}} [host] platform seam for regression tests
- * @returns {Map<string, number>}
+ *
+ * `deadline` (#84): one bound for the WHOLE batch, checked between chunks,
+ * inside the win32 walk, and as the `du` child's timeout (clamped to the time
+ * left). Once it passes, `expired` is true and `sizes` is a partial map the
+ * caller must not sum. Without a deadline the old per-chunk 30 s budget holds.
+ * @param {string} repoRoot
+ * @param {string[]} relPaths porcelain paths relative to repoRoot
+ * @param {{platform?: string, deadline?: number, clock?: () => number}} [host]
+ *   platform and clock seams for regression tests
+ * @returns {{sizes: Map<string, number>, expired: boolean}}
  */
-function duBytesBatch(repoRoot, relPaths, { platform = process.platform } = {}) {
+function duBytesBatch(repoRoot, relPaths, { platform = process.platform, deadline, clock = Date.now } = {}) {
   const sizes = new Map();
+  const bounded = Number.isFinite(deadline);
+  let expired = false;
   const existing = relPaths.filter((p) => existsSync(join(repoRoot, p)));
   for (let i = 0; i < existing.length; i += DU_CHUNK_SIZE) {
+    if (bounded && clock() >= deadline) { expired = true; break; }
     const chunk = existing.slice(i, i + DU_CHUNK_SIZE);
     if (platform === 'win32') {
-      // Same 30 s budget per chunk the `du` child has; on expiry the rest of
-      // the chunk stays unsized (absent), like a timed-out `du`'s stdout.
-      const deadline = Date.now() + 30_000;
+      // Without a caller deadline: the same 30 s budget per chunk the `du`
+      // child has; on expiry the rest of the chunk stays unsized (absent),
+      // like a timed-out `du`'s stdout.
+      const chunkDeadline = bounded ? deadline : clock() + 30_000;
       for (const p of chunk) {
-        const bytes = walkWinBytes(join(repoRoot, p), deadline);
+        const bytes = walkWinBytes(join(repoRoot, p), chunkDeadline, clock);
+        if (bytes === WALK_EXPIRED) {
+          if (bounded) { expired = true; break; }
+          continue;
+        }
         if (bytes !== null) sizes.set(stripTrailingSlash(p), bytes);
       }
+      if (expired) break;
       continue;
     }
     let out;
@@ -311,9 +344,13 @@ function duBytesBatch(repoRoot, relPaths, { platform = process.platform } = {}) 
         env: { ...process.env, LC_ALL: 'C.UTF-8' },
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 30_000,
+        // A synchronous child is not preempted by the caller's deadline, so
+        // its own timeout is the time left (at least 1 ms: 0 means "none").
+        timeout: bounded ? Math.max(1, Math.min(30_000, deadline - clock())) : 30_000,
       });
     } catch (err) {
+      // Killed by a deadline-clamped timeout: its stdout is a partial sum.
+      if (bounded && err?.code === 'ETIMEDOUT') { expired = true; break; }
       out = typeof err?.stdout === 'string' ? err.stdout : '';
     }
     for (const line of out.split('\n')) {
@@ -324,8 +361,11 @@ function duBytesBatch(repoRoot, relPaths, { platform = process.platform } = {}) 
       sizes.set(stripTrailingSlash(line.slice(tab + 1)), kb * 1024);
     }
   }
-  return sizes;
+  return { sizes, expired };
 }
+
+/** {@link walkWinBytes} result when the deadline passed mid-walk. */
+const WALK_EXPIRED = Symbol('walk-expired');
 
 /**
  * `du -skl <root>` for native Windows, which has no `du` (#1743). Windows
@@ -334,18 +374,20 @@ function duBytesBatch(repoRoot, relPaths, { platform = process.platform } = {}) 
  * `du -k`. Ceiling (BV-004): sparse/compressed NTFS files count at apparent
  * size; revisit if Node exposes allocation size on win32. Symlinks are never
  * followed (`du -P`). Hard links count under every path (`-l`). Unreadable
- * subtrees are skipped. Returns null when the root vanished or the deadline
- * passed (unsized, never a partial undercount).
+ * subtrees are skipped. Returns null when the root vanished and
+ * {@link WALK_EXPIRED} when the deadline passed (unsized, never a partial
+ * undercount).
  * @param {string} root
- * @param {number} deadline epoch ms
- * @returns {number|null} bytes (KiB multiple)
+ * @param {number} deadline epoch ms on `clock`
+ * @param {() => number} [clock]
+ * @returns {number|null|typeof WALK_EXPIRED} bytes (KiB multiple)
  */
-function walkWinBytes(root, deadline) {
+function walkWinBytes(root, deadline, clock = Date.now) {
   let blocks512 = 0;
   const stack = [root];
   let first = true;
   while (stack.length > 0) {
-    if (Date.now() > deadline) return null;
+    if (clock() > deadline) return WALK_EXPIRED;
     const current = stack.pop();
     let st;
     try { st = lstatSync(current); } catch { if (first) return null; continue; }
@@ -921,10 +963,12 @@ export function checkTrackedSessionsLedger(repoRoot) {
  * read past roughly 25 findings. The caller renders the summary plus the top
  * findings and can use `mechanical` to route the fixable subset separately.
  *
- * @param {{ repoRoot: string, now?: number, thresholds?: object }} opts
+ * @param {{ repoRoot: string, now?: number, thresholds?: object, deadline?: number }} opts
+ *   `deadline` (epoch ms, #84) bounds the ignored-ballast sizing; omitted, the
+ *   sizing keeps its own per-chunk 30 s budget
  * @returns {{ severity: 'warn', message: string, findings: object[], mechanical: number } | null}
  */
-export function checkProjectHygiene({ repoRoot, now = Date.now(), thresholds = {} } = {}) {
+export function checkProjectHygiene({ repoRoot, now = Date.now(), thresholds = {}, deadline } = {}) {
   if (!repoRoot || typeof repoRoot !== 'string') return null;
   if (!existsSync(join(repoRoot, '.git'))) return null;
 
@@ -939,7 +983,7 @@ export function checkProjectHygiene({ repoRoot, now = Date.now(), thresholds = {
     const release = checkReleaseHygiene(repoRoot, releaseDriftCommits);
     if (release) findings.push(release);
 
-    findings.push(...checkIgnoredBallast(repoRoot, ballastMb));
+    findings.push(...checkIgnoredBallast(repoRoot, ballastMb, { deadline }));
 
     const stale = checkStaleArtifacts(repoRoot, artifactAgeDays, now);
     if (stale) findings.push(stale);

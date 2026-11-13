@@ -2644,6 +2644,29 @@ export function canonicalizeGrantPrefix(absPath, io) {
 }
 
 /**
+ * Spell an ABSOLUTE scope grant the way an absolute target is spelled before
+ * `pathMatchesPattern`: the platform's own separator becomes `/` (#2066).
+ *
+ * The one normalisation both the PreToolUse gate (`hooks/enforce-scope.mjs`
+ * `matchedAbsoluteGrant`) and the PostToolUse report (`hooks/post-bash-write-verify.mjs`
+ * `isInScope`) apply, so a win32 grant `C:\work\src\**` matches the `/`-form
+ * target `C:/work/src/a.mjs` in both hooks — the post hook used the raw grant
+ * and reported an allowed write as out of scope.
+ *
+ * Only `pathApi.sep` is replaced, never a literal `\`: on POSIX `\` is an
+ * ordinary file-name character, so there this is the identity. Relative grants
+ * are deliberately NOT routed through here (#1742), and no drive-letter case
+ * folding happens.
+ *
+ * @param {string} pattern — an absolute allowedPaths entry
+ * @param {{sep: string}} [pathApi] — test seam for the win32 spelling on a POSIX host
+ * @returns {string}
+ */
+export function absoluteGrantPattern(pattern, pathApi = path) {
+  return pattern.split(pathApi.sep).join('/');
+}
+
+/**
  * Grade ONE `allowedPaths` / fileScope entry as a Gate 5b grant.
  *
  * The single grading predicate shared by `scripts/validate-wave-scope.mjs`

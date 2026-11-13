@@ -5,11 +5,6 @@ metadata:
   user-invocable: "true"
   argument-hint: "[topic]"
   model: inherit
-allowed-tools:
-  - Read
-  - Grep
-  - Glob
-  - Bash
 ---
 
 # eli5

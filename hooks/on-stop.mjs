@@ -953,8 +953,13 @@ async function main() {
       await handleStop(input, reaperTrigger);
     } finally {
       // terminalSequence is only meaningful for Stop (session-level) events.
-      if (await stopNotificationEnabled()) {
-        process.stdout.write(buildTerminalSequenceJson(detectPlatform()));
+      // GH#85: never on Codex. Its `stop.command.output` schema (codex-cli
+      // 0.160.1) sets `additionalProperties: false` and does not know the
+      // field, so the whole output was rejected and the hook shown as failed.
+      // Codex gets an empty stdout, which its schema accepts.
+      const platform = detectPlatform();
+      if (platform !== 'codex' && await stopNotificationEnabled()) {
+        process.stdout.write(buildTerminalSequenceJson(platform));
       }
     }
   }
@@ -995,7 +1000,7 @@ async function stopNotificationEnabled() {
  */
 const PLATFORM_NOTIFY_LABELS = {
   claude: 'Claude Code',
-  codex:  'Codex',
+  // No `codex` key: Stop emits no terminalSequence on Codex (GH#85).
   cursor: 'Cursor',
   pi:     'Pi',
 };

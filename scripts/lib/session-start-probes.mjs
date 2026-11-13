@@ -919,7 +919,14 @@ export const PROBES = [
     spec: local('./project-hygiene.mjs'),
     fn: 'checkProjectHygiene',
     network: false,
-    args: ({ repoRoot }) => ({ repoRoot }),
+    // #84: the sizing walk is synchronous, so the race below cannot stop it;
+    // the probe's own budget becomes its deadline instead. Evaluated at call
+    // time. Ceiling: time a sibling held the loop before this call is not
+    // deducted — the hook's start gate (budget + margin) still bounds the run.
+    args: ({ repoRoot, budgetMs }) => ({
+      repoRoot,
+      ...(Number.isFinite(budgetMs) ? { deadline: Date.now() + budgetMs } : {}),
+    }),
   },
   {
     id: 'mirror-issues',
@@ -1253,12 +1260,13 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
   // stays an answerable question.
   const includeNetwork = env?.SO_PROBES_INCLUDE_NETWORK === '1';
 
-  const ctx = { repoRoot, config, env };
   // Per-probe, denominated in the probe's own work time — NOT a shared
   // wall-clock deadline. A shared wall deadline charged every probe for its
   // siblings' non-preemptible `execFileSync` calls; see
   // {@link startLoopBlockedMeter}.
   const budgetMs = Math.max(0, Number(timeoutMs) || 0);
+  // `budgetMs` in ctx: a synchronous probe turns it into its own deadline (#84).
+  const ctx = { repoRoot, config, env, budgetMs };
   const meter = startLoopBlockedMeter();
 
   /** @type {Map<string, object>} */

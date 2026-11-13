@@ -6,7 +6,6 @@ color: cyan
 user-invocable: true
 disable-model-invocation: true
 argument-hint: "[topic-or-feature-slug]"
-tools: Read, Grep, Glob, Bash, Write
 ---
 
 # Brainstorm Skill

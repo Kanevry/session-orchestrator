@@ -487,6 +487,70 @@ const RESULT_COMPLETION_FORMS = Object.freeze([
   Object.freeze({ at: 'start', text: "This agent's report was delivered" }), // 35/35 without carrier
 ]);
 
+/**
+ * The completion the harness writes on the tool_result RECORD itself (#2049):
+ * `toolUseResult: { status: 'completed', agentId, … }` beside `message`. Since
+ * Claude Code 2.1.322 a synchronous Agent result can come WITHOUT the text
+ * trailer above (no `<usage>`, no `agentId:` line; the text starts with
+ * `[Subagent hand-back]`), so the text forms alone read it as "unknown" and the
+ * agent bound its cap slot and file scope until the TTL.
+ *
+ * Census 2026-11-12, Agent tool_results in 120 transcripts (M4 + one m5
+ * `claude -p` run): `completed` on 6/6 trailer-less m5 results and on 17
+ * synchronous M4 results (14 of them trailer-less); `async_launched` on 607/607
+ * launch ACKs; error results carry a string or no `toolUseResult`. The field is
+ * outside `message.content`, so an agent's report text cannot write it.
+ * Trusted only on a `user` record with exactly ONE tool_result block: the
+ * record-level field names no `tool_use_id`, so two results in one record would
+ * be ambiguous (multi-block records exist: 362 launch ACKs batched 2–5 per
+ * record, none of them with a `toolUseResult`).
+ *
+ * Three refusals keep it from finishing a live agent (review of !412):
+ * - no valid `agentId` → no completion. Without the task id a later
+ *   `SendMessage` resume could not re-open the agent (23/23 measured
+ *   `completed` records carry a valid one);
+ * - a text starting with a launch receipt (ACK, fork start) is never upgraded
+ *   by the record, whatever it says (the text forms above are unchanged);
+ * - the record's `agentId` is T(U). A text `agentId:` line counts only when
+ *   the text alone reads as an ACK/completion form — then a differing id
+ *   re-opens the agent on a resume, never closes it. In a result the record
+ *   had to upgrade, the line is ignored. Ceiling (#2063): an unframed report
+ *   that itself contains `<usage>`/`total_tokens` and a column-zero
+ *   `agentId:` line still yields such an id (false DENY without TTL, never a
+ *   false ALLOW); the real hand-back frame indents every report line (438 of
+ *   438 in the m5 run, 2026-11-12).
+ */
+const RECORD_COMPLETED_STATUS = 'completed';
+const RECORD_AGENT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * The start receipt of a forked dispatch — a launch, not a completion (see
+ * {@link RESULT_COMPLETION_FORMS}). Matched as the text PREFIX like
+ * {@link ASYNC_LAUNCH_ACK}.
+ */
+const FORK_START_RECEIPT = 'Fork started';
+
+/**
+ * The record-level completion of a dispatch result, or `null` (see
+ * {@link RECORD_COMPLETED_STATUS}).
+ *
+ * @param {any} rec parsed transcript record
+ * @param {unknown[]} content its `message.content`
+ * @param {string} text the result block's flattened text
+ * @returns {{agentId: string}|null}
+ */
+function recordCompletion(rec, content, text) {
+  const tur = rec?.toolUseResult;
+  if (rec?.type !== 'user' || tur === null || typeof tur !== 'object' || Array.isArray(tur)) return null;
+  if (tur.status !== RECORD_COMPLETED_STATUS) return null;
+  if (typeof tur.agentId !== 'string' || !RECORD_AGENT_ID_RE.test(tur.agentId)) return null;
+  if (content.filter((b) => b?.type === 'tool_result').length !== 1) return null;
+  // The ACK never reaches here (it is decided as 'ack' first); a fork start
+  // reads "unknown" and must not be upgraded.
+  if (text.trimStart().startsWith(FORK_START_RECEIPT)) return null;
+  return { agentId: tur.agentId };
+}
+
 /** The tool that addresses — and can RESUME — an already-dispatched agent (#1459 P1). */
 const SEND_MESSAGE_TOOL = 'SendMessage';
 
@@ -1229,10 +1293,21 @@ function buildLivenessIndex(raw) {
         const own = results.get(block.tool_use_id);
         if (own !== undefined) {
           const text = resultTextOf(block);
-          const form = dispatchResultForm(block, text);
-          // An error text is not a harness trailer — learn T(U) from ACK/completion only.
-          const agentId = form === 'ack' || (form === 'done' && block.is_error !== true) ? lastAgentIdIn(block) : '';
-          own.push({ pos, form, agentId });
+          const textForm = dispatchResultForm(block, text);
+          // The ACK is decided first and never overridden; only "unknown" or a
+          // non-error completion consult the record-level status (#2049).
+          const completion = textForm === 'unknown' || (textForm === 'done' && block.is_error !== true)
+            ? recordCompletion(rec, content, text) : null;
+          const form = textForm === 'unknown' && completion !== null ? 'done' : textForm;
+          // T(U) from the harness-written record first, so a later SendMessage
+          // resume still re-opens the agent (#1459 P1). A text id counts only
+          // where the text alone reads as an ACK/completion: in a result the
+          // record had to upgrade, an `agentId:` line comes from the agent's
+          // report, and as a resume address it kept the agent running without
+          // TTL (Opus re-review of !412, MED). Remaining ceiling: #2063.
+          const textId = textForm === 'ack' || (textForm === 'done' && block.is_error !== true) ? lastAgentIdIn(block) : '';
+          const agentId = completion !== null ? completion.agentId : textId;
+          own.push({ pos, form, agentId, textId });
         } else if (sendIds.has(block.tool_use_id)
           && (block.is_error === true || resultTextOf(block).includes(SEND_NO_EFFECT))) {
           sendNoEffect.add(block.tool_use_id);
@@ -1250,10 +1325,32 @@ function buildLivenessIndex(raw) {
     let lastPos = pos;
     let lastIsSend = false;
     const closers = [useId];
-    if (taskId !== '') {
-      for (const send of sendsByTo.get(taskId) ?? []) {
+    // ALTERNATE ids (#2049, review of !412) re-open the agent on a send but never
+    // close it — a send's terminal notification may belong to another agent
+    // (Codex round 3). They are exactly the ids a record id may have displaced:
+    // every harness-written result id (record `agentId` or text trailer, Codex
+    // rounds 2 and 4) and the task id the text-only reading picks
+    // (`baseTaskId`: first trailer id, else the FIRST notification head, as
+    // before #2049 — Codex round 5). No id from a result the record upgraded
+    // (Opus re-review, MED; an unframed report with its own `<usage>` remains,
+    // #2063) and never a later notification head: a broader set kept agents
+    // running without TTL where the text-only reading falls to the TTL.
+    // Ceiling (BV-004): an agent resumed ONLY through an alternate id reads
+    // running until the session ends — a false DENY, never a false ALLOW.
+    // Revisit-Trigger: a census finds a dispatch whose record `agentId` differs
+    // from its trailer id or from its first notification head's task id (0 of
+    // 27 record completions in 1,298 transcripts, 2026-11-12).
+    const baseTaskId = own.find((r) => r.textId !== '')?.textId
+      ?? (headsByUse.get(useId) ?? []).find((h) => h.taskId !== '')?.taskId
+      ?? '';
+    const altIds = new Set([...own.flatMap((r) => [r.agentId, r.textId]), baseTaskId]
+      .filter((id) => id !== '' && id !== taskId));
+    for (const resumeId of [taskId, ...altIds]) {
+      if (resumeId === '') continue;
+      const closes = resumeId === taskId;
+      for (const send of sendsByTo.get(resumeId) ?? []) {
         if (sendNoEffect.has(send.id)) continue;
-        closers.push(send.id);
+        if (closes) closers.push(send.id);
         if (send.pos > lastPos) { lastPos = send.pos; lastIsSend = true; }
       }
     }

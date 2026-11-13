@@ -172,6 +172,7 @@ import {
   isScopeDeclarationPath,
   resolveScopeContext,
   canonicalizeGrantPrefix,
+  absoluteGrantPattern,
 } from '../scripts/lib/scope-gate.mjs';
 // #1153 P1 — the same process-local ownership check hooks/enforce-scope.mjs
 // applies at Gate 3b. This hook reads the SAME working-copy `wave-scope.json`,
@@ -375,21 +376,26 @@ export function isOutsideSessionRoot(relPath) {
  * @param {string} relPath
  * @param {string[]} allowedPaths
  * @param {string|null} [writeRoot] actual checkout root for absolute grants
+ * @param {{realpath?: (p: string) => string, pathApi?: typeof path}} [io]
+ *   test seam for the win32 path API on a POSIX host, handed through to
+ *   `canonicalizeGrantPrefix`; production passes nothing (native `path`, cached)
  * @returns {boolean}
  */
-export function isInScope(relPath, allowedPaths, writeRoot = null) {
+export function isInScope(relPath, allowedPaths, writeRoot = null, io = undefined) {
+  const pathApi = io?.pathApi ?? path;
   if (!Array.isArray(allowedPaths) || allowedPaths.length === 0) return false;
   return allowedPaths.some((p) => {
     if (typeof p !== 'string') return false;
-    if (!path.isAbsolute(p)) return pathMatchesPattern(relPath, p);
-    if (typeof writeRoot !== 'string' || !path.isAbsolute(writeRoot) || path.isAbsolute(relPath) || isOutsideSessionRoot(relPath)) return false;
+    if (!pathApi.isAbsolute(p)) return pathMatchesPattern(relPath, p);
+    if (typeof writeRoot !== 'string' || !pathApi.isAbsolute(writeRoot) || pathApi.isAbsolute(relPath) || isOutsideSessionRoot(relPath)) return false;
     // Match the canonical target, as PreToolUse does, but never let an absolute
     // grant suppress reporting for a path escaping the observed checkout.
-    const root = canonicalizeGrantPrefix(writeRoot);
-    const target = canonicalizeGrantPrefix(path.resolve(root, relPath));
-    const relative = path.relative(root, target);
-    if (path.isAbsolute(relative) || isOutsideSessionRoot(relative.split(path.sep).join('/'))) return false;
-    return pathMatchesPattern(target, p);
+    const root = canonicalizeGrantPrefix(writeRoot, io);
+    const target = canonicalizeGrantPrefix(pathApi.resolve(root, relPath), io);
+    const relative = pathApi.relative(root, target);
+    if (pathApi.isAbsolute(relative) || isOutsideSessionRoot(relative.split(pathApi.sep).join('/'))) return false;
+    // #2066 — the target is `/`-form; spell the grant the same way PreToolUse does.
+    return pathMatchesPattern(target, absoluteGrantPattern(p, pathApi));
   });
 }
 

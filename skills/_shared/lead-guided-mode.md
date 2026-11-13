@@ -43,9 +43,11 @@ each skill states what it does there.
    ```
 
    Parked questions use the same shape with `→ geparkt (<class>)`. The run's final output lists
-   all lines together under `### Autonome Entscheidungen`. When the run works on an issue, the
-   decision also goes into that issue as a comment ending with the steering rule's marker
-   `autonom entschieden (Steuerung: autonomous)`, so a bulk search finds both forms.
+   all lines together under `### Autonome Entscheidungen`. When the run works on an issue on the
+   project's own tracker, the decision also goes into that issue as a comment ending with the
+   steering rule's marker `autonom entschieden (Steuerung: autonomous)`. On a public tracker, the
+   project's own or not, that comment is an external effect (below): the line stays in the run's report, marked
+   `Kommentar offen`.
 
 ## Owner classes — never decided autonomously
 

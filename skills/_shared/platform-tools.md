@@ -20,8 +20,10 @@ a PreToolUse hook sees a shell call as `tool_name: "Bash"` with
 `tool_input.command` as a string, and `matcher: "Bash"` fires. Codex honours a
 PreToolUse `deny` (measured 2026-10-20 on `codex-cli 0.160.1`, #1691): the
 blocked command does not run. The Bash guards are wired on Codex except
-`pre-bash-templates-first` (it needs `transcript_path`, which Codex sends as
-`null`); see `docs/codex-setup.md`.
+`pre-bash-templates-first` (its template-Read proof needs `transcript_path`,
+which is `null` in some measured Codex payloads and set in others: `null` on
+2026-10-20, set on 2026-11-02, both `codex-cli 0.160.1`); see
+`docs/codex-setup.md`.
 Never call an unavailable `Read`, `Bash`, or `Skill` tool by name. An instruction
 to invoke `session-orchestrator:<name>` means read and follow the canonical
 `skills/<name>/SKILL.md` relative to the plugin root when no Skill tool exists.

@@ -29,7 +29,10 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 if [[ ! -f "$CHECKER_MJS" ]]; then
-  echo "{\"status\":\"infra-error\",\"reason\":\"checker.mjs not found at $CHECKER_MJS\"}" >&2
+  # Emit the JSON via node so a path containing a quote or a backslash (Git Bash
+  # on Windows) still yields valid JSON; the path travels through env.
+  SO_CHECKER_MJS="$CHECKER_MJS" node -e '
+    console.error(JSON.stringify({ status: "infra-error", reason: "checker.mjs not found at " + process.env.SO_CHECKER_MJS }));' >&2
   exit 2
 fi
 

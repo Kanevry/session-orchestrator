@@ -358,6 +358,21 @@ async function blockCommand(pattern, ruleId, rationale, command, sessionId) {
   emitDeny(reason);
 }
 
+/**
+ * #2053 — the deny label when the shell-payload budget ran out before every
+ * write/delete target was read. Short by design (stdout budget, never the command).
+ */
+const PAYLOAD_BUDGET_LABEL = 'payload budget exhausted — target unread';
+
+/**
+ * #2053 review — the reason for the budget deny. Its own text, not the rule's
+ * rationale: the command is refused for being too long to read, not for a
+ * matched target, so it names the remedy (as the oversized deny does).
+ */
+const PAYLOAD_BUDGET_REASON =
+  'the guard reads at most 32 shell payloads per reading (the second, function-head reading of #2052 has its own 32), ' +
+  'so a write or delete target behind them stays unread. Split the command into smaller, simpler Bash calls and retry.';
+
 /** An rm operand that is only a variable: `$D`, `${D}` (quotes already stripped). */
 const BARE_VARIABLE_RE = /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/;
 
@@ -2123,7 +2138,7 @@ function measurePathReset(reset, budget) {
 /** The deny reason of a same-ref path reset, naming the safe way (#1834). */
 const PATH_RESET_SAFE_WAY =
   'The path carries uncommitted changes another session may be building, or the guard cannot measure it (PSA-003, #1834). ' +
-  'Save what you need first, then restore one file explicitly with `git show HEAD:<path> > <path>`, or let the operator commit or stash the changes in their own terminal.';
+  'Save what you need first, then restore one file explicitly with `git show HEAD:<path> > <path>` (denied for targets of rule redirect-truncate-protected: ask the operator there), or let the operator commit or stash the changes in their own terminal.';
 
 /**
  * The verdict of rule `git-checkout-discard` (#1834, ADR-0017 § Path reset):
@@ -2997,7 +3012,12 @@ async function main() {
         const unresolved = collected.filter(
           (e) => e.unresolved && (e.mode === null || modes.has(e.mode))
         );
-        if (unresolved.length > 0) {
+        // #2053 — a spent payload budget left targets UNREAD; a block rule
+        // fails closed on it (parity with the pattern matcher). Decided below,
+        // after the real match, so a readable protected target keeps its label.
+        const budgetDeny =
+          severity === 'block' && unresolved.some((e) => e.reason === 'budget-exhausted');
+        if (unresolved.length > 0 && !budgetDeny) {
           // Variable/substitution operands are never match candidates (#641 FP
           // class) — surface them instead of guessing; never block on a guess.
           // Same for a payload subtree a recursion cap cut off: the cap stays,
@@ -3013,7 +3033,10 @@ async function main() {
           process.stderr.write(`⚠ ${msg}\n`);
           notices.push(msg);
         }
-        if (!blocker.redirectRuleMatches(rule, command, { repoRoot: projectDir })) continue;
+        if (!blocker.redirectRuleMatches(rule, command, { repoRoot: projectDir })) {
+          if (budgetDeny) await blockCommand(PAYLOAD_BUDGET_LABEL, id, PAYLOAD_BUDGET_REASON, lineCommand, sessionId);
+          continue;
+        }
         if (severity !== 'block') {
           const msg = `pre-bash-destructive-guard: redirect target matched (rule: ${id}) — ${rationale}`;
           process.stderr.write(`⚠ ${msg}\n`);
@@ -3042,7 +3065,9 @@ async function main() {
         const cutOff = collected.filter(
           (e) => e.unresolved && (e.reason === 'budget-exhausted' || e.reason === 'depth-exceeded')
         );
-        if (cutOff.length > 0) {
+        // #2053 — same fail-closed budget as the redirect branch above.
+        const budgetDeny = severity === 'block' && cutOff.some((e) => e.reason === 'budget-exhausted');
+        if (cutOff.length > 0 && !budgetDeny) {
           // A recursion cap that drops payloads silently is a bypass, not a cap
           // (#988 T2) — surface it on the VISIBLE channel (#995).
           //
@@ -3053,7 +3078,9 @@ async function main() {
           // channel (host-resources.md § HR-101 — a signal may only warn if it is
           // rare). A cut-off marker, by contrast, needs 32+ payload segments or
           // 3 levels of nesting: pathological by construction. Unresolved
-          // operands stay fail-visible on stderr below; neither class ever blocks.
+          // operands stay fail-visible on stderr below and never block; a spent
+          // budget blocks under a block rule (#2053), past-depth stays a notice
+          // (ceiling: ADR-0017 § #2053).
           const reasons = [...new Set(cutOff.map((e) => e.reason))].join(', ');
           const msg = `pre-bash-destructive-guard: delete-target traversal cut off (${reasons}) — not matched (fail-visible)`;
           process.stderr.write(`⚠ ${msg}\n`);
@@ -3068,7 +3095,10 @@ async function main() {
           );
         }
         const hit = blocker.firstDeniedDeleteTarget(rule, collected, { repoRoot: projectDir });
-        if (!hit) continue;
+        if (!hit) {
+          if (budgetDeny) await blockCommand(PAYLOAD_BUDGET_LABEL, id, PAYLOAD_BUDGET_REASON, lineCommand, sessionId);
+          continue;
+        }
         if (severity !== 'block') {
           const msg = `pre-bash-destructive-guard: protected delete target matched (rule: ${id}) — ${rationale}`;
           process.stderr.write(`⚠ ${msg}\n`);

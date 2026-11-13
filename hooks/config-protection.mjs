@@ -49,6 +49,7 @@ import path from 'node:path';
 
 import { emitAllow, emitDeny } from '../scripts/lib/io.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
+import { normalizeMsysPath } from '../scripts/lib/command-blocker.mjs';
 import { getProjectDir } from '../scripts/lib/platform.mjs';
 import {
   _parseConfigProtection,
@@ -56,7 +57,7 @@ import {
 } from '../scripts/lib/config/config-protection.mjs';
 
 // ---------------------------------------------------------------------------
-// Protected-file allow-list (matched against path.basename(file_path))
+// Protected-file allow-list (matched against protectedConfigName(file_path))
 // ---------------------------------------------------------------------------
 
 /**
@@ -85,15 +86,51 @@ const PROTECTED_PATTERNS = [
 ];
 
 /**
- * Is the given file path a protected quality-gate config file?
+ * The basename the allow-list judges for a target path: the name of the file
+ * the filesystem would actually open. On win32 the Windows spellings of one
+ * file (NTFS stream suffix, trailing dots/spaces) are reduced by the shared
+ * `normalizeMsysPath` rule; on darwin/win32 the name is case-folded, as those
+ * volumes fold case by default (same rule as the destructive guard's
+ * FOLD_PATH_CASE). Linux keeps the name byte-exact, so two files that differ
+ * only in case stay two files there.
+ *
  * @param {string} filePath
+ * @param {string} [platform]
+ * @returns {string}
+ */
+export function protectedConfigName(filePath, platform = process.platform) {
+  const plain = normalizeMsysPath(filePath, platform);
+  const base = platform === 'win32' ? path.win32.basename(plain) : path.basename(plain);
+  return platform === 'darwin' || platform === 'win32' ? base.toLowerCase() : base;
+}
+
+/**
+ * @param {string} name — a protectedConfigName() result
  * @returns {boolean}
  */
-function isProtectedConfig(filePath) {
-  if (typeof filePath !== 'string' || !filePath) return false;
-  const base = path.basename(filePath);
-  if (PROTECTED_EXACT.has(base)) return true;
-  return PROTECTED_PATTERNS.some((re) => re.test(base));
+function isProtectedName(name) {
+  if (PROTECTED_EXACT.has(name)) return true;
+  return PROTECTED_PATTERNS.some((re) => re.test(name));
+}
+
+/**
+ * Resolve the protected-config name for a target, or null when it is not one.
+ * The lexical name is tried first; an existing file is also judged by its
+ * realpath, which names the file actually reached (a symlink, or a case
+ * spelling the lexical fold does not cover).
+ *
+ * @param {string} filePath
+ * @returns {Promise<string|null>}
+ */
+async function resolveProtectedName(filePath) {
+  if (typeof filePath !== 'string' || !filePath) return null;
+  const lexical = protectedConfigName(filePath);
+  if (isProtectedName(lexical)) return lexical;
+  try {
+    const real = protectedConfigName(await fs.realpath(filePath));
+    if (isProtectedName(real)) return real;
+  } catch { /* missing or unreadable target → judged by its lexical name only */ }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +250,8 @@ function extractThresholds(text) {
   const map = new Map();
   if (!text) return map;
   // Named coverage keys + generic threshold/coverage/min* keys.
-  const re = /\b(statements|branches|functions|lines|global|threshold|coverage|min[A-Za-z]*)\b\s*[:=]\s*(\d+(?:\.\d+)?)/gi;
+  // Keys may be bare or quoted (`"lines": 80` in JSON), same form as tsconfigStrictState.
+  const re = /["']?\b(statements|branches|functions|lines|global|threshold|coverage|min[A-Za-z]*)\b["']?\s*[:=]\s*(\d+(?:\.\d+)?)/gi;
   let m;
   while ((m = re.exec(text)) !== null) {
     const key = m[1].toLowerCase();
@@ -314,7 +352,7 @@ function gitleaksAllowlistSignal(text) {
  * protected config file. Returns an array of short reason codes (empty when
  * the edit is tightening / neutral). Fail-open: any internal error → [].
  *
- * @param {string} basename
+ * @param {string} basename — a protectedConfigName() result
  * @param {string} oldContent
  * @param {string} newContent
  * @returns {string[]}
@@ -401,7 +439,8 @@ async function main() {
   if (typeof filePath !== 'string' || !filePath) return emitAllow();
 
   // Only scan protected quality-gate config files — everything else allows.
-  if (!isProtectedConfig(filePath)) return emitAllow();
+  const configName = await resolveProtectedName(filePath);
+  if (configName === null) return emitAllow();
   const basename = path.basename(filePath);
 
   // Resolve old vs new content.
@@ -433,12 +472,16 @@ async function main() {
       // against a missing file is a no-op for our purposes). Nothing to loosen.
       return emitAllow();
     }
-    // Collect the sequential edits: Edit = one (old_string,new_string) pair;
-    // MultiEdit = an ordered edits[] array of the same shape.
+    // Collect the sequential edits: Edit = one (old_string,new_string,replace_all)
+    // entry; MultiEdit = an ordered edits[] array of the same shape.
     const edits =
       toolName === 'MultiEdit'
         ? (Array.isArray(toolInput.edits) ? toolInput.edits : [])
-        : [{ old_string: toolInput.old_string, new_string: toolInput.new_string }];
+        : [{
+            old_string: toolInput.old_string,
+            new_string: toolInput.new_string,
+            replace_all: toolInput.replace_all,
+          }];
 
     let fullNew = fullOld;
     for (const e of edits) {
@@ -447,9 +490,13 @@ async function main() {
       if (os === '') continue; // empty old_string has no defined anchor — skip.
       const at = fullNew.indexOf(os);
       if (at === -1) continue; // slice not present (already applied / stale) — skip.
-      // Plain string replace of the FIRST occurrence (os may contain regex
-      // metacharacters — never feed it to RegExp).
-      fullNew = fullNew.slice(0, at) + ns + fullNew.slice(at + os.length);
+      // Literal replacement only: os may hold regex metacharacters and ns `$`
+      // patterns, so neither goes through RegExp or String.replace.
+      if (e.replace_all === true) {
+        fullNew = fullNew.split(os).join(ns);
+      } else {
+        fullNew = fullNew.slice(0, at) + ns + fullNew.slice(at + os.length);
+      }
     }
     oldContent = fullOld;
     newContent = fullNew;
@@ -475,7 +522,7 @@ async function main() {
   }
 
   // Heuristic.
-  const reasons = detectLoosening(basename, oldContent, newContent);
+  const reasons = detectLoosening(configName, oldContent, newContent);
   if (reasons.length === 0) return emitAllow(); // tightening / neutral
 
   const blocked = mode === 'strict';

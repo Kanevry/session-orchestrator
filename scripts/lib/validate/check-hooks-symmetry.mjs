@@ -88,7 +88,9 @@ const DOCUMENTED_ASYMMETRIES = {
       // `unified_exec` / `apply_patch`, so a guard gating on
       // `tool_name === 'Bash'` would run, match nothing and allow everything
       // (#919-P2 class). For the SHELL tool that premise is refuted below; for
-      // the Edit/Write/MultiEdit gates (apply_patch) it is still unmeasured.
+      // the Edit/Write/MultiEdit gates (apply_patch) it was measured later
+      // (#1914, codex-cli 0.160.1, 2026-11-02): tool_name is "apply_patch",
+      // tool_input is { command: "<raw patch>" }; see docs/codex-setup.md.
       //
       // REFUTED AGAIN for the shell tool (#1669), measured 2026-10-20 on
       // codex-cli 0.160.1 with a logging PreToolUse hook under `codex exec`:
@@ -161,7 +163,8 @@ const DOCUMENTED_ASYMMETRIES = {
         // pre-bash-templates-first (#1691): runs on the Codex payload but can
         // only DENY. Both allow routes are unreachable there: the template-Read
         // evidence needs `transcript_path` (hooks/pre-bash-templates-first.mjs:
-        // 404-410), which Codex sends as `null` (codex-cli 0.160.1, 2026-10-20),
+        // 404-410), which was `null` in the 2026-10-20 run and set in the
+        // 2026-11-02 runs (codex-cli 0.160.1; treat it as optional),
         // and `/templates-ack` writes an acknowledgement only under a `claude`
         // ancestor process (commands/templates-ack.md:18-23). Fed the Codex
         // payload with `.gitlab/issue_templates/bug.md` present, `glab issue
@@ -179,7 +182,7 @@ const DOCUMENTED_ASYMMETRIES = {
         'post-edit-import-probe.mjs',
         // post-tool-context-threshold (#1960): NOT ported. It measures the
         // context from the Claude Code transcript (`transcript_path` + Claude
-        // `message.usage` lines). Codex sends `transcript_path: null`
+        // `message.usage` lines). Codex's `transcript_path` is optional
         // (codex-cli 0.160.1, see pre-bash-templates-first above) and its rollout
         // files carry no such lines — the hook would stay "nicht messbar" forever.
         'post-tool-context-threshold.mjs',

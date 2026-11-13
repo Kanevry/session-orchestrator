@@ -17,16 +17,23 @@
     {
       "type": "file-matches",
       "path": "query.js",
-      "pattern": "\\$1",
+      "pattern": "([\"'])(?:(?!\\1)[^\\n])*\\$1|`[^`]*\\$1",
       "expect": true,
-      "note": "parameterised placeholder present"
+      "note": "placeholder $1 inside a string or template literal; a $1 in a comment does not count. Patterns compile with new RegExp(pattern) and no flags, so case-insensitivity is spelled out as character classes and nothing assumes semicolons."
     },
     {
       "type": "file-matches",
       "path": "query.js",
-      "pattern": "(SELECT|select)[^;]{0,200}\\$\\{",
+      "pattern": "([\"'`])\\s*[Ss][Ee][Ll][Ee][Cc][Tt]\\b(?:(?!\\1)[^\\n])*\\1(?:\\s*\\+\\s*([\"'`])(?:(?!\\2)[^\\n])*\\2)*\\s*\\+\\s*[A-Za-z_$(]",
       "expect": false,
-      "note": "no template-literal interpolation inside the SQL statement"
+      "note": "no SELECT-led literal (optionally followed by more static literals) concatenated with a non-literal. Static literal-to-literal concatenation is allowed. Limit: concatenation that does not follow a SELECT-led literal on the same expression (e.g. a WHERE fragment built in a separate statement) is not detected, and a single-quoted literal is not followed across a line break."
+    },
+    {
+      "type": "file-matches",
+      "path": "query.js",
+      "pattern": "`[^`]*[Ss][Ee][Ll][Ee][Cc][Tt]\\b[^`]*\\$\\{",
+      "expect": false,
+      "note": "no ${...} interpolation inside a template literal that contains SELECT; a template literal elsewhere in the file does not count"
     }
   ]
 }

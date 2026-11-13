@@ -15,29 +15,29 @@
  *   8.   Scan the client plugin caches (marketplace install, no env, cwd outside
  *        any checkout — GH Kanevry/session-orchestrator#64)
  *
- * `.mcp.json`'s bash bootstrap MIRRORS this order and cites this block. It
- * implements: tiers 1-5 in this exact env order → `git rev-parse
- * --show-toplevel` (its analogue of tier 7) → `node -e resolvePluginRoot()`
- * (which runs THIS function, tiers 1-8) → its own cache scan, reachable only
- * when the module is not node-resolvable at all.
+ * `.mcp.json`'s bash bootstrap follows this order for the tiers it has and
+ * cites this block. What it shares with this function: tier 1, then tiers 2-5
+ * with the same SO_PLATFORM reordering (trimmed, allowlisted claude / codex /
+ * cursor / pi; anything else keeps the legacy order), env values trimmed, the
+ * `CODEX_HOME` trim (see `_pluginCacheBases`), the
+ * `package.json{name === "session-orchestrator"}` test in the cache scan (the
+ * shell runs the same `JSON.parse` via `node -e`), and the strict
+ * newest-wins-by-mtime tiebreak (`[ "$c" -nt "$r" ]`, like the `>` below).
  *
- * THE ONE REMAINING DIVERGENCE, stated exactly: **tier 6** — a shell has no
- * `import.meta.url`, so the walk up from this file's own location has no
- * analogue there. Everything else is mirrored byte-for-byte in behaviour: the
- * env list AND its order, the `CODEX_HOME` trim (see `_pluginCacheBases`), the
- * `package.json{name === "session-orchestrator"}` test (the shell runs the same
- * `JSON.parse` via `node -e`, not a substring `grep` — a `grep` matched
- * `"name": "session-orchestrator-fork"` that this function rejects), and the
- * newest-wins-by-mtime tiebreak (`[ "$c" -nt "$r" ]` is strict, exactly like
- * the `>` below).
- *
- * Two divergences that existed until 2026-08-28 and no longer do: the shell
- * scanned the caches BEFORE the node tier (a host with both a global npm
- * install and a marketplace cache copy had the shell pick the cache while this
- * function picked the npm copy), and its env list read `CLAUDE_PLUGIN_ROOT,
- * CODEX_PLUGIN_ROOT, PLUGIN_ROOT` — a different tier-1 winner, and no
- * `CURSOR_RULES_DIR`/`PI_PLUGIN_ROOT` at all. When either side's order changes,
- * change both — the shell is the mirror, this list is the original.
+ * Where the shell differs, stated exactly:
+ *   - It accepts an env root only when it contains `scripts/mcp-server.sh` and
+ *     otherwise tries the next variable; this function accepts any existing
+ *     directory and stops there.
+ *   - Tier 6 (walk up from `import.meta.url`) is replaced by the global npm
+ *     install: `<npm root -g, run from />/session-orchestrator`, with the same
+ *     script and package.json checks. No module is imported for it.
+ *   - Tier 7 (walk up from `process.cwd()`) has NO shell counterpart, on
+ *     purpose: the MCP server is started in the user's project, and a file in
+ *     that project must never be taken as the plugin and executed. The shell
+ *     therefore also has no `git rev-parse --show-toplevel` candidate and no
+ *     cwd-relative module resolution.
+ *   - The `platformHint` argument has no shell counterpart; only SO_PLATFORM.
+ * When either side's order changes, change both.
  *
  * Throws PluginRootResolutionError when all resolution levels fail.
  */
@@ -286,9 +286,9 @@ function _scanPluginCaches(tried) {
 /**
  * Resolve the absolute path to the session-orchestrator plugin directory.
  *
- * Tier order is defined ONCE in this file's top docblock (§ TIER ORDER) and
- * mirrored by `.mcp.json`'s bash bootstrap. Do not restate it here — a second
- * copy is what let the two drift.
+ * Tier order is defined ONCE in this file's top docblock (§ TIER ORDER),
+ * which also lists where `.mcp.json`'s bash bootstrap differs. Do not restate
+ * it here — a second copy is what let the two drift.
  *
  * @param {string} [platformHint] Optional compatibility hint for wrapper callers
  * @returns {string} Absolute path to the plugin root

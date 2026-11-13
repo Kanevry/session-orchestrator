@@ -47,7 +47,7 @@ Resolution order (first match wins):
 1. **CLI argument** `--target <name> --profile <name>` (explicit, highest priority)
 2. **Policy file lookup** — `.orchestrator/policy/test-profiles.json` by target name (if present)
 3. **Convention-based detection** (marker files):
-   - `playwright.config.{ts,js}` present → target type `web`, dispatch `playwright-driver`
+   - `playwright.config.{ts,js,mjs,cjs,mts}` present → target type `web`, dispatch `playwright-driver`
    - `Package.swift` present → target type `mac`, dispatch `peekaboo-driver` (see `skills/peekaboo-driver/SKILL.md`)
 4. **Fallback** → emit error and halt:
    ```
@@ -72,7 +72,7 @@ const RUBRIC = hit.ok ? hit.profile.rubric : 'skills/test-runner/rubric-v2.md';
 **`TARGET_KIND` / `TARGET_URL`** — what the run actually looked at (rubric-v2 Hard rule 4):
 
 - Consume `target_kind` and `target_url` from the `/test` handoff. A recognized `--target-kind` (`live`, `production-build`, `dev-server`) overrides an operator statement; without that flag, use an explicit statement for this run, otherwise `dev-server`. An invalid or missing flag value forces the pair `dev-server unknown` even if a URL was supplied. No profile field upgrades the kind.
-- `TARGET_URL` is `target_url` from `--target-url` first, then the URL the operator named, then the web target's `playwright.config.{ts,js}` `use.baseURL` (read the file, never execute it); for a macOS target use the app path. No value, or an explicitly missing flag value, is the literal `unknown`. Use the resolved URL for browser navigation as well as labelling; a label must describe the target actually driven.
+- `TARGET_URL` is `target_url` from `--target-url` first, then the URL the operator named, then the web target's `playwright.config.{ts,js,mjs,cjs,mts}` `use.baseURL` (read the file, never execute it); for a macOS target use the app path. No value, or an explicitly missing flag value, is the literal `unknown`. Use the resolved URL for browser navigation as well as labelling; a label must describe the target actually driven.
 - A `localhost` / `127.0.0.1` / branch-preview URL is always `dev-server`, whatever was stated or flagged.
 - Unknown is never upgraded: the evaluator gets `dev-server unknown`, and its report header says `DEV-SERVER RUN`.
 - For web targets, treat `TARGET_KIND` as requested until capture evidence confirms `${TARGET_URL}` was actually driven. Grant `LIVE RUN` / `PRODUCTION-BUILD RUN` only when the per-page visited-URL record from Phase 2 supports that target. Missing records or any visited origin differing from `${TARGET_URL}`'s origin force `TARGET_KIND = dev-server`; name the requested URL, observed URLs (or missing evidence), and mismatch in the report. Use the observed URL for `TARGET_URL`, or `unknown` if absent. After verification, set `TARGET_HEADER` to `LIVE RUN`, `PRODUCTION-BUILD RUN`, or `DEV-SERVER RUN — not the live state; no verdict about what users see.` respectively; keep `Target: ${TARGET_KIND} ${TARGET_URL}` consistent with that result.

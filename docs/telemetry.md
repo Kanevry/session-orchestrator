@@ -207,7 +207,13 @@ failed one (#1138).
 ## The other thing that leaves the host: the update check
 
 Telemetry is not the only outbound request this plugin can make, so the second
-one is documented here rather than somewhere an egress audit would miss it.
+one is documented here rather than somewhere an egress audit would miss it. A
+third default-on path, the security-pulse background refresher, is described in
+[SECURITY.md](../SECURITY.md) § Outbound network; it has its own switch
+(`SO_SECURITY_PULSE_REFRESH=off`) and also stays off when `DO_NOT_TRACK` or
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set (`scripts/lib/offline-flags.mjs`
+is the one list both paths read). `SO_DISABLE_UPDATE_CHECK` affects only the
+update check.
 
 On **SessionStart**, `hooks/on-session-start.mjs` calls the plugin-update banner
 (`scripts/lib/plugin-update-banner.mjs`), which asks npm whether a newer release
@@ -222,9 +228,10 @@ What it is, precisely:
 - **No payload and no identifier.** It is a plain `GET` of a constant, public
   URL — no body, no query string, no `anon_id`, no headers this plugin adds.
   npm sees a request for a public package's metadata, as `npm view` would.
-- **At most once per 24 h.** The answer is cached
+- **At most once per 24 h after a successful answer.** The answer is cached
   (`plugin-latest.json`, `CACHE_TTL_MS = 24 h`); within the TTL no request is
-  made at all. The request has a short timeout and every failure is silent.
+  made. A failed request writes no cache, so the next session asks again. The
+  request has a short timeout and every failure is silent.
 - **Independent of telemetry consent.** It is not a ping and sends nothing about
   you — but it is still traffic, so it honours the offline flags below.
 

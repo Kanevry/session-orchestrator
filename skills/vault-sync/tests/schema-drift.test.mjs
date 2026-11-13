@@ -106,21 +106,16 @@ describe.skipIf(!HAS_CANONICAL)('sync-vault-schema.mjs', () => {
     }
   });
 
-  it('failure-mode-missing-canonical — exits 2 with clear message when canonical not found', () => {
-    const rand = Math.random().toString(36).slice(2);
-    const fakePath = join(tmpdir(), `does-not-exist-${rand}.ts`);
-
-    const result = runScript(['--check', '--canonical', fakePath]);
-    expect(result.status, 'expected exit 2 for missing file').toBe(2);
-    expect(result.stderr).toContain(fakePath);
-  });
+  // failure-mode-missing-canonical moved to tests/scripts/sync-vault-schema.test.mjs
+  // (GH#91): it needs no canonical checkout, and this file never runs in vitest.
 
   it('sentinel-presence — validator.mjs contains both sentinel markers exactly once in correct order', () => {
     const content = readFileSync(VALIDATOR_MJS, 'utf-8');
 
-    // Count occurrences
-    const beginCount = (content.match(/BEGIN GENERATED SCHEMA/g) ?? []).length;
-    const endCount = (content.match(/END GENERATED SCHEMA/g) ?? []).length;
+    // Count sentinel comment LINES only: validator.mjs also names the markers
+    // inside a string in its own drift check, which is not a second block.
+    const beginCount = (content.match(/^\/\/ ── BEGIN GENERATED SCHEMA/gm) ?? []).length;
+    const endCount = (content.match(/^\/\/ ── END GENERATED SCHEMA/gm) ?? []).length;
 
     expect(beginCount, 'BEGIN GENERATED SCHEMA must appear exactly once').toBe(1);
     expect(endCount, 'END GENERATED SCHEMA must appear exactly once').toBe(1);

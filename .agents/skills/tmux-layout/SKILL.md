@@ -5,11 +5,6 @@ metadata:
   user-invocable: "true"
   model: inherit
   color: cyan
-allowed-tools:
-  - Read
-  - Bash
-  - Grep
-  - Glob
 ---
 
 # tmux-layout

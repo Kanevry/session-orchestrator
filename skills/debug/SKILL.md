@@ -8,7 +8,6 @@ model: inherit
 color: red
 user-invocable: true
 argument-hint: "[bug-description-or-issue-ref]"
-tools: Read, Grep, Glob, Bash, Write
 ---
 
 # Debug Skill

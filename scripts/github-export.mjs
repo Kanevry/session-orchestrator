@@ -42,9 +42,11 @@
 import { buildGithubExport, createGitRunner, plainPushGuard, verifyExportCommit } from './lib/github-export.mjs';
 import { spawnSync } from './lib/native-command.mjs';
 
+const USAGE = 'Usage: node scripts/github-export.mjs [--source <rev>] [--dry-run] | --verify <sha> --source <sha> | --plain-guard --mirror-key <github|unset>';
+
 function usage(msg) {
   if (msg) console.error(`github-export: ${msg}`);
-  console.error('Usage: node scripts/github-export.mjs [--source <rev>] [--dry-run] | --verify <sha> --source <sha> | --plain-guard --mirror-key <github|unset>');
+  console.error(USAGE);
   process.exit(1);
 }
 
@@ -66,7 +68,11 @@ for (let i = 0; i < args.length; i++) {
     if (!v || v.startsWith('--')) usage(`${a} requires a value`);
     if (a === '--source') opts.source = v;
     else verifySha = v;
-  } else if (a === '--help' || a === '-h') usage();
+  } else if (a === '--help' || a === '-h') {
+    // Asked-for help is not an error: stdout, exit 0 (GH#93).
+    console.log(USAGE);
+    process.exit(0);
+  }
   else usage(`unknown argument '${a}'`);
 }
 

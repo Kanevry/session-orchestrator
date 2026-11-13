@@ -19,7 +19,7 @@ project, excluding all plugin-owned basenames. The remote step only fires when:
 - `baseline-ref` is present in Session Config
 - `GITLAB_TOKEN` env var is set
 - `scripts/lib/fetch-baseline.mjs` is present in the plugin
-- A GitLab host is resolvable from the `gitlab-host` Session Config key (or the `GITLAB_HOST` env var) — never a hardcoded default
+- `GITLAB_HOST` env var is set — never a hardcoded default, and never the target repo's committed `gitlab-host` Session Config key (the token is sent to this host)
 
 When triggered, the step:
 

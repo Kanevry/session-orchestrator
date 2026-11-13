@@ -93,9 +93,12 @@ must add.
 #    A marketplace-installed plugin lives in a managed cache, not a git checkout,
 #    so `git pull` does not apply to it.
 
-# 2. Install Node dependencies in the cache copy:
-SO_DIR="$(dirname "$(find ~/.claude/plugins/cache -path '*session-orchestrator*' -name package.json 2>/dev/null | head -1)")"
-cd "$SO_DIR" && npm install
+# 2. Install Node dependencies in the cache copy. Locate the active copy with
+#    `claude plugin list --json`, take the `installPath` of the enabled
+#    `session-orchestrator@kanevry` entry, and run (see docs/install.md,
+#    "Claude Code: check the Node dependencies"; a `find` over the cache can hit an old
+#    version directory or a nested dependency's package.json):
+cd "/absolute/installPath/from/the/list" && { [ -d node_modules/js-yaml ] && echo "dependencies present, nothing to do" || npm install; }
 
 # 3. Restart Claude Code so hooks.json is re-read.
 ```
@@ -352,7 +355,9 @@ What you get back, and what you do not:
   yourself and does not resync an existing `hooks.json`.
   `pi-install.mjs --settings-only` **does** rewrite the Pi settings file: it reads it, upserts
   this package's entry and writes it back (`scripts/pi-install.mjs` `upsertPackage` /
-  `writeSettings`), so re-running it from the 3.24.0 checkout re-points Pi at that checkout.
+  `writeSettings`), so re-running it from the 3.24.0 checkout **adds** an entry for that checkout when its path is
+  not listed yet. It never removes or replaces an existing entry, so the entry for the newer
+  checkout stays in the file: remove it by hand if you want Pi to load only the 3.24.0 checkout.
   For Cursor, to get a removed link back: delete the stale file first (§ "Cursor still shows the
   removed commands" has a safe, symlink-only removal recipe), then re-run the installer with
   your project path, as shown above.

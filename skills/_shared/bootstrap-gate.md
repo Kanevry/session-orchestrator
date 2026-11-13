@@ -33,9 +33,8 @@ Execute these three checks in order. Any single failure = GATE_CLOSED.
 
 3. Read $REPO_ROOT/.orchestrator/bootstrap.lock.
    - If the file does not exist → GATE_CLOSED (reason: no-bootstrap-lock)
-   - If the file is not valid YAML → GATE_CLOSED (reason: invalid-lock)
-   - If the file lacks the key "version" → GATE_CLOSED (reason: no-bootstrap-lock)
-   - If the file lacks the key "tier" → GATE_CLOSED (reason: no-bootstrap-lock)
+   - If the file has no line starting with "version:" or none starting with "tier:" → GATE_CLOSED (reason: invalid-lock)
+   - The gate does not parse the file as YAML; it only looks for those two line starts.
 
 All three pass → GATE_OPEN. Return silently. No output, no logging.
 ```

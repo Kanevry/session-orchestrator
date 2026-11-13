@@ -9,7 +9,6 @@ description: >
 user-invocable: true
 model: inherit
 color: cyan
-tools: Read, Bash, Grep, Glob
 ---
 
 # tmux-layout — Operator-Side Visualization Substrate

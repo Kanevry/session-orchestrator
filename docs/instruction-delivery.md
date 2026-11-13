@@ -698,8 +698,8 @@ because it intercepted Codex's skill path and version selection; see
 Codex has a separate generated surface: `scripts/generate-codex-skills.mjs` writes
 `.codex-plugin/skills/` from the union of canonical command and skill names. Commands
 win same-name overlaps, and each adapter reads the canonical document before dispatch.
-The portable `.agents/skills/` mirrors continue to reference canonical skills directly;
-they do not replace the installed Codex command entrypoints.
+The portable `.agents/skills/` mirrors are pointer files, not copies: each links to its
+canonical skill or command document (`scripts/generate-agents-skills.mjs`); they do not replace the installed Codex command entrypoints.
 
 ## Learnings Index (selected for your file scope)
 

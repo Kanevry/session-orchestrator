@@ -294,10 +294,13 @@ async function main() {
   // (#1194).
   //
   // CEILING (BV-004): on a harness that exports no session env var and puts no
-  // `session_id` in the hook payload (Cursor today) both tiers are empty, so
-  // this gate is permanently `'unknown'` = enforce = pre-#1153 behaviour there.
-  // Codex CLI does send `session_id` (measured 2026-10-20, codex-cli 0.160.1,
-  // #1691), so a manifest bound to another id classifies `'foreign'` there.
+  // `session_id` in the hook payload both tiers are empty, so this gate is
+  // permanently `'unknown'` = enforce = pre-#1153 behaviour there. Codex CLI
+  // does send `session_id` (measured 2026-10-20, codex-cli 0.160.1, #1691), so a
+  // manifest bound to another id classifies `'foreign'` there. The Cursor and Pi
+  // bridges (`normalizeCursorHookPayload` / `normalizePiHookPayload`) forward
+  // `session_id` only when the host event or ctx carries one; whether Cursor/Pi
+  // supply it is unmeasured, and without it this gate stays `'unknown'` there.
   {
     // `ownIds` is the process-local set built above G3.
     const { verdict, manifestIds } = classifyManifestSession(scope, ownIds);

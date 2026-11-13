@@ -70,8 +70,11 @@ export const PORTABLE_KEYS = Object.freeze([
 
 /**
  * Source keys that map onto a spec key rather than into `metadata`.
- * `tools:` is our own (non-spec) spelling of `allowed-tools:` — 7 SKILL.md
- * files use it, measured 2026-09-06.
+ * `tools:` is our own (non-spec) spelling of `allowed-tools:`. No SKILL.md in
+ * this repo carries it any more (removed 2026-11-13, #2069: Claude Code ignores
+ * the key, and this alias turned it into a pre-approval in the mirrors). The
+ * alias is still applied: a `tools:` key that reappears in a SKILL.md becomes
+ * `allowed-tools` in the mirrors again, and no validator rejects it yet (#2069).
  * @type {Record<string, string>}
  */
 const KEY_ALIASES = { tools: 'allowed-tools' };

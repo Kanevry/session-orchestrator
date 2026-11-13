@@ -76,6 +76,13 @@ export function findings(s: SoSnapshot | null, context: { percent?: number; toke
   return out.map(value => displayText(value))
 }
 export const validId = (v: unknown): v is string => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,200}$/.test(v)
+/**
+ * True for an absolute Session Orchestrator root on any host (GH#89): POSIX `/x`, a Windows drive path with a
+ * separator (`C:\x`, `C:/x`) or UNC `\\server\share`. Rejects relative, drive-relative `C:x`, root-relative `\x`,
+ * empty and non-string values. A regex, not node:path: the mod's tsconfig loads no Node types and no hook imports a
+ * Node module (and `path.win32.isAbsolute('\\x')` is true for a path that still depends on the current drive).
+ */
+export const isAbsoluteRoot = (v: unknown): v is string => typeof v === 'string' && /^(?:\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/])/.test(v)
 export function validateBeacon(v: unknown): v is SoBeacon {
   if (!v || typeof v !== 'object') return false
   const b = v as SoBeacon

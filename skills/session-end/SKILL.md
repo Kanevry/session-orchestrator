@@ -151,6 +151,10 @@ node scripts/emit-event.mjs --type orchestrator.broken_window.filed --payload \
 Non-blocking: a filing failure is a WARN, never blocks the close (same fail-open
 discipline as `createSpiralCarryoverIssue`).
 
+## Phase 2.7: Design-Review Gate (#1452)
+
+> Default on, warn-only (nothing switches automatically): `scripts/design-review.mjs check` prints `WARNING … would refuse` (exit 0) where UI changed, the repo can render it and no review covers it; `WARNING` lines go into the summary. Full procedure: [`references/phase-2-quality-gate.md`](references/phase-2-quality-gate.md) § 2.7.
+
 ## Phase 3: Documentation Updates
 
 > Always runs. Refreshes the session-lock heartbeat at entry (`updateHeartbeat`, #590-3 — skip when `persistence: false`) so a long close-out cannot lapse the 4h TTL, then walks 3.0 Defensive Cleanup → 3.1 SSOT files → 3.2 Docs Verification → 3.2a Session Handover → 3.3 Claude-rules freshness → 3.4/3.4a STATE.md write + coordinator-snapshot cleanup → 3.45 Telemetry Flush → 3.5/3.5a/3.6.x session memory, learning extraction and the mechanical skip-plan tail → 3.7/3.7a/3.7b/3.7c/3.7d/3.7e metrics write, recommendations, durable commit (#490), vault board → closed, session-eval, vault orphans named (#1563). Full procedure: [`references/phase-3-documentation-updates.md`](references/phase-3-documentation-updates.md).

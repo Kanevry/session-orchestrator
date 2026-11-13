@@ -129,6 +129,10 @@ For new or significantly changed type definitions:
 - Are there type assertions (`as Type`) that bypass type safety instead of using type guards or narrowing?
 - Are generic types constrained? (`<T>` vs `<T extends BaseType>`)
 
+### 9. UI and Copy (only when the diff touches UI files)
+- Was a design review recorded for the touched surfaces (the plugin's `scripts/design-review.mjs detect --json` → `rounds`, or a `not-reviewable` record)? Missing → WARN. Taste is the design review's job, not yours.
+- Changed user-facing strings: placeholders shipped (`TODO`, lorem, "coming soon"), or a promise the code in the diff does not keep (a button text, empty state or claim with no matching behaviour) → WARN with `file:line`.
+
 ### Confidence Scoring
 
 For each finding across ALL sections (1-8), assign a confidence score (0-100):
@@ -209,6 +213,9 @@ A HIGH finding is not an escalation — findings travel in the findings list, an
 ### Issues: [PASS/WARN]
 - [tracking accuracy]
 
+### UI and Copy: [PASS/WARN/SKIP]
+- [only when UI files changed; SKIP otherwise]
+
 ### Possible Issues (confidence 50-79)
 - [lower-confidence findings across all sections, for human review]
 
@@ -238,7 +245,8 @@ After the human-readable report, append a JSON summary block for consuming skill
     "security": "PASS|WARN|FAIL",
     "silent_failures": "PASS|WARN|FAIL",
     "test_depth": "PASS|WARN|FAIL",
-    "type_design": "PASS|WARN|FAIL"
+    "type_design": "PASS|WARN|FAIL",
+    "ui_copy": "PASS|WARN"
   },
   "fix_required": []
 }
@@ -252,7 +260,7 @@ Verdict variants (concrete examples per scenario):
 - One or more WARN, no FAIL → `{"verdict": "PROCEED_WITH_FOLLOWUPS"}`
 - Any category FAIL (typecheck, lint, test) → `{"verdict": "FIX_REQUIRED"}`
 - Review unable to complete (missing artifacts, broken state.md) → `{"verdict": "BLOCKED"}`
-- `categories.silent_failures`: result of Section 6; `categories.test_depth`: result of Section 7; `categories.type_design`: result of Section 8
+- `categories.silent_failures`: result of Section 6; `categories.test_depth`: result of Section 7; `categories.type_design`: result of Section 8; `categories.ui_copy`: result of Section 9, omitted when no UI file changed
 - `fix_required`: array of strings describing items that must be addressed before proceeding
 - Wrap in a fenced code block tagged `json` so consuming skills can extract via regex
 - The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response

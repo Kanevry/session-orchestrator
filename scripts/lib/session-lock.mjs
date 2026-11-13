@@ -371,9 +371,11 @@ function writeLockAtomic(lockFile, lock) {
  * Used by the no-existing-lock branch of {@link acquire} and by the
  * single-winner reclaim (`forceAcquire({ onlyIfNotLive: true })` →
  * `reclaimIfNotLive()`), which moves the old lock aside first and then needs
- * exactly this create-or-fail. The unconditional overwrite paths (a plain
- * `forceAcquire`, `updateHeartbeat`) keep using `writeLockAtomic` because they
- * MUST replace an existing lock, not fail on it.
+ * exactly this create-or-fail, and by `updateHeartbeat()`'s revival of an own
+ * NOT-live lock (#2073), which moves it aside the same way. The unconditional
+ * overwrite paths (a plain `forceAcquire`, `updateHeartbeat()` on a LIVE lock)
+ * keep using `writeLockAtomic` because they MUST replace an existing lock, not
+ * fail on it.
  *
  * @param {string} lockFile  Absolute path to .orchestrator/session.lock.
  * @param {object} lock      Lock object to serialize.
@@ -914,6 +916,36 @@ export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, re
 }
 
 /**
+ * Unique tombstone name beside the lock — matches {@link LOCK_LEFTOVER_RE}, so a
+ * tombstone a killed process leaves behind is swept by `sweepLockLeftovers()`.
+ * Shared by `reclaimIfNotLive()` and `updateHeartbeat()`'s revival path.
+ * @param {string} lockFile
+ * @returns {string}
+ */
+function tombstonePathFor(lockFile) {
+  return path.join(path.dirname(lockFile), `.session.lock.reclaim.${crypto.randomBytes(8).toString('hex')}`);
+}
+
+/**
+ * Put an unreadable tombstone back at the lock path (a directory cannot be
+ * hard-linked, and renaming a directory never replaces a file). If the path is
+ * taken by then, it stays under the tombstone name.
+ * @param {string} tomb
+ * @param {string} lockFile
+ * @returns {boolean} `true` when the tombstone name must be KEPT (not unlinked).
+ */
+function restoreUnjudgeableTombstone(tomb, lockFile) {
+  let keepTomb = true;
+  try {
+    // Kept raw (#1865): best-effort put-back of a directory, never a write.
+    // direct-rename:ok best-effort put-back of a directory, never a write
+    if (fs.lstatSync(tomb).isDirectory()) fs.renameSync(tomb, lockFile);
+    else { fs.linkSync(tomb, lockFile); keepTomb = false; }
+  } catch { /* stays at the tombstone name */ }
+  return keepTomb;
+}
+
+/**
  * Single-winner takeover of a stale or corrupt lock — `forceAcquire({
  * onlyIfNotLive: true })` (#1494).
  *
@@ -954,7 +986,7 @@ export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, re
 function reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSessionId }) {
   const lockFile = lockPathFor(repoRoot);
   const reacquire = () => acquire({ sessionId, mode, ttlHours, repoRoot, semanticSessionId, quiet: true });
-  const tomb = path.join(path.dirname(lockFile), `.session.lock.reclaim.${crypto.randomBytes(8).toString('hex')}`);
+  const tomb = tombstonePathFor(lockFile);
 
   try {
     // Kept raw (#1865): a tombstone MOVE of the live lock, not a tmp+rename write;
@@ -973,16 +1005,8 @@ function reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSession
       raw = fs.readFileSync(tomb, 'utf8');
     } catch {
       // Unjudgeable — something unreadable replaced the stale file after
-      // acquire() read it. Not ours to drop: put it back (a directory cannot
-      // be hard-linked, and renaming a directory never replaces a file); if
-      // the path is taken by then, it stays under the tombstone name.
-      keepTomb = true;
-      try {
-        // Kept raw (#1865): best-effort put-back of a directory, never a write.
-        // direct-rename:ok best-effort put-back of a directory, never a write
-        if (fs.lstatSync(tomb).isDirectory()) fs.renameSync(tomb, lockFile);
-        else { fs.linkSync(tomb, lockFile); keepTomb = false; }
-      } catch { /* stays at the tombstone name */ }
+      // acquire() read it. Not ours to drop: put it back.
+      keepTomb = restoreUnjudgeableTombstone(tomb, lockFile);
       return reacquire();
     }
 
@@ -1460,8 +1484,58 @@ export function release({ sessionId, repoRoot, proof } = {}) {
  * when the lock is absent, malformed, or held by a different session_id.
  * Returns `true` on a successful atomic update.
  *
- * Atomicity: same tmp + rename pattern as writeLockAtomic — single syscall
- * visibility on POSIX. Never throws.
+ * Two write paths, chosen by the liveness of the lock as read:
+ *   - LIVE own lock (the normal case, every tool batch): tmp + rename via
+ *     writeLockAtomic. A `forceAcquire({ onlyIfNotLive: true })` reclaim never
+ *     replaces a lock it reads as live, so it cannot race this write except at
+ *     the TTL boundary, where our read still sees the lock live and a
+ *     reclaimer's later read does not (gap (d)).
+ *   - NOT-live own lock (#1229 revival, rare): exactly the window in which a
+ *     reclaim may take the lock over between our read and our write (#2073 —
+ *     the old unconditional write overwrote the reclaimer's lock and answered
+ *     `true`). So the lock is re-read immediately before the move and the
+ *     revival goes on only while it is still ours and still not live; otherwise
+ *     `false` without any write. Then it is renamed to a unique tombstone, the
+ *     same single-winner move `reclaimIfNotLive()` uses, and judged from there:
+ *     still ours → recreated create-or-fail with the fresh heartbeat; anything
+ *     else → linked back and `false`. A rename that finds nothing (ENOENT) or a
+ *     create that finds a lock (EEXIST) → `false`. The tombstone is removed on
+ *     every path except two: an unreadable one, which is put back like the
+ *     reclaim does, and the no-hard-links case of gap (e).
+ *
+ * Remaining gaps (BV-004), none closed by this function:
+ *   (a) LIVE path: a plain `forceAcquire` (operator force-take of a live lock)
+ *       between our read and our rename is still overwritten — last writer
+ *       wins. Closing that needs one guard shared by every lock writer, i.e. a
+ *       new protocol.
+ *   (b) Revival path: the lock path is briefly empty. A third `acquire()` in
+ *       that window creates its lock and wins, and we learn it as `false`
+ *       (EEXIST on our create). If a reclaimer took our expired lock between
+ *       our re-read and our tombstone move, what we moved is the reclaimer's
+ *       fresh LIVE lock: a third `acquire()` in the empty window takes the lock
+ *       from the reclaimer (our link-back then fails with EEXIST), and a
+ *       `release()` by the reclaimer in that window answers `no-lock` while its
+ *       lock is linked back afterwards and lies there as a live ghost. The
+ *       re-read narrows this from "any time after our first read" to two
+ *       consecutive system calls; it does not close it.
+ *   (c) A process killed between the tombstone rename and the create leaves
+ *       the lock path empty and a tombstone that `sweepLockLeftovers()`
+ *       removes. What is lost is normally our own, already expired lock; in
+ *       the interleaving of (b) it is the reclaimer's fresh LIVE lock.
+ *   (d) LIVE path at the TTL boundary: our read sees the lock live, a reclaim
+ *       milliseconds later reads it expired and takes it over, and our
+ *       writeLockAtomic then overwrites the reclaimer's lock and answers `true`.
+ *   (e) Revival path where hard links fail for a reason other than EEXIST (e.g.
+ *       EPERM): the create and the link-back both fail. The moved lock — ours,
+ *       or a racer's in the interleaving of (b) — stays at the tombstone name
+ *       until `sweepLockLeftovers()` removes it after its minimum age, and the
+ *       lock path stays empty: on such a filesystem an expired lock is not
+ *       revived, where the pre-#2073 heartbeat rewrote it. It is deliberately
+ *       not renamed back, because that could replace a lock written meanwhile.
+ * Revisit if a heartbeat returns `true` while events.jsonl shows another session
+ * holding the lock, or a force-take is followed by the old owner's heartbeat.
+ *
+ * Never throws.
  *
  * @param {{ repoRoot?: string, sessionId: string }} opts
  * @returns {boolean}
@@ -1471,10 +1545,81 @@ export function updateHeartbeat({ repoRoot, sessionId } = {}) {
   const existing = readLock({ repoRoot });
   if (existing === null) return false;
   if (existing.session_id !== sessionId) return false;
-  const updated = { ...existing, last_heartbeat: nowIso() };
   const lockFile = lockPathFor(repoRoot);
+  if (!isLockLive(existing)) return reviveOwnLock(lockFile, sessionId, repoRoot);
+  const updated = { ...existing, last_heartbeat: nowIso() };
   const writeResult = writeLockAtomic(lockFile, updated);
   return writeResult.ok === true;
+}
+
+/**
+ * Revival path of {@link updateHeartbeat} (#2073): tombstone move, judge the
+ * moved lock, recreate create-or-fail. See updateHeartbeat() for the gaps.
+ * @param {string} lockFile
+ * @param {string} sessionId
+ * @param {string|undefined} repoRoot  For the re-read right before the move.
+ * @returns {boolean}
+ */
+function reviveOwnLock(lockFile, sessionId, repoRoot) {
+  // Re-read right before the move: a reclaim that finished since the caller's
+  // read left a LIVE foreign lock here, which must not leave the path (gap (b)).
+  const current = readLock({ repoRoot });
+  if (current === null || current.session_id !== sessionId || isLockLive(current)) return false;
+
+  const tomb = tombstonePathFor(lockFile);
+  try {
+    // direct-rename:ok tombstone move of the lock, not a tmp+rename write (#2073)
+    fs.renameSync(lockFile, tomb);
+  } catch {
+    // ENOENT: someone moved or removed the lock first. Anything else: no write.
+    return false;
+  }
+
+  let keepTomb = false;
+  try {
+    let raw;
+    try {
+      raw = fs.readFileSync(tomb, 'utf8');
+    } catch {
+      keepTomb = restoreUnjudgeableTombstone(tomb, lockFile);
+      return false;
+    }
+
+    const moved = parseLock(raw);
+    if (moved === null || moved.session_id !== sessionId) {
+      // A racer's lock (e.g. a reclaim that finished after our read): restore it.
+      try {
+        fs.linkSync(tomb, lockFile);
+      } catch (err) {
+        // EEXIST: the path is taken, that lock wins and this copy is obsolete.
+        // Anything else (e.g. no hard links): keep the racer's only copy at the
+        // tombstone name rather than unlink it.
+        if (err?.code !== 'EEXIST') keepTomb = true;
+      }
+      return false;
+    }
+
+    const created = createSessionLockExclusive(lockFile, { ...moved, last_heartbeat: nowIso() });
+    if (created.ok) return true;
+    if (created.reason !== 'exists') {
+      // Our create failed without anyone else taking the path: put our own
+      // (expired) lock back rather than drop it.
+      try {
+        fs.linkSync(tomb, lockFile);
+      } catch {
+        // No hard links here (e.g. EPERM): keep the tombstone for
+        // sweepLockLeftovers() instead of unlinking our only copy. It is NOT
+        // renamed back: a rename onto a path checked empty a moment ago can
+        // replace a lock a `forceAcquire` wrote in between (gap (e)).
+        keepTomb = true;
+      }
+    }
+    return false;
+  } finally {
+    if (!keepTomb) {
+      try { fs.unlinkSync(tomb); } catch { /* best-effort */ }
+    }
+  }
 }
 
 /**

@@ -48,6 +48,7 @@ import { appendLearning } from '../learnings/io.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { atomicWriteWithBackup } from '../io.mjs';
 import { resolveLedgerRoot } from '../ledger-path.mjs';
+import { withProposalsLock } from './store.mjs';
 
 // ---------------------------------------------------------------------------
 // Path constants (relative to repoRoot)
@@ -343,6 +344,10 @@ export async function archiveRejected({ rejected, repoRoot, reason }) {
  *
  * Creates the file (with empty content) if it does not yet exist.
  *
+ * Holds the proposals write-lock across read, archive and clear (GH#87); when
+ * the lock is not acquired the queue is untouched and `reason` is
+ * `'lock-timeout'` (or `'lock-fs-error'`).
+ *
  * @param {object} opts
  * @param {string} opts.repoRoot - absolute project root path
  * @returns {Promise<{ cleared: boolean, summariesCleared: number, reason?: string }>}
@@ -355,67 +360,82 @@ export async function clearProposalsJsonl({ repoRoot }) {
   const proposalsPath = proposalsResult.realPath ?? proposalsResult.lexicalPath;
   const metricsDirPath = path.dirname(proposalsPath);
 
-  // Step 0 (#797): archive pre-clear content before truncating. Best-effort
-  // — ordinary archive I/O failures do not block clear; an unsafe required
-  // recovery target does, preserving the queue and its summaries.
-  if (existsSync(proposalsPath)) {
-    try {
-      const preClearContent = readFileSync(proposalsPath, 'utf8');
-      if (preClearContent.length > 0) {
-        // Archive and queue never sit in different checkouts (#1722).
-        const archiveResult = validateSinkTarget(PROPOSALS_ARCHIVE_REL, resolveLedgerRoot(PROPOSALS_REL, repoRoot));
-        if (!archiveResult.ok) {
-          return { cleared: false, summariesCleared: 0, reason: `path-safety: ${archiveResult.reason}` };
-        }
-        const archivePath = archiveResult.realPath ?? archiveResult.lexicalPath;
-        await mkdir(path.dirname(archivePath), { recursive: true });
-        const normalized = preClearContent.endsWith('\n') ? preClearContent : `${preClearContent}\n`;
-        await appendFile(archivePath, normalized, 'utf8');
-      }
-    } catch {
-      // Best-effort — a read/append failure on the archive sidecar must not
-      // block the clear itself (function-level never-throw contract).
-    }
-  }
-
+  // GH#87: read, archive and clear under the lock appendProposal holds, so a
+  // proposal appended between the read and the clear is neither archived nor
+  // wiped — it waits, then lands in the fresh queue. Nothing below takes the
+  // lock again (it is not re-entrant).
+  let locked;
   try {
-    // Ensure parent directory exists before clear/create.
-    await mkdir(metricsDirPath, { recursive: true });
-    // Atomic clear: write empty content to a tmp file, then rename over the
-    // target — a concurrent hook reading proposals.jsonl mid-clear observes
-    // either the pre-clear content or the fully-cleared file, never a
-    // partial truncate.
-    // Same tmp-name shape as before: `.proposals.jsonl.tmp.<12 hex>`.
-    const res = atomicWriteWithBackup(proposalsPath, '', { tmpPrefix: '.proposals.jsonl.tmp' });
-    if (!res.ok) return { cleared: false, summariesCleared: 0 };
+    locked = await withProposalsLock(repoRoot, async () => {
+      // Step 0 (#797): archive pre-clear content before truncating. Best-effort
+      // — ordinary archive I/O failures do not block clear; an unsafe required
+      // recovery target does, preserving the queue and its summaries.
+      if (existsSync(proposalsPath)) {
+        try {
+          const preClearContent = readFileSync(proposalsPath, 'utf8');
+          if (preClearContent.length > 0) {
+            // Archive and queue never sit in different checkouts (#1722).
+            const archiveResult = validateSinkTarget(PROPOSALS_ARCHIVE_REL, resolveLedgerRoot(PROPOSALS_REL, repoRoot));
+            if (!archiveResult.ok) {
+              return { cleared: false, summariesCleared: 0, reason: `path-safety: ${archiveResult.reason}` };
+            }
+            const archivePath = archiveResult.realPath ?? archiveResult.lexicalPath;
+            await mkdir(path.dirname(archivePath), { recursive: true });
+            const normalized = preClearContent.endsWith('\n') ? preClearContent : `${preClearContent}\n`;
+            await appendFile(archivePath, normalized, 'utf8');
+          }
+        } catch {
+          // Best-effort — a read/append failure on the archive sidecar must not
+          // block the clear itself (function-level never-throw contract).
+        }
+      }
+
+      try {
+        // Ensure parent directory exists before clear/create.
+        await mkdir(metricsDirPath, { recursive: true });
+        // Atomic clear: write empty content to a tmp file, then rename over the
+        // target — a concurrent hook reading proposals.jsonl mid-clear observes
+        // either the pre-clear content or the fully-cleared file, never a
+        // partial truncate.
+        // Same tmp-name shape as before: `.proposals.jsonl.tmp.<12 hex>`.
+        const res = atomicWriteWithBackup(proposalsPath, '', { tmpPrefix: '.proposals.jsonl.tmp' });
+        if (!res.ok) return { cleared: false, summariesCleared: 0 };
+      } catch {
+        return { cleared: false, summariesCleared: 0 };
+      }
+
+      // Reset per-wave summaries so a subsequent collectProposals() does not
+      // re-report a prior cycle's queued/dropped/below_floor counts against the
+      // now-empty proposals.jsonl (the #723 B3 root cause described above).
+      let summariesCleared = 0;
+      try {
+        const names = await readdir(metricsDirPath);
+        const summaryFiles = names.filter(
+          (n) => n.startsWith('proposals-summary-') && n.endsWith('.json')
+        );
+        for (const filename of summaryFiles) {
+          try {
+            await rm(path.join(metricsDirPath, filename), { force: true });
+            summariesCleared++;
+          } catch {
+            // Best-effort per file — a single sidecar failing to delete must not
+            // fail the overall clear (function-level never-throw contract).
+          }
+        }
+      } catch {
+        // Metrics dir became unreadable between mkdir and readdir (e.g. removed
+        // concurrently) — non-fatal, the JSONL clear above already succeeded.
+      }
+
+      return { cleared: true, summariesCleared };
+    });
   } catch {
     return { cleared: false, summariesCleared: 0 };
   }
-
-  // Reset per-wave summaries so a subsequent collectProposals() does not
-  // re-report a prior cycle's queued/dropped/below_floor counts against the
-  // now-empty proposals.jsonl (the #723 B3 root cause described above).
-  let summariesCleared = 0;
-  try {
-    const names = await readdir(metricsDirPath);
-    const summaryFiles = names.filter(
-      (n) => n.startsWith('proposals-summary-') && n.endsWith('.json')
-    );
-    for (const filename of summaryFiles) {
-      try {
-        await rm(path.join(metricsDirPath, filename), { force: true });
-        summariesCleared++;
-      } catch {
-        // Best-effort per file — a single sidecar failing to delete must not
-        // fail the overall clear (function-level never-throw contract).
-      }
-    }
-  } catch {
-    // Metrics dir became unreadable between mkdir and readdir (e.g. removed
-    // concurrently) — non-fatal, the JSONL clear above already succeeded.
+  if (!locked.ok) {
+    return { cleared: false, summariesCleared: 0, reason: locked.reason === 'timeout' ? 'lock-timeout' : 'lock-fs-error' };
   }
-
-  return { cleared: true, summariesCleared };
+  return locked.value;
 }
 
 /**

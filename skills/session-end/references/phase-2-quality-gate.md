@@ -132,3 +132,29 @@ The CLI reads `security-delta.mode` itself. Exit `0` = pass, warn, degraded or s
 
 Pass `(mode, status, verdict, totals, findings)` forward to the Phase 6 Session Summary. The CLI emits `orchestrator.security.delta` itself, carrying counts only — never package names, paths or secrets.
 
+
+## 2.7 Design-Review Gate (#1452)
+
+> Default on, **warn-only**; nothing switches automatically (conditions below). `scripts/design-review.mjs check` resolves its settings itself (env > `owner.yaml` `design-review.*` > committed block > default). A process gate (did a review cover the UI change?), never a taste gate.
+
+Pass `--since <session-start-ref> --since-time <started_at>` from STATE.md only when STATE.md is this session's: frontmatter `status: active` and its `session-id` equals this session's id. Otherwise, and for a blank key, omit the flag (the CLI uses the session lock); a value older than this session's lock is ignored with a note.
+
+```bash
+DR_JSON=$(node "${PLUGIN_ROOT}/scripts/design-review.mjs" check [--since <ref>] [--since-time <iso>] --json)
+DR_EXIT=$?
+```
+
+- **Exit `0`** — the close continues. Put the first line into the Session Summary. Copy every further line (owner overrides, `Marked not reviewable by hand`, `Not judged`, `note:`) as well. A line starting with `WARNING` (`would refuse`, `not reviewable`, `unmeasured`) also goes under „Nicht geprüft“. `check` has already recorded it; never call it reviewed.
+- **Exit `3`** — only with `close-gate: refuse`. Refuse the close and show the message. Offer AskUserQuestion (header `Design`):
+  1. "Review now (Recommended)" — wave-loop-review.md step 5b, then rerun 2.7.
+  2. "Owner override and close" — with the owner's own words only: `record --status owner-override --reason "<words>"`, plus a Deviation line and `orchestrator.finding.overridden` (`phase 2.7`).
+  3. "Abort close".
+  - Codex/Cursor: the same options as a numbered list.
+  - The CLI refuses `owner-override` in lead-guided sessions (HUD steering file `lead`, or `--lead-guided`), in headless, CI and non-Claude-Code sessions, unless `--decision <owner-queue id>` is given.
+- **Exit `1`/`2`** — the gate did not run. The close continues. Report the message in the Session Summary and under „Nicht geprüft“.
+
+**Switching to `refuse` (decision on #1452, issue note 299725).** Nothing switches automatically and no date is attached: the gate stays warn-only until someone sets `close-gate: refuse` in a commit. That change is due only when all four conditions hold:
+- (1) H2 from the third review of !413 (foreign commits pulled mid-session counted as the session's own) is fixed and independently re-reviewed;
+- (2) the cold reader passes against owner judgements (agentic-designer#85, acceptance with fresh images);
+- (3) at least 20 would-refuse cases are classified (list them with `design-review.mjs would-refuse --repos <dirs>`), at most 10 % of them wrong;
+- (4) step 5b has run once in a real wave with the real `designer`.

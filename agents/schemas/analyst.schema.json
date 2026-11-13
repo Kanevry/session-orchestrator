@@ -5,7 +5,7 @@
   "description": "Machine-readable summary returned by the analyst agent after a PRD-quality review. Mirrors the Output Format section of agents/analyst.md.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict", "report_path", "finding_counts", "scope_drift_count", "criteria_reviewed"],
+  "required": ["verdict", "finding_counts", "scope_drift_count", "criteria_reviewed"],
   "properties": {
     "verdict": {
       "type": "string",
@@ -15,7 +15,7 @@
     "report_path": {
       "type": "string",
       "minLength": 1,
-      "description": "Relative path to the human-readable audit file written to .orchestrator/audits/."
+      "description": "Optional. Relative path under .orchestrator/audits/ where the coordinator stores the reviewer's returned human-readable report; the read-only reviewer does not write it."
     },
     "finding_counts": {
       "type": "object",

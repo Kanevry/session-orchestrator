@@ -32,10 +32,17 @@ const STALE_WORK_MS = 60 * 60 * 1000;
  * Remove `.stage-*` work dirs in `parent` older than STALE_WORK_MS. Only real
  * directories carrying this helper's exact prefix; a symlink is never followed
  * or removed. Best effort: a sweep failure never blocks staging.
+ *
+ * A work dir holding `previous/` is the one copy stagePackage kept when both
+ * the swap and the restore failed (#2072): it is swept only once `stageDir`
+ * exists again, i.e. after a later staging succeeded. Ceiling: nothing restores
+ * that copy automatically — until an operator moves it back or a stage
+ * succeeds, it stays where the "it is kept at …" error named it.
  * @param {string} parent
+ * @param {string} stageDir
  * @param {number} [now]
  */
-export function sweepStaleWorkDirs(parent, now = Date.now()) {
+export function sweepStaleWorkDirs(parent, stageDir, now = Date.now()) {
   let entries;
   try { entries = readdirSync(parent, { withFileTypes: true }); } catch { return; }
   for (const entry of entries) {
@@ -44,6 +51,7 @@ export function sweepStaleWorkDirs(parent, now = Date.now()) {
     try {
       const st = lstatSync(dir);
       if (st.isDirectory() && !st.isSymbolicLink() && now - st.mtimeMs > STALE_WORK_MS) {
+        if (existsSync(path.join(dir, 'previous')) && !existsSync(stageDir)) continue;
         rmSync(dir, { recursive: true, force: true });
       }
     } catch { /* best effort */ }
@@ -115,7 +123,7 @@ export function stagePackage({
   let work;
   try {
     mkdirSync(path.dirname(stageDir), { recursive: true });
-    sweepStaleWorkDirs(path.dirname(stageDir));
+    sweepStaleWorkDirs(path.dirname(stageDir), stageDir);
     work = mkdtempSync(path.join(path.dirname(stageDir), WORK_PREFIX));
     // An inherited silent loglevel suppresses the JSON parsed below.
     const env = { ...process.env };

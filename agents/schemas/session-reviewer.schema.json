@@ -57,6 +57,11 @@
           "type": "string",
           "enum": ["PASS", "WARN", "FAIL"],
           "description": "Result of Section 8 (type design spot-check)."
+        },
+        "ui_copy": {
+          "type": "string",
+          "enum": ["PASS", "WARN"],
+          "description": "Result of Section 9 (UI and copy); omitted when the diff touches no UI file."
         }
       }
     },

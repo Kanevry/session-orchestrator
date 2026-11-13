@@ -188,13 +188,24 @@ function pruneDeadLinks(kind) {
 
 for (const kind of ['rules', 'commands', 'skills']) pruneDeadLinks(kind);
 
+/** Events whose hooks are guards (hooks/hooks-cursor.json wires --fail-closed hooks there). */
+const FAIL_CLOSED_EVENTS = Object.freeze(['beforeShellExecution', 'preToolUse']);
+
 function renderHooksJson(soRoot) {
   const runNode = shQuote(path.join(soRoot, 'hooks', 'run-node.sh'));
   const bridge = shQuote(path.join(soRoot, 'scripts', 'lib', 'cursor-hook-bridge.mjs'));
   const hooks = {};
   for (const eventName of Object.keys(CURSOR_TO_CANONICAL_EVENT)) {
+    // The guard events must not run unchecked when node is missing:
+    // --fail-closed makes run-node.sh exit 2 (stderr diagnostic, no stdout)
+    // instead of 0, as hooks/hooks-codex.json does. Only the guards fail closed
+    // (SECURITY.md); subagentStart runs telemetry only and keeps the graceful
+    // degrade. NAMED CEILING (BV-004): no Cursor run in this repo measures how
+    // Cursor treats exit 2 with empty stdout (block or ignore). Revisit when a
+    // live Cursor probe shows the call still runs on exit 2.
+    const failClosed = FAIL_CLOSED_EVENTS.includes(eventName) ? ' --fail-closed' : '';
     hooks[eventName] = [
-      { command: `sh ${runNode} ${bridge} --event ${eventName}` },
+      { command: `sh ${runNode}${failClosed} ${bridge} --event ${eventName}` },
     ];
   }
   return `${JSON.stringify({ version: 1, hooks }, null, 2)}\n`;

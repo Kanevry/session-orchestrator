@@ -283,7 +283,7 @@ This dispatches parallel subagents wave by wave. You do not need to intervene du
 
 ### `/close`
 
-Ends the session. This runs a full verification against the agreed plan, creates issues for any gaps, runs quality gates, commits cleanly, pushes, mirrors (if configured), and presents a session summary.
+Ends the session. This runs a full verification against the agreed plan, creates issues for any gaps, runs quality gates, commits cleanly, pushes, mirrors (if configured), and presents a session summary. If the session changed UI files that the repo can render and no design review covers them, `/close` warns that it would refuse (warn-only, with no automatic switch; `design-review.close-gate: refuse` enforces it); where nothing can be rendered or the change cannot be measured, `/close` passes with a WARNING (`docs/session-config-reference.md` § Design Review).
 
 ```
 /close
@@ -555,7 +555,7 @@ Between each wave, the orchestrator:
 1. Reviews all agent outputs
 2. Checks for file conflicts between agents
 3. Runs verification based on wave role (Incremental after Impl-Core/Impl-Polish, Full Gate after Quality)
-4. Runs design review if configured (after Impl-Core and Impl-Polish roles)
+4. Reviews the rendered UI when the wave changed UI files (after Impl-Core and Impl-Polish; on by default, `design-review.enabled: false` turns it off). The findings are recorded and shown (they create next-wave tasks only with `design-review.act-on-verdicts: true`), at most two rounds per page; a repo without a Playwright config is recorded as not reviewable. The Pencil comparison still runs when `pencil` is configured
 5. Adapts the plan for the next wave if needed (adds fix tasks, re-scopes)
 6. Reports progress to you
 
@@ -1480,7 +1480,7 @@ If agents consistently time out during wave execution:
 
 ### Import-probe warnings and missing ESLint
 
-The post-edit import probe checks edited `.mjs`, `.js`, and `.cjs` files only when the path is listed in the project's `hooks/_lib/hook-import-set.json` and the hook is enabled. It reports likely hook breakage as a warning and always exits 0. Its two checks have different coverage:
+The post-edit import probe checks edited `.mjs`, `.js`, and `.cjs` files only when the path is listed in the project's `hooks/_lib/hook-import-set.json` and the hook is enabled. It reports likely hook breakage as a warning and always exits 0. (On Pi the probe runs but its warning is not shown; see the event table below.) Its two checks have different coverage:
 
 - **C1 — ESLint:** reports `no-undef` and fatal/parse errors. Install ESLint with the project's package manager and enable `no-undef` in the **project's ESLint configuration**; the probe does not enable that rule itself. Other lint rules remain the full lint command's responsibility.
 - **C2 — import:** loads allowlisted files under `scripts/lib/**` in a child process to detect errors during module loading. It does not import hook entrypoints or call exported functions. An undefined identifier reached only when a function runs can therefore escape C2 even when importing the module succeeds.
@@ -1495,7 +1495,7 @@ The shipped event wiring is:
 |---------|--------------------|
 | Claude Code | `PostToolUse` for edit/write tools |
 | Cursor | `postToolUse` and `afterFileEdit` |
-| Pi | `tool_result` for edit/write tools |
+| Pi | `tool_result` for edit/write tools (wired and run, but the Pi extension does not forward hook output, so the warning is not shown; see [Pi setup](pi-setup.md#hook-coverage)) |
 | Codex | **Unwired:** the current Codex hook manifest has no import-probe handler |
 
 Codex does not currently run this probe automatically, and reinstalling the same bundle does not add that missing handler. Use the project's normal lint and tests for verification there. Implementation: [`hooks/post-edit-import-probe.mjs`](../hooks/post-edit-import-probe.mjs); event manifests: [Claude Code](../hooks/hooks.json), [Cursor](../hooks/hooks-cursor.json), [Pi](../hooks/hooks-pi.json), [Codex](../hooks/hooks-codex.json).

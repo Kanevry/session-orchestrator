@@ -89,9 +89,11 @@ comment.
 
 - Use an exact-string edit for script surgery instead of `perl -pi`/`sed -i`
   for anything beyond a single trivial one-line substitution.
-- If a file is already corrupted, recover with `git show HEAD:<file> > <file>`
-  — **not** `git checkout -- <file>`, which discards a parallel session's
-  uncommitted work (`parallel-sessions.md` § PSA-003).
+- Own corrupted file: `cp <file> <file>.corrupt`, then
+  `git show HEAD:<file> > <file>`. The redirect overwrites every uncommitted
+  change, as `git checkout -- <file>` does (`parallel-sessions.md` § PSA-003).
+  Where the destructive guard runs, it denies this redirect onto the targets of
+  its `redirect-truncate-protected` rule; ask the operator to restore those.
 
 ## 5. `case` patterns inside `$( )` need a leading paren on bash 3.2
 

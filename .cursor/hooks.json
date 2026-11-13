@@ -13,7 +13,7 @@
     ],
     "beforeShellExecution": [
       {
-        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event beforeShellExecution"
+        "command": "sh hooks/run-node.sh --fail-closed scripts/lib/cursor-hook-bridge.mjs --event beforeShellExecution"
       }
     ],
     "afterShellExecution": [
@@ -23,7 +23,7 @@
     ],
     "preToolUse": [
       {
-        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event preToolUse"
+        "command": "sh hooks/run-node.sh --fail-closed scripts/lib/cursor-hook-bridge.mjs --event preToolUse"
       }
     ],
     "postToolUse": [

@@ -42,7 +42,7 @@ Under-testing and over-testing are symmetric defects, not one real problem and o
    - The test file where a new test case should go
    - The specific scenario that is missing
 4. **Run coverage check** if a coverage command is available (`Bash`: `npm test -- --coverage --reporter=json 2>/dev/null | tail -5` or similar) — use the output to validate your manual analysis, not replace it.
-5. **Write findings** to `.orchestrator/audits/wave-reviewer-<wave>-qa-strategist.md` using the output format below.
+5. **Return findings** in your final message using the output format below; the coordinator writes them to `.orchestrator/audits/wave-reviewer-<wave>-qa-strategist.md`.
 
 ## Output Format
 
@@ -88,7 +88,7 @@ Under-testing and over-testing are symmetric defects, not one real problem and o
 
 ## Refusal Rule
 
-Read-only. Never use Edit or Write to modify source or test files. Bash is permitted for running read-only commands (coverage report, test listing). Write the gap report to `.orchestrator/audits/` only.
+Read-only. Never use Edit or Write to modify source or test files. Bash is permitted for running read-only commands (coverage report, test listing).
 
 ## Machine-readable contract (#449 schema-per-agent)
 
@@ -97,7 +97,6 @@ After the human-readable gap report, append a fenced ```json block matching `age
 ```json
 {
   "verdict": "PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED",
-  "report_path": ".orchestrator/audits/wave-reviewer-N-qa-strategist.md",
   "gap_counts": {"high": 0, "med": 0, "low": 0},
   "redundancy_counts": {"duplicate": 0, "worthless": 0, "framework_only": 0},
   "test_to_src_ratio": 1.4,
@@ -107,7 +106,7 @@ After the human-readable gap report, append a fenced ```json block matching `age
 }
 ```
 
-Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `report_path`, `gap_counts`, `source_files_reviewed`, `test_files_reviewed`. Optional: `redundancy_counts`, `test_to_src_ratio`, `blockers`. Emit `redundancy_counts` and `test_to_src_ratio` on every run — omitting them reads as "no redundancy analysis performed", not as "zero redundancy found". The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
+Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `gap_counts`, `source_files_reviewed`, `test_files_reviewed`. Optional: `redundancy_counts`, `test_to_src_ratio`, `blockers`, `report_path` (where the coordinator stores your returned report; you need not emit it). Emit `redundancy_counts` and `test_to_src_ratio` on every run — omitting them reads as "no redundancy analysis performed", not as "zero redundancy found". The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
 
 Verdict variants (concrete examples per scenario):
 - Coverage strong, no gaps, no bloat → `{"verdict": "PROCEED", "gap_counts": {"high": 0, "med": 0, "low": 0}, "redundancy_counts": {"duplicate": 0, "worthless": 0, "framework_only": 0}}`

@@ -16,6 +16,7 @@ import {
   extractTimeoutOnlyFailedFiles,
   collectDebugArtifacts,
   commandKillFields,
+  SHELL_SAFE_FILE_NAME,
 } from './gate-helpers.mjs';
 
 const typecheckCmd = process.env.TYPECHECK_CMD;
@@ -78,7 +79,7 @@ const testResult = await runCheck(testCmd, CHECK_OPTS);
 const testCounts =
   testResult.status !== 'skip'
     ? extractTestCounts(testResult.fullOutput ?? testResult.output)
-    : { passed: 0, failed: 0, total: 0, files: null };
+    : { passed: 0, failed: 0, total: 0, summary: false, files: null };
 
 // A suite that dies at import time (a bad import, a syntax error in a test
 // file) is counted on vitest's `Test Files` line, not its `Tests` line —
@@ -126,8 +127,8 @@ const failedTestFiles = testResult.status === 'fail'
 // load victims but a broken run, and a serial re-run would double the wait.
 // Revisit when a blocked push shows 11+ timeout-only files under load.
 const RERUN_MAX_FILES = 10;
-// The names go into a shell command line, so they must be plain paths.
-const RERUN_FILE_NAME = /^[\w.@+][\w./@+-]*$/;
+// The names go into a shell command line, so they must be plain paths
+// (SHELL_SAFE_FILE_NAME, shared with runCheck's Windows path).
 // Paths placed inside double quotes on that line: nothing the shell expands.
 // NAMED CEILING (BV-004): a backslash is refused, so on Windows (`C:\…`
 // temp paths) no re-run happens and the gate stays red as before. Revisit with
@@ -224,7 +225,7 @@ if (testResult.status === 'fail' && rerunSkipped === null) {
   rerunSkipped =
     !timeouts.eligible ? (timeouts.reason || 'not-eligible')
       : timeouts.files.length > RERUN_MAX_FILES ? 'too-many-files'
-        : !timeouts.files.every((f) => RERUN_FILE_NAME.test(f)) ? 'unsafe-file-name'
+        : !timeouts.files.every((f) => SHELL_SAFE_FILE_NAME.test(f)) ? 'unsafe-file-name'
           : null;
   if (rerunSkipped === null) {
     let reportDir = null;
@@ -270,6 +271,17 @@ if (testResult.status === 'fail' && rerunSkipped === null) {
   }
 }
 const testStatus = rerun?.status === 'pass' ? 'pass' : testResult.status;
+// #2066 item 1a: the verdict follows the exit code, so a test command that
+// exits 0 while its output counts failures (a `|| true`, a wrapper swallowing
+// the exit code) passes. That contradiction is published, not resolved: the
+// verdict and the exit code stay untouched (deciding on the count is an owner
+// decision). Gated on the FIRST run's own `pass`, so a step that turned green
+// through the serial re-run (#1673, which starts only on `fail`) never gets it.
+// The count is parsed from free text (#1534) and may be misread. Only a count
+// read from a `Tests` summary line qualifies: without one the parser scans the
+// whole output, where a foreign runner's log line ("1 failed request") counts.
+const failedDespitePass =
+  testResult.status === 'pass' && testCounts.failed > 0 && testCounts.summary;
 
 const fileFields = testCounts.files
   ? {
@@ -334,6 +346,8 @@ const output = {
     ...commandKillFields(testResult),
     ...(rerun ? { rerun } : {}),
     ...(rerunSkipped ? { rerun_skipped: rerunSkipped } : {}),
+    // Present only when it is true — a clean run carries no such key.
+    ...(failedDespitePass ? { failed_despite_pass: true } : {}),
   },
   lint: { status: lintResult.status, warnings: lintWarnings, ...commandKillFields(lintResult) },
   debug_artifacts: debugArtifacts,
@@ -353,6 +367,13 @@ if (rerun) {
   process.stderr.write(
     `\n──── test re-run: ${rerun.files.length} file(s) failed only by timeout, re-ran serially → ${rerun.status} ────\n` +
       rerun.files.map((f) => `  ${f}\n`).join(''),
+  );
+}
+
+if (failedDespitePass) {
+  process.stderr.write(
+    `⚠ test command exited 0, but its output counts ${testCounts.failed} failed test(s); ` +
+      'the verdict follows the exit code (test.failed_despite_pass); the count is read from free text (#1534) and may be misread\n',
   );
 }
 

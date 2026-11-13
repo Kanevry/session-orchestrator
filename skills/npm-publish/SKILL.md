@@ -2,7 +2,7 @@
 name: npm-publish
 user-invocable: false
 model: sonnet
-description: Use when publishing this package to npm — a version release (npm publish), verifying the registry/pi.dev listing, or diagnosing npm auth failures (E403 2FA/token errors). Token-based flow via NPM_TOKEN in .env.local with a temp userconfig, the leakage gate before every publish, post-publish verification and marker/badge upkeep. Trigger on "publish to npm", "npm release", "E403 publish error".
+description: Use when publishing this package to npm — a version release (npm publish), verifying the registry/pi.dev listing, or diagnosing npm auth failures (E403 2FA/token errors). Default staged route (write token in .env.local via a temp userconfig, owner approves on npmjs.com; Bypass-2FA only for the `--direct` route), the leakage gate before every publish, post-publish verification and marker/badge upkeep. Trigger on "publish to npm", "npm release", "E403 publish error".
 ---
 
 # npm-publish — token auth, and the calls the script cannot make
@@ -13,9 +13,11 @@ description: Use when publishing this package to npm — a version release (npm 
 
 ## Why this skill exists
 
-npm requires 2FA **or** a granular access token with "Bypass 2FA" for every publish (policy active since 2025; legacy tokens were removed Nov 2025 — only granular tokens exist). The failure mode is confusing: `npm publish` fails with **E403 and NO OTP prompt** when the account either has no 2FA enrolled or the supplied token lacks the bypass flag. Three dead ends verified empirically: plain `npm publish` (E403), `--auth-type=web` (no web flow exists for publish), PTY-forced publish (same E403). The ONLY non-interactive path is a correctly-configured granular token.
+npm requires 2FA **or** a granular access token with "Bypass 2FA" for every direct publish (policy active since 2025; legacy tokens were removed Nov 2025 — only granular tokens exist). The default `--publish` is the staged route (§ Route C): its token needs write permission and the package scope, not Bypass-2FA, and the owner approves with 2FA on npmjs.com. The rest of this section and the next apply to the `--direct` route. The failure mode is confusing: `npm publish` fails with **E403 and NO OTP prompt** when the account either has no 2FA enrolled or the supplied token lacks the bypass flag. Three dead ends verified empirically: plain `npm publish` (E403), `--auth-type=web` (no web flow exists for publish), PTY-forced publish (same E403). The ONLY non-interactive direct path is a correctly-configured granular token.
 
-## Token requirements (all four mandatory)
+## Token requirements (`--direct` route; all four mandatory there)
+
+The default staged route (§ Route C) needs items 1, 2 and 4; it does not need Bypass-2FA (item 3).
 
 Create at https://www.npmjs.com/settings/<user>/tokens → Generate New Token → **Granular Access Token**:
 
@@ -45,6 +47,8 @@ The script gates mechanics. These three are yours, and it will not make them for
 
 ## Failure-mode table
 
+The E403/EOTP rows describe the `--direct` route; the default staged route does not need Bypass-2FA.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | `E403 ... Two-factor authentication or granular access token with bypass 2fa enabled is required` — no OTP prompt | Account has no 2FA enrolled AND token (if any) lacks Bypass-2FA | Create granular token with all four requirements above, or enroll 2FA |
@@ -57,7 +61,7 @@ The script gates mechanics. These three are yours, and it will not make them for
 
 ## January 2027: the token route ends (#1906)
 
-npm stops accepting a direct publish with a granular access token that bypasses 2FA in **January 2027** (banner on npmjs.com and on the token page, read 2026-11-01). Everything above — `NPM_TOKEN` in `.env.local`, the temp userconfig, `npm-token-publish` checking `bypass_2fa` — is that route. A token that is still valid on paper stops working on that date, not at its own expiry.
+npm stops accepting a direct publish with a granular access token that bypasses 2FA in **January 2027** (banner on npmjs.com and on the token page, read 2026-11-01). The Bypass-2FA token route above (`--direct`: `NPM_TOKEN` in `.env.local`, the temp userconfig, `npm-token-publish` checking `bypass_2fa`) is that route. A token that is still valid on paper stops working on that date, not at its own expiry.
 
 Three ways forward:
 

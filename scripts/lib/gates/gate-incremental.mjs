@@ -6,7 +6,13 @@
 // Required env: TYPECHECK_CMD, TEST_CMD
 // Optional env: FILES (comma-separated), SESSION_START_REF
 
-import { runCheck, resolveTestFiles, extractErrorLinesJson, commandKillFields } from './gate-helpers.mjs';
+import {
+  runCheck,
+  resolveTestFiles,
+  partitionTestFileArgs,
+  extractErrorLinesJson,
+  commandKillFields,
+} from './gate-helpers.mjs';
 
 const typecheckCmd = process.env.TYPECHECK_CMD;
 const testCmd = process.env.TEST_CMD;
@@ -51,6 +57,8 @@ const start = Date.now();
 
 // A skipped test run spawned nothing: `{ status: 'skip' }`, no kill keys.
 let testResult = { status: 'skip' };
+let testReason = null;
+let rejectedFiles = [];
 let errors = [];
 
 // --- typecheck (always runs unless cmd is "skip") ---
@@ -63,8 +71,22 @@ if (tcResult.status === 'fail') {
 if (testCmd !== 'skip') {
   const testFiles = await resolveTestFiles(files, sessionStartRef);
   if (testFiles.length > 0) {
-    const fileArgs = testFiles.join(' ');
-    testResult = await runCheck(`${testCmd} -- ${fileArgs}`, CHECK_OPTS);
+    // File names are data: runCheck passes them as arguments, never as shell
+    // text. A name this platform cannot pass safely is reported, not dropped.
+    const { accepted, rejected } = partitionTestFileArgs(testFiles);
+    rejectedFiles = rejected;
+    if (rejected.length > 0) {
+      process.stderr.write(`warn: ${rejected.length} test file name(s) not passed to the test command: ${JSON.stringify(rejected)}\n`);
+    }
+    if (accepted.length > 0) {
+      testResult = await runCheck(testCmd, { ...CHECK_OPTS, fileArgs: accepted });
+    }
+    if (rejected.length > 0) {
+      // A test file that never ran cannot count as passed or skipped: the step
+      // goes red and names the files in rejected_files.
+      testResult = { ...testResult, status: 'fail' };
+      testReason = accepted.length > 0 ? 'test-files-rejected' : 'all-test-files-rejected';
+    }
   } else if (!files && !sessionStartRef) {
     // No FILES or SESSION_START_REF supplied: run the full test suite
     testResult = await runCheck(testCmd, CHECK_OPTS);
@@ -87,7 +109,11 @@ const result = {
   // `kill_signals`, `survivors` pids) when `runCheck` spawned it — omitted for
   // skip/stub (#1457). `run-quality-gate.mjs` joins them into its event.
   typecheck: { status: tcResult.status, ...commandKillFields(tcResult) },
-  test: { status: testResult.status, ...commandKillFields(testResult) },
+  test: {
+    status: testResult.status,
+    ...(testReason ? { reason: testReason } : {}),
+    ...commandKillFields(testResult),
+  },
   // Stub map, same shape as gate-full: a command `runCheck` recognised as a
   // stub (`echo …`/`true`) spawned nothing, so `joinGateKillFields` may count
   // it as measured instead of declaring the whole inner ladder unknown.
@@ -96,6 +122,7 @@ const result = {
     ...(testResult.stubbed ? { test: testResult.stubbed } : {}),
   },
   errors,
+  ...(rejectedFiles.length > 0 ? { rejected_files: rejectedFiles } : {}),
 };
 
 process.stdout.write(JSON.stringify(result) + '\n');

@@ -9,7 +9,7 @@
  * Part of v3.2 shell-helper port migration (issue #218 / #317).
  */
 
-import { runCheck, csvToJsonArray, commandKillFields } from './gate-helpers.mjs';
+import { runCheck, csvToJsonArray, partitionTestFileArgs, commandKillFields } from './gate-helpers.mjs';
 
 const typecheckCmd = process.env.TYPECHECK_CMD;
 const testCmd = process.env.TEST_CMD;
@@ -62,10 +62,26 @@ const tcResult = await runCheck(typecheckCmd, CHECK_OPTS);
 
 // A skipped test run spawned nothing: `{ status: 'skip' }`, no kill keys.
 let testResult = { status: 'skip' };
+let testReason = null;
+let rejectedFiles = [];
 
 if (testCmd !== 'skip' && files.length > 0) {
-  const fileArgs = files.join(' ');
-  testResult = await runCheck(`${testCmd} -- ${fileArgs}`, CHECK_OPTS);
+  // File names are data: runCheck passes them as arguments, never as shell
+  // text. A name this platform cannot pass safely is reported, not dropped.
+  const { accepted, rejected } = partitionTestFileArgs(files);
+  rejectedFiles = rejected;
+  if (rejected.length > 0) {
+    process.stderr.write(`gate-per-file: ${rejected.length} file name(s) not passed to the test command: ${JSON.stringify(rejected)}\n`);
+  }
+  if (accepted.length > 0) {
+    testResult = await runCheck(testCmd, { ...CHECK_OPTS, fileArgs: accepted });
+  }
+  if (rejected.length > 0) {
+    // A test file that never ran cannot count as passed or skipped: the step
+    // goes red and names the files in rejected_files.
+    testResult = { ...testResult, status: 'fail' };
+    testReason = accepted.length > 0 ? 'test-files-rejected' : 'all-test-files-rejected';
+  }
 }
 
 const result = {
@@ -74,7 +90,11 @@ const result = {
   // `kill_signals`, `survivors` pids) when `runCheck` spawned it — omitted for
   // skip/stub (#1457). `run-quality-gate.mjs` joins them into its event.
   typecheck: { status: tcResult.status, ...commandKillFields(tcResult) },
-  test: { status: testResult.status, ...commandKillFields(testResult) },
+  test: {
+    status: testResult.status,
+    ...(testReason ? { reason: testReason } : {}),
+    ...commandKillFields(testResult),
+  },
   // Stub map, same shape as gate-full: a command `runCheck` recognised as a
   // stub (`echo …`/`true`) spawned nothing, so `joinGateKillFields` may count
   // it as measured instead of declaring the whole inner ladder unknown.
@@ -83,6 +103,7 @@ const result = {
     ...(testResult.stubbed ? { test: testResult.stubbed } : {}),
   },
   files,
+  ...(rejectedFiles.length > 0 ? { rejected_files: rejectedFiles } : {}),
 };
 
 process.stdout.write(JSON.stringify(result) + '\n');

@@ -933,8 +933,18 @@ test:
   enabled: false                       # opt-in
   default-profile: smoke               # profile name looked up in profiles-path
   profiles-path: .orchestrator/policy/test-profiles.json
-  mode: warn                           # warn | strict | off
+  mode: warn                           # parsed, read by no step yet (#1452) — strict does not block
   retention-days: 30                   # days test-run artifacts are kept (0 = no cleanup)
+
+# Design review on UI touch (#1452) — DEFAULT ON; this block is only needed to opt out or tune globs
+# host-local off without a commit: SO_DESIGN_REVIEW=off or owner.yaml design-review.enabled: false
+design-review:
+  enabled: true                        # false = no wave review, no close gate
+  close-gate: warn                     # warn ("would refuse", exit 0) | refuse — no automatic switch, #1452
+  include: []                          # replaces the default UI globs when non-empty
+  exclude: []                          # added to the default exclusions (tests, stories, build output)
+  designer:                            # optional path to agentic-designer's `designer` CLI; empty = look it up on PATH
+  act-on-verdicts: false               # review findings (designer and ux-evaluator) create work only when true (agentic-designer#85)
 
 # Verification auto-fix loop (PRD gsd Pattern 4 / #521)
 verification-auto-fix:

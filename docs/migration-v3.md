@@ -38,9 +38,12 @@ Optional but recommended:
 #    so `git pull` does not apply to it.
 
 # 2. Install Node dependencies. Claude Code has no `plugin dir` subcommand,
-#    so resolve the install path from the cache:
-SO_DIR="$(dirname "$(find ~/.claude/plugins/cache -path '*session-orchestrator*' -name package.json 2>/dev/null | head -1)")"
-cd "$SO_DIR" && npm install
+#    so locate the active copy with `claude plugin list --json`, take the
+#    `installPath` of the enabled `session-orchestrator@kanevry` entry, and run
+#    (see docs/install.md, "Claude Code: check the Node dependencies"; a `find`
+#    over the cache can hit an old version directory or a nested dependency's
+#    package.json):
+cd "/absolute/installPath/from/the/list" && { [ -d node_modules/js-yaml ] && echo "dependencies present, nothing to do" || npm install; }
 
 # 3. Restart Claude Code so hooks.json is re-read
 ```

@@ -15,7 +15,7 @@
  *   sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event beforeShellExecution
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
 import { matcherMatches, readHookDecision, spawnHookShell } from './pi-hook-bridge.mjs';
@@ -155,9 +155,16 @@ export function normalizeCursorHookPayload(cursorEventName, event = {}, ctx = {}
   const ctxObject = objectOrEmpty(ctx);
   const toolName = inferCursorToolName(cursorEventName, eventObject);
   const toolInput = collectToolInput(eventObject);
+  // The project dir is what the EVENT says it is: its own `cwd`, else its one
+  // workspace root. The hook process cwd (`ctx.cwd`) is only a fallback — it
+  // need not be the project, and a scope check resolved from the wrong dir
+  // finds no manifest. Several roots without a `cwd` give no single answer, so
+  // none is guessed.
+  const roots = Array.isArray(eventObject.workspace_roots) ? eventObject.workspace_roots : [];
   const cwd = firstString(
-    typeof ctxObject.cwd === 'string' ? ctxObject.cwd : undefined,
     typeof eventObject.cwd === 'string' ? eventObject.cwd : undefined,
+    roots.length === 1 && typeof roots[0] === 'string' ? roots[0] : undefined,
+    typeof ctxObject.cwd === 'string' ? ctxObject.cwd : undefined,
     process.cwd(),
   );
 
@@ -174,6 +181,65 @@ export function normalizeCursorHookPayload(cursorEventName, event = {}, ctx = {}
     is_error: eventObject.is_error ?? eventObject.isError,
     timestamp: eventObject.timestamp ?? new Date().toISOString(),
   };
+}
+
+/**
+ * The LAUNCH dir of a Cursor event, handed to the hooks as `CURSOR_PROJECT_DIR`.
+ * It differs from the payload `cwd` on purpose: the event `cwd` follows the
+ * agent (a shell call may run in `<repo>/sub`), while `resolveSessionRoot()` in
+ * `platform.mjs` clamps the session root to the launch dir whenever that dir
+ * lies inside the repo. Handing it the event `cwd` would shrink the root to a
+ * subdirectory that holds no scope manifest.
+ *
+ * Order:
+ *  1. the workspace root that contains the event `cwd` (the deepest, if roots nest);
+ *  2. the single workspace root — when the event has no `cwd`, or it contains it;
+ *  3. `ctx.cwd` (the CLI passes an inherited `CURSOR_PROJECT_DIR` there, else its
+ *     process cwd) — when the event has no `cwd`, or `ctx.cwd` contains it;
+ *  4. `''`: no launch dir is known, so none is claimed and an inherited
+ *     `CURSOR_PROJECT_DIR` stays as it is. Rungs 2 and 3 are skipped for a dir
+ *     that does not contain the event `cwd`: for an event `cwd` outside any
+ *     repo, `resolveSessionRoot()` would take that dir as the session root.
+ *
+ * Containment compares real paths (a symlinked spelling such as macOS `/tmp`
+ * vs `/private/tmp` is the same dir); a path that does not exist is compared
+ * as resolved.
+ *
+ * @param {Record<string, unknown>} [event]
+ * @param {Record<string, unknown>} [ctx]
+ * @returns {string}
+ */
+export function resolveCursorLaunchDir(event = {}, ctx = {}) {
+  const eventObject = objectOrEmpty(event);
+  const ctxObject = objectOrEmpty(ctx);
+  const roots = (Array.isArray(eventObject.workspace_roots) ? eventObject.workspace_roots : [])
+    .filter((root) => typeof root === 'string' && root.length > 0);
+  const canonical = (dir) => {
+    try { return realpathSync.native(dir); } catch { return path.resolve(dir); }
+  };
+  const eventCwd = typeof eventObject.cwd === 'string' && eventObject.cwd.length > 0
+    ? canonical(eventObject.cwd)
+    : '';
+  const contains = (dir) => {
+    const rel = path.relative(canonical(dir), eventCwd);
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+  };
+  if (eventCwd) {
+    let best = '';
+    let bestDepth = -1;
+    for (const root of roots) {
+      const depth = canonical(root).length;
+      if (contains(root) && depth > bestDepth) {
+        best = path.resolve(root);
+        bestDepth = depth;
+      }
+    }
+    if (best) return best;
+  }
+  if (roots.length === 1 && (!eventCwd || contains(roots[0]))) return path.resolve(roots[0]);
+  const ctxCwd = typeof ctxObject.cwd === 'string' ? ctxObject.cwd : '';
+  if (ctxCwd && (!eventCwd || contains(ctxCwd))) return ctxCwd;
+  return '';
 }
 
 /**
@@ -250,7 +316,9 @@ export function selectCursorHooks(manifest, cursorEventName, event = {}) {
 /**
  * @param {Record<string, unknown>} hook
  * @param {Record<string, unknown>} payload
- * @param {{ pluginRoot: string, cwd?: string, env?: NodeJS.ProcessEnv, nativeHost?: Parameters<typeof import('./pi-hook-bridge.mjs').hookShellLaunch>[1] }} options
+ * @param {{ pluginRoot: string, cwd?: string, projectDir?: string, env?: NodeJS.ProcessEnv, nativeHost?: Parameters<typeof import('./pi-hook-bridge.mjs').hookShellLaunch>[1] }} options
+ *   `projectDir` is the launch dir (see resolveCursorLaunchDir); `''` leaves
+ *   `CURSOR_PROJECT_DIR` as inherited, omitted lets the payload `cwd` stand in.
  * @returns {{ command: string, status: number|null, stdout: string, stderr: string, blocked: boolean, reason: string|null }}
  */
 export function runCursorHookCommand(hook, payload, options) {
@@ -275,7 +343,8 @@ export function runCursorHookCommand(hook, payload, options) {
   env.CURSOR_RULES_DIR = options.pluginRoot;
   env.PLUGIN_ROOT = options.pluginRoot;
   env.SO_PLATFORM = 'cursor';
-  if (typeof payload.cwd === 'string') env.CURSOR_PROJECT_DIR = payload.cwd;
+  const projectDir = options.projectDir ?? (typeof payload.cwd === 'string' ? payload.cwd : '');
+  if (projectDir) env.CURSOR_PROJECT_DIR = projectDir;
 
   // `hook.command` is a shell line from the repo-committed hooks.json, so a
   // shell is the intended interpreter — the same commit-gated trust class as
@@ -337,12 +406,14 @@ export async function runCursorHookEvent(cursorEventName, event = {}, ctx = {}, 
   const manifest = options.manifest ?? loadCursorHookManifest(pluginRoot);
   const payload = normalizeCursorHookPayload(cursorEventName, event, ctx);
   const hooks = selectCursorHooks(manifest, cursorEventName, event);
+  const projectDir = resolveCursorLaunchDir(event, ctx);
   const results = [];
 
   for (const hook of hooks) {
     const result = runCursorHookCommand(hook, payload, {
       pluginRoot,
       cwd: typeof payload.cwd === 'string' ? payload.cwd : process.cwd(),
+      projectDir,
       env: options.env,
     });
     results.push(result);
@@ -373,8 +444,12 @@ export async function runCursorHookEvent(cursorEventName, event = {}, ctx = {}, 
  */
 const MAX_CURSOR_HINT_CHARS = 3_000;
 
-/** The two post-hoc events whose output carries `additional_context`. */
-const POST_HOC_CONTEXT_EVENTS = Object.freeze(['afterFileEdit', 'postToolUse']);
+/**
+ * The three post-hoc events whose output carries `additional_context`.
+ * `afterShellExecution` is where `hooks/hooks-cursor.json` wires
+ * `post-bash-write-verify.mjs`, the SEC-008 hint producer (#2075 N1).
+ */
+const POST_HOC_CONTEXT_EVENTS = Object.freeze(['afterFileEdit', 'afterShellExecution', 'postToolUse']);
 
 /**
  * Collect the hint text of every hook result: the top-level `systemMessage`
@@ -416,14 +491,16 @@ function collectCursorHints(results) {
 /**
  * Map a bridge result onto Cursor's hook stdout contract.
  *
- * Non-blocking `afterFileEdit` / `postToolUse` results forward their hooks'
- * hints as `additional_context` (#1799 point 2) — before, they returned `{}`
- * and every write-verify and SEC-008 hint was dropped on Cursor. The field name
- * is the one this bridge already emits on the post-hoc BLOCK branch below; the
- * repo holds NO measurement that Cursor reads `additional_context` on a
- * non-blocking post-hoc event (no doc, test or probe beyond this file — grep
- * `additional_context` in docs/, scripts/, tests/, 2026-10-25). Revisit when a
- * live Cursor probe confirms or refutes it.
+ * Non-blocking `afterFileEdit` / `afterShellExecution` / `postToolUse` results
+ * forward their hooks' hints as `additional_context` (#1799 point 2; the
+ * `afterShellExecution` gap is #2075 N1) — before, they returned `{}` and every
+ * write-verify and SEC-008 hint was dropped on Cursor. The field name is the one
+ * this bridge already emits on the post-hoc BLOCK branch below; adding
+ * `afterShellExecution` is the same evidence class as #1799, not a newly guessed
+ * field. For NONE of the three events does the repo hold a measurement that
+ * Cursor reads `additional_context` (no doc, test or probe beyond this file —
+ * grep `additional_context` in docs/, scripts/, tests/, 2026-10-25). Revisit
+ * when a live Cursor probe confirms or refutes it.
  *
  * @param {string} cursorEventName
  * @param {{ block: boolean, reason: string|null, results?: Array<{ stdout?: unknown }> }} result
@@ -462,12 +539,49 @@ function readStdinSync() {
   }
 }
 
-async function main() {
-  const eventIdx = process.argv.indexOf('--event');
-  const eventName = eventIdx >= 0 ? process.argv[eventIdx + 1] : '';
+/**
+ * The answer for an event the bridge could not evaluate (plugin root, manifest,
+ * payload or hook run failed). A gating event is denied with the reason, as
+ * SECURITY.md requires of the guards; every other event gets the neutral `{}`,
+ * since a post-hoc event has nothing left to stop.
+ *
+ * @param {string} cursorEventName
+ * @param {string} reason
+ * @returns {Record<string, unknown>}
+ */
+export function cursorFailureOutput(cursorEventName, reason) {
+  if (CURSOR_BLOCKING_EVENTS.includes(cursorEventName)) {
+    return { permission: 'deny', user_message: reason, agent_message: reason };
+  }
+  return {};
+}
+
+/**
+ * The hook process cwd stand-in: Cursor's stated project dir when it set one,
+ * else the process cwd. Used only when the event carries neither `cwd` nor a
+ * single workspace root (see normalizeCursorHookPayload and
+ * resolveCursorLaunchDir).
+ *
+ * @returns {string}
+ */
+function fallbackCwd() {
+  return (process.env.CURSOR_PROJECT_DIR || '').trim() || process.cwd();
+}
+
+/**
+ * @param {string} eventName
+ */
+async function main(eventName) {
+  // A missing or unmapped event name: the bridge has no handler for it.
+  // cursorFailureOutput denies it only when the name is a known gating event
+  // (e.g. beforeMCPExecution, listed but unmapped); for any other name it
+  // cannot tell whether Cursor gates on it, so it answers the neutral `{}` —
+  // never an explicit allow — and says so on stderr. The installer writes only
+  // mapped names, so this branch means a hand-edited hooks.json.
   if (!eventName || typeof CURSOR_TO_CANONICAL_EVENT[eventName] !== 'string') {
-    process.stderr.write(`cursor-hook-bridge: missing or unknown --event ${eventName || '(none)'}\n`);
-    process.stdout.write(`${JSON.stringify({ permission: 'allow' })}\n`);
+    const reason = `cursor-hook-bridge: missing or unknown --event ${eventName || '(none)'}`;
+    process.stderr.write(`${reason}\n`);
+    process.stdout.write(`${JSON.stringify(cursorFailureOutput(eventName, reason))}\n`);
     return;
   }
 
@@ -476,28 +590,25 @@ async function main() {
   try {
     event = raw.trim() ? JSON.parse(raw) : {};
   } catch (err) {
-    const blocking = CURSOR_BLOCKING_EVENTS.includes(eventName);
-    if (blocking) {
-      const reason = `Cursor hook payload is not valid JSON: ${err instanceof Error ? err.message : err}`;
-      process.stdout.write(`${JSON.stringify({
-        permission: 'deny',
-        user_message: reason,
-        agent_message: reason,
-      })}\n`);
-      return;
-    }
-    process.stdout.write('{}\n');
+    const reason = `Cursor hook payload is not valid JSON: ${err instanceof Error ? err.message : err}`;
+    process.stdout.write(`${JSON.stringify(cursorFailureOutput(eventName, reason))}\n`);
     return;
   }
 
-  const result = await runCursorHookEvent(eventName, objectOrEmpty(event), { cwd: process.cwd() });
+  const result = await runCursorHookEvent(eventName, objectOrEmpty(event), { cwd: fallbackCwd() });
   process.stdout.write(`${JSON.stringify(toCursorHookOutput(eventName, result))}\n`);
 }
 
-const isMain =isMainModule(import.meta.url);
+const isMain = isMainModule(import.meta.url);
 if (isMain) {
-  main().catch((err) => {
-    process.stderr.write(`cursor-hook-bridge: ${err instanceof Error ? err.message : err}\n`);
-    process.stdout.write(`${JSON.stringify({ permission: 'allow' })}\n`);
+  const eventIdx = process.argv.indexOf('--event');
+  const eventName = eventIdx >= 0 ? (process.argv[eventIdx + 1] ?? '') : '';
+  // Any failure past this point (plugin root, manifest, normalize, hook run)
+  // must not turn into a silent allow on a gating event.
+  main(eventName).catch((err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`cursor-hook-bridge: ${message}\n`);
+    const reason = `Session Orchestrator hook bridge failed, so this call is blocked: ${message}`;
+    process.stdout.write(`${JSON.stringify(cursorFailureOutput(eventName, reason))}\n`);
   });
 }

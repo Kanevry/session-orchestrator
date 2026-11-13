@@ -4,7 +4,6 @@ description: Explain a topic like I'm a 5 year old — restate my last output, o
 user-invocable: true
 argument-hint: "[topic]"
 model: inherit
-tools: Read, Grep, Glob, Bash
 ---
 
 # eli5

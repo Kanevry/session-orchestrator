@@ -7,14 +7,15 @@
  * fixture, sends the case prompt through `claude -p`, and applies the case's
  * mechanical oracles to whatever the model left behind.
  *
- * It never writes to, and never deletes from, the source repository.
- * Everything lands under $TMPDIR/so-ablation-eval-<pid>/.
+ * Workdirs land under <os.tmpdir()>/so-ablation-eval-<pid>/. The only write
+ * into the source repository is the result log, appended to the git-ignored
+ * evals/instruction-ablation/results/<ISO>.jsonl. It never deletes anything.
  *
  * See README.md for design, cost, and the three limits worth knowing.
  */
 
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadHostPaths, resolveHostPath } from '../../scripts/lib/config/host-paths.mjs';
@@ -60,12 +61,33 @@ function loadCases() {
   if (!existsSync(CASES_DIR)) return [];
   return readdirSync(CASES_DIR)
     .filter((f) => f.endsWith('.json'))
-    .map((f) => JSON.parse(readFileSync(join(CASES_DIR, f), 'utf8')))
-    .filter((c) => ONLY_CASES.length === 0 || ONLY_CASES.includes(c.id));
+    .map((f) => JSON.parse(readFileSync(join(CASES_DIR, f), 'utf8')));
 }
 
-const cases = loadCases();
+// Reject a bad selection before --list prints anything and before any
+// workdir exists: `Number('nope')` used to print NaN cell counts with exit 0,
+// and `--runs Infinity` would loop paid cells without end.
+function usageError(msg) {
+  console.error(msg);
+  process.exit(1);
+}
+if (!Number.isInteger(RUNS) || RUNS < 1) {
+  usageError(`--runs must be a positive integer (got '${val('--runs', '1')}')`);
+}
+const allCases = loadCases();
+const unknownCases = ONLY_CASES.filter((id) => !allCases.some((c) => c.id === id));
+if (unknownCases.length > 0) {
+  usageError(`unknown case id(s): ${unknownCases.join(', ')} (known: ${allCases.map((c) => c.id).join(', ')})`);
+}
+const unknownVariants = ONLY_VARIANTS.filter((id) => !VARIANTS.some((v) => v.id === id));
+if (unknownVariants.length > 0) {
+  usageError(`unknown variant id(s): ${unknownVariants.join(', ')} (known: ${VARIANTS.map((v) => v.id).join(', ')})`);
+}
+const cases = allCases.filter((c) => ONLY_CASES.length === 0 || ONLY_CASES.includes(c.id));
 const variants = VARIANTS.filter((v) => ONLY_VARIANTS.length === 0 || ONLY_VARIANTS.includes(v.id));
+if (cases.length === 0 || variants.length === 0) {
+  usageError(`empty selection: ${cases.length} case(s) × ${variants.length} variant(s)`);
+}
 
 // ── rule-corpus source resolution ───────────────────────────────────
 /** Expand a leading `~` to the user's home directory. */
@@ -169,11 +191,6 @@ if (LIST) {
   process.exit(0);
 }
 
-if (cases.length === 0) {
-  console.error('no cases found');
-  process.exit(1);
-}
-
 // Baseline axis (#936 T3): a real build needs a resolved corpus. --list already
 // returned above; --dry-run still builds fixtures, so guard it here too.
 if (RULES_SOURCE === 'baseline' && !baselineInfo?.available) {
@@ -186,7 +203,7 @@ if (RULES_SOURCE === 'baseline' && !baselineInfo?.available) {
 }
 
 // ── workspace ───────────────────────────────────────────────────────
-const ROOT = join(process.env.TMPDIR || '/tmp', `so-ablation-eval-${process.pid}`);
+const ROOT = join(tmpdir(), `so-ablation-eval-${process.pid}`);
 mkdirSync(ROOT, { recursive: true });
 
 /** Build a workdir carrying the variant's instruction surface. */

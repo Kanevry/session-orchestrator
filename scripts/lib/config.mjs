@@ -66,6 +66,7 @@ import { _parseIssueBudget } from './config/issue-budget.mjs';
 import { _parseHealthEndpoints, _parseEcosystemHealthBlockEnabled } from './config/health-endpoints.mjs';
 import { _parseBrokenWindow } from './config/broken-window.mjs';
 import { _parseSlopcheck } from './config/slopcheck.mjs';
+import { _parseDesignReview } from './config/design-review.mjs';
 import { _parseDiscoveryValidator } from './config/discovery-validator.mjs';
 import { _parseReaper } from './config/reaper.mjs';
 import { _parseGate } from './config/gate.mjs';
@@ -481,6 +482,9 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // slopcheck: parsed from full content (PRD gsd Pattern 2 / issues #517, #520)
   const slopcheck = _parseSlopcheck(mdContent);
 
+  // design-review: default-on UI-touch review trigger + close gate (#1452)
+  const designReview = _parseDesignReview(mdContent);
+
   // skill-evolution: opt-in skill self-evolution autonomy block (OpenSpace C1 / issue #646)
   const skillEvolution = _parseSkillEvolution(mdContent);
 
@@ -649,6 +653,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'issue-budget': issueBudget,
     'broken-window-budget': brokenWindow,
     'slopcheck': slopcheck,
+    'design-review': designReview,
     'skill-evolution': skillEvolution,
     'dispatcher-autonomy': dispatcherAutonomy,
     'discovery-validator': discoveryValidator,

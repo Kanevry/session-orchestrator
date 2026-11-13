@@ -12,14 +12,14 @@ const measured: Omit<SoSnapshot, 'age_ms'> = {
   peers: [], vault: { enabled: false, mode: 'warn', last_run: null, board: null }, degraded: [],
 }
 const UUID = '3f1c2b9a-6d4e-4f7a-9b2c-1e5d8a7c6b40'
-function world(on: On, collector: 'ok' | 'failed' | 'invalid' | 'missing' | 'pre-1730' = 'ok') {
+function world(on: On, collector: 'ok' | 'failed' | 'invalid' | 'missing' | 'pre-1730' = 'ok', env: Record<string, string> = { HOME: '/home/test' }, registered = '') {
   const writes: SoBeacon[] = []
   const statuses: string[] = []
   const calls = { pluginList: 0, collector: [] as string[][] }
   const clock = mock.clock(on, { now: Date.parse(at) })
-  mock.env(on, { HOME: '/home/test' })
+  mock.env(on, env)
   mock.store(on)
-  on('fs.read', () => ({ value: '' }))
+  on('fs.read', () => ({ value: registered }))
   on('fs.list', () => ({ value: [] }))
   on('session.id', () => ({ value: collector === 'pre-1730' ? UUID : 'test-session' }))
   on('session.cwd', () => ({ value: '/repo' }))
@@ -101,6 +101,13 @@ for (const failure of ['failed', 'invalid', 'missing'] as const) {
     }
   })
 }
+// Catches (GH#89): on native Windows only USERPROFILE is set and `--register-root` writes a drive path; the mod read
+// only HOME and accepted only a leading `/`, so the registered root was never used (a plugin list call would throw here).
+test('a drive-letter root registered under USERPROFILE is used without HOME', { options: {} }, async ($, on) => {
+  const { calls } = world(on, 'ok', { USERPROFILE: 'C:\\Users\\test' }, 'C:\\so\n')
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  expect(calls.collector[0]?.[1]).toBe('C:\\so/scripts/so-hud.mjs')
+})
 // Catches (#1730): this mod passing --session-id to a Session Orchestrator from before #1730 — its collector exits 2 on
 // the unknown flag and every measurement failed for good.
 test('a collector without --session-id is measured without the flag, asked once', { options: { soRoot: '/so' } }, async ($, on) => {

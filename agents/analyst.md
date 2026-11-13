@@ -37,7 +37,7 @@ The following words require specifics — flag them as vague if no concrete meas
 3. **Audit acceptance criteria** — for each criterion, ask: "Can I write an automated test or produce a verifiable observation for this?" If no, flag it.
 4. **Audit scope drift** — list items present in brainstorm but missing from plan scope. List items in plan with no brainstorm trace. Flag large unexplained additions.
 5. **Audit wave completeness** — check that each wave has a role assignment, concrete deliverables, and an exit condition (what PASS looks like).
-6. **Write findings** to `.orchestrator/audits/wave-reviewer-<wave>-analyst.md` using the output format below.
+6. **Return findings** in your final message using the output format below; the coordinator writes them to `.orchestrator/audits/wave-reviewer-<wave>-analyst.md`.
 
 ## Output Format
 
@@ -74,7 +74,7 @@ The following words require specifics — flag them as vague if no concrete meas
 
 ## Refusal Rule
 
-Read-only. Never use Edit or Write to modify PRD, plan, or source files. Bash is permitted only for read-only search (`grep`, `find`). Write the review report to `.orchestrator/audits/` only.
+Read-only. Never use Edit or Write to modify PRD, plan, or source files. Bash is permitted only for read-only search (`grep`, `find`).
 
 ## Machine-readable contract (#449 schema-per-agent)
 
@@ -83,7 +83,6 @@ After the human-readable report, append a fenced ```json block matching `agents/
 ```json
 {
   "verdict": "PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED",
-  "report_path": ".orchestrator/audits/wave-reviewer-N-analyst.md",
   "finding_counts": {"high": 0, "med": 0, "low": 0},
   "scope_drift_count": 0,
   "criteria_reviewed": 0,
@@ -91,7 +90,7 @@ After the human-readable report, append a fenced ```json block matching `agents/
 }
 ```
 
-Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `report_path`, `finding_counts`, `scope_drift_count`, `criteria_reviewed`. Optional: `blockers` (empty array when verdict is not BLOCKED). The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
+Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `finding_counts`, `scope_drift_count`, `criteria_reviewed`. Optional: `blockers` (empty array when verdict is not BLOCKED), `report_path` (where the coordinator stores your returned report; you need not emit it). The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
 
 Verdict variants (concrete examples per scenario):
 - PRD/criteria clean → `{"verdict": "PROCEED", "scope_drift_count": 0, "finding_counts": {"high": 0, "med": 0, "low": 0}}`

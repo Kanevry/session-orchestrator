@@ -4,7 +4,6 @@ description: Use when you have a PRD or design spec and need a bite-sized, execu
 user-invocable: true
 model: inherit
 color: green
-tools: Read, Grep, Glob, Bash, Write
 ---
 
 # Write Executable Plan

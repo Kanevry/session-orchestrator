@@ -315,17 +315,32 @@ export function isRuntimeStatePath(citedPath) {
  * corpus carries hundreds of citations and a per-path spawn would dominate the
  * check's runtime.
  *
- * Fails OPEN toward REPORTING (the safe direction here): a missing `git`, a
- * non-git root, or exit 128 yields an empty set, so every absent citation is
- * still reported and no real defect is suppressed by a tooling failure. Exit 1
- * means "none of them are ignored" and is NOT an error.
+ * Fails OPEN toward REPORTING (the safe direction here): inside a work tree,
+ * any failure (e.g. exit 128 on a pathspec beyond a symlink) yields an empty
+ * set, so every absent citation is still reported as blocking. Only when
+ * there is no git at all (ENOENT), or `git rev-parse --is-inside-work-tree`
+ * itself fails AND `repoRoot` has no `.git` entry, does it return `null` ("git
+ * cannot answer"); the caller then reports state-root citations as advisory
+ * (GH#93: an unpacked npm package has no `.git`). A bare repository or a path
+ * inside `.git` answers `false` with exit 0 and keeps the empty set. A
+ * repository git refuses to open (broken `GIT_DIR`, dubious ownership) still
+ * has its `.git` and keeps the empty set too, so it stays blocking (#2066).
+ * Ceiling: a broken `GIT_DIR` on a tree with no `.git` of its own still lands
+ * on `null`.
+ * Exit 1 means "none of them are ignored" and is NOT an error.
+ *
+ * A candidate with a `..` segment is never offered to git: it can leave the
+ * repo (exit 128 "outside repository" for the WHOLE batch), and it is no
+ * runtime artefact either, so it stays reported.
  *
  * @param {string} repoRoot absolute repo root
  * @param {string[]} candidates repo-relative POSIX paths (already known absent)
- * @returns {Set<string>} the subset git ignores
+ * @returns {Set<string> | null} the subset git ignores, or null when git cannot answer
  */
 export function gitIgnoredPaths(repoRoot, candidates) {
-  const unique = [...new Set(candidates)].filter((p) => p.length > 0 && !p.includes('\n'));
+  const unique = [...new Set(candidates)].filter(
+    (p) => p.length > 0 && !p.includes('\n') && !p.split('/').includes('..'),
+  );
   if (unique.length === 0) return new Set();
   let stdout;
   try {
@@ -337,9 +352,23 @@ export function gitIgnoredPaths(repoRoot, candidates) {
       maxBuffer: 8 * 1024 * 1024,
     });
   } catch (error) {
-    // Exit 1 = nothing matched, and git still wrote (empty) stdout. Anything
-    // else (128, ENOENT, non-git root) leaves `stdout` undefined → empty set.
-    if (error?.status !== 1) return new Set();
+    // Exit 1 = nothing matched, and git still wrote (empty) stdout. No git
+    // binary, or no work tree AND no `.git` under repoRoot → null; any other
+    // failure → empty set (blocking).
+    if (error?.status !== 1) {
+      if (error?.code === 'ENOENT') return null;
+      try {
+        execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+          cwd: repoRoot,
+          stdio: 'ignore',
+        });
+        return new Set();
+      } catch {
+        // A `.git` (a FILE in a linked worktree) means a real repo git refused
+        // to open (#2066: dubious ownership, broken GIT_DIR) — stay blocking.
+        return existsSync(path.join(repoRoot, '.git')) ? new Set() : null;
+      }
+    }
     stdout = typeof error.stdout === 'string' ? error.stdout : '';
   }
   return new Set(
@@ -598,14 +627,20 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
   );
 
   for (const { file: relative, citation } of pending) {
-    if (isRuntimeStatePath(citation.path) && ignored.has(citation.path)) {
+    if (isRuntimeStatePath(citation.path) && ignored?.has(citation.path)) {
       summary.runtimeArtifacts += 1;
       continue;
     }
+    // Ceiling (BV-004): without a git tree (no git binary, or no `.git` under
+    // the root — an unpacked tarball, GH#93) the second half cannot be
+    // measured, so a state-root citation is neither excused nor blocking — it
+    // still prints, as advisory. A tree WITH `.git` that git cannot open stays
+    // blocking (#2066). Git-backed runs are unchanged.
+    const unverifiedState = ignored === null && isRuntimeStatePath(citation.path);
     // `.mjs` and `.md` are blocking.
     // `.sh` is advisory (`warn`) unless the caller opted into `strictSh`.
     const isSh = path.extname(citation.path) === '.sh';
-    const severity = isSh && !strictSh ? 'warn' : 'fail';
+    const severity = (isSh && !strictSh) || unverifiedState ? 'warn' : 'fail';
     if (severity === 'warn') summary.warnings += 1;
     findings.push({
       kind: 'missing-path',
@@ -619,7 +654,10 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
             ? `\`${citation.path}\` does not exist (advisory — .sh citations do not block ` +
               'validate-plugin until re-run with --strict-sh; see #1187) — '
             : `\`${citation.path}\` does not exist (--strict-sh) — `
-          : `\`${citation.path}\` does not exist — `) +
+          : unverifiedState
+            ? `\`${citation.path}\` does not exist (advisory — git is unavailable, so a runtime ` +
+              'state file cannot be told from a dead citation) — '
+            : `\`${citation.path}\` does not exist — `) +
         'create it, fix the path, or annotate the citation with ' +
         '`<!-- path-check: planned #<iid> | historical | example -->` on this line or the ' +
         'line directly above',
@@ -665,7 +703,7 @@ export function runCheckSkillScriptPaths(pluginRoot, { strictSh = false } = {}) 
       `  PASS: ${s.citations} file citation(s) in ${s.filesScanned} doc file(s) — ` +
         `${s.existing} exist, ${s.annotated} annotated as deliberately absent, ` +
         `${s.placeholders} placeholder(s)` +
-        (s.warnings > 0 ? `, ${s.warnings} advisory .sh warning(s) (see --strict-sh)` : ''),
+        (s.warnings > 0 ? `, ${s.warnings} advisory warning(s)` : ''),
     );
   }
   console.log('');

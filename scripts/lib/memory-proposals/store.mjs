@@ -434,6 +434,33 @@ function releaseProposalsLock(lockFile) {
 }
 
 /**
+ * Run `fn` while holding the same proposals write-lock `appendProposal` takes
+ * (GH#87). For writers outside this module that rewrite proposals.jsonl —
+ * without it, a proposal appended between their read and their write is lost.
+ *
+ * Not re-entrant: calling it (or `appendProposal`) from inside `fn` for the
+ * same repo waits for its own lock and times out.
+ *
+ * @template T
+ * @param {string} repoRoot
+ * @param {() => Promise<T> | T} fn
+ * @param {{ timeoutMs?: number }} [opts]
+ * @returns {Promise<{ ok: true, value: T } | { ok: false, reason: 'timeout' | 'fs-error', error?: string }>}
+ *   Resolves `ok: false` when the lock is not acquired (`fn` never ran). Throws
+ *   only what `fn` throws, or a TypeError when the lock path escapes the repo.
+ */
+export async function withProposalsLock(repoRoot, fn, { timeoutMs = DEFAULT_LOCK_TIMEOUT_MS } = {}) {
+  const lockFile = lockPathFor(repoRoot);
+  const lockResult = await acquireProposalsLock(lockFile, timeoutMs);
+  if (!lockResult.ok) return lockResult;
+  try {
+    return { ok: true, value: await fn() };
+  } finally {
+    releaseProposalsLock(lockFile);
+  }
+}
+
+/**
  * Count lines in a JSONL file where `wave_id === waveId`.
  * Returns 0 if the file does not exist.
  *

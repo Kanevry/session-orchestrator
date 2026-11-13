@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 import type { SoBeacon, SoProfile, SoSnapshot } from '../types/index'
-import { ageBeacon, completeState, configHooksFire, displayText, findings, fireableHooks, holdsProfile, PROFILES, profileLines, profileOf, profileText, statusText, validId, validateBeacon } from './logic'
+import { ageBeacon, completeState, configHooksFire, displayText, findings, fireableHooks, holdsProfile, isAbsoluteRoot, PROFILES, profileLines, profileOf, profileText, statusText, validId, validateBeacon } from './logic'
 import { CD_SCRIPT, classifyAllOutward, collisionVerdict, findCollisions, findTraps, GITLINKS_SCRIPT, gitlinksFromRun, hasSecret, KIND_LABEL, plainSourceRefs, pushDestinations, pushNeedsConfirm, pushRemote, pushSources, redactDeep, redactText, REPO_CONFIG_READ, repoConfigEntries, trapVerdict, UNKNOWN_DIR, type Outward, type PushConfig, type PushFacts, type RepoConfig, type SecretHit } from './rules'
 
 // Only these closures cross helper boundaries; the engine table never does.
@@ -105,16 +105,16 @@ export const register: Register = (on, options) => {
     degraded: [...new Set([...current.degraded, ...problems])],
   } : null
   const root = async (io: IO): Promise<string | null> => {
-    if (typeof options.soRoot === 'string' && options.soRoot.startsWith('/')) {
+    if (isAbsoluteRoot(options.soRoot)) {
       await io.storeSet('so-root', options.soRoot)
       return options.soRoot
     }
     const cached = await io.storeGet('so-root')
-    if (typeof cached === 'string' && cached.startsWith('/')) return cached
+    if (isAbsoluteRoot(cached)) return cached
     const home = await io.env()
     let found: string | null = null
     if (home) {
-      try { const p = (await io.read(`${home}/.config/session-orchestrator/hud/so-root`)).trim(); if (p.startsWith('/')) found = p } catch { /* try installed plugins */ }
+      try { const p = (await io.read(`${home}/.config/session-orchestrator/hud/so-root`)).trim(); if (isAbsoluteRoot(p)) found = p } catch { /* try installed plugins */ }
     }
     // At most one `claude plugin list` per PLUGIN_LIST_RETRY_MS while no root is found, whatever its outcome.
     const now = found ? null : await io.now()
@@ -126,7 +126,7 @@ export const register: Register = (on, options) => {
         const rows: unknown[] = Array.isArray(data) ? data : Array.isArray(data.plugins) ? data.plugins : []
         for (const row of rows) {
           const p = row as { name?: string; id?: string; installPath?: string }
-          if ((p.name ?? p.id ?? '').split('@')[0] === 'session-orchestrator' && p.installPath?.startsWith('/')) { found = p.installPath; break }
+          if ((p.name ?? p.id ?? '').split('@')[0] === 'session-orchestrator' && isAbsoluteRoot(p.installPath)) { found = p.installPath; break }
         }
       }
     }
@@ -388,7 +388,8 @@ export const register: Register = (on, options) => {
       read: (path) => beneath.fs.read(path),
       list: (path) => beneath.fs.list(path),
       now: () => beneath.clock.now(),
-      env: () => beneath.env.get('HOME'),
+      // Native Windows usually sets only USERPROFILE (GH#89); an empty HOME falls through as well.
+      env: async () => (await beneath.env.get('HOME')) || beneath.env.get('USERPROFILE'),
       storeGet: (key) => beneath.store.get(key),
       storeSet: (key, value) => beneath.store.set(key, value),
       sessionId: () => beneath.session.id(),

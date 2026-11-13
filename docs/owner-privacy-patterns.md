@@ -11,9 +11,13 @@ Create `owner-patterns.json` using your own private values. Do not commit it, co
 3. `XDG_CONFIG_HOME/session-orchestrator/owner-patterns.json`.
 4. `~/.config/session-orchestrator/owner-patterns.json`.
 
-Empty or whitespace-only environment values are unset. An explicit relative filename is unsafe. The file must be regular, owned by the current user, have exactly mode `0600` and a single hard link, and be outside any Git repository, including ignored directories. Its parent and user-owned ancestors must not be group/world writable. User-controlled symlink ancestors and a symlink file are rejected; root-owned operating-system aliases such as macOS `/tmp` are allowed above the protected parent.
+Empty or whitespace-only environment values are unset. An explicit relative filename is unsafe. On every platform the file must be regular, have a single hard link, be no larger than 64 KiB, and be outside any Git repository, including ignored directories. A symlink file is rejected.
 
-For a new directory, use a private umask and create the file with mode `0600`. Choose the directory according to the resolution above; this example uses the default:
+**POSIX (Linux, macOS):** the file must also be owned by the current user and have exactly mode `0600`. Its parent and user-owned ancestors must not be group/world writable. User-controlled symlink ancestors are rejected; root-owned operating-system aliases such as macOS `/tmp` are allowed above the protected parent.
+
+**Windows:** the scanner does not check mode, owner or directory writability, and it does not read ACLs. Protect the file through its ACL yourself. Any link in the ancestor chain is rejected.
+
+For a new directory on POSIX, use a private umask and create the file with mode `0600`. Choose the directory according to the resolution above; this example uses the default:
 
 ```sh
 umask 077

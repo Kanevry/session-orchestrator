@@ -7,12 +7,6 @@ metadata:
   user-invocable: "true"
   disable-model-invocation: "true"
   argument-hint: "[topic-or-feature-slug]"
-allowed-tools:
-  - Read
-  - Grep
-  - Glob
-  - Bash
-  - Write
 ---
 
 # brainstorm

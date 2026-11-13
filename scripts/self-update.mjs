@@ -40,7 +40,7 @@
  * Exit codes: 0 all steps ok/skipped · 1 usage error · 2 a step failed.
  */
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { commandOnPath, spawnNativeSync } from './lib/native-command.mjs';
@@ -59,6 +59,8 @@ const COMMAND_TIMEOUT_MS = 300_000;
 // `codex plugin list --available --json` is 2.56 MB on a host with several
 // marketplaces (measured 2026-10-02); the 1 MiB default fails with ENOBUFS.
 const MAX_BUFFER = 64 * 1024 * 1024;
+/** Written into `node_modules` only after `npm ci` succeeded (GH#88). */
+const INSTALLED_MARKER = '.so-self-update-installed';
 /** Host-local copy of the packed package; the marketplace reads this, never the clone. */
 const STAGE_DIR = resolveStageDir();
 
@@ -228,9 +230,31 @@ export function updateRepo({ run, log }, opts, ctx = {}) {
   }
   const after = run('git', ['rev-parse', 'HEAD'], { cwd: root, mutates: false });
   const moved = before.stdout !== after.stdout;
-  if (moved || !existsSync(path.join(root, 'node_modules'))) {
+  // GH#88: `moved` and a present `node_modules` say nothing about whether the
+  // last `npm ci` finished — after a failed one the next run saw HEAD unmoved
+  // and reported "already current". The marker exists only after a successful
+  // install: removed before `npm ci` runs, written after it succeeds. A clone
+  // installed before this marker existed pays one extra `npm ci`.
+  const installedMarker = path.join(root, 'node_modules', INSTALLED_MARKER);
+  if (moved || !existsSync(installedMarker)) {
+    if (!opts.dryRun) {
+      try {
+        rmSync(installedMarker, { force: true });
+      } catch (err) {
+        // A marker that survives a failed install would hide that failure.
+        return { step: 'repo', status: 'failed', detail: `cannot remove install marker ${installedMarker}: ${err.message}` };
+      }
+    }
     const r = run('npm', ['ci'], { cwd: root });
     if (!r.ok) return { step: 'repo', status: 'failed', detail: r.detail };
+    if (!opts.dryRun) {
+      try {
+        mkdirSync(path.dirname(installedMarker), { recursive: true });
+        writeFileSync(installedMarker, `${after.stdout.trim()}\n`, 'utf8');
+      } catch (err) {
+        log(`repo: warning — npm ci succeeded but the install marker could not be written (${err.message}); the next run installs again`);
+      }
+    }
   }
   return { step: 'repo', status: 'ok', detail: `${repoVersion(root)}${moved ? ' (updated)' : ' (already current)'}` };
 }

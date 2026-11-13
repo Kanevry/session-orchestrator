@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-11T08:15:28.872Z",
-  "head": "6a1b7502b78c96d9aa8b19d7572462c4569daf4c",
+  "generated_at": "2026-11-13T11:48:52.570Z",
+  "head": "4c6582249cfae868ed12d3d5ac803377818a0205",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -405,6 +405,7 @@
       "file": "scripts/lib/command-blocker.mjs",
       "reachable_from": [
         "codex-apply-patch-guard.mjs",
+        "config-protection.mjs",
         "on-stop.mjs",
         "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
@@ -607,6 +608,15 @@
     },
     {
       "file": "scripts/lib/config/custom-phases.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/design-review.mjs",
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
@@ -1561,6 +1571,12 @@
         "pre-bash-memory-propose-audit.mjs",
         "pre-task-scope-disjoint.mjs",
         "pre-tool-state-md-path-guard.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/offline-flags.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
       ]
     },
     {

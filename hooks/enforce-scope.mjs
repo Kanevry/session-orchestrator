@@ -133,6 +133,8 @@ let sessionStartedAtMs;
 // no new module edge, so `hooks/_lib/hook-import-set.json` is unchanged.
 let gradeScopeEntry;
 let canonicalizeGrantPrefix;
+// #2066 — the absolute-grant spelling shared with hooks/post-bash-write-verify.mjs.
+let absoluteGrantPattern;
 // #1123 — "is this manifest even mine?" (G3b). Process-local identity only
 // (#1194): the repo-global `session.lock` tier is shared by every session in the
 // checkout and would classify a peer's manifest as ours.
@@ -223,6 +225,7 @@ async function bootstrap() {
     sessionStartedAtMs,
     gradeScopeEntry,
     canonicalizeGrantPrefix,
+    absoluteGrantPattern,
     findOwnScopeFile,
     resolveScopeContext,
   } = modules.scopeGate);
@@ -318,9 +321,12 @@ async function main() {
   // names YOU before you write it") — not on this reader.
   //
   // CEILING (BV-004): on a harness that exports no session env var and puts no
-  // `session_id` in the hook payload (Codex CLI, Cursor today), both tiers are
-  // empty, so G3b is permanently `'unknown'` = enforce = pre-#1123 behaviour
-  // there. Revisit when Codex/Cursor hook payloads carry a session id.
+  // `session_id` in the hook payload, both tiers are empty, so G3b is
+  // permanently `'unknown'` = enforce = pre-#1123 behaviour there. Codex CLI
+  // does send `session_id` (measured 2026-10-20, codex-cli 0.160.1, #1691). The
+  // Cursor and Pi bridges (`normalizeCursorHookPayload` / `normalizePiHookPayload`)
+  // forward `session_id` only when the host event or ctx carries one; whether
+  // Cursor/Pi supply it is unmeasured, and without it G3b stays `'unknown'` there.
   //
   // ACCEPTED RESIDUAL, named rather than hidden: `session` is a plain field in a
   // file any process in this working copy can write, so writing a foreign id
@@ -1122,7 +1128,7 @@ function matchedAbsoluteGrant(resolvedPath, allowedPaths) {
   const abs = allowedPaths.filter((p) => typeof p === 'string' && path.isAbsolute(p));
   if (abs.length === 0) return null;
   const normalizedAbs = resolvedPath.split(path.sep).join('/');
-  return abs.find((pat) => pathMatchesPattern(normalizedAbs, pat.split(path.sep).join('/'))) ?? null;
+  return abs.find((pat) => pathMatchesPattern(normalizedAbs, absoluteGrantPattern(pat))) ?? null;
 }
 
 // ---------------------------------------------------------------------------

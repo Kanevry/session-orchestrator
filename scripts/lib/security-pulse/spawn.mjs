@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { ensurePrivateDir, stampMs } from './cache.mjs';
 import { renameSyncWithRetry } from '../io.mjs';
 import { spawn } from '../native-command.mjs';
+import { firstOfflineFlag } from '../offline-flags.mjs';
 
 /** At most one refresher spawn per repo per 10 min. */
 export const SPAWN_THROTTLE_MS = 10 * 60 * 1000;
@@ -199,7 +200,10 @@ function openClaim(claimPath) {
 /**
  * Throttled refresher start. Never throws.
  *
- * Results: `spawned`; `disabled` ({@link REFRESH_SWITCH_ENV}=off); `throttled`
+ * Results: `spawned`; `disabled` ({@link REFRESH_SWITCH_ENV}=off, or one of the
+ * standard offline flags `DO_NOT_TRACK` / `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+ * is set — the refresher sends lockfile package names to OSV and queries
+ * GitHub, which an operator who set those flags did not consent to); `throttled`
  * (marker fresh, or another session holds the claim); `claim-failed` (the claim
  * could not be created or published — no spawn); `error` (anything else).
  *
@@ -215,6 +219,7 @@ export function maybeSpawnRefresh({ repoRoot, markerPath, nowMs, env, spawnRefre
   try {
     const switchValue = (env ?? process.env)[REFRESH_SWITCH_ENV];
     if (String(switchValue ?? '').trim().toLowerCase() === 'off') return 'disabled';
+    if (firstOfflineFlag(env ?? process.env) !== null) return 'disabled';
     if (!spawnAllowed(markerPath, nowMs)) return 'throttled';
 
     try {

@@ -700,6 +700,7 @@ baseline-ref: main
 
 Requires:
 - `GITLAB_TOKEN` env var set with read scope on the baseline project
+- `GITLAB_HOST` env var set — never the target repo's committed `gitlab-host` Session Config key (the token is sent to this host)
 - `scripts/lib/fetch-baseline.mjs` present in the session-orchestrator plugin
 
 If the fetch fails (network error, auth error, missing file), bootstrap continues without aborting — rules will arrive via the legacy Clank sync path. A warning is printed.
@@ -1471,8 +1472,80 @@ test:
 | `test.enabled` | boolean | `false` | Master toggle for the `/test` agentic end-to-end test command. When `false`, `/test` reports "test is disabled" and exits. |
 | `test.default-profile` | string | `smoke` | Profile name used when no `--profile` flag or positional arg is given. Must match a key in the profile registry at `profiles-path`. |
 | `test.profiles-path` | string | `.orchestrator/policy/test-profiles.json` | Path (relative to repo root) where the test profile registry lives. |
-| `test.mode` | string (`warn` \| `strict` \| `off`) | `warn` | Issue reconciliation severity. `warn` files findings non-blockingly. `strict` blocks session-end on HIGH/CRITICAL findings. `off` skips reconciliation entirely. |
+| `test.mode` | string (`warn` \| `strict` \| `off`) | `warn` | **Parsed and validated, but no step reads it (checked 2026-11-12, #1452).** `/test` reconciles findings the same way under every value (critical/high filed, medium/low triaged), and session-end does not block on test findings. Earlier versions of this table said `strict` blocks session-end on HIGH/CRITICAL findings; no code ever did. The UI check at close is `design-review` (below); it is warn-only by default and refuses only with `close-gate: refuse`. |
 | `test.retention-days` | integer | `30` | Days to retain `.orchestrator/metrics/test-runs/<run-id>/` artifacts before cleanup. Set to `0` to disable cleanup. |
+
+## Design Review (#1452)
+
+**Default on, advisory, warn-only.**
+- **Waves:** when an Impl-Core or Impl-Polish wave changes UI files, wave-executor `references/wave-loop-review.md` step 5b reviews the rendered result. The findings are recorded and shown, not turned into work, unless `act-on-verdicts` is on.
+- **Close:** session-end Phase 2.7 runs `scripts/design-review.mjs check`.
+
+| Outcome | When | Exit |
+|---|---|---|
+| pass | no UI file changed in this session, or every changed UI file (in its current content) is covered by a record | 0 |
+| would refuse (`close-gate: warn`, default) | UI files changed in this session, a `playwright.config.*` whose directory holds them can render them, and no `reviewed`, `not-reviewable` or `owner-override` record covers them. Prints `WARNING … would refuse`, records a `would-refuse` record once per uncovered set | 0 |
+| refuse (`close-gate: refuse`) | the same, enforced | 3 |
+| not reviewable / unmeasured | nothing can render the files, or git cannot say what changed (unresolvable start ref, no git, no session base, unwritable records). Prints `WARNING`, records the case itself | 0 |
+
+**Switching to `refuse` (#1452, decision of 2026-11-12, issue note 299725).** Nothing switches automatically: the default stays `warn` until someone sets `close-gate: refuse` in a commit, and no date is attached. That change is due only when all four conditions hold:
+- (1) H2 from the third review of !413 (foreign commits pulled mid-session counted as the session's own) is fixed and independently re-reviewed;
+- (2) the cold reader passes against owner judgements (agentic-designer#85, acceptance with fresh images);
+- (3) at least 20 would-refuse cases are classified, at most 10 % of them wrong;
+- (4) step 5b has run once in a real wave with the real `designer`.
+
+List the records with `node scripts/design-review.mjs would-refuse --repos <dir,dir,…> [--json]`.
+
+**Change set.** `resolveSessionChangeSet()` in `scripts/lib/ui-touch.mjs` finds the session's own commits `<start>..HEAD ^<default-branch baseline>`, intersected with the net diff, plus the working tree. Only commits this checkout created count: the HEAD reflog of the worktree names them (`commit`, `commit (amend)`, `cherry-pick`, `revert`, `am`, and a rebase replay of such a commit, matched by author and author date). A rebase onto, or a merge of, an updated main, and a pull that brings a colleague's commits onto main or onto the same feature branch, never count other people's files. When the reflog cannot answer (disabled, expired, or starting after the session) and there is a commit to attribute, the result is `unmeasured (own-commits-unmeasurable …)`, never a refusal. Commits made in another worktree or clone and merged in are not counted. It never falls back to `HEAD~1`. Files last written before the session and deleted files do not count.
+
+Deliberate take-overs of a foreign commit count as own, because this checkout creates the resulting commit: `cherry-pick`, `commit --amend` on a pulled commit, and `merge --squash` followed by a commit. A replayed commit whose author-and-date fingerprint more counted commits carry than this checkout created (a foreign commit with the same author and second, replayed by a rebase) is not counted. A `commit (amend)` replaces the commit HEAD was on, so that predecessor no longer counts as created here.
+
+**Known limits, each named in a note.** When a candidate commit carries your git identity (`user.email` as author or committer) but is not counted, `check` prints `note: N commit(s) with your git identity are not attributed to this checkout and are not counted (<reasons>): <short SHAs>` (text and `--json` `notes`; at most five SHAs, then `+N more`). The reasons named are the ones that can apply: created in another worktree, clone or host under the same identity; author date reset; squashed into another commit; ambiguous author fingerprint. The verdict does not change. The measured cases:
+- a commit made in a linked worktree of the same repo and merged by fast-forward (the reflog is per worktree);
+- an own commit re-dated by `git rebase --reset-author-date` / `--ignore-date` (the replay no longer matches the original's author date);
+- an own commit squashed into a pulled foreign commit by `rebase -i` (the result carries the foreign author);
+- an own replay dropped as ambiguous because a foreign commit with the same author and second was replayed with it (both are named).
+
+Without `user.email` in the git config, only ambiguous replays are named; the other cases are dropped without a note.
+
+**Known limits without a note.**
+- `git reset --soft` followed by a new commit: the earlier commits stay counted as created here, so a foreign commit with the same author and second replayed later is not caught by the fingerprint count.
+- A foreign replay whose matching own commit left the range after `git reset --hard FETCH_HEAD`.
+- A fully own history rebased with `--reapply-cherry-picks --empty=keep`.
+
+**Without `sinceTime`** (no `--since-time`, no session lock) the window starts at the OLDEST HEAD reflog entry at the start ref; the newest one would drop the session's own commits after a switch back to an unchanged main. Then a commit an earlier session made from the same ref, parked on a branch and fast-forwarded in later, counts as this session's. The close gate passes `--since-time` from STATE.md or falls back to the session lock, so this path is reached only by `check --since <ref>` without either, and by direct callers of `resolveSessionChangeSet()`; they should pass `sinceTime`.
+
+**Records.** They live in `.orchestrator/metrics/design-review.jsonl` beside the events ledger.
+- **Scope:** one record covers the session's UI files in their current content (path plus blob hash), whatever surface it names; a later change to one of them re-arms the gate. A record counts only for the same worktree and session (a branch switch keeps it).
+- **`reviewed`:** needs `--reviewer`, a verdict of that reviewer, and a `--run-dir` holding PNG screenshots. The screenshots must be checked by magic bytes, non-empty, written in this session and untracked; their sha256 is stored. A `recapture` or `BLOCKED` verdict is reported at close as "not judged". At most two rounds per surface and session.
+- **`not-reviewable` by hand:** in a repo that can render, it is reported at close like an override.
+- **`owner-override`:** needs the owner's words. It is refused without `--decision <owner-queue id>` when the session is lead-guided, headless, CI, or not a Claude Code session. Lead-guided means the HUD steering file `<config>/hud/steuerung/<session-id>.json`, else `alle.json`, says `lead`, or `--lead-guided` is passed. Remaining limit: an interactive Claude Code tab without a steering file counts as interactive. `check` lists every override.
+
+**Settings.** Each setting resolves as env > `owner.yaml` `design-review.<key>` > committed block > default. The `owner.yaml` block is read on its own, even when the rest of that file is invalid; an unparseable file is named in the output. Unknown values are ignored and named as notes.
+
+```yaml
+design-review:
+  enabled: true                # false = no wave review and no close gate (env SO_DESIGN_REVIEW)
+  close-gate: warn             # warn | refuse (env SO_DESIGN_REVIEW_CLOSE_GATE)
+  act-on-verdicts: false       # review findings create work only when true (env SO_DESIGN_REVIEW_ACT_ON_VERDICTS)
+  include: []                  # replaces the default UI globs when non-empty
+  exclude: []                  # added to the default exclusions
+  designer:                    # optional: path to agentic-designer's `designer` CLI when not on PATH
+```
+
+**The UI classifier is a heuristic.** The default globs and exclusions below are path rules, measured over six repos, not a guarantee. Adjust them with `design-review.include` and `design-review.exclude`. Precedence: a path is UI when it matches `include` (or, when `include` is empty, the default UI globs) and matches neither the default exclusions nor `exclude`; exclusions always win. Known edge cases: pages inside `app/api/` are not UI; route directories named `stories` are excluded; an endpoint written with a UI extension (for example a `.tsx` handler outside `api/`) can count; an app whose source directory is a top-level `docs/` is excluded, and `include` cannot change that because the default exclusions always win.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `design-review.enabled` | boolean | `true` | Opt-out switch. Only `false` (or `off`/`no`/`0`) disables it. |
+| `design-review.close-gate` | `warn` \| `refuse` | `warn` | `warn` prints "would refuse", exits 0 and records the case for classification; `refuse` exits 3. No automatic switch; conditions above. |
+| `design-review.act-on-verdicts` | boolean | `false` | Applies to both reviewers. `false`: findings and verdicts are recorded and shown only — no next-wave tasks, no automatic owner decision (`designer critique` returns `actions: ["record-only"]` plus the would-be `advisory_actions`). Off because `designer critique` had 23 wrong of 37 findings in its first production run (agentic-designer#85) and `ux-evaluator` rubric-v2 has no measured precision on real pages. `true`: `fix` / ux-evaluator findings → next-wave tasks, `rebuild` → owner decision, `recapture` → not reviewable. |
+| `design-review.include` | glob list (inline or `- item` lines) | `[]` → defaults | Replaces the default UI globs (`DEFAULT_UI_GLOBS`). They cover components (`.tsx/.jsx/.vue/.svelte/.astro`), app styles, `.mdx`/`.html` under app directories, server templates under `app/src/views/...`, `.ts/.js` under `components/views/layouts/screens/pages`, root `messages/` and `locales/i18n/...` catalogues. A SwiftUI or Compose repo names its view paths here. |
+| `design-review.exclude` | glob list | `[]` | Added to the default exclusions, which always apply. They cover tests, stories, fixtures and eval pages (`test/` and `tests/` except inside an `app/`, `pages/` or `routes/` tree, where `app/test/page.tsx` is a route), build and tool output, `.d.ts`, test setup and mocks (`vitest.setup.*`, `test-utils.*`, `mocks/`), generated code (`__generated__/`, `gql/`, `*.gen.*`, `*.generated.*`; a plain `generated/` directory is not excluded), API routes (`pages/api/`, `app/api/`, `app/**/route.ts`) and logic files (`.ts`, `.js`, `.json` …, not components or styles) in `api/` and `server/` directories, top-level `docs/ design/ assets/ marketing/ templates/ examples/ research/ reports/ audits/ scripts/` and `docs/ research/ reports/ audits/ scripts/` at a monorepo package root (`apps/*/`, `packages/*/`), `remotion/` anywhere, and e-mail template directories (`emails/`, `mails/`, `email/templates/`) outside an `app/`, `pages/`, `routes/`, `components/` or `features/` tree. The default exclusions also win over an explicit `include` (a root `templates/` stays excluded). |
+| `design-review.designer` | path | none → `designer` on PATH | agentic-designer's `designer critique` (verdict `ship\|fix\|rebuild\|recapture`). A broken path falls back to PATH and is named in the output. `--image` shots (page top) get the page's value sentence, `--section-image` shots never do. At most two images run at a time, 240 s each. A failed image counts as `recapture`. |
+
+<!-- path-check: example -->
+Optional inputs, detected and passed to the reviewer when present, never required: `docs/design/context.md` (per-repo design context, including known deliberate deviations) and the agentic-designer review contract `design-director/references/review.md`. Event: `orchestrator.design_review.recorded` (`docs/events-schema.md`).
 
 ## Custom Phases (#637)
 
@@ -1830,14 +1903,14 @@ All fields live under a top-level `config-protection` object in your Session Con
 ```yaml
 config-protection:
   enabled: true                        # PreToolUse guard: warn when an Edit/Write loosens a quality gate
-  mode: warn                           # warn (stderr + event, exit 0) | strict (block loosening edits, exit 2)
+  mode: warn                           # warn (stderr + event, exit 0) | strict (block loosening edits via deny envelope, exit 0)
 allow-config-weakening: false          # per-session bypass (mirrors allow-destructive-ops); top-level, NOT nested under config-protection
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `config-protection.enabled` | boolean | `true` | Master toggle. Only an explicit `enabled: false` disables the guard — any other value (or an absent `enabled` line inside a present block) leaves it on. |
-| `config-protection.mode` | `warn` \| `strict` | `warn` | `warn` emits a stderr message + an event, exit code 0 (never blocks). `strict` blocks the loosening `Edit`/`Write` with exit code 2. Any value other than `strict` resolves to `warn`. |
+| `config-protection.mode` | `warn` \| `strict` | `warn` | `warn` emits a stderr message + an event, exit code 0 (never blocks). `strict` blocks the loosening `Edit`/`Write`/`MultiEdit` with a PreToolUse deny envelope on stdout, exit code 0 (#906). Any value other than `strict` resolves to `warn`. |
 | `allow-config-weakening` | boolean | `false` | Top-level key (NOT nested under `config-protection`) — a per-session bypass mirroring `allow-destructive-ops`. When `true`, the guard is bypassed for the entire session — for intentional config-weakening changes (e.g. deliberately relaxing a rule as planned work). |
 
 **Used by:** `hooks/config-protection.mjs`, `scripts/lib/config/config-protection.mjs` (`_parseConfigProtection`, `_isConfigWeakeningAllowed`). Issue #622.

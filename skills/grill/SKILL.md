@@ -5,7 +5,6 @@ user-invocable: true
 argument-hint: "[file-path-or-topic]"
 model: inherit
 color: red
-tools: Read, Grep, Glob, Bash, Write
 ---
 
 # Grill Skill

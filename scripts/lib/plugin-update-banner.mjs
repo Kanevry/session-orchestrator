@@ -44,6 +44,7 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { writeJsonAtomicSync } from './io.mjs';
+import { OFFLINE_ENV_KEYS, isTruthyFlag } from './offline-flags.mjs';
 import { readPluginVersionFromPackageJson } from './bootstrap-lock-freshness.mjs';
 
 /** npm registry document for the `latest` dist-tag of this package. */
@@ -68,29 +69,7 @@ export const FETCH_TIMEOUT_MS = 2000;
  * to be at least as easy to silence as telemetry is — an operator who set
  * `DO_NOT_TRACK` did not consent to a per-session npm request either.
  */
-export const KILL_SWITCH_ENV_KEYS = [
-  'SO_DISABLE_UPDATE_CHECK',
-  'DO_NOT_TRACK',
-  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
-];
-
-/**
- * Truthiness for an env kill-switch: set, non-empty, not `0`, not `false`.
- *
- * Deliberately a local four-liner rather than an import: the equivalent in
- * `telemetry/consent.mjs` is module-private (not exported), and widening its
- * visibility to reuse four lines would couple this probe to the telemetry
- * module's internals for no gain.
- *
- * @param {unknown} raw
- * @returns {boolean}
- */
-function isTruthyFlag(raw) {
-  if (raw === undefined || raw === null) return false;
-  const t = String(raw).trim();
-  if (t === '' || t === '0') return false;
-  return t.toLowerCase() !== 'false';
-}
+export const KILL_SWITCH_ENV_KEYS = ['SO_DISABLE_UPDATE_CHECK', ...OFFLINE_ENV_KEYS];
 
 /**
  * @param {Record<string, string|undefined>} env
@@ -298,7 +277,7 @@ const GENERIC_UPDATE_INSTRUCTION = 'run `npm update -g session-orchestrator`';
  * hook's own lazy `await import()`, and `hooks/_lib/hook-import-set.json`
  * tracks its closure — adding platform.mjs as a dependency here is a
  * wave-scope change, not a two-line addition, so the fallback stays local
- * exactly like `isTruthyFlag` above (same rationale, same precedent).
+ * (the zero-import `offline-flags.mjs` is the one shared piece).
  * `detectPlatform()`'s step 3 (`CODEX_THREAD_ID`) and step 4 (a filesystem
  * walk from `cwd` for marker directories) are left out on purpose. The walk
  * needs `node:fs`/`node:path` traversal this probe has no other reason to

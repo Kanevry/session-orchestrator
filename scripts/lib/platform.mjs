@@ -479,12 +479,19 @@ function _isStrictlyInside(child, parent) {
  *  - A session worktree NAMED like a harness one (`agent-` + 8 or more hex) is
  *    lifted to its parent — the pre-#1492 launch-dir behaviour for that one
  *    session, not a new failure. Revisit if the harness changes its naming.
- *  - A Cursor/Pi bridge session follows its payload `cwd`, as it did before
- *    #1492: the bridges hand over no launch dir distinct from that `cwd`, so a
- *    bridge session whose `cwd` moves into a subdirectory without a manifest is
- *    unenforced there. Not a new failure — the pre-#1492 bridge answer. Revisit
- *    when a bridge hands over a stable workspace root separately from the
- *    payload `cwd` — then clamp on that instead.
+ *  - The Cursor bridge hands over a launch dir separate from the payload `cwd`
+ *    (`resolveCursorLaunchDir` in cursor-hook-bridge.mjs: the workspace root
+ *    that contains the event cwd), so a Cursor command run in a subdirectory
+ *    is clamped to that root. When the event carries no workspace root and the
+ *    hook process dir does not contain the event cwd, no launch dir is set and
+ *    the payload `cwd` decides, as before #1492. With nested workspace roots,
+ *    or a root that is a repo subdirectory, the deepest root decides which
+ *    manifest applies; no rule picks the right manifest in both layouts.
+ *  - A Pi bridge session follows its payload `cwd`, as it did before #1492: the
+ *    Pi bridge hands over no launch dir distinct from that `cwd`, so a session
+ *    whose `cwd` moves into a subdirectory without a manifest is unenforced
+ *    there. Not a new failure — the pre-#1492 bridge answer. Revisit when the
+ *    Pi bridge hands over a stable workspace root — then clamp on that.
  *
  * @param {string|undefined} cwd       the hook payload's `cwd`
  * @param {string} [toplevel]          `git rev-parse --show-toplevel` of `cwd`, `''` when unknown

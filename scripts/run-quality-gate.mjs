@@ -480,6 +480,8 @@ async function main() {
       '                     receipt or navigator; after a green run on a clean tree write a pushed-tree\n' +
       '                     receipt into a --ledger-root store of another checkout\n' +
       '  --pushed-sha <sha> 40/64-hex commit id carried as `pushed_sha` in the gate event\n\n' +
+      'The test command\'s exit code decides the verdict; when it exits 0 while its output counts\n' +
+      'failed tests, the full gate reports that as one stderr line and as `test.failed_despite_pass`.\n\n' +
       'Exit codes:\n' +
       '  0 — pass (non-blocking variants always exit 0)\n' +
       '  1 — script error (bad arguments, missing dependencies, --receipt-record with\n' +

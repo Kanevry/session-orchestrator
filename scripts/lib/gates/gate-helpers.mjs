@@ -14,7 +14,7 @@ import {
   spawnInGroup,
 } from '../process-group.mjs';
 import { detectStubCommand } from './echo-stub-detect.mjs';
-import { execSync } from '../native-command.mjs';
+import { execFileSync } from '../native-command.mjs';
 
 const RUN_CHECK_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
@@ -435,7 +435,14 @@ function isTestFile(filePath) {
  * @param {number|null} [opts.timeoutMs] - Wall-clock ceiling; defaults to
  *   {@link resolveGateTimeoutMs} (`SO_GATE_TIMEOUT_MS` or 900_000). `null`
  *   disables the clock — the byte cap still applies.
- * @param {string} [opts.platform] - Host platform for missing-command classification.
+ * @param {string} [opts.platform] - Host platform for missing-command
+ *   classification and for how `fileArgs` reach the command.
+ * @param {string[]} [opts.fileArgs] - File names appended after `--`. On POSIX
+ *   they travel as positional arguments (`/bin/sh -c '<cmd> -- "$@"' sh …`),
+ *   so the configured command keeps its shell semantics and no name is ever
+ *   parsed by the shell. On win32 they are appended to the cmd.exe line and
+ *   must each match {@link SHELL_SAFE_FILE_NAME} (filter with
+ *   {@link partitionTestFileArgs}); anything else throws a TypeError.
  * @param {string} [opts.repoRoot] - Root whose gate-process ledger the spawn is
  *   recorded in; defaults to `process.cwd()`, which is the tree under test.
  * @returns {Promise<{ status: 'pass'|'fail'|'skip', output: string, fullOutput: string,
@@ -448,17 +455,40 @@ export async function runCheck(cmd, opts = {}) {
     return { status: 'skip', output: '', fullOutput: '', exitCode: 0 };
   }
 
-  const stub = detectStubCommand(cmd);
+  const { fileArgs = [], ...spawnOpts } = opts;
+  const platform = opts.platform ?? process.platform;
+  // The command line as the shell would read it. On POSIX it is only the
+  // ledger signature (unchanged from when the names were joined into the
+  // string); the names themselves never pass through the shell.
+  const shown = fileArgs.length > 0 ? `${cmd} -- ${fileArgs.join(' ')}` : cmd;
+  let spawned = cmd;
+  if (fileArgs.length > 0) {
+    if (platform === 'win32') {
+      // NAMED CEILING (BV-004): cmd.exe re-parses its whole line, so Windows
+      // has no argument vector to put the names in; the allowlist IS the
+      // boundary there, and a name outside it does not run. Revisit with the
+      // Windows gate work (#1612) if a runner without cmd.exe becomes the path.
+      if (!fileArgs.every((f) => SHELL_SAFE_FILE_NAME.test(f))) {
+        throw new TypeError('runCheck: fileArgs on win32 must match SHELL_SAFE_FILE_NAME (use partitionTestFileArgs)');
+      }
+      spawned = shown;
+    } else {
+      spawned = ['/bin/sh', '-c', `${cmd} -- "$@"`, 'sh', ...fileArgs];
+    }
+  }
+
+  // A command with appended names was never a stub (`echo x -- f` is not one).
+  const stub = fileArgs.length > 0 ? { isStub: false } : detectStubCommand(cmd);
   if (stub.isStub) {
     return { status: 'pass', output: `(stubbed: ${stub.kind})`, fullOutput: `(stubbed: ${stub.kind})`, exitCode: 0, stubbed: { kind: stub.kind } };
   }
 
   const timeoutMs = opts.timeoutMs === undefined ? resolveGateTimeoutMs() : opts.timeoutMs;
-  const run = await spawnInGroup(cmd, {
+  const run = await spawnInGroup(spawned, {
     maxOutputBytes: RUN_CHECK_MAX_BUFFER_BYTES,
     repoRoot: process.cwd(),
-    commandSignature: buildCommandSignature(cmd),
-    ...opts,
+    commandSignature: buildCommandSignature(shown),
+    ...spawnOpts,
     // #1675: the CLI gate path (`.husky/pre-push` → `npm run quality-gate` →
     // gate-full → here) must bound Vitest's workers exactly like `runGate()` in
     // scripts/lib/quality-gate.mjs; without it the pre-push gate ran 18 workers
@@ -469,7 +499,7 @@ export async function runCheck(cmd, opts = {}) {
     // sites (this one and `runGate`); revisit by extracting one shared helper
     // if a third gate entrypoint appears or the bound needs a value other
     // than the flag `vitest.config.mjs` reads.
-    env: { ...(opts.env ?? process.env), SO_BOUNDED_WORKERS: '1' },
+    env: { ...(spawnOpts.env ?? process.env), SO_BOUNDED_WORKERS: '1' },
     timeoutMs,
   });
 
@@ -536,19 +566,64 @@ export function csvToJsonArray(csv) {
 /**
  * Return the list of files changed between `ref` and HEAD.
  *
+ * git runs with an argument vector, never through a shell, so the ref and the
+ * reported names stay data. The ref must name a commit (`rev-parse --verify`);
+ * one that is empty, starts with `-`, carries a control character or does not
+ * resolve behaves like no ref at all and yields []. Names are read with `-z`,
+ * so a name with a space, a quote or a non-ASCII character arrives verbatim
+ * instead of in git's C-quoted form.
+ *
  * @param {string} ref - Git ref (commit hash, branch, tag). Returns [] if empty.
  * @returns {string[]}
  */
 export function findChangedFiles(ref) {
-  if (!ref || typeof ref !== 'string' || !ref.trim()) return [];
+  if (!ref || typeof ref !== 'string') return [];
+  const commit = ref.trim();
+  // eslint-disable-next-line no-control-regex -- refusing control characters is the point
+  if (!commit || commit.startsWith('-') || /[\u0000-\u001f\u007f]/.test(commit)) return [];
   try {
-    const output = execSync(`git diff --name-only ${ref} HEAD`, {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', '--end-of-options', `${commit}^{commit}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const output = execFileSync('git', ['diff', '--name-only', '-z', commit, 'HEAD', '--'], {
       encoding: 'utf8',
     });
-    return output.trim().split('\n').filter(Boolean);
+    return output.split('\0').filter(Boolean);
   } catch {
     return [];
   }
+}
+
+/**
+ * File names that can stand unquoted on a shell command line: nothing a POSIX
+ * shell or cmd.exe expands, splits or reads as an option (the first character
+ * excludes `-`). Shared by every place that appends names to a command string —
+ * the Windows path of {@link runCheck} and gate-full's serial re-run.
+ */
+export const SHELL_SAFE_FILE_NAME = /^[\w.@+][\w./@+-]*$/;
+
+/**
+ * Split file names into those that may be handed to the test command on
+ * `platform` and those that may not. On POSIX {@link runCheck} passes the names
+ * as positional arguments, so every non-empty name is accepted. On win32 the
+ * command runs through cmd.exe, which has no argument vector: there only
+ * {@link SHELL_SAFE_FILE_NAME} names are accepted. Callers report `rejected`;
+ * a rejected name must never be dropped silently.
+ *
+ * @param {string[]} files
+ * @param {string} [platform]
+ * @returns {{ accepted: string[], rejected: string[] }}
+ */
+export function partitionTestFileArgs(files, platform = process.platform) {
+  const accepted = [];
+  const rejected = [];
+  for (const file of files) {
+    const ok = typeof file === 'string' && file !== '' && !file.includes('\0')
+      && (platform !== 'win32' || SHELL_SAFE_FILE_NAME.test(file));
+    (ok ? accepted : rejected).push(file);
+  }
+  return { accepted, rejected };
 }
 
 /**
@@ -677,13 +752,15 @@ function parseCountTriple(scope) {
  * see. Add it together with a consumer, never ahead of one.
  *
  * @param {string} output - Captured test-runner stdout/stderr (or a tail of it).
- * @returns {{ passed: number, failed: number, total: number, files: {passed: number, failed: number, total: number}|null }}
- *   Test-case `total === passed + failed`. `files` is `null` when the output
- *   carried no `Test Files` summary line; when present,
+ * @returns {{ passed: number, failed: number, total: number, summary: boolean, files: {passed: number, failed: number, total: number}|null }}
+ *   Test-case `total === passed + failed`. `summary` is `true` when the triple
+ *   was read from a `Tests` summary line and `false` when it fell back to the
+ *   whole output, where any "N failed" in a log line counts. `files` is `null`
+ *   when the output carried no `Test Files` summary line; when present,
  *   `files.total === files.passed + files.failed`.
  */
 export function extractTestCounts(output) {
-  const EMPTY = { passed: 0, failed: 0, total: 0, files: null };
+  const EMPTY = { passed: 0, failed: 0, total: 0, summary: false, files: null };
   if (!output) return EMPTY;
 
   // Colored Vitest labels must match the same summaries as piped plain text.
@@ -699,7 +776,7 @@ export function extractTestCounts(output) {
   // triple here would be indistinguishable from a real all-passed-zero-files run.
   const files = fileScope ? parseCountTriple(fileScope) : null;
 
-  return { passed, failed, total, files };
+  return { passed, failed, total, summary: summaryLines.length > 0, files };
 }
 
 /**
