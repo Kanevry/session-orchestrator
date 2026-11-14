@@ -118,14 +118,14 @@ const GUARD_EMISSION_NOTE =
 
 /**
  * Honest disclosure appended to every process-safety evidence string in
- * rubric-v2: the ONE remaining adverse guard signal — an operator BYPASS via
- * `allow-destructive-ops: true` — emits no telemetry at all. The bypass branch
- * in `hooks/pre-bash-destructive-guard.mjs` writes `ℹ destructive-guard
- * bypassed` to stderr and exits 0 without calling `emitEvent`, so a bypassed
- * session is indistinguishable from a session that never tripped a rule.
+ * rubric-v2. `allow-destructive-ops: true` no longer bypasses the guard (#2089;
+ * the key is ignored with a stderr warning). What still emits no telemetry is a
+ * guard the operator switched off (`SO_DISABLED_HOOKS`, hook profile `off`): the
+ * hook exits before it runs, so such a session is indistinguishable from a
+ * session that never tripped a rule.
  */
 const GUARD_BYPASS_BLINDSPOT_NOTE =
-  'guard BYPASS (allow-destructive-ops) emits no event — not gradeable here.';
+  'a guard the operator switched off (SO_DISABLED_HOOKS, hook profile off) emits no event — not gradeable here.';
 
 const QUALITY_GATE_EVENTS = new Set([
   'orchestrator.quality_gate.passed',

@@ -1,4 +1,4 @@
-// Copy buttons and the mobile nav menu. Plain script, defer-loaded.
+// Copy buttons, tool tabs and the mobile nav menu. Plain script, defer-loaded.
 (function () {
   'use strict';
 
@@ -22,6 +22,74 @@
 
   function init() {
     const isGerman = document.documentElement.lang === 'de';
+
+    // Where the clipboard refuses (insecure context, permission denied), a
+    // short "Failed" on the button is easy to miss: select the command and say
+    // visibly, next to it, how to copy it by hand.
+    function showCopyHint(btn, failed) {
+      const row = btn.parentElement;
+      const next = row.nextElementSibling;
+      let hint = next && next.classList.contains('copy-err') ? next : null;
+      if (!failed) {
+        if (hint) hint.hidden = true;
+        return;
+      }
+      const code = row.querySelector('code, pre');
+      if (code) {
+        try {
+          const range = document.createRange();
+          range.selectNodeContents(code);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } catch { /* selection is a convenience; the hint below still shows */ }
+      }
+      if (!hint) {
+        hint = document.createElement('p');
+        hint.className = 'copy-err';
+        row.after(hint);
+      }
+      hint.hidden = false;
+      hint.textContent = isGerman
+        ? 'Kopieren ging hier nicht. Die Zeile ist markiert: Strg+C oder \u2318C drücken.'
+        : 'Could not copy here. The line is selected: press Ctrl+C or \u2318C.';
+    }
+
+    // Tool tabs ([data-tabs]): the panels are plain sections in the markup, so
+    // without JavaScript all of them stay readable. Roles are set here, with the
+    // behaviour that makes them true.
+    document.querySelectorAll('[data-tabs]').forEach((list) => {
+      const tabs = [...list.querySelectorAll('button[aria-controls]')];
+      const panes = tabs.map((t) => document.getElementById(t.getAttribute('aria-controls')));
+      if (!tabs.length || panes.some((p) => !p)) return;
+      list.setAttribute('role', 'tablist');
+      list.setAttribute('aria-orientation', 'vertical');
+      const select = (i, focus) => {
+        tabs.forEach((t, j) => {
+          t.setAttribute('aria-selected', String(i === j));
+          t.tabIndex = i === j ? 0 : -1;
+          panes[j].hidden = i !== j;
+        });
+        if (focus) tabs[i].focus();
+      };
+      tabs.forEach((t, i) => {
+        t.setAttribute('role', 'tab');
+        panes[i].setAttribute('role', 'tabpanel');
+        panes[i].setAttribute('aria-labelledby', t.id);
+        t.addEventListener('click', () => select(i, false));
+        t.addEventListener('keydown', (ev) => {
+          const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[ev.key];
+          let j = step === undefined ? null : (i + step + tabs.length) % tabs.length;
+          if (ev.key === 'Home') j = 0;
+          if (ev.key === 'End') j = tabs.length - 1;
+          if (j === null) return;
+          ev.preventDefault();
+          select(j, true);
+        });
+      });
+      select(0, false);
+    });
+
     const status = document.getElementById('copy-live') || document.createElement('span');
     status.className = 'sr';
     status.setAttribute('role', 'status');
@@ -34,11 +102,12 @@
         btn.dataset.label = label;
         copyText(btn.getAttribute('data-copy'))
           .then(
-            () => isGerman ? ['Kopiert', 'Befehl kopiert'] : ['Copied', 'Command copied'],
-            () => isGerman ? ['Fehler', 'Kopieren fehlgeschlagen'] : ['Failed', 'Copy failed'],
+            () => isGerman ? ['Kopiert', 'Befehl kopiert', false] : ['Copied', 'Command copied', false],
+            () => isGerman ? ['Fehler', 'Kopieren fehlgeschlagen', true] : ['Failed', 'Copy failed', true],
           )
           // The button label stays short; the live region carries the full status.
-          .then(([short, msg]) => {
+          .then(([short, msg, failed]) => {
+            showCopyHint(btn, failed);
             btn.textContent = short;
             status.textContent = msg;
             window.setTimeout(() => {

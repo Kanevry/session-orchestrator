@@ -82,6 +82,7 @@ Cursor has no Skill tool. Commands tell the agent to **Read** `skills/<name>/SKI
 2. **afterFileEdit cannot prevent an edit** — it fires after the write. Scope blocking belongs on `preToolUse`.
 3. **Model preference advisory** — The `model-preference-cursor` frontmatter in skills is advisory only. Select your model in Cursor settings.
 4. **No Agent/Skill tools** — `pre-task-scope-disjoint` and `skill-invocation-telemetry` are not wired; commands Read skill files directly.
+5. **Warnings on an allowed gating event** — when a gating hook warns but does not block (for example a guard demoted by the `relaxed` profile), the bridge (`scripts/lib/cursor-hook-bridge.mjs`) answers `permission: allow` together with the warning as `user_message`. Whether Cursor displays `user_message` on an allow is unmeasured; the repo documents no allow-specific Cursor response schema.
 
 ## Shared Knowledge
 

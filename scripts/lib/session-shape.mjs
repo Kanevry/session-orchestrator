@@ -88,6 +88,7 @@ const HOUSEKEEPING_LOOP = Object.freeze([
   'reconcile',
   'dialectic',
   'memory-cleanup',
+  'backlog-refinement',
 ]);
 
 // ---------------------------------------------------------------------------

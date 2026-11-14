@@ -12,7 +12,10 @@
  * Decision flow:
  *   G1 tool filter — Bash, Monitor and PowerShell are gated
  *   G2 command present + string
- *   G3 bypass: allow-destructive-ops: true in Session Config → exit 0
+ *   G3 `allow-destructive-ops: true` in Session Config is IGNORED (#2089):
+ *      one stderr warning, the guard keeps judging. The instruction file is
+ *      agent-writable, so it may not disarm the guard; the operator relaxes it
+ *      through the hook profile env (hooks/_lib/profile-gate.mjs).
  *   G4 policy load: .orchestrator/policy/blocked-commands.json
  *      #972 floor/overlay merge (scripts/lib/blocked-commands-policy.mjs):
  *      pluginRoot policy = floor, cwd/projectDir policy = overlay (add or
@@ -21,8 +24,10 @@
  *   G5 rule evaluation per rule in policy.rules
  *      severity:"block" → deny envelope on stdout via emitDeny, exit 0 (#906)
  *      severity:"warn"  → emit warning, exit 0 (allow)
- *      severity is the policy's, softened by effectiveRuleSeverity() of the
- *      hook profile (#1881: worktree-remove-unsafe warns unless strict)
+ *      severity is the policy's, softened by effectiveSeverity() of the
+ *      hook profile (#1881: worktree-remove-unsafe warns unless strict;
+ *      #2090: under `relaxed` a case measured `recoverable` warns — see
+ *      redirectCaseClass / resetHardCaseClass)
  *      Special cases:
  *        git-stash-any: only warn when stash is non-empty
  *        rm-rf-destructive: path exception for .orchestrator/tmp, node_modules
@@ -53,7 +58,10 @@
  * includes the raw command — only a keyed, host-local `command_hash`
  * (`hmac:` + 16 hex of HMAC-SHA256 under the host key, or `v0-hmac:` with a
  * per-process key when none is readable) from `hooks/_lib/command-hash.mjs`
- * (#1880; unsalted sha256 before). Emission
+ * (#1880; unsalted sha256 before), plus `case` (`<rule id>` or
+ * `<rule id>/<case>`) and `target_class` (closed enum, see TARGET_CLASSES —
+ * #2090: lets a later audit tell a useful block from friction without
+ * storing command text or paths). Emission
  * is wrapped in try/catch and happens BEFORE the block/warn outcome is
  * finalized; a telemetry failure never changes the guard's decision.
  */
@@ -64,7 +72,7 @@ import path from 'node:path';
 import { hashCommand as sharedHashCommand } from './_lib/command-hash.mjs';
 import { pathToFileURL } from 'node:url';
 
-import { shouldRunHook, effectiveRuleSeverity } from './_lib/profile-gate.mjs';
+import { shouldRunHook, effectiveSeverity, resolveHookProfile } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { execFileSync as nativeExecFileSync } from '../scripts/lib/native-command.mjs';
 
@@ -334,13 +342,16 @@ function resolveSessionId(input) {
  * strictly independent of telemetry success. emitDeny never returns, so it
  * MUST stay the last statement here.
  *
+ * @param {{ caseId?: string, targetClass?: string, ruleClass?: string }} [meta] — #2090
+ *   measurement fields; a missing or unknown value falls back to the rule id /
+ *   `unknown` / `irreversible`. `ruleClass` also picks the Relax sentence.
  * @returns {Promise<never>}
  */
-async function blockCommand(pattern, ruleId, rationale, command, sessionId) {
+async function blockCommand(pattern, ruleId, rationale, command, sessionId, meta = {}) {
   const reason = [
     `Destructive command blocked: '${pattern}' (rule: ${ruleId})`,
     `Reason: ${rationale}`,
-    `Override: Set \`allow-destructive-ops: true\` in Session Config if intentional.`,
+    `Relax: ${relaxSentence(meta?.ruleClass === 'recoverable')}`,
     `See: issue #155, .claude/rules/parallel-sessions.md (PSA-003)`,
   ].join('\n');
 
@@ -348,6 +359,7 @@ async function blockCommand(pattern, ruleId, rationale, command, sessionId) {
     await emitEvent('orchestrator.destructive_guard.blocked', {
       ...(sessionId ? { session_id: sessionId } : {}),
       rule: ruleId,
+      ...measurementFields(ruleId, meta),
       command_hash: hashCommand(command),
     });
   } catch {
@@ -356,6 +368,341 @@ async function blockCommand(pattern, ruleId, rationale, command, sessionId) {
 
   // Structured deny for the Claude Code PreToolUse hook protocol. Never returns.
   emitDeny(reason);
+}
+
+/**
+ * #2089/#2090 — the operator-side ways to relax this guard. The mild one first:
+ * the `relaxed` hook profile (host-local owner.yaml `hooks.profile`, or the
+ * env), which turns only recoverable cases into warnings. The full off switch
+ * is named last. Both are read outside the agent-writable instruction file
+ * (hooks/_lib/profile-gate.mjs).
+ */
+const RELAXED_PROFILE_HOW =
+  'the operator can choose the hook profile `relaxed` (`hooks.profile: relaxed` in the host-local owner.yaml, or SO_HOOK_PROFILE=relaxed)';
+const GUARD_OFF_SWITCH = 'SO_DISABLED_HOOKS=pre-bash-destructive-guard switches this guard off entirely.';
+
+/**
+ * The Relax line of a deny reason: whether `relaxed` would let THIS command
+ * through, decided by the case's class (#2090).
+ *
+ * @param {boolean} recoverable
+ * @returns {string}
+ */
+function relaxSentence(recoverable) {
+  return recoverable
+    ? `${RELAXED_PROFILE_HOW}, which would let this command run with a warning because git can bring the data back; ${GUARD_OFF_SWITCH}`
+    : `${RELAXED_PROFILE_HOW}, but it would still block this command because git cannot bring the data back; ${GUARD_OFF_SWITCH}`;
+}
+
+/** #2089 — the Session Config key that used to disarm the guard and now only warns. */
+const IGNORED_KEY_WARNING =
+  '⚠ pre-bash-destructive-guard: `allow-destructive-ops: true` in the Session Config of the ' +
+  'instruction file (CLAUDE.md / AGENTS.md) is ignored — an agent-writable file may not disarm ' +
+  `this guard, so it keeps judging. Instead, ${RELAXED_PROFILE_HOW}; ${GUARD_OFF_SWITCH}\n`;
+
+/** #2090 — the closed set of `target_class` values on the guard events. */
+const TARGET_CLASSES = new Set(['temp', 'own-worktree', 'protected-file', 'outside-repo', 'unknown']);
+
+/** #2090 — the closed set of `rule_class` values on the guard events. */
+const RULE_CLASS_VALUES = new Set(['irreversible', 'recoverable']);
+
+/** True when absolute `child` is `parent` or lies beneath it (lexical). */
+function isWithin(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/**
+ * #2090 — classify what a command aimed at, lexically: no realpath, no
+ * filesystem walk, no spawn. `.orchestrator/tmp` and the repo are checked
+ * before the temp roots, so a checkout that itself lives under $TMPDIR still
+ * reads as `own-worktree`. Never throws: anything unreadable is `unknown`.
+ *
+ * @param {unknown} target — the operand as the matcher saw it
+ * @param {{ projectDir?: string, dir?: string }} [ctx]
+ * @returns {'temp'|'own-worktree'|'outside-repo'|'unknown'}
+ */
+function classifyTarget(target, { projectDir, dir } = {}) {
+  try {
+    if (typeof target !== 'string' || target.length === 0 || /[$`]/.test(target)) return 'unknown';
+    let text = target;
+    if (text === '~' || text.startsWith('~/')) text = path.join(os.homedir(), text.slice(1));
+    else if (text.startsWith('~')) return 'unknown';
+    const root = typeof projectDir === 'string' && path.isAbsolute(projectDir) ? path.resolve(projectDir) : null;
+    const base = typeof dir === 'string' && path.isAbsolute(dir) ? dir : root;
+    if (!path.isAbsolute(text) && base === null) return 'unknown';
+    const abs = path.resolve(base ?? path.sep, text);
+    // The shell's cwd is canonical (/private/var/… on macOS) while the project
+    // dir may come from env un-canonicalised: one realpath of the ROOT only.
+    const roots = [];
+    if (root !== null) {
+      roots.push(root);
+      try { const real = fs.realpathSync(root); if (real !== root) roots.push(real); } catch { /* lexical root only */ }
+    }
+    if (roots.some((r) => isWithin(abs, path.join(r, '.orchestrator', 'tmp')))) return 'temp';
+    if (roots.some((r) => isWithin(abs, r))) return 'own-worktree';
+    const temps = [os.tmpdir(), process.env.TMPDIR, '/tmp', '/private/tmp', '/var/tmp'];
+    if (temps.some((t) => typeof t === 'string' && path.isAbsolute(t) && isWithin(abs, path.resolve(t)))) return 'temp';
+    return 'outside-repo';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
+ * #2090 — the `case`, `target_class` and `rule_class` event fields. `rule_class`
+ * is the class the verdict was decided with (per case where the guard measured
+ * one). Never throws.
+ *
+ * @param {string} ruleId
+ * @param {{ caseId?: string, targetClass?: string, ruleClass?: string }} [meta]
+ * @returns {{ case: string, target_class: string, rule_class: string }}
+ */
+function measurementFields(ruleId, meta = {}) {
+  const caseId = typeof meta?.caseId === 'string' && meta.caseId.length > 0 ? meta.caseId : String(ruleId);
+  const targetClass = TARGET_CLASSES.has(meta?.targetClass) ? meta.targetClass : 'unknown';
+  const ruleClass = RULE_CLASS_VALUES.has(meta?.ruleClass) ? meta.ruleClass : 'irreversible';
+  return { case: caseId, target_class: targetClass, rule_class: ruleClass };
+}
+
+// ---------------------------------------------------------------------------
+// #2090 — per-case class on the would-block path
+//
+// The policy has one class per rule; a rule like redirect-truncate-protected
+// covers both a tracked clean file (git restores it) and a gitignored ledger
+// (nothing does). These readers decide the class of the CASE at hand, only
+// after a rule already matched as `block`, so an allowed command pays nothing.
+// Every doubt — an unreadable word, a cwd change, a failing or slow git — is
+// `irreversible`: the class can only ever make the verdict stricter than
+// `recoverable`, and under `standard` / `strict` effectiveSeverity() ignores it.
+// ---------------------------------------------------------------------------
+
+/** Per-call cap of the case-class git reads (ms); the hook deadline caps it further. */
+const CASE_CLASS_GIT_TIMEOUT_MS = 1500;
+
+
+/**
+ * #2090 fix pass 3 — the SHAPE ALLOWLIST both case readers start with.
+ *
+ * Two review rounds made the earlier readers say `recoverable` for lines that
+ * really lose data, purely by spelling (a `cd` hidden in a payload, `git -c
+ * core.fsmonitor=…` as an "inert" statement, `git diff --output=…`). Proving
+ * recoverability on arbitrary shell text keeps losing, so it is inverted: a
+ * case can be `recoverable` only when the WHOLE line is one plain statement
+ * the guard reads completely; every other line is `irreversible`, exactly the
+ * `standard` verdict.
+ *
+ * NAMED CEILING (BV-004): only plain single statements soften — no quotes,
+ * expansions, chains, wrappers, env prefixes, fd-numbered redirects or
+ * absolute/`..` targets; `relaxed` denies everything else like `standard`.
+ * REVISIT TRIGGER: measured `rule_class` events show a frequent, safe shape
+ * that is denied under `relaxed`.
+ */
+const PLAIN_LINE_RE = /^[\x20-\x7e]*$/;
+/** Characters that make a line more than plain words (quoting, expansion, chaining, globbing, comments, history). */
+const NON_PLAIN_CHAR_RE = /[\\`$'"(){}<|&;#*?[\]~!^]/;
+
+/** Programs that write only their arguments, or nothing, to stdout: the only command words before a softened `>`. */
+const REDIRECT_PLAIN_VERBS = new Set(['echo', 'printf', ':', 'true']);
+
+/** A softenable redirect target: relative, plain characters, no `.`/`..`/empty segment, no leading `-`. */
+const PLAIN_TARGET_RE = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
+
+/** git attributes that make the working-tree bytes differ from what git stores. */
+const CONVERTING_ATTRS = ['filter', 'ident', 'working-tree-encoding', 'text', 'eol', 'crlf'];
+/**
+ * The subset that can hide CONTENT from `git status` (a clean filter, `$Id$`
+ * collapsing, re-encoding); text/eol only change line endings, and a
+ * repository-wide `* text=auto` would otherwise keep every reset denied.
+ */
+const CONTENT_ATTRS = ['filter', 'ident', 'working-tree-encoding'];
+
+/**
+ * The plain words of `command` when it is ONE statement free of every
+ * non-plain character and holding at most `maxGt` `>` characters, else null.
+ * Uses the guard's tokenizer and chain splitter; a quoted token is doubt.
+ *
+ * @param {string} command
+ * @param {number} maxGt
+ * @returns {Array<{ text: string, redirect?: { fd: number|null, mode: string } }> | null}
+ */
+function plainStatement(command, maxGt) {
+  if (typeof command !== 'string' || !PLAIN_LINE_RE.test(command) || NON_PLAIN_CHAR_RE.test(command)) return null;
+  if (command.split('>').length - 1 > maxGt) return null;
+  const tokens = blocker.tokenizeCommand(command);
+  if (!Array.isArray(tokens) || tokens.length === 0) return null;
+  if (tokens.some((t) => t.quoted || t.operator !== undefined || typeof t.text !== 'string')) return null;
+  if (blocker.splitChainSegments(tokens).length !== 1) return null;
+  return tokens;
+}
+
+/**
+ * Run one read-only git command for a case class; `{ status, out }`, or null
+ * when git could not be run, timed out, or the hook deadline is near. argv
+ * only, no shell, pathspecs literal. Hardened (#2090 fix pass 3): no
+ * fsmonitor hook, no hooks directory, no optional locks — repo config cannot
+ * make these reads run a program through those two keys.
+ *
+ * @param {string} dir
+ * @param {string[]} args
+ * @param {{ input?: string }} [options]
+ * @returns {{ status: number, out: string } | null}
+ */
+function caseGit(dir, args, { input } = {}) {
+  const timeout = Math.min(CASE_CLASS_GIT_TIMEOUT_MS, Math.floor(hookTimeLeft()) - 500);
+  if (timeout <= 0) return null;
+  try {
+    const out = execFileSync('git', [
+      '--literal-pathspecs', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', dir, ...args,
+    ], {
+      encoding: 'utf8',
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
+      ...(input === undefined ? {} : { input }),
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+      timeout,
+      maxBuffer: GIT_MAX_BUFFER,
+    });
+    return { status: 0, out: String(out) };
+  } catch (err) {
+    if (timedOut(err) || typeof err?.status !== 'number') return null;
+    return { status: err.status, out: '' };
+  }
+}
+
+/**
+ * Whether `git check-attr -z` output (path NUL attr NUL value NUL …) leaves
+ * every attribute `unspecified`, i.e. no conversion between the stored blob
+ * and the working-tree bytes.
+ *
+ * @param {{ status: number, out: string } | null} res
+ * @param {number} expectedTriples
+ * @returns {boolean}
+ */
+function attrsUnspecified(res, expectedTriples) {
+  if (res === null || res.status !== 0) return false;
+  const parts = res.out.split('\0');
+  if (parts.at(-1) === '') parts.pop();
+  if (parts.length !== expectedTriples * 3) return false;
+  for (let i = 2; i < parts.length; i += 3) if (parts[i] !== 'unspecified') return false;
+  return true;
+}
+
+/**
+ * The class of one redirect-truncate-protected hit (#2090): `recoverable`
+ * only for the plain shape `[echo|printf|:|true <words>] > <target>` (see the
+ * shape allowlist above) whose target is ONE regular file of the cwd's
+ * repository, tracked as a plain `H` entry, with no git attribute converting
+ * its content, and whose raw bytes hash to the HEAD blob — then HEAD holds
+ * every byte the truncation destroys. Every doubt is `irreversible`.
+ *
+ * @param {object} rule
+ * @param {string} command
+ * @param {string} projectDir
+ * @param {string} cwd - the shell's directory (payload `cwd`)
+ * @returns {{ ruleClass: 'recoverable'|'irreversible', files: string[] }}
+ */
+function redirectCaseClass(rule, command, projectDir, cwd) {
+  const no = { ruleClass: 'irreversible', files: [] };
+  try {
+    if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) return no;
+    const tokens = plainStatement(command, 1);
+    if (tokens === null) return no;
+    const at = tokens.findIndex((t) => t.redirect !== undefined);
+    // The redirect is the last-but-one word, a bare `>` (no fd, no `>|`/`&>`).
+    if (at !== tokens.length - 2 || tokens[at].text !== '>' || tokens[at].redirect.fd !== null) return no;
+    if (tokens[at].redirect.mode !== 'truncate') return no;
+    if (at > 0 && !REDIRECT_PLAIN_VERBS.has(tokens[0].text)) return no;
+    const target = tokens[at + 1].text;
+    if (!PLAIN_TARGET_RE.test(target) || target.split('/').some((s) => s === '' || s === '.' || s === '..')) return no;
+    // The rule must name this very target (the line holds no other write).
+    if (!blocker.redirectRuleMatches(rule, `> ${target}`, { repoRoot: projectDir })) return no;
+    const abs = path.resolve(cwd, target);
+    if (abs.split(path.sep).includes('.git')) return no;
+    // No symlinked directory on the way: the real path is the lexical one.
+    if (fs.realpathSync(abs) !== path.join(fs.realpathSync(cwd), target)) return no;
+    const st = fs.lstatSync(abs, { throwIfNoEntry: false });
+    if (!st || !st.isFile() || st.isSymbolicLink() || st.nlink !== 1) return no;
+    // Read from the cwd: a path in a nested repository is not in this index.
+    // `-v` tags each entry: only `H` is a plain index entry (assume-unchanged
+    // and skip-worktree hide local edits).
+    const listed = caseGit(cwd, ['ls-files', '-v', '-z', '--error-unmatch', '--', target]);
+    if (listed === null || listed.status !== 0 || listed.out !== `H ${target}\0`) return no;
+    // A clean filter or eol conversion would let filtered bytes equal HEAD
+    // while the raw bytes hold more (review round 2): any attribute is doubt.
+    if (!attrsUnspecified(caseGit(cwd, ['check-attr', '-z', ...CONVERTING_ATTRS, '--', target]), CONVERTING_ATTRS.length)) return no;
+    const head = caseGit(cwd, ['ls-tree', '-z', 'HEAD', '--', target]);
+    const m = head?.status === 0 ? /^100(644|755) blob ([0-9a-f]{40,64})\t(.*)\0$/.exec(head.out) : null;
+    if (!m || m[3] !== target) return no;
+    // Under core.fileMode=false a local exec-bit change is invisible to git and
+    // `git restore` does not bring it back: a mismatch with HEAD is doubt.
+    if (process.platform !== 'win32' && ((st.mode & 0o100) !== 0) !== (m[1] === '755')) return no;
+    // Raw bytes, unfiltered, against the HEAD blob.
+    const raw = caseGit(cwd, ['hash-object', '--no-filters', '--', target]);
+    if (raw === null || raw.status !== 0 || raw.out.trim() !== m[2]) return no;
+    return { ruleClass: 'recoverable', files: [target] };
+  } catch {
+    return no;
+  }
+}
+
+/** The words a softenable reset may carry after `git reset`, each at most once; `--hard` is required. */
+const RESET_PLAIN_WORDS = new Set(['--hard', 'HEAD', '-q', '--quiet']);
+
+/** Entries in the git dir that mean an operation is in progress. */
+const IN_PROGRESS_MARKERS = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'BISECT_LOG'];
+
+/**
+ * The class of one git-reset-hard hit (#2090): `recoverable` only when the
+ * whole line, tokenised, is `git reset` followed by `--hard` and at most one
+ * each of `HEAD`, `-q`, `--quiet` in any order (see the shape allowlist
+ * above), and the cwd's tree has no staged or unstaged change to a tracked
+ * file, every index entry is a plain `H`, no tracked file carries a
+ * content-converting attribute (a clean filter could hide local bytes from
+ * `git status`), and no merge/rebase/cherry-pick/revert/bisect is in
+ * progress — then only HEAD's reflog entry changes. Every doubt is
+ * `irreversible`.
+ *
+ * @param {string} command
+ * @param {string} cwd
+ * @returns {{ ruleClass: 'recoverable'|'irreversible' }}
+ */
+function resetHardCaseClass(command, cwd) {
+  const no = { ruleClass: 'irreversible' };
+  try {
+    if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) return no;
+    const tokens = plainStatement(command, 0);
+    if (tokens === null || tokens.length < 3 || tokens[0].text !== 'git' || tokens[1].text !== 'reset') return no;
+    const words = tokens.slice(2).map((t) => t.text);
+    if (new Set(words).size !== words.length || !words.includes('--hard')) return no;
+    if (words.some((w) => !RESET_PLAIN_WORDS.has(w)) || (words.includes('-q') && words.includes('--quiet'))) return no;
+    // One call for both: the git dir, and the top level the cwd must BE — from
+    // a subdirectory `ls-files` lists only that subtree (review round 3: an
+    // assume-unchanged root file went unseen). A linked worktree's own top
+    // level counts.
+    const where = caseGit(cwd, ['rev-parse', '--absolute-git-dir', '--show-toplevel']);
+    const [dir = '', root = ''] = where?.status === 0 ? where.out.split('\n') : [];
+    if (!path.isAbsolute(dir) || !path.isAbsolute(root) || fs.realpathSync(root) !== fs.realpathSync(cwd)) return no;
+    if (IN_PROGRESS_MARKERS.some((m) => fs.existsSync(path.join(dir, m)))) return no;
+    // No pathspec: status covers the whole work tree.
+    // `--ignore-submodules=none`: config (`submodule.<name>.ignore`,
+    // `diff.ignoreSubmodules`) must not hide a submodule's uncommitted edits.
+    const status = caseGit(cwd, ['status', '--porcelain=v1', '-z', '--untracked-files=no', '--ignore-submodules=none']);
+    if (status === null || status.status !== 0 || status.out.length > 0) return no;
+    // `git status` does not see local edits behind assume-unchanged or
+    // skip-worktree. Output is bounded by GIT_MAX_BUFFER: an overflow fails.
+    const listed = caseGit(cwd, ['ls-files', '-v', '-z', '--full-name']);
+    if (listed === null || listed.status !== 0) return no;
+    const entries = listed.out.split('\0').filter((e) => e.length > 0);
+    if (entries.some((e) => !e.startsWith('H '))) return no;
+    if (entries.length === 0) return { ruleClass: 'recoverable' };
+    const attrs = caseGit(root, ['check-attr', '-z', '--stdin', ...CONTENT_ATTRS], {
+      input: entries.map((e) => `${e.slice(2)}\0`).join(''),
+    });
+    if (!attrsUnspecified(attrs, entries.length * CONTENT_ATTRS.length)) return no;
+    return { ruleClass: 'recoverable' };
+  } catch {
+    return no;
+  }
 }
 
 /**
@@ -2894,53 +3241,37 @@ async function main() {
     );
   }
 
-  // G3 — bypass: allow-destructive-ops: true in Session Config
-  // Note: parseSessionConfig only returns known fields; allow-destructive-ops is
-  // a new field, so we parse the raw markdown for it directly.
+  // G3 — `allow-destructive-ops: true` no longer disarms the guard (#2089).
+  // The instruction file is agent-writable (Edit, Write, sed -i, tee …) and
+  // a change took effect on the next call for every session sharing the
+  // checkout, so the key was an off switch the guarded agent could flip itself
+  // — against profile-gate.mjs's "an agent-writable file may only relax, never
+  // disarm". The scan stays only to TELL the operator the key is ignored and
+  // which env switches do work; it never changes the verdict. readConfigFile
+  // resolves CLAUDE.md, or AGENTS.md first under SO_PLATFORM=codex|pi, so the
+  // warning covers both file names.
+  //
+  // Comment handling is kept from the bypass era (W4/F1b, #1162a): a key
+  // inside `<!-- … -->` is not "present", and with an UNTERMINATED `<!--` the
+  // scan reads nothing rather than guessing where the comment ends.
   try {
     const mdContent = await readConfigFile(projectDir);
-    // Look for "allow-destructive-ops: true" in the Session Config block.
-    // Simple line-based scan: find lines under ## Session Config, stop at next ##.
-    // W4/F1b — HTML-comment stripping is MANDATORY here (same class as #1162a).
-    // With a raw `split(/\r?\n/)` a COMMENTED-OUT
-    // `<!--\nallow-destructive-ops: true\n-->` under `## Session Config` DISABLED
-    // the whole 14-rule guard for the session: commenting a key out is the most
-    // ordinary way to turn it off and must never turn it ON. `NoDash` (not the
-    // full `preprocessBlockLines`) on purpose — bold-subkey normalisation is not
-    // wanted; the regex below already tolerates `- **key:**` and stays as-is.
-    //
-    // UNTERMINATED `<!--` — the fail-closed direction INVERTS for a bypass scan.
-    // `stripHtmlCommentBlocks` returns the lines UNFILTERED when a comment is
-    // never closed (right for a block PARSER, nothing may silently vanish), which
-    // here would hand the commented-out bypass line back and re-arm the guard's
-    // own off switch. For this scan "I cannot tell where the comments end" must
-    // mean NOT ARMED: the bypass is opt-in, so refusing to grant it is the safe
-    // reading of an ambiguous document. Said out loud on stderr, because a
-    // silently-ignored bypass would look identical to a typo the operator meant.
-    if (findUnterminatedComment(mdContent.split(/\r?\n/)) !== null) {
-      process.stderr.write(
-        'ℹ destructive-guard: unterminated <!-- in CLAUDE.md — bypass ignored\n'
-      );
-    } else {
-      const lines = preprocessBlockLinesNoDash(mdContent);
+    if (findUnterminatedComment(mdContent.split(/\r?\n/)) === null) {
       let inConfig = false;
-      for (const line of lines) {
-        // SSOT predicate (#968) — never re-derive this comparison. A local copy
-        // that drifts LOOSER than the extractor silently disagrees with the
-        // runtime about where the config block starts.
+      for (const line of preprocessBlockLinesNoDash(mdContent)) {
+        // SSOT predicate (#968) — never re-derive this comparison.
         if (isSessionConfigHeading(line)) { inConfig = true; continue; }
         if (inConfig && /^## /.test(line)) break;
-        if (inConfig) {
-          const m = line.match(/^\s*(?:-\s+\*\*)?allow-destructive-ops(?::\*\*)?\s*:\s*(\S+)/);
-          if (m && m[1].toLowerCase() === 'true') {
-            process.stderr.write('ℹ destructive-guard bypassed\n');
-            return emitAllow();
-          }
+        if (!inConfig) continue;
+        const m = line.match(/^\s*(?:-\s+\*\*)?allow-destructive-ops(?::\*\*)?\s*:\s*(\S+)/);
+        if (m && m[1].toLowerCase() === 'true') {
+          process.stderr.write(IGNORED_KEY_WARNING);
+          break;
         }
       }
     }
   } catch {
-    // No config file or parse error — proceed to policy check
+    // No config file or parse error — nothing to warn about; the guard judges as always.
   }
 
   // #1900 — refuse PowerShell before POSIX analysis. A cmdlet allowlist cannot
@@ -2986,14 +3317,57 @@ async function main() {
   // `command` is the reading the rules judge; `lineCommand` the line itself
   // (telemetry hash). That re-read skips warn rules: they cannot name a deny.
   const lineCommand = command;
+  // #2090 — one profile for the whole call; effectiveSeverity() is the only
+  // place that turns it (with the rule's or the case's class) into block/warn.
+  const profile = resolveHookProfile();
+  const shellCwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
+  /**
+   * #2090 — a block case measured `recoverable` under a profile that softens
+   * it: the same visible warn channel policy `warn` rules use (stderr + the
+   * aggregated allow-with-notice), plus a `warned` event carrying the class.
+   * Collected while judging and written by flushSoftened() only when the line
+   * as a whole ends allowed (fix pass 3): a later rule that denies the line
+   * leaves only its `blocked` event and no softening text.
+   *
+   * @type {Array<{ id: string, meta: object }>}
+   */
+  const softenedCases = [];
+  const emitSoftened = (id, meta = {}) => {
+    softenedCases.push({ id, meta });
+  };
+  const flushSoftened = async () => {
+    // The text itself goes out once, through the notice channel (emitWarn).
+    for (const { id, meta } of softenedCases) {
+      try {
+        await emitEvent('orchestrator.destructive_guard.warned', {
+          ...(sessionId ? { session_id: sessionId } : {}),
+          rule: id,
+          ...measurementFields(id, { ...meta, ruleClass: 'recoverable' }),
+          command_hash: hashCommand(lineCommand),
+        });
+      } catch {
+        // Best-effort — telemetry must never block or alter the guard decision.
+      }
+    }
+  };
+  const warnRecoverable = (id, label, consequence, meta = {}) => {
+    const msg = `pre-bash-destructive-guard: ${label} (rule: ${id}) — allowed under hook profile ${profile}: ${consequence}`;
+    notices.push(msg);
+    emitSoftened(id, meta);
+  };
   const evaluateRules = async (command, { unexpanded = false } = {}) => {
     for (const rule of rules) {
       // #1956 fix cycle 1: the rules share the hook deadline too; a rule loop
       // past it would be killed by the harness, which lets the command through.
       if (hookTimeLeft() <= 0) throw new HookReadBudgetError('hook deadline spent before every rule ran');
       const { id, pattern, rationale = '' } = rule;
-      // #1881 — the hook profile may soften a block rule to warn (strict never does).
-      const severity = effectiveRuleSeverity(id, rule.severity);
+      // #1881/#2090 — the hook profile may soften a block rule to warn (strict
+      // never does); per rule here, per measured case at the block sites below.
+      const severity = effectiveSeverity({ ruleId: id, policySeverity: rule.severity, ruleClass: rule.class, profile });
+      const caseSeverity = (ruleClass) => effectiveSeverity({ ruleId: id, policySeverity: severity, ruleClass, profile });
+      // A policy `block` rule the profile softened by its class: every warn
+      // branch below reports it as a `warned` event (#2090 fix pass).
+      const softened = rule.severity === 'block' && severity === 'warn';
 
       // #983 — redirect-truncate rules are decided by redirect TARGET via
       // redirectRuleMatches, NEVER by the generic pattern path below: their
@@ -3034,19 +3408,33 @@ async function main() {
           notices.push(msg);
         }
         if (!blocker.redirectRuleMatches(rule, command, { repoRoot: projectDir })) {
-          if (budgetDeny) await blockCommand(PAYLOAD_BUDGET_LABEL, id, PAYLOAD_BUDGET_REASON, lineCommand, sessionId);
+          if (budgetDeny) await blockCommand(PAYLOAD_BUDGET_LABEL, id, PAYLOAD_BUDGET_REASON, lineCommand, sessionId, { caseId: `${id}/budget-exhausted` });
           continue;
         }
         if (severity !== 'block') {
           const msg = `pre-bash-destructive-guard: redirect target matched (rule: ${id}) — ${rationale}`;
-          process.stderr.write(`⚠ ${msg}\n`);
           notices.push(msg); // #995 — visible on the allow-with-notice channel
+          if (softened) emitSoftened(id, { targetClass: 'protected-file' });
+          else process.stderr.write(`⚠ ${msg}\n`);
           continue;
         }
         // Reason stays short (stdout-budget): operator + target, never the command.
         const hit = findMatchedRedirectEntry(rule, entries, projectDir);
         const label = hit ? `${REDIRECT_PROBE_OPS[hit.mode] ?? '>'} ${hit.target}` : pattern;
-        await blockCommand(label, id, rationale, lineCommand, sessionId);
+        // #2090 — per-case class, measured only here on the would-block path.
+        // The harness-memory rule and every other redirect rule stay as classed.
+        const measured = id === 'redirect-truncate-protected' && !unexpanded
+          ? redirectCaseClass(rule, command, projectDir, shellCwd)
+          : { ruleClass: rule.class, files: [] };
+        if (caseSeverity(measured.ruleClass) === 'warn') {
+          const files = measured.files.join(', ');
+          warnRecoverable(id, `'${label}'`,
+            `${files} is tracked and has no uncommitted changes, so HEAD still holds its content and \`git restore ${files}\` brings it back (the operator runs that restore: this guard denies it on a file with changes).`,
+            { targetClass: 'protected-file' });
+          continue;
+        }
+        // #2090 — a matched denylist target is a protected file by definition.
+        await blockCommand(label, id, rationale, lineCommand, sessionId, { targetClass: 'protected-file', ruleClass: measured.ruleClass });
         continue; // unreachable (blockCommand never returns) — kept for clarity
       }
 
@@ -3096,19 +3484,20 @@ async function main() {
         }
         const hit = blocker.firstDeniedDeleteTarget(rule, collected, { repoRoot: projectDir });
         if (!hit) {
-          if (budgetDeny) await blockCommand(PAYLOAD_BUDGET_LABEL, id, PAYLOAD_BUDGET_REASON, lineCommand, sessionId);
+          if (budgetDeny) await blockCommand(PAYLOAD_BUDGET_LABEL, id, PAYLOAD_BUDGET_REASON, lineCommand, sessionId, { caseId: `${id}/budget-exhausted` });
           continue;
         }
         if (severity !== 'block') {
           const msg = `pre-bash-destructive-guard: protected delete target matched (rule: ${id}) — ${rationale}`;
-          process.stderr.write(`⚠ ${msg}\n`);
           notices.push(msg);
+          if (softened) emitSoftened(id, { targetClass: 'protected-file' });
+          else process.stderr.write(`⚠ ${msg}\n`);
           continue;
         }
         // Reason stays short (stdout-budget): verb + target, never the command.
         // The policy `rationale` is long by design (it carries the measurement
         // trail); blockCommand puts only its first line in the systemMessage.
-        await blockCommand(`${hit.verb} ${hit.target}`, id, rationale, lineCommand, sessionId);
+        await blockCommand(`${hit.verb} ${hit.target}`, id, rationale, lineCommand, sessionId, { targetClass: 'protected-file' });
         continue; // unreachable (blockCommand never returns) — kept for clarity
       }
 
@@ -3133,11 +3522,12 @@ async function main() {
         const label = `git ${hit.subcommand} in ${hit.worktree} — core.hooksPath ${hit.hooksPath} is missing there`;
         if (severity !== 'block') {
           const msg = `pre-bash-destructive-guard: ${label} (rule: ${id}) — ${rationale}`;
-          process.stderr.write(`⚠ ${msg}\n`);
           notices.push(msg);
+          if (softened) emitSoftened(id, { targetClass: classifyTarget(hit.worktree, { projectDir }) });
+          else process.stderr.write(`⚠ ${msg}\n`);
           continue;
         }
-        await blockCommand(label, id, rationale, lineCommand, sessionId);
+        await blockCommand(label, id, rationale, lineCommand, sessionId, { targetClass: classifyTarget(hit.worktree, { projectDir }), ruleClass: rule.class });
         continue; // unreachable (blockCommand never returns) — kept for clarity
       }
 
@@ -3153,14 +3543,18 @@ async function main() {
         const { label } = hit;
         // #1881 — the profile may soften only an UNMEASURABLE target (110 of 136
         // denials in 7 days); a measured hit keeps the policy severity.
-        const removalSeverity = hit.unmeasurable ? effectiveRuleSeverity(`${id}/unmeasurable`, rule.severity) : rule.severity;
+        // #2090: both cases stay `irreversible` — a removal deletes files no git
+        // command restores; only the RELAXED_WARN_RULES case moves.
+        const removalSeverity = hit.unmeasurable
+          ? effectiveSeverity({ ruleId: id, caseId: 'unmeasurable', policySeverity: rule.severity, ruleClass: 'irreversible', profile })
+          : rule.severity;
         if (removalSeverity !== 'block') {
           const msg = `pre-bash-destructive-guard: ${label} (rule: ${id}) — ${rationale}`;
           process.stderr.write(`⚠ ${msg}\n`);
           notices.push(msg);
           continue;
         }
-        await blockCommand(label, id, rationale, lineCommand, sessionId);
+        await blockCommand(label, id, rationale, lineCommand, sessionId, { caseId: hit.unmeasurable ? `${id}/unmeasurable` : id });
         continue; // unreachable (blockCommand never returns) — kept for clarity
       }
 
@@ -3180,11 +3574,12 @@ async function main() {
         if (verdict.deny === null) continue;
         if (severity !== 'block') {
           const msg = `pre-bash-destructive-guard: ${verdict.deny} (rule: ${id}) — ${rationale}`;
-          process.stderr.write(`⚠ ${msg}\n`);
           notices.push(msg);
+          if (softened) emitSoftened(id, { targetClass: classifyTarget(cwd, { projectDir }) });
+          else process.stderr.write(`⚠ ${msg}\n`);
           continue;
         }
-        await blockCommand(verdict.deny, id, PATH_RESET_SAFE_WAY, lineCommand, sessionId);
+        await blockCommand(verdict.deny, id, PATH_RESET_SAFE_WAY, lineCommand, sessionId, { targetClass: classifyTarget(cwd, { projectDir }) });
         continue; // unreachable (blockCommand never returns) — kept for clarity
       }
 
@@ -3208,13 +3603,19 @@ async function main() {
           }
         }
         const msg = `pre-bash-destructive-guard: '${pattern}' (rule: ${id}) — ${rationale}`;
-        process.stderr.write(`⚠ ${msg}\n`);
         notices.push(msg); // #995 — visible on the allow-with-notice channel
+        if (softened) {
+          // A softening counts only if the whole line ends allowed (flushSoftened).
+          emitSoftened(id, {});
+          continue;
+        }
+        process.stderr.write(`⚠ ${msg}\n`);
         // Best-effort telemetry — must never affect the warn/allow outcome.
         try {
           await emitEvent('orchestrator.destructive_guard.warned', {
             ...(sessionId ? { session_id: sessionId } : {}),
             rule: id,
+            ...measurementFields(id),
             command_hash: hashCommand(command),
           });
         } catch {
@@ -3225,6 +3626,8 @@ async function main() {
       }
 
       if (severity === 'block') {
+        // #2090 — what the denied command aimed at, for the block event only.
+        let blockMeta = {};
         // Special: rm-rf-destructive — path exception
         if (id === 'rm-rf-destructive') {
           const ruleAllowlist = Array.isArray(rule['path-allowlist']) ? rule['path-allowlist'] : [];
@@ -3253,17 +3656,40 @@ async function main() {
             // Safe paths only (.orchestrator/tmp, node_modules, /tmp, $TMPDIR) — allow
             continue;
           }
+          // Measurement only: any failure here leaves `unknown`, never the verdict.
+          blockMeta = { targetClass: 'unknown' };
+          try {
+            const denied = targets.find((t) => !allowed(t))
+              ?? writeTargets.find((t) => !isNullSink(t.text) && !allowed(t));
+            if (denied && !denied.unread) {
+              blockMeta.targetClass = classifyTarget(denied.text, { projectDir, dir: Array.isArray(denied.dirs) ? denied.dirs[0] : cwd });
+            }
+          } catch {
+            // keep `unknown`
+          }
           // #1883: an mktemp variable stays blocked, but say why and what works,
           // so the agent stops re-spelling the removal. Measured 2026-10-31: a
           // text-level grant proved only 1 of 94 real cleanups and had 6 bypasses
           // (rebinding via zsh builtins, `$E` eval, PATH-hijacked mktemp, …).
           if (/\bmktemp\b/.test(command) && targets.some((t) => BARE_VARIABLE_RE.test(t.text))) {
-            await blockCommand(pattern, id, `${rationale} ${MKTEMP_CLEANUP_HINT}`, lineCommand, sessionId);
+            await blockCommand(pattern, id, `${rationale} ${MKTEMP_CLEANUP_HINT}`, lineCommand, sessionId, { caseId: `${id}/mktemp-variable`, targetClass: 'unknown' });
           }
         }
         // #1957 fix cycle 3: name the env-defined alias the guard cannot follow.
         const why = pattern.startsWith('git ') && envAliasUnfollowed(command) ? `${ENV_ALIAS_REASON}. ${rationale}` : rationale;
-        await blockCommand(pattern, id, why, lineCommand, sessionId);
+        // #2090 — git-reset-hard: a clean tree loses nothing the reflog does
+        // not keep. Measured only here, after the rule matched as `block`.
+        let ruleClass = rule.class;
+        if (id === 'git-reset-hard') {
+          ruleClass = unexpanded ? 'irreversible' : resetHardCaseClass(command, shellCwd).ruleClass;
+          if (caseSeverity(ruleClass) === 'warn') {
+            warnRecoverable(id, `'${pattern}'`,
+              'the tree has no uncommitted changes, so only HEAD moves: the previous commit stays in the reflog and `git reset --hard HEAD@{1}` returns to it.',
+              { targetClass: classifyTarget(shellCwd, { projectDir }) });
+            continue;
+          }
+        }
+        await blockCommand(pattern, id, why, lineCommand, sessionId, { ...blockMeta, ruleClass });
       }
       // Unknown severity → skip (conservative allow for unknown future severities)
     }
@@ -3287,8 +3713,10 @@ async function main() {
     throw e;
   }
 
-  // G6 — no blocking match. Flush the aggregated allow-with-notice channel
-  // (#995): emitWarn if any notice queued (visible), else a silent allow.
+  // G6 — no blocking match. The softened cases are final now (fix pass 3),
+  // then flush the aggregated allow-with-notice channel (#995): emitWarn if
+  // any notice queued (visible), else a silent allow.
+  await flushSoftened();
   return flushNotices(notices);
 }
 

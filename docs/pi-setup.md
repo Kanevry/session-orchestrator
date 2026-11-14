@@ -83,7 +83,7 @@ The extension uses `hooks/hooks-pi.json` and `scripts/lib/pi-hook-bridge.mjs` to
 - **Session id:** the bridge reads one only from `event.sessionId`, `event.session_id` or `ctx.sessionId`; whether Pi supplies any of them is not measured. `on-session-start.mjs` adopts the value only when it is a UUID; for any other value, or none, it generates a random UUID, so each start gets a new id.
 - **Transcript path:** `transcript_path` is not passed on, so hooks that read it have no source on Pi.
 
-Output of non-blocking hooks is not delivered, see [Hook Coverage](#hook-coverage).
+User-facing notices of non-blocking hooks (their `systemMessage`) are delivered; model-facing context (`additionalContext`) is not, see [Hook Coverage](#hook-coverage).
 
 ## Hook Coverage
 
@@ -95,7 +95,7 @@ Output of non-blocking hooks is not delivered, see [Hook Coverage](#hook-coverag
 | `tool_result` | `PostToolUse` | hooks run (side effects only) |
 | `agent_end` | `Stop` | hooks run (side effects only) |
 
-"Side effects only" means the hooks execute and keep their effects (session lock, events, ledger), but their output reaches neither the user nor the model. The extension returns only `{ block, reason }` or nothing (`pi/extensions/session-orchestrator.ts`) and never reads the hook results (`results` in `scripts/lib/pi-hook-bridge.mjs`), so on Pi these do not arrive: the session-start banner and SessionStart context, `post-edit-validate`, the import probe, and `post-bash-write-verify` (including its secret-output warning). Only `tool_call` blocks are visible. Wiring: `hooks/hooks-pi.json`.
+"Side effects only" means the hooks execute and keep their effects (session lock, events, ledger); their output does not reach the model. The extension returns only `{ block, reason }` or nothing to Pi (`pi/extensions/session-orchestrator.ts`), so model-facing context (`additionalContext`) does not arrive, for example the SessionStart context. The user-facing notice of a hook that does not block, its top-level `systemMessage` (`collectPiWarnings` in `scripts/lib/pi-hook-bridge.mjs`), is shown by `deliverPiWarnings` on every one of the five events: through `ctx.ui.notify` with level `warning` when the text starts with a warning or stop marker and `info` otherwise, or to stderr when Pi has no UI. Blocked results are not repeated as a notice; their text is the block `reason`. A notice that cannot be shown is swallowed and never changes a block decision. This is verified by tests (`tests/lib/pi-hook-bridge.test.mjs`), not in a running Pi. Which of the other hooks (`post-edit-validate`, the import probe, `post-bash-write-verify`) print their text as `systemMessage` or as `additionalContext` is not re-measured here; only a `systemMessage` arrives. Wiring: `hooks/hooks-pi.json`.
 
 Not yet mapped in v1: `PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `SubagentStop`, and `CwdChanged`.
 

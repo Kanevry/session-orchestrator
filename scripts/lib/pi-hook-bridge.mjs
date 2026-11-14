@@ -455,14 +455,111 @@ export function runPiHookCommand(hook, payload, options) {
 }
 
 /**
+ * Collect the operator warnings of the NON-blocking hook results: the top-level
+ * `systemMessage` of each JSON line on stdout — the only carrier of
+ * `scripts/lib/io.mjs#emitWarn` (exit 0, no `permissionDecision`), and the
+ * channel the `relaxed` hook profile uses for a demoted block. A blocked
+ * result is skipped: its text already travels as the block `reason`.
+ * De-duplicated in first-seen order.
+ *
+ * @param {Array<{ stdout?: unknown, blocked?: boolean }>} results
+ * @returns {string[]}
+ */
+export function collectPiWarnings(results) {
+  /** @type {string[]} */
+  const warnings = [];
+  for (const result of Array.isArray(results) ? results : []) {
+    if (result?.blocked) continue;
+    const stdout = typeof result?.stdout === 'string' ? result.stdout : '';
+    for (const line of stdout.split('\n')) {
+      if (!line.trim().startsWith('{')) continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const message = objectOrEmpty(parsed).systemMessage;
+      const text = typeof message === 'string' ? message.trim() : '';
+      if (text && !warnings.includes(text)) warnings.push(text);
+    }
+  }
+  return warnings;
+}
+
+/**
+ * Show hook warnings to the Pi user. With a UI (`ctx.hasUI`, TUI and RPC mode)
+ * each one goes through `ctx.ui.notify(text, "warning")`, Pi's fire-and-forget
+ * notice; without one (print `-p` and JSON mode) it goes to stderr, prefixed
+ * `[session-orchestrator]`, so stdout keeps only Pi's own output. API source:
+ * upstream pi-mono `packages/coding-agent/docs/extensions.md` § ctx.hasUI and
+ * § ctx.ui (main branch, read 2026-11-14) — not exercised against a running Pi
+ * here (no `pi` binary on the verifying host).
+ *
+ * Severity: a text with a line that starts with a guard marker (`⚠` from
+ * `io.mjs#emitWarn`, `⛔`, `🚨`) is a "warning"; anything else — e.g. the
+ * SessionStart host/peer banner, which this channel now also carries — is
+ * "info".
+ *
+ * Never throws: a failing notify or stderr write is swallowed (one best-effort
+ * stderr line), so delivering a warning can never cost the caller its
+ * decision.
+ *
+ * @param {string[]} warnings
+ * @param {Record<string, unknown>} [ctx]  the Pi ExtensionContext
+ * @param {{ write: (text: string) => unknown }} [stderr]
+ * @returns {'notify'|'stderr'|'none'|'failed'}  the channel used (test seam)
+ */
+export function deliverPiWarnings(warnings, ctx = {}, stderr = process.stderr) {
+  const tellFailure = (err) => {
+    try {
+      stderr.write(`[session-orchestrator] hook warning could not be shown: ${err instanceof Error ? err.message : String(err)}\n`);
+    } catch { /* stderr itself is gone; nothing left to tell */ }
+  };
+  try {
+    if (!Array.isArray(warnings) || warnings.length === 0) return 'none';
+    const ui = objectOrEmpty(objectOrEmpty(ctx).ui);
+    const viaNotify = objectOrEmpty(ctx).hasUI === true && typeof ui.notify === 'function';
+    // Each item on its own: one bad text or one throwing notify must not drop
+    // the warnings after it.
+    let delivered = 0;
+    for (const text of warnings) {
+      try {
+        if (viaNotify) ui.notify(text, piNoticeLevel(text));
+        else stderr.write(`[session-orchestrator] ${text}\n`);
+        delivered += 1;
+      } catch (err) {
+        tellFailure(err);
+      }
+    }
+    if (delivered === 0) return 'failed';
+    return viaNotify ? 'notify' : 'stderr';
+  } catch (err) {
+    tellFailure(err);
+    return 'failed';
+  }
+}
+
+/**
+ * @param {string} text
+ * @returns {'warning'|'info'}
+ */
+function piNoticeLevel(text) {
+  return /^\s*(?:⚠|⛔|🚨)/mu.test(text) ? 'warning' : 'info';
+}
+
+/**
  * Run all hooks configured for one Pi event. For `tool_call`, a blocking hook
  * returns a Pi-compatible `{ block, reason }` response to the extension.
+ * `warnings` carries the non-blocking `systemMessage` texts
+ * ({@link collectPiWarnings}); before it existed the bridge dropped them, so a
+ * warn-only guard was invisible on Pi.
  *
  * @param {string} piEventName
  * @param {Record<string, unknown>} [event]
  * @param {Record<string, unknown>} [ctx]
  * @param {{ pluginRoot?: string, manifest?: Record<string, unknown>, env?: NodeJS.ProcessEnv }} [options]
- * @returns {Promise<{ block: boolean, reason: string|null, payload: Record<string, unknown>, results: Array<object> }>}
+ * @returns {Promise<{ block: boolean, reason: string|null, warnings: string[], payload: Record<string, unknown>, results: Array<object> }>}
  */
 export async function runPiHookEvent(piEventName, event = {}, ctx = {}, options = {}) {
   const pluginRoot = options.pluginRoot ?? resolvePluginRoot();
@@ -482,6 +579,7 @@ export async function runPiHookEvent(piEventName, event = {}, ctx = {}, options 
       return {
         block: true,
         reason: result.reason,
+        warnings: collectPiWarnings(results),
         payload,
         results,
       };
@@ -491,6 +589,7 @@ export async function runPiHookEvent(piEventName, event = {}, ctx = {}, options 
   return {
     block: false,
     reason: null,
+    warnings: collectPiWarnings(results),
     payload,
     results,
   };

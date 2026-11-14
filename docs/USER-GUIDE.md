@@ -339,7 +339,7 @@ It prints one JSON line (`totalWaves`, `waves[]` with each wave's `role`/`agentC
 
 Best for: git cleanup, SSOT refresh, CI fixes, branch merges, documentation updates.
 
-- **Execution model:** **1 coordinator-direct wave.** Housekeeping *is* the maintenance loop: drift-check → expired-learnings sweep → `/evolve analyze` → `/reconcile` → `/evolve dialectic` → `/memory-cleanup`, then any operator-selected housekeeping issues appended in the order picked. No wave-executor dispatch for the loop itself — most of those steps are `AskUserQuestion`-gated, and AUQ does not exist inside a dispatched subagent.
+- **Execution model:** **1 coordinator-direct wave.** Housekeeping *is* the maintenance loop: drift-check → expired-learnings sweep → `/evolve analyze` → `/reconcile` → `/evolve dialectic` → `/memory-cleanup` → `/backlog`, then any operator-selected housekeeping issues appended in the order picked. No wave-executor dispatch for the loop itself — most of those steps are `AskUserQuestion`-gated, and AUQ does not exist inside a dispatched subagent.
 - **Agents:** 0 dispatched for the loop (the coordinator runs it directly); the dialectic step dispatches the read-only `dialectic-deriver` subagent.
 - **Typical duration:** Short
 - **Use when:** Your repo needs maintenance, not new features — or when the session-start `maintenance-due` banner tells you it's overdue.

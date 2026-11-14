@@ -138,7 +138,7 @@ Delivery is never guaranteed (CSM-004): an unanswered request establishes nothin
 
 ## Always-OK Pass-Through (no AUQ)
 
-Fires when the caller's mode is in the `always-ok` class (`discovery`, `evolve`, `plan`, `repo-audit`, `portfolio`). The preamble returns `PASS_THROUGH` immediately regardless of other active sessions. No AUQ, no Deviation, no latency penalty.
+Fires when the caller's mode is in the `always-ok` class (`discovery`, `evolve`, `plan`, `repo-audit`, `portfolio`, `backlog`). The preamble returns `PASS_THROUGH` immediately regardless of other active sessions. No AUQ, no Deviation, no latency penalty.
 
 ```js
 // Conceptual — there is NO AUQ for this case.

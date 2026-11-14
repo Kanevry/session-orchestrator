@@ -83,8 +83,9 @@
  * `tool_name` is not `apply_patch` allows only when its `tool_input` does not
  * read as a patch (see `main`).
  *
- * Time: Codex gives the hook 5 s (`hooks/hooks-codex.json`). The children share
- * a 4.5 s budget; a patch too large to judge in it is denied, not waved through,
+ * Time: Codex gives the hook 15 s (`hooks/hooks-codex.json`). The children share
+ * a 12 s budget counted from process start (`BUDGET_MS`, `guardDeadline`); a
+ * patch too large to judge in it is denied, not waved through,
  * and the deny names the way out: split the patch. All `*** Update File:`
  * sections of one path fold into one judged Write (`foldPatchFiles`, #1914),
  * so the child count grows with the files a patch touches, not its hunks.
@@ -116,8 +117,35 @@ export const EDIT_GUARDS = Object.freeze([
   'pre-tool-state-md-path-guard.mjs',
 ]);
 
-/** Shared wall-clock budget for all guard children (Codex hook timeout is 5 s). */
-const BUDGET_MS = 4500;
+/**
+ * Shared wall-clock budget for all guard children, counted from THIS process's
+ * start (see {@link guardDeadline}), not from main(). The Codex manifest gives
+ * the PreToolUse entries 15 s, counted by Codex from the moment it starts the
+ * hook (CODEX_PRE_TOOL_USE_TIMEOUT_S in scripts/lib/codex/plugin-contract.mjs).
+ * A Codex kill at that ceiling counts as Failed and the patch runs unguarded,
+ * so the guard's own fail-closed deny has to fire first. The 3 s reserve covers
+ * what process.uptime() cannot see — the launcher before this node (sh +
+ * run-node.sh on POSIX; cmd.exe plus the codex-win.cjs node on Windows, which an
+ * external tester put at 1.6–2.5 s per hook process) — plus writing the deny.
+ * Revisit trigger: a Windows run that shows Codex killing the guard before its
+ * budget deny, or a change of the manifest timeout.
+ */
+export const BUDGET_MS = 12_000;
+
+/**
+ * Absolute `Date.now()` deadline for the guard children: process start plus
+ * {@link BUDGET_MS}. Node's bootstrap and the module imports before main()
+ * already spent part of the Codex timeout; counting from main() hid that.
+ *
+ * @param {number} [nowMs]     current wall clock (test seam)
+ * @param {number} [uptimeMs]  ms since this process started (test seam)
+ * @returns {number}
+ */
+export function guardDeadline(nowMs = Date.now(), uptimeMs = process.uptime() * 1000) {
+  // Floored: process.uptime() is fractional, and spawnSync rejects a
+  // non-integer `timeout` (the guard would then fail closed on every patch).
+  return Math.floor(nowMs - uptimeMs + BUDGET_MS);
+}
 
 /** Appended to a deny caused by the time budget: the way out for the operator (#1914). */
 const SPLIT_HINT = ' — Patch teilen (weniger Dateien je apply_patch)';
@@ -369,7 +397,7 @@ export function toToolCalls(file, cwd, applyHunksToText) {
  */
 export function runGuard(guard, payload, cwd, deadline) {
   const remaining = deadline - Date.now();
-  if (remaining <= 0) return { verdict: 'deny', reason: `time budget of ${BUDGET_MS} ms exhausted before ${guard}${SPLIT_HINT}` };
+  if (remaining <= 0) return { verdict: 'deny', reason: `time budget of ${BUDGET_MS} ms since hook start exhausted before ${guard}${SPLIT_HINT}` };
   const result = spawnSync(process.execPath, [path.join(HOOKS_DIR, guard)], {
     cwd,
     input: JSON.stringify(payload),
@@ -416,7 +444,7 @@ async function decide(input, text, route) {
   const base = {};
   for (const key of CARRIED_FIELDS) if (key in input) base[key] = input[key];
 
-  const deadline = Date.now() + BUDGET_MS;
+  const deadline = guardDeadline();
   const warnings = [];
   for (const file of foldPatchFiles(parsed.files)) {
     const mapped = toToolCalls(file, cwd, applyHunksToText);

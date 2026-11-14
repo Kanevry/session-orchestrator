@@ -216,6 +216,11 @@ never tripped a rule, and grading a signal that is never emitted would be the
 same fabrication rubric-v1 already refused. Wiring that emit is the prerequisite
 for ever grading it.
 
+*Note 2026-11-14 (#2089):* the bypass described above no longer exists.
+`allow-destructive-ops: true` is ignored with a stderr warning. What still emits
+no event is a guard the operator switched off (`SO_DISABLED_HOOKS`, hook profile
+`off`); the disclosure string in `scripts/lib/eval/engine.mjs` says so.
+
 **A dimension that never fires is its own kind of dead instrument.** Recomputed
 over the 38 sessions in `.orchestrator/metrics/eval.jsonl` (2026-09-19 @
 `d92c2ca4`), v2 `process-safety` fires on **0 of 38** — `agent_summary.spiral`

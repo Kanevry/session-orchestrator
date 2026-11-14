@@ -6,6 +6,7 @@
       "id": "git-reset-hard",
       "pattern": "git reset --hard",
       "severity": "block",
+      "class": "irreversible",
       "allow-override-flag": null,
       "sources": ["PSA-003", "#155"],
       "rationale": "Hard reset permanently discards staged and committed work that may belong to another parallel session (#155 incident). Blocked unconditionally per PSA-003 to prevent cross-session data loss."
@@ -14,6 +15,7 @@
       "id": "git-reset-mixed",
       "pattern": "git reset --mixed",
       "severity": "warn",
+      "class": "recoverable",
       "allow-override-flag": null,
       "sources": ["PSA-003", "#155"],
       "rationale": "Mixed reset unstages changes silently and can discard parallel-session work from the index. Warn so the coordinator can confirm intent before proceeding."
@@ -22,6 +24,7 @@
       "id": "git-reset-soft",
       "pattern": "git reset --soft",
       "severity": "warn",
+      "class": "recoverable",
       "allow-override-flag": null,
       "sources": ["PSA-003", "#155"],
       "rationale": "Soft reset moves HEAD and may reorder commits from concurrent sessions. Warn to surface the operation to the coordinator for explicit approval."
@@ -30,6 +33,7 @@
       "id": "git-checkout-discard",
       "pattern": "git checkout --",
       "severity": "block",
+      "class": "irreversible",
       "allow-override-flag": null,
       "sources": ["PSA-003", "#155", "#1834", "ADR-0017"],
       "rationale": "Discards uncommitted file changes that another session may be actively building (PSA-003). Since #1834 the guard measures every path reset read-only (git status --porcelain=v1 -z -- <path>): git checkout [HEAD] -- <path> and git restore [--staged] <path> without a foreign --source are denied when a path carries uncommitted changes or cannot be measured, allowed with a notice when clean; git checkout <other ref> -- <path>, --ours/--theirs/-m and git restore --source=<ref> only warn (HR-101: 175 replay hits in 30 days). ADR-0017 § Path reset."
@@ -38,6 +42,7 @@
       "id": "git-clean-force",
       "pattern": "git clean -f",
       "severity": "block",
+      "class": "irreversible",
       "allow-override-flag": null,
       "sources": ["PSA-003", "#155"],
       "rationale": "Force-clean deletes untracked files that may be unfinished output from a parallel session. Blocked unconditionally per PSA-003."
@@ -46,6 +51,7 @@
       "id": "git-clean-force-d",
       "pattern": "git clean -fd",
       "severity": "block",
+      "class": "irreversible",
       "allow-override-flag": null,
       "sources": ["PSA-003", "#155"],
       "rationale": "Force-clean including directories amplifies the blast radius of git-clean-force, removing entire untracked directory trees. Blocked per PSA-003."
@@ -54,6 +60,7 @@
       "id": "git-stash-any",
       "pattern": "git stash",
       "severity": "warn",
+      "class": "recoverable",
       "allow-override-flag": null,
       "sources": ["PSA-003", "#155"],
       "rationale": "Stashing captures another session's uncommitted changes into a stash they cannot find, effectively hiding their work. Warn to confirm the coordinator owns all affected changes."
@@ -62,6 +69,7 @@
       "id": "rm-rf-destructive",
       "pattern": "rm -rf",
       "severity": "block",
+      "class": "irreversible",
       "allow-override-flag": null,
       "path-allowlist": ["/tmp/", "/private/tmp/", "$TMPDIR"],
       "sources": ["PSA-003", "#155", "wave-executor-baseline", "#641"],
@@ -71,6 +79,7 @@
       "id": "git-push-force",
       "pattern": "git push --force",
       "severity": "block",
+      "class": "irreversible",
       "allow-override-flag": null,
       "sources": ["PSA-003", "#155", "#138-SECURITY-REQ-07"],
       "rationale": "Force-push rewrites shared remote history, permanently discarding commits from other sessions or collaborators. Blocked unconditionally per PSA-003 and SECURITY-REQ-07."
@@ -79,6 +88,7 @@
       "id": "git-push-force-short",
       "pattern": "git push -f",
       "severity": "block",
+      "class": "irreversible",
       "allow-override-flag": null,
       "sources": ["PSA-003", "#155", "#138-SECURITY-REQ-07"],
       "rationale": "Short-flag alias for git push --force; same destructive effect on remote history. Blocked for full parity with git-push-force per SECURITY-REQ-07."
@@ -87,6 +97,7 @@
       "id": "git-push-force-with-lease",
       "pattern": "git push --force-with-lease",
       "severity": "warn",
+      "class": "recoverable",
       "allow-override-flag": null,
       "sources": ["PSA-003", "#155"],
       "rationale": "Safer than bare force-push but still rewrites remote history if the lease condition is met. Warn so the coordinator confirms this is the intended recovery action."
@@ -95,6 +106,7 @@
       "id": "sql-drop-table-upper",
       "pattern": "DROP TABLE",
       "severity": "block",
+      "class": "irreversible",
       "allow-override-flag": null,
       "sources": ["wave-executor-baseline", "#155"],
       "rationale": "Uppercase DROP TABLE is an irreversible DDL operation that destroys database schema and data. Blocked as part of the wave-executor baseline destructive-command guard."
@@ -103,6 +115,7 @@
       "id": "sql-drop-table-lower",
       "pattern": "drop table",
       "severity": "block",
+      "class": "irreversible",
       "allow-override-flag": null,
       "sources": ["wave-executor-baseline", "#155"],
       "rationale": "Lowercase alias for DROP TABLE; same irreversible DDL destruction. Blocked to ensure case-insensitive SQL issued via shell (e.g., psql -c) is caught by commandMatchesBlocked()."
@@ -112,6 +125,7 @@
       "type": "redirect-truncate",
       "pattern": ">",
       "severity": "block",
+      "class": "irreversible",
       "target-denylist": ["CLAUDE.md", "AGENTS.md", ".claude/rules/**", ".orchestrator/policy/**", ".orchestrator/metrics/*.jsonl*", ".git/**", "SECURITY.md"],
       "modes": ["truncate"],
       "rationale": "Truncating redirect (>, &>, N>) onto protected artefacts silently destroys them — #983. Append (>>) stays allowed. The metrics entry is `*.jsonl*`, not `*.jsonl` (#1401): `events-rotation.mjs` renames the live ledger to `events.jsonl.1`/`.2`/… (scripts/lib/events-rotation.mjs:74), and the narrow glob missed every one of those rotated generations — the same suffix blind spot the old .gitignore line had. Deliberately NOT widened to `.orchestrator/metrics/**`: the bootstrap templates legitimately create `README.md` and empty ledgers in that directory with truncating redirects (skills/bootstrap/{standard,deep}-template.md), and only the ledger family needs this rule. Deletion and renaming of ANY file under .orchestrator/metrics/ is covered by the separate `ledger-delete-protected` rule below, where no legitimate writer exists.",
@@ -122,6 +136,7 @@
       "type": "redirect-truncate",
       "pattern": ">",
       "severity": "block",
+      "class": "irreversible",
       "target-denylist": ["~/.claude/projects/*/memory/**","~/.codex/projects/*/memory/**","~/.cursor/projects/*/memory/**"],
       "modes": ["truncate","append"],
       "rationale": "The harness auto-memory directory is injected as TRUSTED project context into every later session, yet lives outside git diff, CI review, check-owner-leakage (git ls-files only) and gitleaks. #1352 closed the Edit/Write lane for dispatched agents; this closes the shell-redirect lane, append included. NAMED CEILING (BV-004), every case measured 2026-09-13: (a) redirect-shaped by construction — `tee -a` and an in-process write (node -e fs.appendFileSync) are NOT covered; (b) NAMED CEILING: `eval` with a non-literal payload (`eval \"$CMD\"`, `eval $(…)`) is unreachable — the command text does not exist at hook time (`unresolved` class, #641). Literal `eval '… > target'`, `dd of=target` and `env -S <str> …` are covered since #1366; (c) a cwd-relative target after a directory change (`cd ~ && … > .claude/projects/*/memory/…`) is out of reach — the hook does not know the chain's cwd and a relative target is judged repo-root-relative, which is not lexically solvable; (d) `$HOME` / `${HOME}` / `$(…)` / backticks in the target fall into the pre-existing `unresolved` class (#641), where the hook warns and allows rather than guessing — for a home directory that is the most natural spelling. (e) the payload-evaluation budget is SHARED and finite (`MAX_PAYLOAD_EVALUATIONS` = 32 in `scripts/lib/command-blocker.mjs`): once it is spent, redirect-target collection returns `{unresolved, reason: 'budget-exhausted'}`, which this rule treats like every other unresolved target — warn and ALLOW. Measured 2026-09-16: 40 `eval 'echo fN'` fillers followed by `eval 'echo x > ~/.claude/…/MEMORY.md'` → ALLOW plus `⚠ unresolved redirect target (budget-exhausted)`. Not a regression of #1366 — `bash -c` fillers exhaust the same budget at HEAD (#988 T2) — but a standing ceiling of the same class as (d), and an attacker-controllable one: the filler count is free. Revisit together with (d) if the unresolved class is ever made blocking. Revisit if the policy grows a non-redirect target class or the payload traversal learns redirects. Home-anchored entries are matched against the expanded ABSOLUTE path (#1362) because relativizeAgainstRoot discards every out-of-repo target by design.",
@@ -132,8 +147,9 @@
       "type": "path-delete",
       "pattern": "rm|mv|unlink .orchestrator (state dir) or .orchestrator/metrics/**",
       "severity": "block",
+      "class": "irreversible",
       "target-denylist": [".orchestrator", ".orchestrator/metrics", ".orchestrator/metrics/**"],
-      "rationale": "Deleting or renaming anything under .orchestrator/metrics/ destroys append-only session telemetry with no recovery path — the ledger IS the history, and nothing re-derives it. Measured 2026-09-19 (#1401): a wave subagent ran `touch .orchestrator/metrics/events.jsonl.1` (which ADOPTED the existing rotated ledger instead of creating a probe file), then `rm -f` on the same path — 53,896 lines / 10 MB covering 2026-04-12 to 2026-09-18 were gone, and the guard said nothing, because `rm` was only ever matched as the literal pattern `rm -rf`. Severity is `block`, not `warn`, on a measured absence of legitimate callers: rotation and ledger repair run through Node fs, never through Bash (`renameSync`/`unlinkSync` at scripts/lib/events-rotation.mjs:16,61,69,74), and a census of every shell rm/mv/unlink in scripts/, hooks/, .husky/, .gitlab-ci.yml and the guard's own 60-command test corpus found ZERO targeting this directory. Intentional maintenance has two named bypasses: `allow-destructive-ops: true` in Session Config (per session), or SO_DISABLED_HOOKS=pre-bash-destructive-guard in the environment of the whole session (session-level: the hook reads it from its own process env, so a `SO_DISABLED_HOOKS=… rm …` prefix inside the command has no effect). Covers `rm`, `mv` (both operand roles — the source vanishes, an existing destination is overwritten) and `unlink`, through transparent wrappers (sudo/env/timeout/nohup/nice/…), every chain position, and literal `bash -c` / `env -S` / `eval` payloads. NAMED CEILING (BV-004), each measured: `find … -delete`, `find … -exec rm`, `… | xargs rm`, `git rm <path>` and in-process `node -e fs.unlinkSync(…)` are NOT covered — in each the path is not lexically an operand of a resolvable destructive verb (see PATH_DESTRUCTIVE_VERBS in scripts/lib/command-blocker.mjs). REVISIT TRIGGER: any of those five shapes appearing in a real deletion incident or a transcript census. `.orchestrator/tmp/**` is outside this denylist by construction, not by an exemption clause, and the match is judged PER TARGET — a sibling tmp operand can never lift the verdict for a metrics operand. SPELLING CEILING (measured 2026-09-19 against this hook, one payload per row): the #1401 incident was an agent re-spelling a blocked command, so the four re-spellings were run back through the guard. Two were closed HERE by adding the exact entry `.orchestrator` to the denylist above — `rm -r .orchestrator` (ALLOW before: only the literal `rm -rf` pattern of `rm-rf-destructive` caught the -rf form, and `rm -r` is one character shorter) and `mv .orchestrator /tmp/x` (ALLOW before). That entry is EXACT, not a prefix: `.orchestrator/tmp/**` deletes stay ALLOW, re-measured after the change (`rm -rf .orchestrator/tmp/*`, `rm -rf .orchestrator/tmp`, `rm -f .orchestrator/tmp/scratch.json` → all ALLOW), so the widening adds no exemption clause that could be lifted. Three remain OPEN and are DECLARED, not papered over: (0) a TRAILING SLASH on the state dir — `rm -r .orchestrator/` → ALLOW (measured 2026-09-19, found while re-measuring this change): the operand keeps its slash and the exact entry `.orchestrator` does not match it, while a `.orchestrator/` entry would be read as a DIRECTORY-PREFIX glob (measured: `pathMatchesPattern('.orchestrator/tmp/x', '.orchestrator/') === true`) and would swallow the tmp exemption — so the fix belongs in operand normalisation in scripts/lib/command-blocker.mjs, never in this list; (1) a wildcard in a DIRECTORY segment — `rm -f .orchestrator/*/events.jsonl` — because the guard is lexical and never expands globs, so the operand it sees is the literal string `.orchestrator/*/events.jsonl`, which no concrete-path glob in this denylist matches; (2) a cwd-changing chain — `cd .orchestrator/metrics && rm -f events.jsonl` — because the guard does not track cwd across chain segments and the operand it sees is the bare `events.jsonl`. Closing either needs glob expansion or cwd tracking in scripts/lib/command-blocker.mjs, i.e. a matcher change, not a policy change. REVISIT TRIGGER for these two: either form appearing in a real deletion incident or a transcript census — or any widening of this denylist beyond exact paths, which would need a per-verb exemption for `.orchestrator/tmp/**` bound to the statement the matcher hit (widening without narrowing the bypass opens a hole the narrow form did not have, `.claude/rules/guard-design.md`).",
+      "rationale": "Deleting or renaming anything under .orchestrator/metrics/ destroys append-only session telemetry with no recovery path — the ledger IS the history, and nothing re-derives it. Measured 2026-09-19 (#1401): a wave subagent ran `touch .orchestrator/metrics/events.jsonl.1` (which ADOPTED the existing rotated ledger instead of creating a probe file), then `rm -f` on the same path — 53,896 lines / 10 MB covering 2026-04-12 to 2026-09-18 were gone, and the guard said nothing, because `rm` was only ever matched as the literal pattern `rm -rf`. Severity is `block`, not `warn`, on a measured absence of legitimate callers: rotation and ledger repair run through Node fs, never through Bash (`renameSync`/`unlinkSync` at scripts/lib/events-rotation.mjs:16,61,69,74), and a census of every shell rm/mv/unlink in scripts/, hooks/, .husky/, .gitlab-ci.yml and the guard's own 60-command test corpus found ZERO targeting this directory. Intentional maintenance has one named bypass: SO_DISABLED_HOOKS=pre-bash-destructive-guard in the environment of the whole session (session-level: the hook reads it from its own process env, so a `SO_DISABLED_HOOKS=… rm …` prefix inside the command has no effect). Covers `rm`, `mv` (both operand roles — the source vanishes, an existing destination is overwritten) and `unlink`, through transparent wrappers (sudo/env/timeout/nohup/nice/…), every chain position, and literal `bash -c` / `env -S` / `eval` payloads. NAMED CEILING (BV-004), each measured: `find … -delete`, `find … -exec rm`, `… | xargs rm`, `git rm <path>` and in-process `node -e fs.unlinkSync(…)` are NOT covered — in each the path is not lexically an operand of a resolvable destructive verb (see PATH_DESTRUCTIVE_VERBS in scripts/lib/command-blocker.mjs). REVISIT TRIGGER: any of those five shapes appearing in a real deletion incident or a transcript census. `.orchestrator/tmp/**` is outside this denylist by construction, not by an exemption clause, and the match is judged PER TARGET — a sibling tmp operand can never lift the verdict for a metrics operand. SPELLING CEILING (measured 2026-09-19 against this hook, one payload per row): the #1401 incident was an agent re-spelling a blocked command, so the four re-spellings were run back through the guard. Two were closed HERE by adding the exact entry `.orchestrator` to the denylist above — `rm -r .orchestrator` (ALLOW before: only the literal `rm -rf` pattern of `rm-rf-destructive` caught the -rf form, and `rm -r` is one character shorter) and `mv .orchestrator /tmp/x` (ALLOW before). That entry is EXACT, not a prefix: `.orchestrator/tmp/**` deletes stay ALLOW, re-measured after the change (`rm -rf .orchestrator/tmp/*`, `rm -rf .orchestrator/tmp`, `rm -f .orchestrator/tmp/scratch.json` → all ALLOW), so the widening adds no exemption clause that could be lifted. Three remain OPEN and are DECLARED, not papered over: (0) a TRAILING SLASH on the state dir — `rm -r .orchestrator/` → ALLOW (measured 2026-09-19, found while re-measuring this change): the operand keeps its slash and the exact entry `.orchestrator` does not match it, while a `.orchestrator/` entry would be read as a DIRECTORY-PREFIX glob (measured: `pathMatchesPattern('.orchestrator/tmp/x', '.orchestrator/') === true`) and would swallow the tmp exemption — so the fix belongs in operand normalisation in scripts/lib/command-blocker.mjs, never in this list; (1) a wildcard in a DIRECTORY segment — `rm -f .orchestrator/*/events.jsonl` — because the guard is lexical and never expands globs, so the operand it sees is the literal string `.orchestrator/*/events.jsonl`, which no concrete-path glob in this denylist matches; (2) a cwd-changing chain — `cd .orchestrator/metrics && rm -f events.jsonl` — because the guard does not track cwd across chain segments and the operand it sees is the bare `events.jsonl`. Closing either needs glob expansion or cwd tracking in scripts/lib/command-blocker.mjs, i.e. a matcher change, not a policy change. REVISIT TRIGGER for these two: either form appearing in a real deletion incident or a transcript census — or any widening of this denylist beyond exact paths, which would need a per-verb exemption for `.orchestrator/tmp/**` bound to the statement the matcher hit (widening without narrowing the bypass opens a hole the narrow form did not have, `.claude/rules/guard-design.md`).",
       "sources": ["#1401", "PSA-003"]
     },
     {
@@ -141,6 +157,7 @@
       "type": "hooks-path-missing",
       "pattern": "git commit|push in a linked worktree without its hooks directory",
       "severity": "block",
+      "class": "irreversible",
       "rationale": "This linked worktree runs NO git hooks: `core.hooksPath` is relative (husky: `.husky/_`), the main checkout has that directory, this worktree does not. pre-commit (gitleaks, owner-leakage, lint-staged), commit-msg (commitlint) and the pre-push full gate would all be skipped, with exit 0 and no output (#1732, measured 2026-10-22: a push went out without its gate). Fix, each step as its OWN command: (1) install the worktree's dependencies from its lockfile — `npm ci` in an npm repo, `pnpm install --frozen-lockfile` in a pnpm repo; (2) `npx husky`; (3) check that the hooks directory now exists; then retry the commit or push.",
       "sources": ["#1732"]
     },
@@ -149,6 +166,7 @@
       "type": "worktree-remove-unsafe",
       "pattern": "git worktree remove with --force, or over gitignored state that would be lost",
       "severity": "block",
+      "class": "irreversible",
       "rationale": "Removing this worktree would delete files nothing can restore; back them up first, or let the operator run the removal in their own terminal.\n`git worktree remove` deletes gitignored files with the worktree — STATE.md, handover files, the fleet's train manifests under `.orchestrator/runtime/fleet/`, top-level `.orchestrator/*.lock` — and \"clean\" per `git status --porcelain` protects none of them; `--force` additionally deletes untracked and modified files (#1789). Incidents: 2026-10-15 a session lost its handover/STATE.md this way; 2026-10-24 another removed four worktrees without checking first. Discipline failed twice, so the gate is mechanical. The guard denies every forced removal it can read, and a plain one when an IGNORED entry in the target (measured with one read-only `git status --porcelain=v1 -z --untracked-files=all --ignored=traditional`) is valuable: `.orchestrator/runtime/fleet/**`, `STATE.md` directly under `.claude/`, `.codex/`, `.cursor/`, `.pi/` or `.orchestrator/`, a top-level `.orchestrator/*.lock`, or an ignored directory that can hold one of those. A target the guard cannot read (variable, substitution, unknown directory, no worktree root, failed or timed-out status) is denied as not measurable; the operand is resolved the way git's find_worktree() does it — first a unique worktree whose path ends in the operand at a directory boundary (a bare name like `wt-a` works from anywhere in the repo), then the operand as a path — via one read-only `git worktree list --porcelain`; only when no worktree matches is the call allowed (git fails by itself). Every word is read by its text, quoted or not (`\"--force\"`, `\"git\" worktree …`), and unambiguous abbreviations (`--forc`, `--fo`, `--f`) count as `--force` (REFUTE review 2026-10-25, all three reproduced with real git). Calls inside `$( … )`/backticks and inside `bash|sh|zsh|dash|ksh -c` and `eval` payloads (re-tokenized, depth cap 3, fail-closed past it) are judged with an unknown directory; the shell's own option parsing is mirrored there — `--rcfile`/`--init-file` take a value, `+c` runs a command string like `-c` — and a descriptor-close redirect before the subcommand (`git 3>&- worktree …`) is read as a redirect (#1797). NAMED CEILING (BV-004): other interpreters (`python -c`, `node -e`, `xargs`, `find -exec`) and a script file that runs the removal are not seen — the same class as `fleet-worktree-abbau.sh`; neither is a `-c` payload held in a variable (`bash -c \"$p\"`) — Codex review 2026-10-25, #1797; revisit if one appears in an incident. Safe routes: move or back up the named files and retry; or let the fleet's abbau script do the removal (`fleet-worktree-abbau.sh` runs `git worktree remove` inside a script, which this Bash-call hook does not see — intended); a forced removal is the operator's, typed in their own terminal. `worktree prune`, `list`, `add` and `move` are not judged.",
       "sources": [
         "#1789",

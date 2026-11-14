@@ -28,50 +28,45 @@ regexes = [
 
   # Supabase local/test references
   "supabase\\.co",
+
+  # Doc placeholders written as a run of x or X (e.g. a GitLab PAT or a Slack/
+  # Discord webhook shown with its secret part as 20 x's). Since docs are
+  # scanned (#2089), the full-history scan found 7 such placeholders in
+  # .claude/rules/security.md and docs/session-config-*.md (measured
+  # 2026-11-14). A real token never contains 16 identical x characters.
+  "x{16,}|X{16,}",
 ]
 
-# Paths that intentionally contain test/mock credentials
+# Paths exempt from EVERY rule. Keep this list short: each entry needs a
+# concrete technical reason next to it. Documentation and instruction markdown
+# (docs/, skills/, commands/, agents/, .claude/rules/, .claude/skills/,
+# CLAUDE.md, AGENTS.md, README.md, CHANGELOG.md) is deliberately NOT listed:
+# it is exported to the public mirror, so it is scanned by all rules (#2089).
+# A synthetic example in a doc that trips a rule gets a narrow, documented
+# entry (stopword/regex or a .gitleaksignore fingerprint), never a path here.
+#
+# Patterns are anchored with `^(?:\./)?` so they match only at the repo root
+# (git mode and `gitleaks dir .` report repo-relative paths). An unanchored
+# `tests/.*` also exempted nested dirs such as scripts/tests/.
 paths = [
-  # CI configuration (variables are mock values)
-  ".gitlab-ci.yml",
+  # Top-level test tree: its fixtures carry synthetic token shapes on purpose
+  # (see scripts/lib/validate/check-test-fixture-shapes.mjs, patterns F5-F8),
+  # which would otherwise trip the very rules they exercise.
+  "^(?:\\./)?tests/",
 
   # Vendored, minified third-party JS (three.js, MIT). Minified property chains
   # such as `s.isInterleavedBufferAttribute` match the baseline-vault-token shape
   # (measured 2026-09-07: 8 hits, all identifiers, no secret). The files are
   # byte-identical copies of the npm tarball; see site/vendor/LICENSES.md.
-  "site/vendor/.*\\.min\\.js",
+  "^(?:\\./)?site/vendor/[^/]+\\.min\\.js$",
 
-  # Test files
-  ".*\\.test\\.ts",
-  ".*\\.test\\.tsx",
-  ".*\\.test\\.mjs",
-  ".*\\.spec\\.ts",
-  ".*\\.spec\\.tsx",
-  ".*\\.spec\\.mjs",
-  ".*/__tests__/.*",
-  ".*/__mocks__/.*",
-  "tests/.*",
-
-  # Documentation (skills may reference credential formats; rules are scanned)
-  "skills/.*\\.md",
-  "\\.claude/skills/.*\\.md",
-  "\\.claude/rules/.*\\.md",
-  "docs/.*\\.md",
-  "commands/.*\\.md",
-  "agents/.*\\.md",
-  "CLAUDE\\.md",
-  "AGENTS\\.md",
-  "README\\.md",
-  "CHANGELOG\\.md",
-
-  # Seed/fixture files
-  "seeds/.*",
-  "fixtures/.*",
-
-  # Lock files (package checksums, not secrets)
-  "pnpm-lock\\.yaml",
-  "package-lock\\.json",
-  "bun\\.lockb",
+  # Lock files: generated, contain only registry URLs and base64 sha512
+  # integrity hashes, which match high-entropy rules without being secrets.
+  # bun.lockb is binary. Matched at any depth (sub-packages such as
+  # marketing/remotion/ carry their own lockfile), filename only.
+  "(?:^|/)pnpm-lock\\.yaml$",
+  "(?:^|/)package-lock\\.json$",
+  "(?:^|/)bun\\.lockb$",
 ]
 
 # Stripe live key detection (all projects that use Stripe)
@@ -260,8 +255,8 @@ severity = "CRITICAL"
 tags = ["vault", "secrets"]
 
   [rules.allowlist]
-  description = "FP: JS member access like deps.validatePathInsideProject, args.skipGeneratedRuleStaleness, or opts.throwOnFrontmatterUnsafe reads as the legacy Vault s.<token> format (s. + 24+ alnum). These are code identifiers (a published path-utils function name; a drift-check CLI flag; the writeStateMd frontmatter-safe-guard option from #747), never secrets. Superseded structurally by the leading \\b in the rule regex above -- a member access never has a word boundary before its `s.`, so new identifiers no longer need an entry here. Kept as defence in depth."
-  regexes = ['''validatePathInsideProject''', '''skipGeneratedRuleStaleness''', '''throwOnFrontmatterUnsafe''']
+  description = "FP: JS member access like deps.validatePathInsideProject, args.skipGeneratedRuleStaleness, or opts.throwOnFrontmatterUnsafe reads as the legacy Vault s.<token> format (s. + 24+ alnum). These are code identifiers (a published path-utils function name; a drift-check CLI flag; the writeStateMd frontmatter-safe-guard option from #747), never secrets. Superseded structurally by the leading \\b in the rule regex above -- a member access never has a word boundary before its `s.`, so new identifiers no longer need an entry here. Kept as defence in depth. The anchored camelCase entry covers the case \\b does not: a namespace import named `s` called after a space, e.g. `s.someCamelCaseFunction(` in a `node -e` example in skills/ markdown (full-history scan 2026-11-14, #2089). A legacy Vault token is random base62 and practically never a strict camelCase word without digits."
+  regexes = ['''^s\.[a-z]+(?:[A-Z][a-z]+)+$''', '''validatePathInsideProject''', '''skipGeneratedRuleStaleness''', '''throwOnFrontmatterUnsafe''']
 
 # Twilio API Key
 [[rules]]

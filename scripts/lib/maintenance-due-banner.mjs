@@ -20,7 +20,7 @@
  * ## Design constraints it is written against
  *
  * - **HR-101 (a signal may only warn if it is rare).** Nothing is due ⇒ the
- *   probe is SILENT. Seven independent signals are ANDed with a cooldown, not
+ *   probe is SILENT. Eight independent signals are ANDed with a cooldown, not
  *   ORed into a permanent warning: a repo that ran `/session housekeeping`
  *   within the last {@link HOUSEKEEPING_COOLDOWN_DAYS} days says nothing at
  *   all, because the operator already did the thing the banner would ask for.
@@ -33,7 +33,7 @@
  *   an existing module constant. Same posture as `reconcile-nudge-banner.mjs`
  *   and `loop-readiness-banner.mjs`: an advisory banner needs no switch.
  *
- * ## The seven signals
+ * ## The eight signals
  *
  * | id                | due when                                                              | source |
  * |-------------------|-----------------------------------------------------------------------|--------|
@@ -44,6 +44,7 @@
  * | `memory-cleanup`  | `shouldDispatchAutoDream().trigger === true`                          | `auto-dream.mjs` |
  * | `pending-sidecar` | a pending dream/dialectic proposal younger than 14 days is unapplied   | `.orchestrator/*-pending*.md` |
  * | `generated-rules-expiring` | a machine-generated rule is expired or expires within {@link GENERATED_RULE_EXPIRY_HORIZON_DAYS} days | `instruction-budget-guard.mjs` |
+ * | `backlog-refinement` | no `orchestrator.backlog.refine_completed` within {@link BACKLOG_REFINE_INTERVAL_DAYS} days (only where the checker's own `resolveTarget` can read the checkout — skipped otherwise) | `events.jsonl` + `backlog-refine/fetch.mjs` |
  *
  * ### Why the expiry alarm is HERE and not in the test suite (#1372 follow-up)
  *
@@ -86,13 +87,15 @@ import {
   listMachineGeneratedRules,
 } from './instruction-budget-guard.mjs';
 import { planRuleExpirySweep } from './reconcile/rule-expiry-sweep.mjs';
+import { resolveTarget } from './backlog-refine/fetch.mjs';
+import { BACKLOG_REFINE_EVENT } from './backlog-refine/event.mjs';
 
 /**
  * How many signals this probe knows about. The banner denominator is this
  * number MINUS the signals a kill-switch skipped on this host — see the
  * `skipped` array in {@link computeMaintenanceDue}'s result.
  */
-export const MAINTENANCE_TOTAL_SIGNALS = 7;
+export const MAINTENANCE_TOTAL_SIGNALS = 8;
 
 /**
  * How far ahead the `generated-rules-expiring` signal looks.
@@ -130,16 +133,36 @@ export const SIDECAR_MAX_AGE_DAYS = 14;
 
 const MS_PER_DAY = 86_400_000;
 
+/** `resolveTarget` refusals that mean: the backlog checker does not serve this checkout. */
+const BACKLOG_UNSERVED_REASONS = new Set(['github-not-supported', 'no-gitlab-remote', 'no-remotes', 'not-a-git-repo']);
+
 /** The event name whose ABSENCE is the `evolve` signal. */
 const EVOLVE_EVENT = 'orchestrator.evolve.completed';
 
 /**
- * Events-ledger window for the #1401 census (`events-retention-banner.mjs`):
- * `null` — the one ledger question here ("was {@link EVOLVE_EVENT} EVER
- * recorded?") is about every line ever written, so no day count bounds it; a
- * pruned history turns the answer `undeterminable`, never "never" (#1489).
+ * How often the backlog refinement step (`/backlog`, `scripts/backlog-refine.mjs`)
+ * is expected to run: the signal is due when no {@link BACKLOG_REFINE_EVENT}
+ * younger than this many days is on record. A module constant, NOT a Session
+ * Config key (see "NO new Session Config key" above).
+ *
+ * NAMED CEILING (BV-004): one week matches {@link HOUSEKEEPING_COOLDOWN_DAYS} —
+ * a weekly housekeeping session clears it. REVISIT TRIGGER: the row is due on
+ * more than ~1 session start in 10 of repos that run housekeeping weekly
+ * (HR-101) — then re-aim it, never just widen it.
  */
-export const REQUIRED_EVENTS_WINDOW_DAYS = null;
+export const BACKLOG_REFINE_INTERVAL_DAYS = 7;
+
+/**
+ * Events-ledger window for the #1401 census (`events-retention-banner.mjs`).
+ * Two ledger questions live here: "was {@link EVOLVE_EVENT} EVER recorded?" is
+ * about every line ever written, so no day count bounds it — a pruned history
+ * turns that answer `undeterminable`, never "never" (#1489). "Was
+ * {@link BACKLOG_REFINE_EVENT} recorded in the last
+ * {@link BACKLOG_REFINE_INTERVAL_DAYS} days?" IS bounded, so its window is the
+ * finite floor this module declares; a ledger that covers less turns the
+ * backlog answer `undeterminable` too.
+ */
+export const REQUIRED_EVENTS_WINDOW_DAYS = BACKLOG_REFINE_INTERVAL_DAYS;
 
 /** Pending-proposal sidecars, repo-relative (owned by auto-dream / auto-dialectic). */
 const PENDING_SIDECARS = ['.orchestrator/pending-dream.md', '.orchestrator/dialectic-pending.md'];
@@ -173,7 +196,7 @@ export const TAIL_CHUNK_BYTES = SCAN_CHUNK_BYTES;
  * Wall-clock budget for the "did /evolve ever run?" walk (#1414).
  *
  * NAMED CEILING (BV-004): 1000 ms is half of `PROBE_BUDGET_MS` (2000 ms in
- * `session-start-probes.mjs`), which this probe shares with six other signals.
+ * `session-start-probes.mjs`), which this probe shares with seven other signals.
  * The walk is UNBOUNDED in principle — "never ran" is a claim about every line
  * of every source — so it needs an own limit now that it spans the archives
  * too, and running out must report `truncated`, never a clean "never".
@@ -224,6 +247,71 @@ function readLastEvolveRun(repoRoot) {
     return { ok: false, lastAt: null, truncated: false, historyCut: false };
   }
   return { ok: true, lastAt, truncated: scan.truncated, historyCut: scan.gaps.length > 0 };
+}
+
+/**
+ * Wall-clock budget for the backlog-refinement window walk (#2094).
+ *
+ * NAMED CEILING (BV-004): 300 ms — the walk is BOUNDED by
+ * {@link BACKLOG_REFINE_INTERVAL_DAYS} days of ledger, unlike the evolve walk,
+ * and it shares `PROBE_BUDGET_MS` (2000 ms) with {@link EVOLVE_SCAN_BUDGET_MS}.
+ * Running out reports `truncated` ⇒ `undeterminable`, never "due".
+ *
+ * REVISIT TRIGGER: a repo whose week of events does not fit, i.e. the signal
+ * reads `undeterminable` more than rarely — then the answer needs an index.
+ */
+export const BACKLOG_SCAN_BUDGET_MS = 300;
+
+/**
+ * Was `orchestrator.backlog.refine_completed` recorded within the interval?
+ *
+ * Walks the ledger backwards (newest first) across rotation boundaries and
+ * stops at the first refine record inside the window, or at the first record
+ * OLDER than the window start — the point from which the window is proven
+ * covered. Every record is parsed (no substring pre-filter), because the
+ * timestamps of the other events are what prove coverage.
+ *
+ * NAMED CEILING (BV-004): "first record older than the window" assumes the
+ * ledger is append-ordered by time; concurrent appends can interleave by
+ * seconds, which cannot move a 7-day verdict. REVISIT TRIGGER: a ledger writer
+ * that back-dates records.
+ *
+ * @param {string} repoRoot
+ * @param {number} now epoch ms
+ * @returns {{state: 'recent'|'absent'|'undeterminable', lastAt: string|null}}
+ *   `absent` only when the walk provably covered the whole window — reached a
+ *   record older than its start, or read every line of an uncut history.
+ *   Truncated, unreadable or cut-before-the-window ⇒ `undeterminable`.
+ */
+function readBacklogRefineWindow(repoRoot, now) {
+  const windowStart = now - BACKLOG_REFINE_INTERVAL_DAYS * MS_PER_DAY;
+  let lastAt = null;
+  let covered = false;
+  const scan = scanEventsBackwards({
+    filePath: eventsFilePath(repoRoot),
+    chunkBytes: TAIL_CHUNK_BYTES,
+    budgetMs: BACKLOG_SCAN_BUDGET_MS,
+    onRecord: (rec) => {
+      const ts = typeof rec?.timestamp === 'string' ? Date.parse(rec.timestamp) : NaN;
+      if (!Number.isFinite(ts)) return false;
+      if (ts < windowStart) {
+        covered = true;
+        return true;
+      }
+      // A record dated after `now` proves nothing about the window (clock
+      // skew, a hand-written line): skipping it keeps one such line from
+      // silencing the signal until it rotates out.
+      if (rec.event === BACKLOG_REFINE_EVENT && ts <= now) {
+        lastAt = rec.timestamp;
+        return true;
+      }
+      return false;
+    },
+  });
+  if (lastAt !== null) return { state: 'recent', lastAt };
+  if (scan.unreadable.length > 0 || scan.truncated) return { state: 'undeterminable', lastAt: null };
+  if (covered || scan.gaps.length === 0) return { state: 'absent', lastAt: null };
+  return { state: 'undeterminable', lastAt: null };
 }
 
 /**
@@ -491,6 +579,31 @@ export async function computeMaintenanceDue(opts = {}) {
     }
   } catch {
     undeterminable.push('generated-rules-expiring');
+  }
+
+  // --- backlog-refinement (S8, #2094) --------------------------------------
+  // The signal asks the checker's OWN resolver whether this checkout is a
+  // target it can read (`resolveTarget`, a few `git remote -v` spawns). Two
+  // separate classifications disagreed twice (#2094 review): the signal stayed
+  // due on a repo the checker refused, with no run able to clear it. A repo
+  // the checker cannot serve — GitHub, no GitLab remote it can resolve, no
+  // remote, not a git repo — is `skipped`, out of the denominator. A git that
+  // could not be ASKED, or any other refusal, is `undeterminable`.
+  try {
+    const target = resolveTarget({ cwd: repoRoot, preferVcs: config?.vcs ?? null });
+    if (!target.ok && BACKLOG_UNSERVED_REASONS.has(target.reason)) {
+      skipped.push('backlog-refinement');
+    } else if (!target.ok) {
+      undeterminable.push('backlog-refinement');
+    } else {
+      const refine = readBacklogRefineWindow(repoRoot, now);
+      if (refine.state === 'undeterminable') undeterminable.push('backlog-refinement');
+      else if (refine.state === 'absent') {
+        markDue('backlog-refinement', `none in ${BACKLOG_REFINE_INTERVAL_DAYS}d → run /backlog`);
+      }
+    }
+  } catch {
+    undeterminable.push('backlog-refinement');
   }
 
   return {

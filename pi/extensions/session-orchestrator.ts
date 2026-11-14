@@ -1,17 +1,25 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { runPiHookEvent } from "../../scripts/lib/pi-hook-bridge.mjs";
+import { deliverPiWarnings, runPiHookEvent } from "../../scripts/lib/pi-hook-bridge.mjs";
 
 const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(EXTENSION_DIR, "../..");
 
 async function dispatch(piEventName: string, event: Record<string, unknown>, ctx: Record<string, unknown>) {
   const result = await runPiHookEvent(piEventName, event, ctx, { pluginRoot: PLUGIN_ROOT });
-  if (result.block) {
-    return { block: true, reason: result.reason ?? "Blocked by Session Orchestrator" };
+  // The decision is fixed before any warning is shown: delivery must never cost a block.
+  const decision = result.block
+    ? { block: true, reason: result.reason ?? "Blocked by Session Orchestrator" }
+    : undefined;
+  // Non-blocking hook warnings (emitWarn, `relaxed` profile) would otherwise be lost on Pi.
+  // deliverPiWarnings never throws; the catch only guards against a regression there.
+  try {
+    deliverPiWarnings(result.warnings, ctx);
+  } catch {
+    /* a warning that cannot be shown must not change the decision */
   }
-  return undefined;
+  return decision;
 }
 
 export default function sessionOrchestratorPiExtension(pi: {

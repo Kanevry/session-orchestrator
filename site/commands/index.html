@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Commands: which one to type, and what happens next</title>
-<meta name="description" content="All 31 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
+<meta name="description" content="All 32 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
 <link rel="canonical" href="https://session-orchestrator.com/commands">
 <link rel="alternate" hreflang="en" href="https://session-orchestrator.com/commands">
 <link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de/commands">
@@ -13,7 +13,7 @@
 <meta property="og:site_name" content="Session Orchestrator">
 <meta property="og:url" content="https://session-orchestrator.com/commands">
 <meta property="og:title" content="Commands: which one to type, and what happens next">
-<meta property="og:description" content="All 31 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
+<meta property="og:description" content="All 32 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -21,7 +21,7 @@
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Commands: which one to type, and what happens next">
-<meta name="twitter:description" content="All 31 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
+<meta name="twitter:description" content="All 32 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
 <meta name="twitter:image:alt" content="Session Orchestrator: From your task to checked work. The commands /session, /go and /close beside an illustration of an agent workshop under human direction.">
 <link rel="icon" href="/favicon.svg">
@@ -84,16 +84,16 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
 <link rel="stylesheet" href="/assets/site.css?v=20261107">
-<link rel="stylesheet" href="/assets/commands.css?v=20261109">
+<link rel="stylesheet" href="/assets/commands.css?v=20261113">
 </head>
 <body class="guide-page commands-page">
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.19.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.20.0</span></span></a>
     <nav class="nav" aria-label="Main">
-      <a href="/#how">How it works</a>
+      <a href="/guide#how-it-works">How it works</a>
       <a href="/commands" aria-current="page">Commands</a>
       <a href="/#install">Install</a>
       <a href="/guide">Guide</a>
@@ -102,7 +102,7 @@
     </nav>
     <p class="lang"><a href="/commands" aria-current="page" lang="en">EN</a><a href="/de/commands" lang="de">DE</a></p>
     <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation">
-      <a href="/#how">How it works</a>
+      <a href="/guide#how-it-works">How it works</a>
       <a href="/commands" aria-current="page">Commands</a>
       <a href="/#install">Install</a>
       <a href="/guide">Guide</a>
@@ -115,7 +115,7 @@
 <main id="main">
   <section class="sec" id="top">
     <div class="wrap">
-      <p class="eyebrow">31 commands &middot; Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
+      <p class="eyebrow">32 commands &middot; Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
       <h1 class="h-display">Which command helps me right now?</h1>
       <p class="lede">Pick what you want to do. Each command below says when to use it, what you get, how to type it and what happens next.</p>
 
@@ -136,7 +136,7 @@
         <li><a class="tile" href="#start-project"><span class="tile-title">Start a project</span><span class="tile-hint">/bootstrap, /plan new</span></a></li>
         <li><a class="tile" href="#plan-feature"><span class="tile-title">Plan a feature</span><span class="tile-hint">/plan feature</span></a></li>
         <li><a class="tile" href="#build"><span class="tile-title">Build</span><span class="tile-hint">/session, /go, /close</span></a></li>
-        <li><a class="tile" href="#maintain"><span class="tile-title">Maintain</span><span class="tile-hint">/session housekeeping</span></a></li>
+        <li><a class="tile" href="#maintain"><span class="tile-title">Maintain</span><span class="tile-hint">/session housekeeping, /backlog</span></a></li>
         <li><a class="tile" href="#investigate"><span class="tile-title">Investigate</span><span class="tile-hint">/discovery, /debug</span></a></li>
         <li><a class="tile" href="#testing"><span class="tile-title">Test</span><span class="tile-hint">/test, /ux-grill</span></a></li>
         <li><a class="tile" href="#look-back"><span class="tile-title">Look back</span><span class="tile-hint">/eval, /plan retro</span></a></li>
@@ -155,6 +155,8 @@
             <tr><th scope="row">Tidy up?</th><td><a href="#session"><code>/session housekeeping</code></a></td></tr>
           </tbody>
         </table>
+        <p><b>Not sure how big it is?</b> Start with <code>/session feature</code>. If the plan it proposes looks bigger than you thought, start again with <code>/session deep</code>. On Codex you pick the same commands as skills, for example <code>$session-orchestrator:session feature</code>.</p>
+        <p class="rule-more">Running several sessions at once? The optional <a href="/lead">lead session</a> keeps them in line.</p>
       </aside>
 
       <h2 class="small" id="typing-h">How to type a command in your coding tool</h2>
@@ -174,8 +176,8 @@
   <div class="cmd-filter" id="cmd-filter-box" hidden>
     <label for="cmd-filter">Filter commands</label>
     <input type="search" id="cmd-filter" autocomplete="off" spellcheck="false" placeholder="for example: test, issues, commit" aria-describedby="cmd-count">
-    <p class="cmd-count" id="cmd-count" role="status" aria-live="polite">31 of 31 commands</p>
-    <p class="cmd-empty" id="cmd-empty" hidden>No command matches. Clear the field to see all 31.</p>
+    <p class="cmd-count" id="cmd-count" role="status" aria-live="polite">32 of 32 commands</p>
+    <p class="cmd-empty" id="cmd-empty" hidden>No command matches. Clear the field to see all 32.</p>
   </div>
 
   <section class="cmd-group" id="start-here" aria-labelledby="start-here-h">
@@ -246,8 +248,8 @@
       </dl>
       <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/plan/SKILL.md">Source: skills/plan/SKILL.md</a></p>
     </article>
-    <article class="cmd-card is-start" id="evolve" data-command="evolve">
-      <h3><a class="cmd-name" href="#evolve"><code>/evolve</code></a> <span class="start-badge">Start here</span></h3>
+    <article class="cmd-card is-start" id="evolve-command" data-command="evolve">
+      <h3><a class="cmd-name" href="#evolve-command"><code>/evolve</code></a> <span class="start-badge">Start here</span></h3>
       <dl class="cmd-facts">
       <dt>When</dt><dd>After a few sessions, you want to learn from what went well or badly.</dd>
       <dt>You get</dt><dd>Suggested lessons from your past sessions. You decide which ones to keep.</dd>
@@ -394,6 +396,18 @@
       </dl>
       <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/architecture/SKILL.md">Source: skills/architecture/SKILL.md</a></p>
     </article>
+    <article class="cmd-card" id="backlog" data-command="backlog">
+      <h3><a class="cmd-name" href="#backlog"><code>/backlog</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>When</dt><dd>Agents keep asking back or guessing because issues lack labels, acceptance checks or a clear size.</dd>
+      <dt>You get</dt><dd>A report on your open GitLab issues: labels against the repo's own taxonomy, readiness of <code>status:ready</code> issues, oversized issues, epics and dependencies on closed issues. Then proposed splits, epics, merges and fills.</dd>
+      <dt>Type it</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/backlog [path | group/name]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:backlog</code></dd><dt>Cursor</dt><dd><code>/backlog</code></dd><dt>Pi</dt><dd><code>/backlog</code></dd></dl></dd>
+      <dt>Touches</dt><dd><span class="touch touch-issues">Opens issues</span> <span class="asks">asks you first</span> <span class="touch-note">the check only reads; labels, comments and issues change only for proposals you approve</span></dd>
+      <dt>Needs</dt><dd>A GitLab repository. GitHub is not supported yet.</dd>
+      <dt>Then</dt><dd>Pick the ready issues up in <code>/session</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/backlog/SKILL.md">Source: skills/backlog/SKILL.md</a></p>
+    </article>
     <article class="cmd-card" id="memory-cleanup" data-command="memory-cleanup">
       <h3><a class="cmd-name" href="#memory-cleanup"><code>/memory-cleanup</code></a></h3>
       <dl class="cmd-facts">
@@ -527,10 +541,49 @@
     </div>
   </section>
 
-  <section class="cmd-group" id="learn" aria-labelledby="learn-h">
-    <h2 id="learn-h">Learn</h2>
-    <p class="group-lede">Turn lessons from past sessions into rules your agents read.</p>
-    <p class="group-also">First: <a href="#evolve"><code>/evolve</code></a> in Start here.</p>
+  <section class="cmd-group learn-sec" id="evolve" aria-labelledby="learn-h">
+    <span id="learn" class="anchor-alias"></span>
+    <div class="section-heading"><div><p class="eyebrow">It learns, with your yes</p><h2 id="learn-h">The same mistake should not<br>come back every week.</h2></div><p>Each session leaves a short record. <code>/evolve</code> looks across those records and suggests a lesson. You decide. Only a lesson you keep can become a rule.</p></div>
+      <div class="learn-grid">
+        <ol class="learn-flow">
+          <li class="learn-step"><h3><span class="how-n">1</span>A session leaves a record</h3><p>One line per session: its type, its rounds and agents, what was finished and what was carried over.</p><p class="artifact-path"><code>.orchestrator/metrics/sessions.jsonl</code></p></li>
+          <li class="learn-step"><h3><span class="how-n">2</span><code>/evolve</code> suggests a lesson</h3><p>It shows the evidence, a confidence score and the files the lesson is about. The real lesson below is about this project&#8217;s own tools. In your repository a lesson is about your code, for example a check your agents keep skipping.</p>
+<pre class="artifact"><code>{ "type": "convention",
+  "evidence": "Session … three reviews against …",
+  "file_paths": ["skills/_shared/fleet-protocol.md",
+                 "skills/wave-executor/SKILL.md"],
+  "expires_at": "2027-01-12T00:10:00.000Z" }</code></pre></li>
+          <li class="learn-step"><h3><span class="how-n">3</span>You decide</h3><p>Keep it, correct it or reject it. Nothing becomes a rule without you.</p><p class="learn-choices" aria-hidden="true"><span>Keep</span><span>Correct</span><span>Reject</span></p></li>
+          <li class="learn-step"><h3><span class="how-n">4</span><code>/reconcile</code> writes a rule</h3><p>A small rule file that names its source, its confidence and an expiry date.</p>
+<pre class="artifact"><code>auto-generated: true
+paths:
+  - "skills/_shared/**"
+  - "skills/wave-executor/**"
+learning-key: convention/owner-inbox-…
+confidence: 0.8
+expires-at: 2027-01-12</code></pre></li>
+          <li class="learn-step"><h3><span class="how-n">5</span>The next session uses it</h3><p>Agents get the rule only when they work on matching files. After its expiry date, housekeeping removes it once you confirm.</p></li>
+        </ol>
+        <div class="learn-side">
+          <figure class="learn-art">
+            <img src="/img/learning-shelf-800.webp" srcset="/img/learning-shelf-480.webp 480w, /img/learning-shelf-800.webp 800w, /img/learning-shelf-1536.webp 1536w" sizes="(min-width: 960px) 40vw, calc(100vw - 40px)" width="1536" height="1024" loading="lazy" decoding="async" alt="A person at a desk holds up one card taken from an agent's logbook, a rejected card lies crumpled in a tray, and an agent takes a marked binder from the rule shelf.">
+            <figcaption>Only a lesson you approve becomes a rule · made with AI</figcaption>
+          </figure>
+          <p class="artifact-note">The examples in steps 2 and 4 are real files from this repository, shortened.</p>
+          <div class="when-box">
+            <h3>Which one, when?</h3>
+            <dl>
+              <dt><code>/plan retro</code></dt><dd>after a finished phase: what worked, what to change</dd>
+              <dt><code>/evolve</code></dt><dd>when your sessions repeat a pattern</dd>
+              <dt><code>/reconcile</code></dt><dd>when a lesson you kept should become a working rule</dd>
+              <dt><code>/eval</code></dt><dd>to score how a session ran, from its own records</dd>
+              <dt><code>/session housekeeping</code></dt><dd>to do all the upkeep in one go</dd>
+            </dl>
+          </div>
+          <p class="small muted">What it does not do: it does not train a model, and it does not change itself without your approval. Measured tests that compare two versions of a skill are planned, not shipped.</p>
+        </div>
+      </div>
+    <p class="group-also">First: <a href="#evolve-command"><code>/evolve</code></a> in Start here.</p>
     <div class="cmd-grid">
     <article class="cmd-card" id="reconcile" data-command="reconcile">
       <h3><a class="cmd-name" href="#reconcile"><code>/reconcile</code></a></h3>
@@ -704,7 +757,7 @@
 <!-- Vercel Web Analytics, same-origin; see the comment on /guide and /datenschutz Punkt 04. -->
 <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
 <script src="/_vercel/insights/script.js" defer></script>
-<script src="/assets/commands.js?v=20261109" defer></script>
+<script src="/assets/commands.js?v=20261113" defer></script>
 <script src="/assets/ui.js?v=20260910" defer></script>
 </body>
 </html>

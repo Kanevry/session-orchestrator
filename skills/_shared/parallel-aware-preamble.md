@@ -27,7 +27,7 @@ If another `parallel-ok`-class session is active in the same worktree, the pream
 If an `exclusive`-class session is also active, the Exclusive-Conflict AUQ takes precedence (HARD-GATE wins).
 </SOFT-GATE>
 
-**Always-OK class** (`discovery`, `evolve`, `plan`, `repo-audit`, `portfolio`):
+**Always-OK class** (`discovery`, `evolve`, `plan`, `repo-audit`, `portfolio`, `backlog`):
 The preamble passes through with zero AUQ regardless of other active sessions. Read-only modes never conflict.
 
 ## Identity Binding for `findPeers` (#1085)

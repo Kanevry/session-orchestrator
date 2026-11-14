@@ -455,11 +455,15 @@ const INTENTIONAL_TEST_ASSET_PATHS = new Set([
 // `skills/eval/rubric-v3.md` (5.9.0 sweep, measured 2026-10-06): its change log quotes the dated
 // owner decision "rubric-v3 in 5.8.0" (2026-10-05, #1487) — the release that introduced the rubric.
 // Prose history, not a version surface; bumping it would falsify the quote.
+// `design/prototypes/1756/` (5.20.0 sweep, measured 2026-11-14): the frozen hero prototypes of
+// both design rounds for the home page (#1756). Their captions and notes quote the demo run they
+// were built from ("plugin 5.19.0, 13 Nov 2026"); bumping them would falsify the run. Only this
+// one round directory is exempt — a new prototype directory under `design/prototypes/` stays swept.
 // `site/_census.json` is deliberately NOT allowlisted: it carries a `"version"` field that
 // `--set-version` re-stamps (scripts/site-numbers.mjs --write, see the post-bump hint in main()),
 // so leaving it under the drift sweep makes the sweep double as its staleness gate — a census
 // not re-stamped after a bump fails `--check` instead of shipping the previous version.
-export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|scripts\/lib\/locks\/index\.mjs|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|skills\/eval\/rubric-v3\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|skills\/release\/SKILL\.md|marketing\/remotion\/(?:README\.md|campaign\.json|render-receipt\.json|src\/ReleaseFilm\.tsx)$)/;
+export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|scripts\/lib\/locks\/index\.mjs|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|skills\/eval\/rubric-v3\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|skills\/release\/SKILL\.md|design\/prototypes\/1756\/|marketing\/remotion\/(?:README\.md|campaign\.json|render-receipt\.json|src\/ReleaseFilm\.tsx)$)/;
 
 /** Pure check over packed-entry lines. Returns violations: {name, line}[]. */
 export function checkLeakage(lines) {
@@ -656,6 +660,12 @@ export function isPinnedActionComment(content, literal) {
  */
 function isHistoryRow(file, line, content, prevTag) {
   if (!versionTokenRegex(prevTag).test(content)) return true;
+  // A shipped page line marked `site-numbers:historical` carries a dated run caption on purpose
+  // (site/index.html, site/de/index.html since #1756). tests/scripts/site-numbers.test.mjs already
+  // exempts exactly these lines and guards every other line of the page more strictly, so the
+  // prev-tag sweep follows the same marker instead of exempting the whole file. Only on the pages
+  // that test reads (site/**/*.html): elsewhere no stricter guard stands behind the marker.
+  if (file.startsWith('site/') && file.endsWith('.html') && content.includes('site-numbers:historical')) return true;
   if (isDependencyRangeOnly(content, prevTag)) return true;
   const base = file.split('/').pop();
   if (LOCKFILE_BASENAMES.has(base)) {

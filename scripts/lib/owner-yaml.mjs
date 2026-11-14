@@ -61,8 +61,9 @@
  *                            or an entry that is empty, relative, non-string or carries
  *                            NUL/CR/LF, drops the section like an invalid store-role)
  *   hooks:                  (optional; host-local hook profile — #1881)
- *     profile: 'strict' | 'full' | 'standard'  (absent = standard; `full` = legacy
- *                            alias of strict. precedence env SO_HOOK_PROFILE > this >
+ *     profile: 'strict' | 'full' | 'standard' | 'relaxed'  (absent = standard; `full` =
+ *                            legacy alias of strict; `relaxed` blocks only irreversible
+ *                            rules (#2090). precedence env SO_HOOK_PROFILE > this >
  *                            standard, see hooks/_lib/profile-gate.mjs. minimal/off are env-only)
  *     disabled: string[]     (hook names switched off on this host; unioned with env
  *                            SO_DISABLED_HOOKS; never a safety hook. An invalid value or
@@ -291,7 +292,7 @@ const VALID_LEARNINGS_STORE_ROLES = ['writer', 'inbox'];
  * tests/hooks/profile-gate.test.mjs pins the parity. `minimal`, `off` and a
  * safety hook stay env-only: an agent can append to this file.
  */
-const VALID_HOOK_PROFILES = ['strict', 'full', 'standard'];
+const VALID_HOOK_PROFILES = ['strict', 'full', 'standard', 'relaxed'];
 const SAFETY_HOOKS = [
   'pre-bash-destructive-guard',
   'enforce-scope',

@@ -15,6 +15,12 @@
  *     floor rule, never downgrade a floor `block`, never swap a floor rule's
  *     pattern/path-allowlist for its own (field-merge would be the backdoor).
  *
+ * Rule class (#2090): every rule leaves this module with `class` set to
+ * `irreversible` or `recoverable`. A missing or unknown class becomes
+ * `irreversible`, so an overlay rule from a repo that never heard of classes
+ * cannot turn relaxable under the `relaxed` hook profile. In the merge the class
+ * escalates like severity: irreversible on either side wins.
+ *
  * Invariant: merged.rules ⊇ floor.rules for EVERY overlay input (including
  * `{}`, `{"rules":[]}`, malformed JSON, and a missing file) — every overlay
  * failure mode fails TO THE FLOOR, not open.
@@ -32,6 +38,24 @@ const POLICY_REL = path.join('.orchestrator', 'policy', 'blocked-commands.json')
 
 /** Severity ordering for the escalate-only merge: warn < block. */
 const SEVERITY_RANK = { warn: 0, block: 1 };
+
+/**
+ * The rule class a policy entry may declare (#2090). Mirrors RULE_CLASSES in
+ * hooks/_lib/profile-gate.mjs (not imported: the gate stays builtin-only, and
+ * this module must not depend on a hook file). tests pin the parity.
+ */
+export const RULE_CLASSES = Object.freeze(['irreversible', 'recoverable']);
+
+/**
+ * Normalize a declared rule class: only the exact string `recoverable` stays
+ * recoverable; absent, unknown or non-string reads as `irreversible`.
+ *
+ * @param {unknown} raw
+ * @returns {'irreversible'|'recoverable'}
+ */
+export function normalizeRuleClass(raw) {
+  return raw === 'recoverable' ? 'recoverable' : 'irreversible';
+}
 
 /** Module-level default per-path cache (each hook invocation is an isolated
  * Node subprocess, so this is fresh per process — issue #250 contract). */
@@ -84,8 +108,12 @@ export function resolvePolicyPaths({ cwd, projectDir, pluginRoot } = {}) {
  * string id/pattern/severity) and duplicate ids (first occurrence wins), each
  * with a warning — never kill the whole list for one bad entry.
  *
- * Valid rules pass through UNCHANGED (extra fields like `path-allowlist` and
- * `allow-override-flag` are preserved verbatim).
+ * Valid rules keep every field verbatim (extra fields like `path-allowlist`
+ * and `allow-override-flag` included); only `class` is normalized
+ * ({@link normalizeRuleClass}) — a rule whose class needs no change is passed
+ * through as the same object, otherwise a shallow copy carries the new class.
+ * An unknown class value is warned about; an absent one is silent (pre-#2090
+ * policies have none).
  *
  * @param {unknown} rules
  * @param {string} label - 'floor' | 'overlay' | 'policy' (for warning text)
@@ -117,7 +145,13 @@ function sanitizeRules(rules, label, warnings) {
       continue;
     }
     seen.add(rule.id);
-    out.push(rule);
+    const ruleClass = normalizeRuleClass(rule.class);
+    if (rule.class !== undefined && rule.class !== ruleClass) {
+      warnings.push(
+        `${label} rule '${rule.id}' has unknown class ${JSON.stringify(rule.class)} — treated as irreversible`
+      );
+    }
+    out.push(rule.class === ruleClass ? rule : { ...rule, class: ruleClass });
   }
   return out;
 }
@@ -133,10 +167,12 @@ function sanitizeRules(rules, label, warnings) {
  *   (a) overlay-only id                  → appended (additive).
  *   (b) id collision, floor `block`      → the WHOLE floor rule wins (no field
  *       merge — an overlay path-allowlist/pattern would be the backdoor);
- *       overlay definition dropped + warning.
+ *       overlay definition dropped + warning (only an `irreversible` class
+ *       is taken over, #2090).
  *   (c) id collision, floor `warn`       → max(floor, overlay) severity with
  *       warn < block, on the FLOOR rule's fields; unknown/missing overlay
- *       severity → floor wins + warning.
+ *       severity → floor wins + warning. The class escalates the same way:
+ *       `irreversible` on either side wins (#2090).
  *   (d) duplicate ids WITHIN one file    → first occurrence wins + warning.
  *   (e) broken individual rule           → skipped with warning, list survives.
  *
@@ -165,7 +201,12 @@ export function mergePolicies(floor, overlay) {
 
     const floorRule = merged[idx];
     if (floorRule.severity === 'block') {
-      // (b) floor block is immutable — whole floor rule wins
+      // (b) floor block is immutable — whole floor rule wins. The one field an
+      // overlay may still tighten is the class (#2090): irreversible is never
+      // a backdoor, it only stops `relaxed` from softening the rule.
+      if (floorRule.class === 'recoverable' && rule.class === 'irreversible') {
+        merged[idx] = { ...floorRule, class: 'irreversible' };
+      }
       warnings.push(
         `overlay rule '${rule.id}' shadowed by floor block rule — overlay definition ignored`
       );
@@ -183,8 +224,14 @@ export function mergePolicies(floor, overlay) {
         );
         continue;
       }
-      if (SEVERITY_RANK[rule.severity] > SEVERITY_RANK[floorRule.severity]) {
-        merged[idx] = { ...floorRule, severity: rule.severity };
+      const escalateSeverity = SEVERITY_RANK[rule.severity] > SEVERITY_RANK[floorRule.severity];
+      const escalateClass = floorRule.class === 'recoverable' && rule.class === 'irreversible';
+      if (escalateSeverity || escalateClass) {
+        merged[idx] = {
+          ...floorRule,
+          ...(escalateSeverity ? { severity: rule.severity } : {}),
+          ...(escalateClass ? { class: 'irreversible' } : {}),
+        };
       }
       continue;
     }

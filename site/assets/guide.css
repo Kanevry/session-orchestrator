@@ -54,3 +54,31 @@
   .guide-toc a[aria-current="true"] { border-left-color: var(--accent); }
   .guide-body { grid-column: 4 / 13; min-width: 0; }
 }
+/* Relocated start-page explanations share the guide's reading column. */
+.guide-body .section-heading { display: block; }
+.guide-body .section-heading > p { max-width: var(--measure); margin-top: 20px; }
+.guide-body .how-grid { display: block; }
+.guide-step-title { display: inline-flex; align-items: center; gap: 12px; }
+.guide-body .keep-row { gap: var(--gap); }
+.guide-body .story-sec, .guide-body .technical-sec { background: var(--bg); }
+.guide-body .story-grid, .guide-body .faq-layout { display: block; }
+.guide-body .faq-intro { position: static; }
+.guide-body .faq { margin-top: 32px; }
+.guide-body .detail-body .grid-12 { display: block; }
+.guide-body .tools-table { font-size: .9rem; }
+.guide-body .tools-table th, .guide-body .tools-table td { padding-inline: 8px; }
+.guide-body .tools-table tbody th { white-space: normal; }
+.guide-body #measured .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 600px) {
+  .guide-body .tools-table th, .guide-body .tools-table td { padding-inline: 0; }
+  .guide-body .tools-table td { padding-left: 9rem; }
+  .guide-body #measured .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Beginner glossary restored from the former home page. */
+.glossary { max-width: 72ch; margin-block: 24px; padding: 16px 20px; border: 1px solid var(--line); border-radius: var(--radius); }
+.glossary > summary { cursor: pointer; color: var(--fg-2); }
+.glossary dl { margin: 16px 0 0; }
+.glossary dl > div + div { margin-top: 12px; }
+.glossary dt { font-weight: 600; }
+.glossary dd { margin: 0; color: var(--fg-2); }

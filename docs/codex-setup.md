@@ -250,6 +250,35 @@ These per-event gaps are tracked as documented asymmetries in `scripts/lib/valid
 
 An empty `SubagentStart` array means the event belongs to the validated Codex surface but currently has no payload-compatible handler. It does not mean installation or hook trust failed.
 
+### Which guard runs on which harness
+
+Derived from the four manifests, one row per PreToolUse-class handler, with the matcher it is registered under (Cursor: events `beforeShellExecution` and `preToolUse`; Pi: event `tool_call`). `no` = the manifest does not register it. Re-derive it by listing, per handler file name, the `matcher` of every group in the `PreToolUse` / `beforeShellExecution` / `preToolUse` / `tool_call` events of `hooks/hooks.json`, `hooks/hooks-codex.json`, `hooks/hooks-cursor.json` and `hooks/hooks-pi.json`. Not every row is a guard (`pre-task-scope-disjoint`, `pre-agent-cap`, `pre-auq-clarity` are Claude Code dispatch and prompt hooks).
+
+| Guard | Claude Code | Codex | Cursor | Pi |
+|---|---|---|---|---|
+| `enforce-scope.mjs` | `Edit\|Write\|MultiEdit` | via `apply_patch` adapter | `Write\|StrReplace\|TabWrite\|Edit\|MultiEdit` | `edit\|write` |
+| `config-protection.mjs` | `Edit\|Write\|MultiEdit` | via `apply_patch` adapter | `Write\|StrReplace\|TabWrite\|Edit\|MultiEdit` | `edit\|write` |
+| `pre-edit-sessions-ledger-guard.mjs` | `Edit\|Write\|MultiEdit` | via `apply_patch` adapter | `Write\|StrReplace\|TabWrite\|Edit\|MultiEdit` | `edit\|write` |
+| `pre-tool-state-md-path-guard.mjs` | `Edit\|Write\|MultiEdit` + `Bash\|Monitor` | `Bash` | `*` + `Write\|StrReplace\|TabWrite\|Edit\|MultiEdit` | `edit\|write` + `bash` |
+| `pre-bash-destructive-guard.mjs` | `Bash\|Monitor` + `PowerShell` | `Bash` | `*` | `bash` |
+| `pre-bash-staging-fence.mjs` | `Bash\|Monitor` | `Bash` | `*` | `bash` |
+| `pre-bash-memory-propose-audit.mjs` | `Bash\|Monitor` | `Bash` | `*` | `bash` |
+| `pre-bash-sessions-ledger-guard.mjs` | `Bash\|Monitor` | `Bash` | `*` | no |
+| `pre-bash-templates-first.mjs` | `Bash\|Monitor` | no | `*` | no |
+| `pre-bash-issue-budget.mjs` | `Bash\|Monitor` | `Bash` | `*` | no |
+| `enforce-commands.mjs` | `Bash\|Monitor` + `PowerShell` | `Bash` | `*` | `bash` |
+| `pre-task-scope-disjoint.mjs` | `Agent` | no | no | no |
+| `pre-agent-cap.mjs` | `Agent` | no | no | no |
+| `pre-auq-clarity.mjs` | `AskUserQuestion` | no | no | no |
+| `codex-apply-patch-guard.mjs` | no | `Bash` + `apply_patch` | no | no |
+
+Reading notes:
+
+- On Codex the Edit/Write guards (`enforce-scope`, `config-protection`, `pre-edit-sessions-ledger-guard`, and the edit side of `pre-tool-state-md-path-guard`) are not registered by name; `codex-apply-patch-guard.mjs` runs them per file of an `apply_patch` (see above).
+- Hook timeouts: the Codex `PreToolUse` entries in `hooks/hooks-codex.json` have `timeout: 15` (seconds; they had 5), and the `apply_patch` guard counts its own 12 s budget from process start (`BUDGET_MS` in `hooks/codex-apply-patch-guard.mjs`; it was 4.5 s from its `main`). An external report measured on Windows that most guard processes did not finish within 5 s, and Codex runs the tool call when a hook times out. The maintainers have not measured the new values on Windows; the 3 s margin between the budget and the timeout is a reserve, not a measurement. The other harness manifests keep 5.
+- Only Claude Code registers the `PowerShell` tool. On Windows, Codex sends PowerShell text with the tool name `Bash`, which the POSIX rules of these guards do not understand.
+- The shell and path guards in this table read the text of the call they are handed. Text typed into an already open interactive Codex shell reaches no hook, and a script file a call runs is not inspected. What that means for the guarantee: [SECURITY.md](../SECURITY.md) § What the guards are, and are not.
+
 ## Usage
 
 After installation or refresh, start a fresh task. In the desktop composer, open the skill picker, search for `go` or `close`, and select the matching **Session Orchestrator** entry. In Codex CLI or the IDE extension, use `/skills` or mention the namespaced skill directly in your prompt. [OpenAI skill invocation](https://learn.chatgpt.com/docs/build-skills)

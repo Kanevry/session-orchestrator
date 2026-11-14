@@ -325,6 +325,7 @@ Propose the **ordered default scope** below in the Phase 8 Q&A. Every step is AU
 5. **`/reconcile`** — turn high-confidence learnings into operator-approved `.claude/rules/` proposals.
 6. **`/evolve dialectic`** — dry-run first, review `.orchestrator/dialectic-pending.md`, then apply. This step dispatches the read-only `dialectic-deriver` agent, so **"coordinator-direct" means no wave-executor, not zero subagents**. <!-- path-check: example -->
 7. **`/memory-cleanup`** — `--dry-run` writes the MEMORY.md proposal to `.orchestrator/pending-dream.md`; `--apply-pending` applies it. <!-- path-check: example -->
+8. **`/backlog`** — backlog refinement: run the read-only checker for this repo, apply the mechanical label batch after approval, offer the judgment pass (split / epic / close proposals) as an option. Run after the learning and memory steps; skipped on non-GitLab repos.
 
 Operator-selected issues (from Phase 6) are appended AFTER this loop, not interleaved with it — the loop's outputs (new learnings, new rules) are inputs the issue work should already see.
 

@@ -262,6 +262,7 @@ Ordinary housekeeping is **ONE coordinator-direct wave**: `node scripts/session-
 | 5 | `/reconcile` | AUQ-gated (rule proposals are never applied unasked) | `orchestrator.reconcile.completed` with `dry_run: false` |
 | 6 | `/evolve dialectic` | AUQ-gated (the derived thesis is presented, not committed) | `orchestrator.dialectic.completed` |
 | 7 | `/memory-cleanup` | AUQ-gated (deletions are operator-approved) | `orchestrator.memory.cleanup_completed` |
+| 8 | `/backlog` (`node scripts/backlog-refine.mjs`) | report unconditional; tracker writes AUQ-gated per `skills/backlog/SKILL.md` | `orchestrator.backlog.refine_completed` |
 
 Row 3 runs directly after row 2 because its evidence comes from row 2's corpus: an entry's date is recoverable only via its `learning-id` → `learnings.jsonl` `expires_at`, so the rule sweep must see the store the learnings sweep left behind. Show the operator the dry-run plan — it names every rewrite, every delete, every skip (`no-1to1-mapping`, `no-provenance-block`, `unreadable`, `no-counter-sentence`) and every unresolvable pair — before asking. A `no-counter-sentence` skip (GH#70) is the sweep refusing to touch a file whose counter sentence it cannot read, deletion included — report it as a skip, never as a defect. Contract: `docs/rule-authoring.md` § Consolidated rules → "The expiry sweep".
 

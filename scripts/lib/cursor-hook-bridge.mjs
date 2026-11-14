@@ -522,7 +522,14 @@ export function toCursorHookOutput(cursorEventName, result) {
     };
   }
   if (blocking) {
-    return { permission: 'allow' };
+    // A non-blocking gating event still carries its hooks' warnings (emitWarn,
+    // the `relaxed` profile's demoted block); a bare allow dropped them. The repo
+    // documents no allow-specific Cursor response schema — `user_message` is the
+    // field this bridge already sends on deny (header: Cursor reads
+    // `{ permission, user_message, agent_message }`). That Cursor SHOWS it on an
+    // allow is unmeasured; revisit when a live Cursor probe confirms or refutes it.
+    const hints = collectCursorHints(result.results);
+    return hints ? { permission: 'allow', user_message: hints } : { permission: 'allow' };
   }
   if (POST_HOC_CONTEXT_EVENTS.includes(cursorEventName)) {
     const hints = collectCursorHints(result.results);

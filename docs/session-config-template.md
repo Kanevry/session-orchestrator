@@ -166,7 +166,7 @@ enforcement-gates:
                                        #   means "enabled unless set to false"; this one runs
                                        #   only on a literal `true`. Leaving it out does NOT
                                        #   leave Bash writes guarded (#800/#915).
-allow-destructive-ops: false           # disables destructive-command guard when true
+allow-destructive-ops: false           # INERT since #2089 (ignored with a warning); relax via SO_HOOK_PROFILE / owner.yaml hooks.profile
 reasoning-output: false                # opt-in STATE:/PLAN: agent transparency markers
 grounding-check: true                  # session-end Phase 1.1a planned-vs-touched diff
 grounding-injection-max-files: 3       # 0 disables (#85)
@@ -1093,7 +1093,7 @@ instruction-budget:
 config-protection:
   enabled: true            # PreToolUse: warn on gate-weakening Edit/Write
   mode: warn               # warn | strict (strict blocks loosening, exit 2)
-allow-config-weakening: false   # per-session bypass (mirrors allow-destructive-ops)
+allow-config-weakening: false   # per-session bypass
 
 # Orphan-process watchdog (#1425 / #1432) — DEFAULT OFF; arm only after measuring its firing rate (HR-101)
 reaper:

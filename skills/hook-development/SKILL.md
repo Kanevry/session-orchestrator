@@ -330,7 +330,7 @@ All hook handlers support runtime opt-out via two environment variables without 
 
 | Variable | Values | Behaviour |
 |----------|--------|-----------|
-| `SO_HOOK_PROFILE` | `strict` \| `standard` \| `minimal` \| `off` (`full` = `strict`) | Preset bundle (default `standard`). |
+| `SO_HOOK_PROFILE` | `strict` \| `standard` \| `relaxed` \| `minimal` \| `off` (`full` = `strict`) | Preset bundle (default `standard`). |
 | `SO_DISABLED_HOOKS` | Comma-separated names | Disable individual hooks; overrides profile. |
 
 The same two settings can live per host in `owner.yaml` (`hooks.profile`, `hooks.disabled`); env wins, and owner.yaml cannot disable a safety hook (#1881).
@@ -339,7 +339,8 @@ The same two settings can live per host in `owner.yaml` (`hooks.profile`, `hooks
 
 - **`strict`** (`full` is the old name): all hooks run, every destructive-guard rule at its policy severity.
 - **`standard`** (default): strict minus `STANDARD_OFF_HOOKS` in `hooks/_lib/profile-gate.mjs`; the cases in `RELAXED_WARN_RULES` warn instead of block.
-- **`minimal`**: only `on-session-start` + `pre-bash-destructive-guard`.
+- **`relaxed`** (#2090): the hooks of `standard`; additionally two measured destructive-guard cases warn and run instead of being denied: a truncating redirect onto an unmodified tracked file, and plain `git reset --hard` on a clean tree (`redirectCaseClass` / `resetHardCaseClass` in `hooks/pre-bash-destructive-guard.mjs` are the authority). Every other blocking case of the shipped policy is denied (policy `warn` rules still only warn, and a rule a repo adds in its own overlay with `class: recoverable` warns as a whole), including a commit or push from a worktree without git hooks; a rule class of `irreversible` is the default when a rule carries none. `owner.yaml` may select it; the key `allow-destructive-ops` in the instruction file no longer relaxes anything (#2089).
+- **`minimal`**: only `on-session-start` + `pre-bash-destructive-guard` (rules as in `standard`).
 - **`off`**: no hooks run.
 
 A new guard that interrupts often but protects no data belongs in `STANDARD_OFF_HOOKS`; one that stops data loss or a scope escape belongs in `SAFETY_HOOKS`.

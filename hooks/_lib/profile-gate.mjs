@@ -27,6 +27,10 @@
  *              `full` is the pre-#1881 name of this profile and stays an alias.
  *   standard — DEFAULT. strict without the hooks in STANDARD_OFF_HOOKS; the
  *              destructive-guard cases in RELAXED_WARN_RULES warn instead of block.
+ *   relaxed  — German "locker" (#2090). The hooks of standard; additionally every
+ *              destructive-guard rule/case of class `recoverable` warns instead of
+ *              block. Class `irreversible` (data git cannot bring back) still
+ *              blocks. Relaxes, never disarms, so owner.yaml may choose it.
  *   minimal  — only on-session-start + pre-bash-destructive-guard (rules as in standard)
  *   off      — no hooks enabled
  *
@@ -42,6 +46,11 @@
  * An unknown env profile is ignored with one stderr warning (owner.yaml or the
  * default then decides). An invalid owner.yaml `hooks` section is dropped by
  * `loadOwnerConfig()` (stderr WARN there), so the default decides.
+ *
+ * Rule classes (#2090): each policy rule carries `class` — `irreversible` or
+ * `recoverable`. A missing or unknown class reads as `irreversible`, so a rule
+ * that never declared one cannot become relaxed by accident. effectiveSeverity()
+ * is the one place deciding block vs warn per profile and class.
  *
  * Usage in each hook handler (at the very top, before any other logic):
  *   import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -82,7 +91,10 @@ export const RELAXED_WARN_RULES = Object.freeze([
 ]);
 
 /** Profiles owner.yaml may choose (`minimal` and `off` switch safety hooks off). */
-export const OWNER_PROFILES = Object.freeze(['strict', 'full', 'standard']);
+export const OWNER_PROFILES = Object.freeze(['strict', 'full', 'standard', 'relaxed']);
+
+/** Policy rule classes; anything else normalizes to `irreversible` (#2090). */
+export const RULE_CLASSES = Object.freeze(['irreversible', 'recoverable']);
 
 /**
  * Hooks owner.yaml cannot disable: they stop an agent from destroying data,
@@ -106,7 +118,7 @@ export const SAFETY_HOOKS = Object.freeze([
 export const DEFAULT_PROFILE = 'standard';
 
 /** Valid profile names (`full` = legacy alias of `strict`). */
-export const VALID_PROFILES = Object.freeze(['strict', 'full', 'standard', 'minimal', 'off']);
+export const VALID_PROFILES = Object.freeze(['strict', 'full', 'standard', 'relaxed', 'minimal', 'off']);
 
 const STANDARD_OFF = new Set(STANDARD_OFF_HOOKS);
 const RELAXED_WARN = new Set(RELAXED_WARN_RULES);
@@ -125,12 +137,12 @@ let _unknownProfileWarned = false;
  * Normalize a profile name; `full` maps to `strict`. Unknown → null.
  *
  * @param {unknown} raw
- * @returns {"strict"|"standard"|"minimal"|"off"|null}
+ * @returns {"strict"|"standard"|"relaxed"|"minimal"|"off"|null}
  */
 function normalizeProfile(raw) {
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
   if (value === 'full') return 'strict';
-  if (VALID_PROFILES.includes(value)) return /** @type {"strict"|"standard"|"minimal"|"off"} */ (value);
+  if (VALID_PROFILES.includes(value)) return /** @type {"strict"|"standard"|"relaxed"|"minimal"|"off"} */ (value);
   return null;
 }
 
@@ -165,7 +177,7 @@ export function _resetHookProfileCache() {
 /**
  * Resolve the active profile: env > owner.yaml > default.
  *
- * @returns {"strict"|"standard"|"minimal"|"off"}
+ * @returns {"strict"|"standard"|"relaxed"|"minimal"|"off"}
  */
 export function resolveHookProfile() {
   const rawEnv = (process.env.SO_HOOK_PROFILE ?? '').trim();
@@ -217,20 +229,46 @@ export function shouldRunHook(hookName, defaultEnabled = true) {
 
   if (profile === 'off') return false;
   if (profile === 'minimal') return MINIMAL_HOOKS.has(name);
-  if (profile === 'standard' && STANDARD_OFF.has(name)) return false;
+  if ((profile === 'standard' || profile === 'relaxed') && STANDARD_OFF.has(name)) return false;
 
   return defaultEnabled;
 }
 
 /**
- * The severity a destructive-guard case applies under the active profile:
- * a `block` case listed in RELAXED_WARN_RULES warns unless the profile is strict.
+ * The severity a destructive-guard rule or case applies — pure, no env or file
+ * read; the single place deciding block vs warn (#2090).
  *
- * @param {string} ruleId — `<rule id>` or `<rule id>/<case>`
- * @param {string} severity — the policy severity
- * @returns {string}
+ *   - policy severity other than `block` → returned unchanged (never escalated).
+ *   - profile `strict` (or `full`)       → `block`.
+ *   - a case in RELAXED_WARN_RULES       → `warn` under every other profile.
+ *   - profile `relaxed`                  → `warn` when the class is `recoverable`.
+ *   - otherwise                          → `block`.
+ * An unknown or missing profile reads as `strict`, a missing or unknown class
+ * as `irreversible`: a bad argument can only make the verdict stricter.
+ * `minimal` and `off` judge like `standard` (minimal runs the guard with the
+ * standard rules; off never runs it).
+ *
+ * The caller may pass a per-case class in `ruleClass` when one case of a rule
+ * is recoverable and another is not (the policy format has one class per rule).
+ *
+ * @param {object} args
+ * @param {string} args.ruleId — `<rule id>`, or `<rule id>/<case>` when caseId is absent
+ * @param {string} [args.caseId] — the case within the rule, e.g. `unmeasurable`
+ * @param {string} args.policySeverity — the (merged) policy severity
+ * @param {string} [args.ruleClass] — `irreversible` | `recoverable`
+ * @param {string} [args.profile] — the active profile, e.g. from resolveHookProfile()
+ * @returns {string} `block` | `warn` for those inputs; any other severity unchanged
+ * @example
+ *   effectiveSeverity({ ruleId: 'git-stash-any', policySeverity: 'warn', profile: 'strict' }) // 'warn'
+ *   effectiveSeverity({ ruleId: 'ledger-delete-protected', policySeverity: 'block',
+ *     ruleClass: 'irreversible', profile: 'relaxed' }) // 'block'
  */
-export function effectiveRuleSeverity(ruleId, severity) {
-  if (severity !== 'block' || !RELAXED_WARN.has(ruleId)) return severity;
-  return resolveHookProfile() === 'strict' ? severity : 'warn';
+export function effectiveSeverity({ ruleId, caseId, policySeverity, ruleClass, profile } = {}) {
+  if (policySeverity !== 'block') return policySeverity;
+  const active = normalizeProfile(profile) ?? 'strict';
+  if (active === 'strict') return 'block';
+  const key = typeof caseId === 'string' && caseId.length > 0 ? `${ruleId}/${caseId}` : ruleId;
+  if (RELAXED_WARN.has(key)) return 'warn';
+  if (active === 'relaxed' && ruleClass === 'recoverable') return 'warn';
+  return 'block';
 }

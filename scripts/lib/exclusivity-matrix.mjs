@@ -14,8 +14,9 @@
  *  - acquire() integration (P1.2, #570) — enforce lock semantics at session-start
  *
  * Stable contract: the list of modes per class is documented in
- * `skills/_shared/state-ownership.md` (PRD §3.A line 195).
- * Do NOT add or move modes without coordinating with that document.
+ * `skills/_shared/parallel-aware-preamble.md` § Gate Classes and
+ * `skills/_shared/parallel-aware-auq.md`.
+ * Do NOT add or move modes without updating both documents.
  */
 
 // ---------------------------------------------------------------------------
@@ -34,7 +35,7 @@
 export const EXCLUSIVITY_MATRIX = Object.freeze({
   exclusive: Object.freeze(['bootstrap', 'housekeeping', 'memory-cleanup']),
   'parallel-ok': Object.freeze(['deep', 'feature']),
-  'always-ok': Object.freeze(['discovery', 'evolve', 'plan', 'repo-audit', 'portfolio']),
+  'always-ok': Object.freeze(['discovery', 'evolve', 'plan', 'repo-audit', 'portfolio', 'backlog']),
 });
 
 // ---------------------------------------------------------------------------

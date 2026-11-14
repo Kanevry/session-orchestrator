@@ -9,8 +9,8 @@
    target command's own card (its "Codex" etc. entry), never from a list in
    this file; a command without a card or without such a form is left as it
    is. The original text is kept in data-orig-text, so switching back
-   restores it exactly. The choice is stored in localStorage ("so-tool") and
-   can be preset with ?tool=codex.
+   restores it exactly. The choice is kept in the address (?tool=codex), so a
+   reload or a shared link keeps it; nothing is saved on the device.
 
    Filter: every search term must appear somewhere in a card's text for the
    card to stay visible. The index is rebuilt after each tool switch.
@@ -61,7 +61,6 @@
   /* ---------- Tool switcher ---------- */
   const TOOLS = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor', pi: 'Pi' };
   const DEFAULT_TOOL = 'claude';
-  const STORE_KEY = 'so-tool';
   const switcher = document.getElementById('tool-switch');
   const status = document.getElementById('tool-status');
   let reindex = function () {};
@@ -138,19 +137,14 @@
     reindex();
   }
 
-  function readStored() {
+  function updateToolUrl(tool) {
     try {
-      return window.localStorage.getItem(STORE_KEY);
+      const url = new URL(window.location.href);
+      if (tool === DEFAULT_TOOL) url.searchParams.delete('tool');
+      else url.searchParams.set('tool', tool);
+      window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
     } catch {
-      return null;
-    }
-  }
-
-  function store(tool) {
-    try {
-      window.localStorage.setItem(STORE_KEY, tool);
-    } catch {
-      /* storage blocked: the choice lasts for this page view only */
+      /* URL updates unavailable: the choice lasts for this page view only */
     }
   }
 
@@ -160,21 +154,19 @@
     try {
       fromUrl = new URLSearchParams(window.location.search).get('tool');
     } catch {
-      /* no usable query string: fall back to the stored choice */
+      /* no usable query string: use the default tool */
     }
     const known = function (t) {
       return !!t && Object.prototype.hasOwnProperty.call(TOOLS, t);
     };
-    // An unknown ?tool= value falls through to the stored choice instead of discarding it.
-    const wanted = known(fromUrl) ? fromUrl : readStored();
-    if (known(wanted)) initialTool = wanted;
+    if (known(fromUrl)) initialTool = fromUrl;
 
     switcher.addEventListener('click', function (e) {
       const btn = e.target.closest('button[data-tool]');
       if (!btn) return;
       const tool = btn.getAttribute('data-tool');
       if (!Object.prototype.hasOwnProperty.call(TOOLS, tool)) return;
-      store(tool);
+      updateToolUrl(tool);
       applyTool(tool, true);
     });
   }

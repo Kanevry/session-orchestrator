@@ -64,9 +64,10 @@
 <a class="skip" href="#main">Skip to content</a>
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/lead" aria-current="page"><span class="brand-mark" aria-hidden="true"></span><span>lead session orchestrator</span></a>
-    <nav class="nav" aria-label="Main"><a href="#inbox">What you see</a><a href="#how">How it works</a><a href="#limits">Limits</a><a href="#start">Get started</a><a href="/">session-orchestrator</a></nav>
-    <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="#inbox">What you see</a><a href="#codex">Using Codex?</a><a href="#how">How it works</a><a href="#limits">Limits</a><a href="#start">Get started</a><a href="/">session-orchestrator</a></nav></details>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.20.0</span></span></a>
+    <nav class="nav" aria-label="Main"><a href="/#how">How it works</a><a href="/commands">Commands</a><a href="/guide">Guide</a><a href="/lead" aria-current="page">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
+    <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="/#how">How it works</a><a href="/commands">Commands</a><a href="/guide">Guide</a><a href="/lead" aria-current="page">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
+    <a class="top-install" href="#start">Install</a>
   </div>
 </header>
 <main id="main">
@@ -77,8 +78,10 @@
         <p class="eyebrow">Optional add-on · MIT licensed</p>
         <h1 class="h-display">Many sessions.<br>One lead.<br>One Inbox for you.</h1>
         <p class="hero-lede">When several coding sessions run at once, one lead session watches them for you. It collects every question that needs you in one Inbox. You answer once, the sessions keep working.</p>
-        <p class="lead-rule"><b>Optional add-on.</b> session-orchestrator works without it. Do you run three or more sessions side by side? Then add the lead.</p>
-        <div class="cta"><a class="btn btn-primary" href="#inbox">See the Inbox<span aria-hidden="true">↓</span></a><a class="btn btn-secondary" href="/">session-orchestrator<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
+        <p class="lead-context">Each session runs <a href="/">session-orchestrator</a>, a free plugin that gives your coding agent a plan and a memory.</p>
+        <p class="lead-rule"><b>Optional add-on.</b> The plugin works without the lead. Do you run three or more sessions side by side? Then add the lead.</p>
+        <div class="cta"><a class="btn btn-primary" href="#start">Get started<span aria-hidden="true">↓</span></a><a href="#inbox">See the Inbox<span aria-hidden="true">↓</span></a><a href="/">session-orchestrator</a></div>
+        <nav class="lead-sections" aria-label="On this page"><a href="#inbox">What you see</a><a href="#codex">Using Codex?</a><a href="#how">How it works</a><a href="#limits">Limits</a><a href="#start">Get started</a></nav>
       </div>
       <figure class="hero-art">
         <img src="/img/lead-control-room-800.webp" srcset="/img/lead-control-room-480.webp 480w, /img/lead-control-room-800.webp 800w, /img/lead-control-room-1536.webp 1536w" sizes="(min-width: 1360px) 622px, (min-width: 1101px) calc(50vw - 58px), (min-width: 960px) calc(50vw - 54px), (min-width: 601px) calc(100vw - 56px), calc(100vw - 40px)" width="1536" height="1024" fetchpriority="high" decoding="async" alt="One person in an elevated control room oversees four separate workshops where small agents work, with one indicator light per workshop and a stop lever on the desk.">
@@ -138,6 +141,7 @@
         <li class="card"><span class="feature-tag">Ledger</span><p>Decisions and merges go into a log that can only grow. <code>ledger verify</code> names the first line that was changed.</p></li>
       </ul>
       <figure class="fig lead-diagram-fig">
+        <div class="lead-diagram-scroll" role="region" aria-label="Session diagram" tabindex="0">
         <svg class="lead-diagram" viewBox="0 0 600 400" role="img" aria-labelledby="lead-diagram-title lead-diagram-desc">
           <title id="lead-diagram-title">You, one lead session, three sessions</title>
           <desc id="lead-diagram-desc">You sign the authority files and answer one queue. The lead session holds the lease, the gates, the ledger and the owner queue. It sends constraints to three sessions, Claude Code, Codex CLI and a headless run, and reads their check-ins. Each session runs session-orchestrator inside.</desc>
@@ -164,7 +168,8 @@
           <text class="d-name" x="434" y="298">headless run</text>
           <text class="d-meta" x="434" y="322">own worktree</text>
         </svg>
-        <figcaption>Diagram: one lead above several sessions</figcaption>
+        </div>
+        <figcaption>Diagram: one lead above several sessions<span class="lead-scroll-hint"> · Scroll sideways to read the diagram</span></figcaption>
       </figure>
     </div>
   </section>
@@ -183,20 +188,34 @@
     <div class="wrap">
       <div class="section-heading"><div><p class="eyebrow">Get started</p><h2>Install<br>from npm.</h2></div><p>Needs Node.js 24 or newer, git, and glab signed in to GitLab. Current version and changelog: <a href="https://www.npmjs.com/package/lead-session-orchestrator">npm</a>.</p></div>
       <p class="install-guide"><b>1. The command line tool.</b> The command is called <code>navigator</code>.</p>
-      <p class="cmd"><code>npm i -g lead-session-orchestrator</code></p>
-      <pre class="code">navigator situation                         # the current picture on one screen
-navigator status                            # all Claude sessions on this host, open questions first
-navigator stop set --reason "maintenance"   # nothing new starts until you clear it</pre>
-      <p class="install-guide"><b>2. The Inbox.</b> The Inbox pane is a Claude Code mod in the same npm package and needs Claude Code 2.1.296 or newer. Mods are early access in Claude Code and are not sandboxed; a Claude Code release can change them. Add it once from a shell:</p>
-      <pre class="code">claude plugin marketplace add "$(npm root -g)/lead-session-orchestrator"
-claude plugin install owner-inbox@navigator-mods</pre>
-      <p class="install-guide">Then start a new Claude Code session and type <code>/inbox</code>. The other mods and their options are on <a href="https://www.npmjs.com/package/lead-session-orchestrator">npm</a>.</p>
-      <p class="install-guide"><b>3. The lead.</b> The lead is a Claude Code skill in the same package. Copy it once:</p>
-      <pre class="code">mkdir -p ~/.claude/skills
-cp -R "$(npm root -g)/lead-session-orchestrator/skills/lead" ~/.claude/skills/lead</pre>
-      <p class="install-guide">Start a new Claude Code session and type <code>/lead</code>. That session takes the lease, so it is the only lead on this computer. The skill names commands, not your setup: before the first run, write down which repositories it leads and your load limits for headless runs, as <code>skills/README.md</code> in the package describes. Headless runs also need the settings in <code>docs/configuration.md</code>.</p>
-      <p class="install-guide"><b>4. Your sessions.</b> Sessions that run session-orchestrator check in by themselves when they start. They need nothing extra: the lead creates the folder <code>~/.config/navigator</code> when it takes the lease, and that is where they write. Sessions you start after that check in; one that was already running does not.</p>
-      <p class="install-guide"><b>5. Rules, when you want them.</b> Until you add a trusted signer, every push, merge and other action in the authority file asks you. To let the lead do some of them without asking, write one authority file per repository in a git repository of yours, commit it with your SSH signature, set <code>authority.dir</code> to that folder in <code>~/.config/navigator/estate.yaml</code>, and add your key as a trusted signer. The steps are in the package, in <code>docs/configuration.md</code>.</p>
+      <div class="cmd-row"><code>npm i -g lead-session-orchestrator</code><button class="copy" type="button" data-copy="npm i -g lead-session-orchestrator">Copy</button></div>
+      <div class="cmd-row"><code>navigator situation</code><button class="copy" type="button" data-copy="navigator situation">Copy</button></div>
+      <div class="cmd-row"><code>navigator status</code><button class="copy" type="button" data-copy="navigator status">Copy</button></div>
+      <div class="cmd-row"><code>navigator stop set --reason &quot;maintenance&quot;</code><button class="copy" type="button" data-copy="navigator stop set --reason &quot;maintenance&quot;">Copy</button></div>
+      <p class="small"><code>situation</code>: the current picture on one screen. <code>status</code>: all Claude sessions on this host, open questions first. <code>stop set</code>: nothing new starts until you clear it.</p>
+      <p class="install-guide"><b>2. The Inbox.</b> Add the Claude Code mod from the same npm package once from a shell, then type <code>/inbox</code> in a new Claude Code session.</p>
+      <div class="cmd-row"><code>claude plugin marketplace add &quot;$(npm root -g)/lead-session-orchestrator&quot;</code><button class="copy" type="button" data-copy="claude plugin marketplace add &quot;$(npm root -g)/lead-session-orchestrator&quot;">Copy</button></div>
+      <div class="cmd-row"><code>claude plugin install owner-inbox@navigator-mods</code><button class="copy" type="button" data-copy="claude plugin install owner-inbox@navigator-mods">Copy</button></div>
+      <div class="cmd-row"><code>/inbox</code><button class="copy" type="button" data-copy="/inbox">Copy</button></div>
+      <p class="small">Needs Claude Code 2.1.296 or newer. Mods are early access in Claude Code and are not sandboxed; a Claude Code release can change them. The other mods and their options are on <a href="https://www.npmjs.com/package/lead-session-orchestrator">npm</a>.</p>
+      <p class="install-guide"><b>3. The lead.</b> Copy the Claude Code skill from the same package once, then type <code>/lead</code> in a new Claude Code session.</p>
+      <div class="cmd-row"><code>mkdir -p ~/.claude/skills</code><button class="copy" type="button" data-copy="mkdir -p ~/.claude/skills">Copy</button></div>
+      <div class="cmd-row"><code>cp -R &quot;$(npm root -g)/lead-session-orchestrator/skills/lead&quot; ~/.claude/skills/lead</code><button class="copy" type="button" data-copy="cp -R &quot;$(npm root -g)/lead-session-orchestrator/skills/lead&quot; ~/.claude/skills/lead">Copy</button></div>
+      <div class="cmd-row"><code>/lead</code><button class="copy" type="button" data-copy="/lead">Copy</button></div>
+      <p class="small">That session takes the lease, so it is the only lead on this computer. Before the first run, write down which repositories it leads and your load limits for headless runs.</p>
+      <p class="small">Package notes: <code>skills/README.md</code> describes this setup; the skill names commands, not your setup. Headless runs also need the settings in <code>docs/configuration.md</code>.</p>
+      <p class="install-guide"><b>4. Your sessions.</b> Start sessions that run session-orchestrator after the lead takes the lease so they check in by themselves.</p>
+      <pre class="code">Check-in folder: ~/.config/navigator
+Created by the lead when it takes the lease
+Sessions write here; no extra setup
+Already running sessions do not check in</pre>
+      <p class="install-guide"><b>5. Rules, when you want them.</b> Add a signed authority file for each repository and a trusted signer to allow some actions without asking.</p>
+      <pre class="code">Authority files: one per repository, in a git repository of yours
+Commit with your SSH signature; add your key as a trusted signer
+Config file: ~/.config/navigator/estate.yaml
+Set authority.dir to the folder holding your authority files
+Package instructions: docs/configuration.md</pre>
+      <p class="small">Until you add a trusted signer, every push, merge and other action in the authority file asks you.</p>
     </div>
   </section>
 

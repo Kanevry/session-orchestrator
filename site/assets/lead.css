@@ -76,3 +76,20 @@
   .ib-age { grid-column: 2; text-align: left; }
   .ib-frame { padding: 8px 10px; }
 }
+
+/* Cold entry context and local section links. */
+.lead-context { max-width: 48ch; margin: 0 0 20px; color: var(--fg-2); }
+.lead-sections { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 20px; font-size: .85rem; }
+
+/* Keep labels at their drawn size; contain scrolling inside the figure. */
+.lead-diagram-scroll { max-width: 100%; overflow-x: auto; }
+.lead-diagram-fig .lead-diagram { min-width: 600px; }
+.lead-scroll-hint { display: none; }
+@media (max-width: 700px) { .lead-scroll-hint { display: inline; } }
+
+/* Same command row pattern as the home install section. */
+.install-sec .cmd-row { display: flex; align-items: stretch; margin: 0 0 6px; background: var(--code-bg); border-radius: 8px; overflow: hidden; }
+.install-sec .cmd-row code { flex: 1; min-width: 0; padding: 10px 12px; font-size: .8rem; line-height: 1.45; color: var(--fg); overflow-wrap: anywhere; white-space: pre-wrap; }
+.install-sec .cmd-row .copy { position: static; transform: none; flex: 0 0 auto; min-width: 66px; min-height: 44px; padding: 0 14px; border: 0; border-left: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--fg-2); font: 500 .8rem/1 var(--font-body); }
+.install-sec .cmd-row .copy:hover { color: var(--fg); }
+.install-sec .small { max-width: 80ch; }

@@ -87,6 +87,104 @@
       "author": { "@id": "https://www.gotzendorfer.at/#person" },
       "publisher": { "@id": "https://www.gotzendorfer.at/#person" },
       "dateModified": "2026-10-23"
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://session-orchestrator.com/guide#faq",
+      "inLanguage": "en",
+      "isPartOf": {
+        "@id": "https://session-orchestrator.com/#website"
+      },
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Is this itself an AI that writes code?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. It adds a workflow for planning, working and checking results. Your coding tool writes the code. Technical enforcement depends on the tool and guard configuration."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Which tools does it work with?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Claude Code runs the guard hooks directly. Cursor and Pi use bridges with documented limits. Codex CLI offers selectable workflow skills and runs the destructive-command guard as a Bash hook that blocks; its file-scope rules are instructions only, because Codex edits files through apply_patch, which the scope guard does not read. Parallel agents are available on Claude Code and Codex; Cursor and Pi run tasks sequentially."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can a team use it?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Yes. Each person installs the plugin in their own coding tool. The Session Config in CLAUDE.md and the session records under .orchestrator/ live in the repository and are committed, so the next person's session reads what the last one left. Commits land on the branch you are on; /close pushes that branch. It creates a new branch only when you accept a worktree offer or run /autopilot."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What happens to my existing CLAUDE.md?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "/bootstrap never overwrites it. It only adds the sections it needs (## Session Config, ## Dispatcher Autonomy and a short rules section) when they are missing."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does it work with Jira or Linear?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. Issues are read and written on GitHub or GitLab only."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What is different from just using Claude Code?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "It adds a repeatable session workflow: read the project, agree the scope, divide the work into steps with declared files, and check the results between steps. The session record carries progress and unfinished work into the next session."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does it send data anywhere?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "The plugin runs locally without its own account. Optional usage telemetry is off until you consent. By default, session-start checks the npm registry for updates. Successful results are cached for 24 hours per repository; a failed request or cache write may cause another request at the next session. SO_DISABLE_UPDATE_CHECK=1 or DO_NOT_TRACK=1 disables the check. Your coding tool and configured services still use their own network connections. This website uses cookieless Vercel Web Analytics, described in its privacy policy."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does it work on Windows?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Windows is barely tested. macOS and Linux run the full tests in CI; Windows only a smoke test. The Node core uses portable paths, but the shell-based hooks and optional MCP server need WSL or Git Bash. Treat Windows support as best-effort."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What does it cost?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Nothing for the plugin. It is free and open source under the MIT licence. You still pay for your coding tool, and a session with several agents and rounds uses more of its quota or tokens than a single chat."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can it break my project?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 14 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Who maintains it?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Me, Bernhard Götzendorfer. I answer questions on GitHub myself. It is shipped as-is, with best-effort maintenance and no service level agreement."
+          }
+        }
+      ]
     }
   ]
 }
@@ -96,16 +194,16 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
 <link rel="stylesheet" href="/assets/site.css?v=20261107">
-<link rel="stylesheet" href="/assets/guide.css?v=20261026a">
+<link rel="stylesheet" href="/assets/guide.css?v=20261113">
 </head>
 <body class="guide-page">
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.19.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.20.0</span></span></a>
     <nav class="nav" aria-label="Main">
-      <a href="/#how">How it works</a>
+      <a href="/guide#how-it-works">How it works</a>
       <a href="/commands">Commands</a>
       <a href="/#install">Install</a>
       <a href="/guide" aria-current="page">Guide</a>
@@ -114,7 +212,7 @@
     </nav>
     <p class="lang"><a href="/guide" aria-current="page" lang="en">EN</a><a href="/de" lang="de" hreflang="de" title="Startseite auf Deutsch – die Anleitung gibt es nur auf Englisch">DE<span class="sr"> – Startseite auf Deutsch, die Anleitung gibt es nur auf Englisch</span></a></p>
     <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation">
-      <a href="/#how">How it works</a>
+      <a href="/guide#how-it-works">How it works</a>
       <a href="/commands">Commands</a>
       <a href="/#install">Install</a>
       <a href="/guide" aria-current="page">Guide</a>
@@ -133,6 +231,15 @@
       <h1 class="h-display">Install once, set up once, then run your first session.</h1>
       <p class="lede">From your task to checked work. Pick your coding tool and follow its five steps.</p>
       <p class="meta">Node.js 24 or later &middot; MIT &middot; guidance reviewed against source on 2026-10-23</p>
+
+        <details class="glossary"><summary>New to these words? A short glossary</summary><dl>
+          <div><dt>Repository</dt><dd>The folder with your project's files and their full history.</dd></div>
+          <div><dt>Commit</dt><dd>A saved step in that history, with a short note on what changed.</dd></div>
+          <div><dt>Branch</dt><dd>A separate line of work, so a change can be tried without touching the main version.</dd></div>
+          <div><dt>Issue</dt><dd>A to-do note on GitLab or GitHub: a bug, a wish or an open question.</dd></div>
+          <div><dt>CI or pipeline</dt><dd>Checks that run on a server after each change and report whether the tests still pass.</dd></div>
+          <div><dt>Hook</dt><dd>A small check your coding tool runs at fixed moments, for example before a command, and which can stop it.</dd></div>
+        </dl></details>
 
       <nav id="install" aria-labelledby="pick-h">
         <h2 id="pick-h" class="small">Pick your tool</h2>
@@ -156,6 +263,13 @@
       <li><a href="#pi">Pi</a></li>
       <li><a href="#which-command">Which command when?</a></li>
       <li><a href="#more">When you need more</a></li>
+      <li><a href="#how-it-works">How it works</a></li>
+      <li><a href="#film">The session film</a></li>
+      <li><a href="#fits-together">How it fits together</a></li>
+      <li><a href="#tools">Compare coding tools</a></li>
+      <li><a href="#story">The story</a></li>
+      <li><a href="#under-the-hood">Under the hood</a></li>
+      <li><a href="#faq">Questions people ask</a></li>
     </ol>
   </nav>
   <div class="guide-body">
@@ -346,7 +460,7 @@
       <details class="technical-detail" id="before">
         <summary><h3>Before you start: requirements and the instruction file</h3></summary>
         <div>
-          <p>macOS and Linux are covered by CI. Native Windows is untested; the shell hooks and the optional MCP server need WSL or Git Bash. Some optional workflows (the plugin validator, some wave-scope snippets, the MCP server) also need <code>jq</code>.</p>
+          <p>Windows is barely tested. macOS and Linux run the full tests in CI; Windows only a smoke test. The shell hooks and the optional MCP server need WSL or Git Bash. Some optional workflows (the plugin validator, some wave-scope snippets, the MCP server) also need <code>jq</code>.</p>
           <p>Your settings live in the project&rsquo;s instruction file: <code>CLAUDE.md</code> on Claude Code and Cursor, <code>AGENTS.md</code> on Codex CLI and Pi. The contents are the same.</p>
           <p>Each tool keeps its own session state (<code>STATE.md</code> in <code>.claude/</code>, <code>.codex/</code>, <code>.cursor/</code> or <code>.pi/</code>). Session records and lessons in <code>.orchestrator/metrics/</code> are shared, and so are the issues. Switching tools keeps your history.</p>
         </div>
@@ -397,7 +511,7 @@ enforcement: warn</pre>
         <summary><h3>What to do when a command is blocked</h3></summary>
         <div>
           <p>Read the reason in the message first. Most blocks protect work you did not create.</p>
-          <p>If you really mean it, set <code>allow-destructive-ops: true</code> in the Session Config for that maintenance and remove it afterwards. Left in place, it turns the guard off for every later session.</p>
+          <p>If you really mean it, run the command yourself in your own terminal, or relax the guard from outside the agent&rsquo;s reach: start the session with <code>SO_HOOK_PROFILE=relaxed</code> (or set <code>hooks.profile: relaxed</code> in your host-local <code>owner.yaml</code>), which only warns on cases the guard can prove recoverable. <code>SO_DISABLED_HOOKS=pre-bash-destructive-guard</code> turns the guard off. The old <code>allow-destructive-ops: true</code> line in the Session Config is ignored, because the agent could write it itself.</p>
           <p>If a legitimate edit is blocked by the file list, check the plan and the other agents&rsquo; files before you add the path. <code>enforcement: off</code> turns off the file-scope and blocked-command checks, not the destructive-command guard.</p>
         </div>
       </details>
@@ -434,6 +548,293 @@ enforcement: warn</pre>
           </table>
         </div>
       </details>
+    </div>
+  </section>
+  <section class="sec how-sec" id="how-it-works">
+    <div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">How it works</p><h2>Five steps.<br>You type three commands.</h2></div><p>One task from start to finish: “Add a CSV export to the dashboard.” The task is an example; the commands and the steps are the real ones.</p></div>
+      <p class="how-once"><span class="how-once-label">Once per repository, before the first session</span> Type <code>/bootstrap</code>. It sets up your repository; add <code>--fast --no-interview</code> to skip its questions. After that, each task needs only the three commands below. On Codex you pick every command as a skill: <code>$session-orchestrator:bootstrap</code>, <code>$session-orchestrator:session</code>, <code>$session-orchestrator:go</code>, <code>$session-orchestrator:close</code>.</p>
+      <div class="how-grid">
+        <ol class="how-steps">
+          <li class="how-step" id="step-read">
+            <h3><span class="guide-step-title"><span class="how-n">1</span>Read</span></h3>
+            <p class="how-type"><span>You type</span><code>/session feature add a CSV export</code></p>
+            <p>It reads your code, open issues, recent commits and the last session, then recommends what to work on. <b>Nothing has changed yet.</b></p>
+            <figure class="see-fig">
+              <div class="see-label">What you see next</div>
+              <div class="see-pane" role="img" aria-label="Session overview. Type: feature. Repository shop-dashboard on branch main. Git is clean, nothing is unpushed. 12 open issues, 2 of them high priority, and 1 open merge request. Health: 0 TypeScript errors, tests passing, CI green. Recommended focus, option A: issue 48, the CSV export, on its own, because it is what you asked for and the code it touches has tests. Then the question: Which focus should this session have? Option 1, recommended: issue 48, CSV export. One button, one export route, one test. Serves: orders as a spreadsheet, observable via the new export test. Option 2: issue 48 plus issue 51, a date filter. Same export code, about twice the work. Serves: exports per month, observable via the filter test. Option 3: issue 57, slow order list. High priority, needs its own session. Serves no named outcome.">
+                <div class="sp-h">Session Overview</div>
+                <div>Type: feature</div>
+                <div>Repo: shop-dashboard on branch main</div>
+                <div>Git: clean, 0 unpushed</div>
+                <div>VCS: 12 open issues (2 high), 1 open MR</div>
+                <div>Health: TypeScript 0 errors | Tests: passing | CI: green</div>
+                <div class="sp-h">Recommended Focus</div>
+                <div>Option A (recommended): #48 CSV export on its own. It is what you asked for, and the code it touches has tests.</div>
+                <div class="sp-q"><span class="sp-tag">Focus</span> Which focus should this session have?</div>
+                <div class="sp-opt"><span>1.</span><span><b>#48 CSV export <span class="sp-rec">(Recommended)</span></b><br>One button, one export route, one test. Serves: orders as a spreadsheet; observable via the new export test.</span></div>
+                <div class="sp-opt"><span>2.</span><span><b>#48 + #51 date filter</b><br>Same export code, about twice the work. Serves: exports per month; observable via the filter test.</span></div>
+                <div class="sp-opt"><span>3.</span><span><b>#57 slow order list</b><br>High priority, needs its own session. Serves: no named outcome.</span></div>
+              </div>
+              <figcaption>Recreated from a real /session overview, shortened; repository and numbers made up.</figcaption>
+            </figure>
+            <p>You pick an option or answer in your own words. Then it shows the plan. Nothing is built before you type <code>/go</code>.</p>
+          </li>
+          <li class="how-step" id="step-plan">
+            <h3><span class="guide-step-title"><span class="how-n">2</span>Plan</span></h3>
+            <p class="how-type"><span>You type</span><code>/go</code></p>
+            <p>Correct the plan by writing in the chat, or say yes by typing <code>/go</code>. Every agent gets its own list of files, and overlaps are rejected before work starts.</p>
+          </li>
+          <li class="how-step" id="step-go">
+            <h3><span class="guide-step-title"><span class="how-n">3</span>Go</span></h3>
+            <p class="how-type"><span>You do</span>nothing. Watch, or do something else.</p>
+            <p>The agents work in rounds: side by side on Claude Code and Codex, one after another on Cursor and Pi.</p>
+          </li>
+          <li class="how-step" id="step-check">
+            <h3><span class="guide-step-title"><span class="how-n">4</span>Check</span></h3>
+            <p class="how-type"><span>You do</span>nothing.</p>
+            <p>After each round your tests and typecheck run. A failing test becomes a fix task for the next round, so the error is caught in the round that made it.</p>
+          </li>
+          <li class="how-step" id="step-close">
+            <h3><span class="guide-step-title"><span class="how-n">5</span>Close</span></h3>
+            <p class="how-type"><span>You type</span><code>/close</code></p>
+            <p>It runs the full check, compares the result with the plan, commits the work and turns what is left into issues. The next <code>/session</code> starts here.</p>
+          </li>
+        </ol>
+</div>
+      <div class="keep-row">
+        <figure class="keep-art">
+          <img src="/img/next-morning-800.webp" srcset="/img/next-morning-480.webp 480w, /img/next-morning-800.webp 800w, /img/next-morning-1536.webp 1536w" sizes="(min-width: 960px) 46vw, calc(100vw - 40px)" width="1536" height="1024" loading="lazy" decoding="async" alt="Morning in a small workshop: an agent arrives and reaches into an open crate of unfinished tasks on the handover shelf, next to a closed crate of finished work.">
+          <figcaption>The next session starts where the last one stopped · made with AI</figcaption>
+        </figure>
+        <div class="keep-copy">
+          <h3>Nothing gets lost.</h3>
+          <p>A crash, a closed laptop or a long weekend does not cost you the work. <code>STATE.md</code> records every finished round, so the next <code>/session</code> offers to resume. What <code>/close</code> could not finish is waiting as an issue on GitLab or GitHub.</p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="sec" id="film">
+    <div class="wrap">
+      <h2>The session film</h2>
+      <figure class="fig film">
+        <video controls preload="none" playsinline width="1920" height="1080" poster="/video/session-orchestrator-film-poster.webp">
+          <source src="/video/session-orchestrator-film.webm" type="video/webm">
+          <source src="/video/session-orchestrator-film.mp4" type="video/mp4">
+          <track kind="subtitles" src="/video/session-orchestrator-film.de.vtt" srclang="de" label="Deutsch">
+          <p>Your browser cannot play this video. <a href="/video/session-orchestrator-film.mp4">Download the film (MP4)</a>.</p>
+        </video>
+        <figcaption>The same session as a 34-second film, with sound · made with AI</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="sec connect-sec" id="fits-together">
+    <div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">How it fits together</p><h2>Your tool writes the code.<br>This plugin keeps the work in order.</h2></div><p>It is not another AI. It adds a fixed way of working to the coding tool you already use, and everything it keeps is plain text in your repository.</p></div>
+      <figure class="connect-fig">
+        <p class="scroll-hint" aria-hidden="true">Swipe sideways to see the whole picture.</p>
+        <div class="fig-scroll" tabindex="0" role="region" aria-label="How it fits together, diagram"><svg viewBox="0 0 1000 400" role="img" aria-labelledby="connect-t connect-d">
+          <title id="connect-t">How the pieces fit together</title>
+          <desc id="connect-d">You type commands in your coding tool. Inside it, session-orchestrator adds commands, checks and agents with file lists. It writes plain text into your repository and files what is left as issues on GitLab or GitHub. The next session reads both first. Optionally, one lead session sits above several sessions.</desc>
+          <defs><marker id="cf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="cf-head"/></marker></defs>
+          <rect class="cf-lead" x="210" y="14" width="300" height="44" rx="10"/>
+          <text class="cf-small" x="360" y="42">optional: a lead session above several sessions</text>
+          <rect class="cf-pill" x="20" y="176" width="130" height="56" rx="28"/>
+          <text class="cf-title" x="85" y="210">You</text>
+          <rect class="cf-box" x="210" y="96" width="300" height="230" rx="16"/>
+          <text class="cf-title" x="360" y="130">Your coding tool</text>
+          <text class="cf-small" x="360" y="154">Claude Code · Codex · Cursor · Pi</text>
+          <rect class="cf-plugin" x="236" y="176" width="248" height="122" rx="12"/>
+          <text class="cf-title cf-lime" x="360" y="210">session-orchestrator</text>
+          <text class="cf-small" x="360" y="240">commands · checks</text>
+          <text class="cf-small" x="360" y="264">agents with file lists</text>
+          <rect class="cf-box" x="600" y="96" width="250" height="110" rx="16"/>
+          <text class="cf-title" x="725" y="138">Your repository</text>
+          <text class="cf-small" x="725" y="164">code · STATE.md · rules</text>
+          <rect class="cf-box" x="600" y="236" width="250" height="90" rx="16"/>
+          <text class="cf-title" x="725" y="276">GitLab or GitHub</text>
+          <text class="cf-small" x="725" y="302">issues for what is left</text>
+          <rect class="cf-pill" x="880" y="176" width="100" height="56" rx="28"/>
+          <text class="cf-small cf-fg" x="930" y="200">next</text>
+          <text class="cf-small cf-fg" x="930" y="220">session</text>
+          <path class="cf-flow" d="M150 204H228" marker-end="url(#cf-arrow)"/>
+          <text class="cf-small" x="189" y="194">types</text>
+          <path class="cf-flow" d="M484 210C540 190 560 160 596 152" marker-end="url(#cf-arrow)"/>
+          <path class="cf-flow" d="M484 262C540 270 560 280 596 282" marker-end="url(#cf-arrow)"/>
+          <path class="cf-flow" d="M850 152C870 160 880 176 896 182" marker-end="url(#cf-arrow)"/>
+          <path class="cf-flow" d="M850 282C870 276 880 240 896 228" marker-end="url(#cf-arrow)"/>
+          <path class="cf-flow cf-back" d="M930 232C930 380 360 392 360 330" marker-end="url(#cf-arrow)"/>
+          <text class="cf-small" x="640" y="384">reads both first</text>
+          <path class="cf-flow cf-dash" d="M360 58V92" marker-end="url(#cf-arrow)"/>
+        </svg></div>
+        <figcaption>Schematic. The plugin runs inside your coding tool, on your machine.</figcaption>
+      </figure>
+      <ul class="connect-facts">
+        <li><b>In your repository:</b> plain text you can read and delete. <code>STATE.md</code> for the running session, rules under <code>.claude/rules/</code>.</li>
+        <li><b>On GitLab or GitHub:</b> one issue for each thing that is left, so it cannot be forgotten.</li>
+        <li><b>Nowhere else:</b> no account and no server of its own. By default, besides your coding tool and your Git host, the plugin only asks npm for updates, and you can switch that off. Features you turn on yourself, such as usage data or remote hosts, make their own connections. Optional usage data stays off until you agree.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec tools-sec" id="tools">
+    <div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">Your coding tool</p><h2>Same workflow.<br>Different strengths.</h2></div><p>All four tools get the same commands, checks and memory. What differs: how strictly the guards block, and whether agents work side by side.</p></div>
+      <table class="tools-table" role="table">
+        <caption class="sr">What works in which coding tool</caption>
+        <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader"><span class="sr">What</span></th><th scope="col" role="columnheader">Claude Code</th><th scope="col" role="columnheader">Codex CLI</th><th scope="col" role="columnheader">Cursor IDE</th><th scope="col" role="columnheader">Pi</th></tr></thead>
+        <tbody role="rowgroup">
+          <tr role="row"><th scope="row" role="rowheader">You type</th><td role="cell" data-what="You type" data-label="Claude Code"><code>/session</code></td><td role="cell" data-what="You type" data-label="Codex CLI"><code>$session-orchestrator:session</code></td><td role="cell" data-what="You type" data-label="Cursor IDE"><code>/session</code></td><td role="cell" data-what="You type" data-label="Pi"><code>/session</code></td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Agents</th><td role="cell" data-what="Agents" data-label="Claude Code">side by side</td><td role="cell" data-what="Agents" data-label="Codex CLI">side by side</td><td role="cell" data-what="Agents" data-label="Cursor IDE">one after another</td><td role="cell" data-what="Agents" data-label="Pi">one after another</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Dangerous commands</th><td role="cell" data-what="Dangerous commands" data-label="Claude Code" class="t-yes">blocked</td><td role="cell" data-what="Dangerous commands" data-label="Codex CLI" class="t-yes">blocked</td><td role="cell" data-what="Dangerous commands" data-label="Cursor IDE">blocked through a bridge</td><td role="cell" data-what="Dangerous commands" data-label="Pi">blocked through a bridge</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">File list per agent</th><td role="cell" data-what="File list per agent" data-label="Claude Code" class="t-yes">blocks in strict mode</td><td role="cell" data-what="File list per agent" data-label="Codex CLI" class="t-part">an instruction only</td><td role="cell" data-what="File list per agent" data-label="Cursor IDE">blocks in strict mode</td><td role="cell" data-what="File list per agent" data-label="Pi">blocks in strict mode</td></tr>
+          <tr role="row" class="t-same"><th scope="row" role="rowheader">Tests and checks</th><td role="cell" data-what="Tests and checks" data-label="Claude Code">yes</td><td role="cell" data-what="Tests and checks" data-label="Codex CLI">yes</td><td role="cell" data-what="Tests and checks" data-label="Cursor IDE">yes</td><td role="cell" data-what="Tests and checks" data-label="Pi">yes</td></tr>
+          <tr role="row" class="t-same"><th scope="row" role="rowheader">Lessons and rules</th><td role="cell" data-what="Lessons and rules" data-label="Claude Code">yes</td><td role="cell" data-what="Lessons and rules" data-label="Codex CLI">yes</td><td role="cell" data-what="Lessons and rules" data-label="Cursor IDE">yes</td><td role="cell" data-what="Lessons and rules" data-label="Pi">yes</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Lead Inbox pane</th><td role="cell" data-what="Lead Inbox pane" data-label="Claude Code" class="t-yes">yes, a mod in the <a href="/lead#start">lead npm package</a> (early access)</td><td role="cell" data-what="Lead Inbox pane" data-label="Codex CLI">sessions are led; the pane runs in Claude Code</td><td role="cell" data-what="Lead Inbox pane" data-label="Cursor IDE">not documented</td><td role="cell" data-what="Lead Inbox pane" data-label="Pi">not documented</td></tr>
+        </tbody>
+      </table>
+      <p class="tools-note"><b>Bridge:</b> on Cursor and Pi the guards run through a small adapter, for the commands those tools report. <b>Strict mode:</b> set <code>enforcement: strict</code> in your Session Config; with the default <code>warn</code>, an edit outside the file list is reported, not blocked.</p>
+      <div class="reco-box">
+        <p class="eyebrow">My recommendation</p>
+        <p><b>Want every guard to block, and the lead Inbox?</b> Use Claude Code. <b>Prefer Codex?</b> You get the same commands as skills, agents side by side and the command guard. Only the file list per agent is an instruction, not a block, because Codex edits files through <code>apply_patch</code>. <b>Cursor or Pi?</b> Everything works, one agent after another.</p>
+        <a href="/guide">Install guide for each tool<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec story-sec" id="story"><div class="wrap story-grid"><div><p class="eyebrow">Made by Bernhard Götzendorfer</p><h2>It started with<br>a Notion page.</h2></div><div class="story-copy"><p>I kept 20–30 prompts there for different projects. Before each session I would find the right row, copy it, and explain how I wanted to work all over again.</p><p>That routine gradually became Plan, Go, Close. I now use it on my Mac M4 and the M5 at the office. Session Orchestrator is the tool that grew out of it.</p></div></div></section>
+
+  <section class="sec technical-sec" id="under-the-hood"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Under the hood</p><h2>What is enforced,<br>and where it stops.</h2></div><p>See which checks run, what they cover and where their limits are. With the source files to inspect.</p></div><p class="measured-line"><span class="n"><span class="num" data-metric="sessions">332</span></span><span>sessions have built Session Orchestrator with itself so far, counted from the maintainer&rsquo;s session log (development activity, not users). Counted on <span class="num" data-metric="counted-at">2026-11-14</span>. <a href="/_census.json">See the receipt</a> or <a href="#measured">all numbers</a>.</span></p><details class="technical-detail" id="enforced"><summary>Checks and their source files</summary><div class="detail-body">
+      <div class="grid-12">
+        <div class="col-4">
+          <p class="lede">Some protections run in code; others are instructions the agent must follow. Their strength depends on the tool and configuration.</p>
+        </div>
+        <div class="col-8">
+      <table class="table proof">
+        <caption class="sr">Each check or workflow rule and its source</caption>
+        <thead>
+          <tr><th scope="col">Claim</th><th scope="col">Source</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td data-label="Claim">The workflow declares each agent’s write scope before dispatch.</td>
+            <td data-label="Source"><code>scripts/validate-wave-scope.mjs --assert-disjoint</code></td>
+          </tr>
+          <tr>
+            <td data-label="Claim">With an active scope hook on Claude Code, Cursor or Pi, strict blocks supported out-of-scope edits, warn reports them, and off disables the check. Codex has no scope enforcement.</td>
+            <td data-label="Source"><code>hooks/enforce-scope.mjs</code></td>
+          </tr>
+          <tr>
+            <td data-label="Claim">With the destructive-command hook active, Claude Code and Codex apply 14 blocking rules and 4 warning rules. Cursor and Pi use bridges.</td>
+            <td data-label="Source"><code>.orchestrator/policy/blocked-commands.json</code>, 18 rules</td>
+          </tr>
+          <tr>
+            <td data-label="Claim">Subagents are instructed to leave staging and commits to the coordinator. This is a workflow rule.</td>
+            <td data-label="Source"><code>.claude/rules/parallel-sessions.md</code>, PSA-007</td>
+          </tr>
+          <tr>
+            <td data-label="Claim">The close workflow requires evidence for every planned item.</td>
+            <td data-label="Source"><code>skills/session-end/SKILL.md</code></td>
+          </tr>
+        </tbody>
+      </table>
+        </div>
+      </div>
+    </div></details><details class="technical-detail" id="limits"><summary>Supported tools and limitations</summary><div class="detail-body">
+
+      <ul class="stack">
+        <li>Independent and community-maintained. <b>Not affiliated with or endorsed by Anthropic, OpenAI, or Cursor.</b></li>
+        <li>Shipped as-is, with no service level agreement and best-effort maintenance.</li>
+        <li>Local by default, without its own account. Optional telemetry is off; the npm update check can be disabled separately.</li>
+        <li>Windows is barely tested. macOS and Linux run the full tests in CI; Windows only a smoke test. Shell hooks and the optional MCP server need WSL or Git Bash.</li>
+        <li>Hook-level enforcement is not the same on every harness. The list below is the current state, not a roadmap. The configured quality checks run on all four tools.</li>
+      </ul>
+
+      <table class="kv">
+        <caption class="sr">Hook-level enforcement per harness</caption>
+        <tbody>
+          <tr><th scope="row">Claude Code</th><td>direct guard hooks; scope blocking requires strict mode</td></tr>
+          <tr><th scope="row">Cursor IDE</th><td>bridge for supported tool and shell calls; scope blocking requires strict mode. Post-edit checks cannot prevent a write</td></tr>
+          <tr><th scope="row">Pi</th><td>tool-call bridge for supported calls; scope blocking requires strict mode</td></tr>
+          <tr><th scope="row">Codex CLI</th><td>destructive-command guard runs as a Bash hook and blocks; file-scope rules are instructions only, because edits go through <code>apply_patch</code></td></tr>
+        </tbody>
+      </table>
+    </div></details><details class="technical-detail" id="measured"><summary>Repository numbers and their receipt</summary><div class="detail-body">
+
+      <div class="cards">
+        <div class="card"><p class="n">v<span class="num" data-metric="version">5.20.0</span></p><p class="l">current release</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="skills">53</span></p><p class="l">skills</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="commands">32</span></p><p class="l">slash commands</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typed sub-agents</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="hooks">33</span></p><p class="l">hook files</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="tests">876</span></p><p class="l">test files</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="sessions">332</span></p><p class="l">session records in this repo</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="learnings">44</span></p><p class="l">learnings in this repo</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3312</span></p><p class="l">npm downloads, last 30 days</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="github-stars">54</span></p><p class="l">GitHub stars</p></div>
+      </div>
+
+      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-11-14</span> at commit <span class="num" data-metric="counted-sha">db5c8188</span>. Repository records describe development activity, not active users. The session count includes only sessions that actually ran, not every line in the session log, so it is lower than on older versions of this page. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
+    </div></details></div></section>
+
+  <section class="sec" id="faq">
+    <div class="wrap">
+      <div class="faq-layout">
+      <div class="faq-intro">
+      <p class="eyebrow">A few practical questions</p>
+      <h2>Questions people ask</h2>
+      <p>Setup steps for each tool are <a href="#top">at the top of this page</a>.</p>
+      </div>
+      <div class="faq">
+        <details class="faq-item">
+          <summary>Is this itself an AI that writes code?</summary>
+          <p>No. It adds a workflow for planning, working and checking results. Your coding tool writes the code. Technical enforcement depends on the tool and guard configuration.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Which tools does it work with?</summary>
+          <p>Claude Code runs the guard hooks directly. Cursor and Pi use bridges with documented limits. Codex CLI offers selectable workflow skills and runs the destructive-command guard as a Bash hook that blocks; its file-scope rules are instructions only, because Codex edits files through apply_patch, which the scope guard does not read. Parallel agents are available on Claude Code and Codex; Cursor and Pi run tasks sequentially.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Can a team use it?</summary>
+          <p>Yes. Each person installs the plugin in their own coding tool. The Session Config in CLAUDE.md and the session records under <code>.orchestrator/</code> live in the repository and are committed, so the next person's session reads what the last one left. Commits land on the branch you are on; <code>/close</code> pushes that branch. It creates a new branch only when you accept a worktree offer or run <code>/autopilot</code>.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What happens to my existing CLAUDE.md?</summary>
+          <p><code>/bootstrap</code> never overwrites it. It only adds the sections it needs (<code>## Session Config</code>, <code>## Dispatcher Autonomy</code> and a short rules section) when they are missing.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Does it work with Jira or Linear?</summary>
+          <p>No. Issues are read and written on GitHub or GitLab only.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What is different from just using Claude Code?</summary>
+          <p>It adds a repeatable session workflow: read the project, agree the scope, divide the work into steps with declared files, and check the results between steps. The session record carries progress and unfinished work into the next session.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Does it send data anywhere?</summary>
+          <p>The plugin runs locally without its own account. Optional usage telemetry is off until you consent. By default, session-start checks the npm registry for updates. Successful results are cached for 24 hours per repository; a failed request or cache write may cause another request at the next session. SO_DISABLE_UPDATE_CHECK=1 or DO_NOT_TRACK=1 disables the check. Your coding tool and configured services still use their own network connections. This website uses cookieless Vercel Web Analytics, described in its privacy policy.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Does it work on Windows?</summary>
+          <p>Windows is barely tested. macOS and Linux run the full tests in CI; Windows only a smoke test. The Node core uses portable paths, but the shell-based hooks and optional MCP server need WSL or Git Bash. Treat Windows support as best-effort.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What does it cost?</summary>
+          <p>Nothing for the plugin. It is free and open source under the MIT licence. You still pay for your coding tool, and a session with several agents and rounds uses more of its quota or tokens than a single chat.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Can it break my project?</summary>
+          <p>It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 14 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Who maintains it?</summary>
+          <p>Me, Bernhard G&#246;tzendorfer. I answer questions <a href="https://github.com/Kanevry/session-orchestrator/issues">on GitHub</a> myself. It is shipped as-is, with best-effort maintenance and no service level agreement.</p>
+        </details>
+      </div>
+      </div>
     </div>
   </section>
   </div>

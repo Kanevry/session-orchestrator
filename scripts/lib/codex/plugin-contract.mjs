@@ -165,6 +165,23 @@ export const DISALLOWED_EDIT_HANDLERS = [
   'post-edit-import-probe.mjs',
 ];
 
+/**
+ * Manifest `timeout` (seconds) of every Codex PreToolUse handler. Codex counts
+ * it from the moment it starts the hook, and a hook it kills ends as Failed —
+ * the tool call then runs unguarded. An external tester measured on Windows 11
+ * with codex-cli 0.167.0: at 5 s, 74 of 81 PreToolUse hook starts ended Failed;
+ * with the same manifest at 30 s, 97 of 99 completed and blocked. 15 s is a
+ * mitigation between the two, NOT measured on Windows by this project; on
+ * macOS the Bash guards finish in about 90–110 ms, so the ceiling costs nothing
+ * there, while a hung guard still stalls a tool call for at most 15 s instead
+ * of 30. The manifest format has no per-platform timeout (only `command` and
+ * `commandWindows` differ), so the value is shared. `BUDGET_MS` in
+ * hooks/codex-apply-patch-guard.mjs must stay below it. Revisit trigger: a
+ * Windows run at 15 s with Failed PreToolUse starts, or a Codex release with a
+ * per-platform timeout field.
+ */
+export const CODEX_PRE_TOOL_USE_TIMEOUT_S = 15;
+
 const CODEX_HOOK_WRAPPER_COMMAND =
   /^SO_PLATFORM=codex CODEX_PLUGIN_ROOT="\$\{PLUGIN_ROOT\}" sh "\$\{PLUGIN_ROOT\}\/hooks\/run-node\.sh"(?: --fail-closed)? "\$\{PLUGIN_ROOT\}\/hooks\/([A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*\.mjs)"$/;
 
@@ -631,6 +648,14 @@ function validateHandler(handler, path, eventName, root, expectedBaseVersion, er
 
   const { handlerRelativePath } = parsed;
   validateWindowsEntry(handler.commandWindows, handlerRelativePath, path, root, errors);
+  if (eventName === 'PreToolUse' && handler.timeout !== CODEX_PRE_TOOL_USE_TIMEOUT_S) {
+    addError(
+      errors,
+      `${path}.timeout`,
+      'pre-tool-use-timeout',
+      `a Codex PreToolUse handler needs timeout ${CODEX_PRE_TOOL_USE_TIMEOUT_S}; a Codex kill at a shorter ceiling lets the tool call run unguarded (74 of 81 starts at 5 s on Windows)`,
+    );
+  }
   if (DISALLOWED_EDIT_HANDLERS.includes(handlerRelativePath)) {
     addError(
       errors,
