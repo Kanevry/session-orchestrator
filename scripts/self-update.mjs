@@ -245,7 +245,7 @@ export function updateRepo({ run, log }, opts, ctx = {}) {
         return { step: 'repo', status: 'failed', detail: `cannot remove install marker ${installedMarker}: ${err.message}` };
       }
     }
-    const r = run('npm', ['ci'], { cwd: root });
+    const r = run('npm', ['ci', '--ignore-scripts'], { cwd: root });
     if (!r.ok) return { step: 'repo', status: 'failed', detail: r.detail };
     if (!opts.dryRun) {
       try {
