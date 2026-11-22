@@ -1132,8 +1132,8 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
 
   // #660: namespace new writes under a per-repo subdirectory. #1389: `ctx.repoRoot`
   // is optional — absent, resolveRepoNamespace falls back to process.cwd().
-  // #1513 review M2: a hyphen alias (`gotzendorferv2`) resolves to the
-  // canonical folder already in the vault (`gotzendorfer-v2`), so the mirror
+  // #1513 review M2: a hyphen alias (`acmesitev2`) resolves to the
+  // canonical folder already in the vault (`acme-site-v2`), so the mirror
   // and the pruner agree on where a repo's notes live.
   const stableNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null });
   const repoNs = canonicalNamespace(vaultDir, stableNs);

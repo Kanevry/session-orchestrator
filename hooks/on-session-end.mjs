@@ -558,7 +558,7 @@ async function emitFinalRefused({ sessionId, semanticSessionId }, reason, waveNu
  * 2026-09-02 over every repo's `.orchestrator/metrics/events.jsonl` under
  * `~/Projects` (glob written as a path segment on purpose — a literal star
  * followed by a slash would close this comment), except
- * `EventDrop.at-deps-2026-09` — n = 1335: 1286 other, 27 completed, 12 resume,
+ * A consumer repo, 2026-09 — n = 1335: 1286 other, 27 completed, 12 resume,
  * 8 clear, 1 error, 1 close. (Same denominator and date as the
  * `session.ended` row in `docs/audits/2026-09-02-fleet-instruments.md`; the two
  * disagreed by ~150 before W4a F-F because each counted a different repo set.)

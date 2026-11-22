@@ -245,11 +245,60 @@ export function vercelArgs(mode, { scope, url }) {
 }
 
 /**
- * The deployment URL Vercel prints: the last `https://….vercel.app` token on stdout.
+ * The deployment URL Vercel prints: the last whitespace-separated token on stdout that
+ * is a whole deployment URL ({@link isVercelDeploymentUrl}), without a trailing `/`.
+ * A token only CONTAINING one (`https://x.vercel.app.example/…`) is not cut down to it.
  * @param {string} stdout
  * @returns {string|null}
  */
 export function deploymentUrlFrom(stdout) {
-  const all = String(stdout).match(/https:\/\/[a-z0-9-]+\.vercel\.app/g);
-  return all ? all[all.length - 1] : null;
+  const urls = String(stdout).split(/\s+/).filter(isVercelDeploymentUrl);
+  return urls.length > 0 ? urls[urls.length - 1].replace(/\/$/, '') : null;
+}
+
+/** Directory (relative to the checkout) of the stage receipts `promote` requires. */
+export const STAGE_RECEIPT_DIR = '.orchestrator/runtime/site-deploy';
+
+/**
+ * Receipt file name for a deployment URL: its host plus `.json`.
+ * @param {string} url — a deployment URL ({@link isVercelDeploymentUrl})
+ * @returns {string}
+ */
+export function stageReceiptName(url) {
+  if (!isVercelDeploymentUrl(url)) throw new SiteDeployConfigError(`url: expected https://<deployment>.vercel.app, got '${url}'`);
+  return `${new URL(url).host}.json`;
+}
+
+/**
+ * What a successful `stage` run records, so `promote` can only move the domains to a
+ * deployment this tool built as a production build of a known commit (#2219 review).
+ * @param {{ url: string, sourceSha: string, files: number, bytes: number, config: object, at: string }} args
+ */
+export function buildStageReceipt({ url, sourceSha, files, bytes, config, at }) {
+  const { scope, name, projectId } = config.project;
+  return { version: 1, mode: 'stage', url: url.replace(/\/$/, ''), sourceSha, files, bytes, project: { scope, name, projectId }, at };
+}
+
+/**
+ * Check a stage receipt (parsed JSON, or null when absent) against the promote request.
+ * @param {object|null} receipt
+ * @param {{ url: string, config: object }} want
+ * @returns {{ ok: true, receipt: object } | { ok: false, reason: string }}
+ */
+export function checkStageReceipt(receipt, { url, config }) {
+  const target = String(url).replace(/\/$/, '');
+  if (receipt === null || typeof receipt !== 'object') {
+    return { ok: false, reason: `no stage receipt for ${target}: promote only a deployment this tool staged (--mode stage)` };
+  }
+  if (receipt.version !== 1 || receipt.mode !== 'stage') return { ok: false, reason: `stage receipt for ${target} is not a version-1 stage receipt` };
+  if (receipt.url !== target) return { ok: false, reason: `stage receipt names ${receipt.url}, not ${target}` };
+  const p = receipt.project ?? {};
+  const c = config.project;
+  if (p.projectId !== c.projectId || p.scope !== c.scope) {
+    return { ok: false, reason: `stage receipt for ${target} belongs to another project (${p.scope}/${p.name})` };
+  }
+  if (typeof receipt.sourceSha !== 'string' || !/^[0-9a-f]{40}$/.test(receipt.sourceSha)) {
+    return { ok: false, reason: `stage receipt for ${target} has no source commit` };
+  }
+  return { ok: true, receipt };
 }

@@ -542,7 +542,7 @@ async function main() {
     // `~/.claude/projects/<encoded-repo-path>/memory/`. Every wave manifest
     // therefore blocked the coordinator's memory writes until the manifest was
     // torn down — six sessions in a consumer repo re-documented the same
-    // workaround (bewerbungs-assistent#307, retro 2026-09-09). That directory
+    // workaround (retro 2026-09-09). That directory
     // is harness-owned and cannot collide with ANY wave file scope, so it is
     // always-allowed territory; it is the single out-of-repo carveout here.
     //

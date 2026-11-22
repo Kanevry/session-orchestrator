@@ -11,7 +11,7 @@ The removals follow a two-signal rule measured over a 90-day window — **0 tele
 fleet invocation ∧ no runtime consumer** — not a judgement call. Evidence:
 the 2026-09-06 360° audit and its per-agent raw reports (audit reports stay in the
 private GitLab repository and are not part of the public mirror). Full
-change list: [CHANGELOG.md](../CHANGELOG.md).
+change list: [changelog/v4.md](changelog/v4.md).
 
 ## 1. What Changes
 

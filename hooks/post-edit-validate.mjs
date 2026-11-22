@@ -14,7 +14,7 @@
  *   G3  file_path present
  *   G4  file extension filter — only .ts|.tsx|.js|.jsx|.mjs|.cjs
  *   G5  gate check — wave-scope.json.gates['post-edit-validate'] === false → exit 0
- *   G6  resolve typecheck command: Session Config → tsgo → tsc → local tsc → skip
+ *   G6  Start a typecheck only in the plugin's own checkout and skip everywhere else.
  *   G7  run typecheck with 2s process-group timeout
  *   G8  emit JSONL result to stderr
  *
@@ -37,7 +37,7 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { readStdin } from '../scripts/lib/io.mjs';
 import { resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import { gateEnabled } from '../scripts/lib/hardening.mjs';
-import { findOwnScopeFile } from '../scripts/lib/scope-gate.mjs';
+import { findOwnScopeFile, isPluginProject } from '../scripts/lib/scope-gate.mjs';
 import {
   classifyManifestSession,
   readProcessLocalSessionIds,
@@ -51,6 +51,7 @@ import { spawnSync } from '../scripts/lib/native-command.mjs';
 
 /** File extensions that trigger typecheck. */
 const TS_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
+const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
 
 /**
  * Emit the JSONL result line to stderr.
@@ -75,7 +76,7 @@ function emitResult(file, status, duration_ms, reason, remediation) {
  * @param {string} projectRoot
  * @returns {Promise<string|string[]|null>}
  */
-async function resolveTypecheckCommand(projectRoot) {
+export async function resolveTypecheckCommand(projectRoot) {
   // 1. Session Config typecheck-command
   try {
     const md = await readConfigFile(projectRoot);
@@ -132,7 +133,7 @@ function _tryWhich(name) {
  * @param {string} projectRoot
  * @returns {Promise<{status: 'pass'|'fail'|'timeout', duration_ms: number, reason?: string}>}
  */
-async function runTypecheck(cmd, projectRoot) {
+export async function runTypecheck(cmd, projectRoot) {
   const result = await spawnInGroup(cmd, {
     cwd: projectRoot,
     timeoutMs: 2000,
@@ -201,7 +202,12 @@ async function main() {
     process.exit(0);
   }
 
-  // G6: resolve typecheck command
+  // G6: only the plugin checkout runs a typecheck.
+  if (!isPluginProject({ projectRoot, pluginRoot: PLUGIN_ROOT })) {
+    emitResult(relPath, 'skip', undefined, "post-edit typecheck runs only in the plugin's own checkout");
+    process.exit(0);
+  }
+
   const tc = await resolveTypecheckCommand(projectRoot);
   if (!tc) {
     emitResult(relPath, 'skip', undefined, 'no typecheck command found');

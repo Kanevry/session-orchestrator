@@ -9,12 +9,12 @@
  *
  * Design decision (Discovery D3): there is NO Wave-History parser and NO `readDeviations`
  * in scripts/lib/state-md.mjs, and `readWhatNotToRetry`'s expected format DIVERGES from
- * the real FeedFoundryV2 fixture (which uses a plain `- <text> (<session>, <date>) —
+ * the real ProjectV2 fixture (which uses a plain `- <text> (<session>, <date>) —
  * why: …` bullet). Rather than rely on structured parsers that silently return `[]` on
  * format drift, this module extracts the RAW verbatim markdown block of each section —
  * robust to format drift and faithful to the "mirror the narrative for human
  * traceability" goal. Both the top-level `## Wave History` form and the nested
- * `### Wave History (…)` form (under `## Previous Session` in FeedFoundryV2) are handled.
+ * `### Wave History (…)` form (under `## Previous Session` in ProjectV2) are handled.
  *
  * Exports:
  *   GENERATOR_MARKER       — frontmatter sentinel identifying generator-owned files
@@ -572,9 +572,9 @@ export function writeNarrative(opts) {
  * Fold a slug candidate to a comparison-only form: lowercase, every
  * non-alphanumeric character stripped. Used purely for equality comparison —
  * never as a slug value itself. `subjectToSlug` (vault-mirror/utils.mjs) does
- * NOT insert a hyphen at a camelCase boundary, so `GotzendorferV2` mints
- * `gotzendorferv2` — a DIFFERENT folder than a hand-created `gotzendorfer-v2`.
- * `looseSlug('gotzendorfer-v2') === looseSlug('gotzendorferv2')`, so the two
+ * NOT insert a hyphen at a camelCase boundary, so `AcmeSiteV2` mints
+ * `acmesitev2` — a DIFFERENT folder than a hand-created `acme-site-v2`.
+ * `looseSlug('acme-site-v2') === looseSlug('acmesitev2')`, so the two
  * forms can be reconciled without changing `subjectToSlug` itself.
  *
  * @param {string} s
@@ -589,8 +589,8 @@ function looseSlug(s) {
  * folder names before falling back to minting a new one (issue #829 Finding
  * 3). When EXACTLY ONE existing folder's {@link looseSlug} equals the
  * candidate's, that folder's EXACT on-disk name is reused (auto-resolving
- * casing/punctuation drift, e.g. `GotzendorferV2` → `gotzendorfer-v2`,
- * `LeadPipeDACH` → `leadpipe-dach`). Zero or MORE THAN ONE matches are
+ * casing/punctuation drift, e.g. `AcmeSiteV2` → `acme-site-v2`,
+ * `SalesToolEU` → `salestool-eu`). Zero or MORE THAN ONE matches are
  * ambiguous (or there is genuinely no match) — the caller's `subjectToSlug`
  * candidate is returned unchanged, preserving current behaviour.
  *

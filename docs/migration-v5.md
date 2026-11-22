@@ -59,4 +59,4 @@ The new time-bounded operations route is selected by the documented session-star
 
 Pin the package or plugin checkout to 4.2.0 and restore any caller changes that depend on the v5 API. A `readCurrentStatusEntries` import is new in this release and cannot be assumed on 4.2.0. Preserve existing state files. If you explicitly set `discovery-on-close: false`, it is also understood by 4.2.0.
 
-Full changes: [CHANGELOG.md](../CHANGELOG.md).
+Full changes: [changelog/v5.0-5.4.md](changelog/v5.0-5.4.md).

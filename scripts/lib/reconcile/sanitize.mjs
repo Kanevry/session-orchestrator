@@ -351,7 +351,7 @@ export const EXPIRES_AT_RE = /^\d{4}-\d{2}-\d{2}$/;
  * .orchestrator/metrics/sessions.jsonl | grep -c '/'` → **3**, all of the
  * `feat/operator-surface-2026-08-08-…` family; `git branch -a --format=…
  * | grep -c '/'` → **6**. It hit two usable learnings in the reporting
- * consumer's run (source: peer session eventdrop-at, 2026-09-20).
+ * consumer's run (source: a consumer session, 2026-09-20).
  *
  * Widening a SANITISER is only safe against a census of what the new character
  * makes expressible at the call sites — see {@link assertNoPathEscape} for the

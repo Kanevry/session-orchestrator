@@ -12,18 +12,23 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { createGitRunner } from './lib/github-export.mjs';
+import { writeJsonAtomicSync } from './lib/io.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { commandOnPath, spawnSync } from './lib/native-command.mjs';
 import {
   CONFIG_FILE,
   MODES,
   SiteDeployConfigError,
+  STAGE_RECEIPT_DIR,
   SiteDeployExportError,
+  buildStageReceipt,
+  checkStageReceipt,
   deploymentUrlFrom,
   isVercelDeploymentUrl,
   loadSiteDeployConfig,
   materializeDeployDir,
   planDeploy,
+  stageReceiptName,
   vercelArgs,
   writeVercelLink,
 } from './lib/site-deploy.mjs';
@@ -41,14 +46,15 @@ The export directory holds exactly the selected tracked files plus .vercel/proje
 the working tree, the index and env files are never read into it.
 
 Options:
-  --source <rev>   source commit (default HEAD)
+  --source <rev>   source commit (default HEAD); not with promote
   --mode <mode>    ${MODES.join(' | ')} (default plan)
                    plan     print the source sha, file count, size and the first paths
                    preview  vercel deploy (preview URL, domains untouched)
                    stage    vercel deploy --prod --skip-domain (production build,
                             domains untouched; never promotes by itself)
                    promote  vercel promote <url> (run from a linked temp dir): the ONLY
-                            mode that moves the domains
+                            mode that moves the domains, and only to a URL a stage
+                            run of this checkout recorded in ${STAGE_RECEIPT_DIR}/
   --url <url>      deployment URL (https://<deployment>.vercel.app), required for promote
   --keep           keep the export directory and print its path (on failure too)
   --json           print one JSON object instead of the human summary
@@ -61,9 +67,10 @@ to link.
 
 Exit codes:
   0  done
-  1  usage error
+  1  usage error, or promote of a URL without a matching stage receipt
   2  system error: ${CONFIG_FILE} missing or invalid, vercel not on PATH, the source does
-     not resolve, git/tar failed, or the export differs from the plan
+     not resolve, git/tar failed, the export differs from the plan, or a stage receipt
+     could not be written
   3  vercel exited non-zero (its stderr tail is printed)
 `;
 
@@ -85,6 +92,20 @@ function readConfig() {
 
 const tail = (text) => text.trim().split('\n').slice(-STDERR_TAIL).join('\n');
 
+/** The stage receipt for `url`, or null when absent or unreadable (promote refuses). */
+function readReceipt(url) {
+  try {
+    return JSON.parse(readFileSync(join(REPO_ROOT, STAGE_RECEIPT_DIR, stageReceiptName(url)), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** Atomic write of one stage receipt; returns the io envelope. */
+function writeReceipt(receipt) {
+  return writeJsonAtomicSync(join(REPO_ROOT, STAGE_RECEIPT_DIR, stageReceiptName(receipt.url)), receipt);
+}
+
 /**
  * Run vercel in `cwd`. stdout is captured for the URL; stderr is captured too (for the
  * exit-3 tail) and replayed after the run. Ceiling: no live upload progress; revisit if
@@ -97,10 +118,11 @@ function runVercel(args, cwd) {
   return { status: res.status, stdout, stderr };
 }
 
-function followUp(url, scope) {
+function followUp(url, scope, mode) {
   return [
     `  check:   vercel curl ${url}/ --scope ${scope}   (run it in a linked dir, e.g. the --keep export dir)`,
-    `  promote: node scripts/site-deploy.mjs --mode promote --url ${url}`,
+    // Only a stage run writes the receipt promote requires.
+    ...(mode === 'stage' ? [`  promote: node scripts/site-deploy.mjs --mode promote --url ${url}`] : []),
     `  rollback: vercel rollback <previous url> --scope ${scope}   (run it in a linked dir, e.g. the --keep export dir)`,
   ].join('\n');
 }
@@ -111,7 +133,7 @@ export function main(argv = process.argv.slice(2)) {
     ({ values } = parseArgs({
       args: argv,
       options: {
-        source: { type: 'string', default: 'HEAD' },
+        source: { type: 'string' },
         mode: { type: 'string', default: 'plan' },
         url: { type: 'string' },
         keep: { type: 'boolean', default: false },
@@ -130,11 +152,20 @@ export function main(argv = process.argv.slice(2)) {
   if (!MODES.includes(mode)) return fail(1, `unknown mode '${mode}' (known: ${MODES.join(', ')})`);
   if (mode === 'promote' && !isVercelDeploymentUrl(values.url)) return fail(1, '--mode promote needs --url https://<deployment>.vercel.app');
   if (mode !== 'promote' && values.url !== undefined) return fail(1, '--url is only for --mode promote');
+  // promote moves the domains to an EXISTING deployment; a source here would be ignored.
+  if (mode === 'promote' && values.source !== undefined) return fail(1, '--source is not used by --mode promote (the stage receipt names the source)');
 
   const { config, error } = readConfig();
   if (error) return fail(2, error);
   const { scope, name } = config.project;
   const emit = (obj, text) => process.stdout.write(values.json ? `${JSON.stringify({ mode, project: { name, scope }, ...obj })}\n` : text);
+
+  let staged = null;
+  if (mode === 'promote') {
+    const check = checkStageReceipt(readReceipt(values.url), { url: values.url, config });
+    if (!check.ok) return fail(1, check.reason);
+    staged = check.receipt;
+  }
 
   if (mode !== 'plan' && !commandOnPath('vercel')) return fail(2, 'vercel is not on PATH');
 
@@ -147,7 +178,7 @@ export function main(argv = process.argv.slice(2)) {
       const res = runVercel(vercelArgs('promote', { scope, url: values.url }), linkDir);
       if (res.status !== 0) return fail(3, `vercel promote exited ${res.status}:\n${tail(res.stderr)}`);
       process.stderr.write(res.stderr);
-      emit({ url: values.url }, `promoted ${values.url} (${scope}/${name})\n`);
+      emit({ url: values.url, sourceSha: staged.sourceSha }, `promoted ${values.url} (${scope}/${name}), source ${staged.sourceSha.slice(0, 12)}\n`);
       return 0;
     } finally {
       rmSync(linkDir, { recursive: true, force: true });
@@ -155,7 +186,7 @@ export function main(argv = process.argv.slice(2)) {
   }
 
   const git = createGitRunner(REPO_ROOT);
-  const plan = planDeploy({ git, source: values.source, config });
+  const plan = planDeploy({ git, source: values.source ?? 'HEAD', config });
   if (!plan.ok) return fail(2, plan.reason);
   const mib = (plan.bytes / 1048576).toFixed(1);
 
@@ -184,10 +215,15 @@ export function main(argv = process.argv.slice(2)) {
     process.stderr.write(res.stderr);
     const url = deploymentUrlFrom(res.stdout);
     if (!url) return fail(3, 'vercel deploy exited 0 but printed no https://….vercel.app URL');
+    if (mode === 'stage') {
+      const written = writeReceipt(buildStageReceipt({ url, sourceSha: plan.sourceSha, files: plan.files.length, bytes: plan.bytes, config, at: new Date().toISOString() }));
+      // The deployment exists either way; without the receipt promote refuses it later.
+      if (!written.ok) return fail(2, `staged ${url} but could not write its receipt (${written.code ?? written.error}); promote will refuse it`);
+    }
     const lines = [
       `${mode} deployment of ${plan.sourceSha.slice(0, 12)} (${plan.files.length} files, ${mib} MiB): ${url}`,
       mode === 'stage' ? '  domains untouched; production moves only with promote' : '  preview; domains untouched',
-      followUp(url, scope),
+      followUp(url, scope, mode),
     ];
     if (values.keep) lines.push(`export dir: ${dir}`);
     emit({ ...summary, url }, `${lines.join('\n')}\n`);

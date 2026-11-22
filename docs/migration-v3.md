@@ -2,7 +2,7 @@
 
 v3.0.0 swaps the Bash/zx runtime for Node.js 24+ and adds native Windows support without WSL. This guide walks through the upgrade step-by-step for each supported platform (Claude Code, Codex, Cursor IDE) and each OS (macOS, Linux, Windows).
 
-Epic reference: [#124](https://github.com/Kanevry/session-orchestrator/issues/124). Full change list: [CHANGELOG.md](../CHANGELOG.md).
+Epic reference: [#124](https://github.com/Kanevry/session-orchestrator/issues/124). Full change list: [changelog/v3.2-3.11.md](changelog/v3.2-3.11.md) and [changelog/v3.12-3.24.md](changelog/v3.12-3.24.md).
 
 ## 1. What Changes
 

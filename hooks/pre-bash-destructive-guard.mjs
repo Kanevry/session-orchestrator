@@ -1978,8 +1978,8 @@ function failureCause(err) {
 /**
  * Whether two paths name the same directory, by identity (`dev` + `ino`), not
  * by spelling (#1829): on a case-insensitive APFS volume git prints the
- * on-disk spelling (`…/FeedFoundryV2/09-zug`) while `fs.realpathSync` keeps the
- * input spelling (`…/feedfoundryv2/09-zug`), so a string compare called every
+ * on-disk spelling (`…/ProjectV2/09-zug`) while `fs.realpathSync` keeps the
+ * input spelling (`…/projectv2/09-zug`), so a string compare called every
  * such worktree "no root". A failed stat throws — the caller stays fail-closed.
  *
  * @param {string} a

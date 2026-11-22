@@ -15,10 +15,10 @@ import path from 'node:path';
  * possible ("keine Zahl ohne ihre Population").
  */
 export const REAPER_DEFAULTS = Object.freeze({
-  /** `reaper.min-age-seconds`: DevWatchdogs' hard limit for `tsgo`; the
+  /** `reaper.min-age-seconds`: the host watchdog's hard limit for `tsgo`; the
    *  2026-09-20 orphans were 7-17 min old, comfortably above it. */
   minAgeSeconds: 300,
-  /** `reaper.min-scan-interval-seconds`: DevWatchdogs' normal scan cadence —
+  /** `reaper.min-scan-interval-seconds`: the host watchdog's normal scan cadence —
    *  keeps a `PostToolBatch` storm from taxing every tool call. */
   minScanIntervalSeconds: 30,
   /** `reaper.kill-grace-ms`: `DEFAULT_KILL_GRACE_MS` from `process-group.mjs` —

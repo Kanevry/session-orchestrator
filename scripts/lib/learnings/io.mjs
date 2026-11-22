@@ -330,7 +330,7 @@ export async function withLearningsLock(filePath, fn, { timeoutMs = LEARNINGS_LO
  * append touches disk, so a bad write can never reach the file.
  *
  * @param {object} validated — already validated+normalized learning entry
- * @param {{ legacyTolerant?: boolean }} [opts] — EventDrop #386. When `true`,
+ * @param {{ legacyTolerant?: boolean }} [opts] — the legacy-store tolerance. When `true`,
  *   a field that was ALREADY ABSENT on `validated` (e.g. a legacy record with
  *   no `source_session`, tolerated by `readLearnings()`) stays tolerated after
  *   the round-trip too — the re-validation call below runs in the same
@@ -368,7 +368,7 @@ function serializeLearningLineChecked(validated, { legacyTolerant = false } = {}
     // A key that existed on `validated` (present, even as `undefined`) but
     // vanished from `reparsed` was DROPPED by JSON.stringify — the exact
     // undefined/NaN/etc. corruption #662 exists to catch. A key that was
-    // never on `validated` in the first place (the EventDrop #386
+    // never on `validated` in the first place (the legacy-store tolerance
     // legacy-field case) cannot appear here, because we only iterate
     // `validated`'s own keys.
     const droppedKeys = Object.keys(validated).filter((k) => !(k in reparsed));
@@ -692,7 +692,7 @@ async function rotateBackups(dir, baseName, keep = BACKUP_KEEP) {
  * - `backup` (default `true`): before the destructive rename, copy the current
  *   file to `${filePath}.bak-<ISO>`, then rotate to keep only the newest
  *   {@link BACKUP_KEEP}. Rotation is best-effort and never blocks the rewrite.
- * - `legacyTolerant` (default `true`, EventDrop #386): this function is a
+ * - `legacyTolerant` (default `true`, the legacy-store tolerance): this function is a
  *   ROUND-TRIP writer — its usual caller (`sweepExpiredLearnings` /
  *   `pruneLearnings` in `expiry-sweep.mjs`) reads the store with
  *   `readLearnings()` first, and that reader already tolerates a legacy
@@ -709,7 +709,7 @@ async function rotateBackups(dir, baseName, keep = BACKUP_KEEP) {
  *   round-trip (a value JSON.stringify drops or coerces, e.g. `undefined`/
  *   `NaN`) is still caught by the #662 checked serializer regardless of this
  *   flag — see {@link serializeLearningLineChecked}. Pass `false` to restore
- *   the fully-strict behaviour from before EventDrop #386.
+ *   the fully-strict behaviour from before the legacy-store tolerance.
  * - `malformedLines` (#1489): raw text of store lines that did not parse —
  *   the `malformed` array {@link readLearnings} returns. Written back
  *   verbatim, one per line, AFTER the validated records. A round-trip writer

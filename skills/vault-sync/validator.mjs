@@ -77,7 +77,7 @@ import {
 //
 // vaultNoteStatusSchema — measured 2026-08-23: FOUR hand-maintained copies of this
 // enum exist: (1) the SSOT projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts,
-// (2) this file, (3) sven-infra `02-cron/vault-overview-sync.sh:216`,
+// (2) this file, (3) the ops repo `02-cron/vault-overview-sync.sh:216`,
 // (4) `tests/lib/vault-mirror/render-sessions.test.mjs:490`, whose own comment names
 // this file as its source and then transcribes it. Copy 4 is deliberately NOT widened:
 // it asserts membership for a mapper that emits only `verified`/`draft`.

@@ -327,7 +327,7 @@ export function lintClaudeMd(opts = {}) {
  * `node "$HOME/x.mjs"` works. Why not `path.relative(repoRoot, __filename)`
  * (the first proposal): measured 2026-09-11, it only redacts when the repo and
  * the plugin share a home ancestor —
- *   repoRoot `~/Projects/bewerbungs-assistent`, plugin under `~/.claude/plugins`
+ *   repoRoot `~/Projects/consumer-app`, plugin under `~/.claude/plugins`
  *     → `../../.claude/plugins/…` (private, 98 chars)
  *   repoRoot on a tmp/other volume, plugin under the home dir
  *     → `../../../../Users/<name>/.claude/…` (LEAKS, and longer)

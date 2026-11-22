@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-22T08:52:15.555Z",
-  "head": "19ea25ccee52db4f1b6c33afd948d8513db33b76",
+  "generated_at": "2026-11-22T11:16:09.488Z",
+  "head": "95f51f59747062fece00249c86d7a4ed02678d70",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -416,6 +416,7 @@
         "on-stop.mjs",
         "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
         "post-tool-batch-wave-signal.mjs",
         "pre-agent-cap.mjs",
@@ -1609,6 +1610,7 @@
       "reachable_from": [
         "on-stop.mjs",
         "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
         "post-tool-batch-wave-signal.mjs",
         "pre-agent-cap.mjs",
@@ -1846,6 +1848,7 @@
       "reachable_from": [
         "on-stop.mjs",
         "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
         "post-tool-batch-wave-signal.mjs",
         "pre-agent-cap.mjs",

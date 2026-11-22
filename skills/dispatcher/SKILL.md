@@ -7,7 +7,7 @@ description: >
   worthwhile one via AskUserQuestion, atomically claims it, and routes you to the chosen entry command.
   Triggers: "what should I work on next", "dispatch me to a repo", "pick the next project", "run
   /dispatcher". <example>Context: operator finished a session and wants the next-best repo across the
-  portfolio. user: "/dispatcher" assistant: "Ranked 18 free repos — top recommendation: Pencil-Designs
+  portfolio. user: "/dispatcher" assistant: "Ranked 18 free repos — top recommendation: acme-designs
   (score 4.50, 90d stale). Confirm via the picker, I'll claim its lease atomically, then route you to
   /session deep."</example>
 user-invocable: true

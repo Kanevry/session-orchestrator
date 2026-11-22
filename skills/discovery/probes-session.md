@@ -308,7 +308,7 @@ Recommendation: <action>
 
 ### Probe: cross-repo-duplicate-implementation
 
-**Activation:** Discovery finding recommends implementing something that lives in a known plugin repo (session-orchestrator, projects-baseline, claude-code-skills). Specifically: the finding mentions a path under `session-orchestrator/skills/`, `session-orchestrator/scripts/`, or `session-orchestrator/hooks/`, OR proposes creating a new skill/script whose name could already be in flight upstream.
+**Activation:** Discovery finding recommends implementing something that lives in a known plugin repo (session-orchestrator, projects-baseline, a skills repo). Specifically: the finding mentions a path under `session-orchestrator/skills/`, `session-orchestrator/scripts/`, or `session-orchestrator/hooks/`, OR proposes creating a new skill/script whose name could already be in flight upstream.
 
 **Motivation:** A discovery finding that says "implement skill X" is only useful if X does not already exist on the plugin repo. Without a cross-repo check, a consumer repo can spend hours rebuilding work that already sits in an open MR or on a feature branch. First observed in the vault session on 2026-04-19 (session-orchestrator issue #179): vault#58 was filed ~7 h after the feature already existed as MR !11 — the next vault session began rebuilding the same work from scratch before catching the duplication mid-wave.
 

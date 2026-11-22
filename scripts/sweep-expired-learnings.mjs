@@ -743,8 +743,8 @@ async function runSnapshot(args) {
  * Strict-validate every `--entries` record the store does not already hold.
  *
  * `pruneLearnings()` rewrites through `rewriteLearnings()`, which runs
- * `legacyTolerant` so records ALREADY in the store (legacy shapes, EventDrop
- * #386) survive a round-trip. Without this gate the same tolerance admitted
+ * `legacyTolerant` so records ALREADY in the store (legacy shapes from a
+ * consumer repo) survive a round-trip. Without this gate the same tolerance admitted
  * NEW records too — a sidecar record with `scope: "src/app/x.tsx"` and no
  * `created_at`/`expires_at` was written (GH#69). New = its `id` is absent from
  * the store; an id-less record counts as known only when an id-less store

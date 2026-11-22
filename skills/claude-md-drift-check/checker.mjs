@@ -275,7 +275,7 @@ function instructionFilesAreAliased(pathA, pathB) {
  * (`scripts/lib/common.mjs`) and `parse-config.mjs` read CLAUDE.md first
  * whenever it is non-empty, so the pointer's missing block is never read.
  * Comparing them reported `CLAUDE.md='<dir>' vs AGENTS.md='(unset)'` as an
- * error (peer session gotzendorferv2-6e, 2026-10-04).
+ * error (a peer session, 2026-10-04).
  *
  * ONE direction only, on purpose. A CLAUDE.md that imports AGENTS.md is the
  * file those readers pick, and they read it raw — they do not follow `@`

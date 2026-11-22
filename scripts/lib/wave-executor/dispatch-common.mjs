@@ -31,7 +31,7 @@ export { DEFAULT_KILL_GRACE_MS } from '../process-group.mjs';
 
 /**
  * Roles that may NEVER run on a foreign model. Copied verbatim from
- * account-switch `tools/routing/routing.yaml` § never_foreign (read 2026-08-25).
+ * the operator's routing policy `tools/routing/routing.yaml` § never_foreign (read 2026-08-25).
  * Keep in sync by hand — the YAML lives in a different repo and is parsed there
  * by awk, not by a shared library.
  * @type {readonly string[]}

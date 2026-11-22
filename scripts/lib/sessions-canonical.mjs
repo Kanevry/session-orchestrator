@@ -269,7 +269,7 @@ export function isMeasuredSession(rec) {
  * LIMIT (#1457 point 9): the join assumes one raw_session_id = one physical
  * session. A raw id can also span a CLOSED session and a later, separate
  * abandoned tail (measured: a stub starting 4 minutes after its partner's
- * `completed_at`, LeadPipeDACH `main-2026-09-03-session-11`) — that stub is
+ * `completed_at`, a consumer repo, 2026-09-03) — that stub is
  * dropped too, so the tail is invisible to every reader. No time-window check
  * guards against it; adding one is a separate decision.
  * @param {Map<string, object>} byId

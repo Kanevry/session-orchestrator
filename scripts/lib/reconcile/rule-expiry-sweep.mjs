@@ -191,7 +191,7 @@ const PAIR_ID_RE = /^- learning-id:\s*`([^`]+)`(.*)$/;
  * English is this repo's own form (all 7 live consolidated files, measured
  * 2026-09-20 @ 9b118cf6: `grep -n 'EARLIEST of the' .claude/rules/*.md` → 7
  * hits, `grep -rn 'FRUEHESTE\|FRÜHESTE' .claude/rules/` → 0). German is the
- * consumer-side form reported from EventDrop.at (GH#70, 2026-09-20), where a
+ * consumer-side form reported from a consumer repo (GH#70, 2026-09-20), where a
  * raise lifted the frontmatter and left the body sentence claiming the older
  * date — the sentence that literally forbids correcting it upward.
  *

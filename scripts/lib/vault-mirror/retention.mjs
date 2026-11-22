@@ -191,8 +191,8 @@ const hyphenCount = (s) => (String(s).match(/-/g) || []).length;
  * The hyphen-alias rule, shared by the mirror and the pruner (#1513 review
  * M2): among namespace folders that are equal modulo hyphens, the one with the
  * most hyphens is canonical (ties: lexicographic). The repo-identity fallback
- * that drops hyphens (`GotzendorferV2` → `gotzendorferv2`) and the
- * remote-derived name (`gotzendorfer-v2`) thereby land in one folder.
+ * that drops hyphens (`AcmeSiteV2` → `acmesitev2`) and the
+ * remote-derived name (`acme-site-v2`) thereby land in one folder.
  *
  * @param {Iterable<string>} folders namespace folder names present
  * @param {string} ns

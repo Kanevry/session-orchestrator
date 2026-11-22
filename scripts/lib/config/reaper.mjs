@@ -35,9 +35,9 @@ import { preprocessBlockLines } from './block-preprocess.mjs';
  * mirror there. The parity is held by a test, not by an import
  * (`tests/lib/config/reaper.test.mjs` § defaults mirror REAPER_DEFAULTS).
  */
-/** 300 s — DevWatchdog's hard limit for `tsgo`; the 2026-09-20 orphans were 7–17 min old. */
+/** 300 s — the host watchdog's hard limit for `tsgo`; the 2026-09-20 orphans were 7–17 min old. */
 const DEFAULT_MIN_AGE_SECONDS = 300;
-/** 30 s — DevWatchdog's normal scan cadence; keeps a PostToolBatch storm from taxing every tool call. */
+/** 30 s — the host watchdog's normal scan cadence; keeps a PostToolBatch storm from taxing every tool call. */
 const DEFAULT_MIN_SCAN_INTERVAL_SECONDS = 30;
 /** 10 000 ms — `DEFAULT_KILL_GRACE_MS` from `process-group.mjs`; repo convention, not newly invented. */
 const DEFAULT_KILL_GRACE_MS = 10_000;

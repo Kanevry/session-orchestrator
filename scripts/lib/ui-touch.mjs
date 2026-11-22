@@ -10,7 +10,7 @@
  *      fixture pages, scaffolds, exported designs, e-mail templates, video
  *      compositions and tool output are excluded: measured over six repos on
  *      2026-11-12 (MR !413 review), the first defaults matched 974 files in
- *      EventDrop.at and 288 research/audit HTML files in the vault.
+ *      a consumer repo and 288 research/audit HTML files in the vault.
  *   2. `resolveSessionChangeSet()` — which files did THIS session change? It
  *      returns `{ ok: false, reason }` whenever git cannot answer, so a blocking
  *      caller can say "unmeasured" instead of reading an empty list as "no UI

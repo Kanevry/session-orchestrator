@@ -140,6 +140,8 @@ import { execFileSync } from '../native-command.mjs';
  * changelog cites the paths a release TOUCHED, so a path deleted afterwards is
  * still a correct historical statement — 88 such hits, all correct by
  * construction. Annotating them would be noise on every future entry.
+ * The same holds for the archived changelog sections under `docs/changelog/`
+ * (see {@link HISTORY_PREFIX}).
  */
 export const SCAN_DIRS = Object.freeze([
   'skills',
@@ -151,6 +153,16 @@ export const SCAN_DIRS = Object.freeze([
   '.claude/rules',
   '.cursor/rules',
 ]);
+
+/**
+ * Archived changelog sections, cut out of the root `CHANGELOG.md` to keep each
+ * file under the plugin directory's 256 KiB text limit (#2216). They are
+ * history, not instruction, and get the root changelog's treatment: not
+ * scanned. Measured on the cut: 84 failing and 13 advisory findings, every one
+ * a path a past release touched and a later one removed. This also retires the
+ * `path-check: historical` markers in `docs/changelog/v2.md`.
+ */
+export const HISTORY_PREFIX = 'docs/changelog/';
 
 /**
  * Extensions treated as instruction markdown.
@@ -529,6 +541,7 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
 
   for (const absolute of files) {
     const relative = path.relative(pluginRoot, absolute).split(path.sep).join('/');
+    if (relative.startsWith(HISTORY_PREFIX)) continue;
     /** @type {string} */
     let body;
     try {

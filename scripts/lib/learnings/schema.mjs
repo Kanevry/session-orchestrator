@@ -232,10 +232,10 @@ export class ValidationError extends Error {
  * Throws ValidationError on contract violations. Does NOT mutate input.
  *
  * @param {object} entry — candidate learning
- * @param {{ legacyTolerant?: boolean }} [opts] — EventDrop #386. When `true`, a
+ * @param {{ legacyTolerant?: boolean }} [opts] — the legacy-store tolerance. When `true`, a
  *   value `normalizeLearning()` already passes through UNCHECKED (or merely
  *   DEFAULTED, never validated) on read is no longer rejected here either:
- *   an out-of-enum `schema_version` (measured against the real EventDrop.at
+ *   an out-of-enum `schema_version` (measured against a real consumer
  *   store: 3 live records carry `schema_version: 2`), the
  *   LEGACY_REQUIRED_FIELDS presence check, the `confidence` range/type check
  *   when NO `confidence` key is present, and the `scope`/`host_class`/

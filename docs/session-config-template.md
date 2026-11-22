@@ -1101,7 +1101,7 @@ allow-config-weakening: false   # per-session bypass
 reaper:
   enabled: false                 # only an explicit `true` arms it; it can send signals to processes
   mode: report                   # report (decide + audit only) | kill (send signals — PRD Stufe 2)
-  min-age-seconds: 300           # DevWatchdog's hard limit for tsgo; the 2026-09-20 orphans were 7–17 min old
+  min-age-seconds: 300           # the host watchdog's hard limit for tsgo; the 2026-09-20 orphans were 7–17 min old
   min-scan-interval-seconds: 30  # throttle; keeps a PostToolBatch storm from taxing every tool call
   kill-grace-ms: 10000           # DEFAULT_KILL_GRACE_MS from process-group.mjs:52 — repo convention
   verify-wait-ms: 500            # wait before reading the effect back (a sent signal proves nothing)

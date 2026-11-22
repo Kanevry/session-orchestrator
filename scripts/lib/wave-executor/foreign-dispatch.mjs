@@ -4,7 +4,7 @@
  * result at the filesystem rather than from the model's own prose (#1150).
  *
  * Why this module exists rather than a shell wrapper:
- *   - `never_foreign` (the hard role lock in account-switch
+ *   - `never_foreign` (the hard role lock in the operator's routing policy
  *     `tools/routing/routing.yaml`) is enforced by NOTHING on the Cursor
  *     channel — `dispatch-cursor.sh` does not read it. This adapter is the only
  *     enforcement point for a foreign dispatch that goes through here.

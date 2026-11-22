@@ -84,6 +84,9 @@ export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents', '.claude
  */
 export const MD_EXTENSIONS = Object.freeze(['.md', '.mdc']);
 
+/** Repo-relative prefix of the archived changelog files, skipped by {@link listMarkdown}. */
+export const HISTORY_PREFIX = 'docs/changelog/';
+
 /** Path segments that end the walk: vendored or machine-owned trees, never instruction. */
 export const PRUNE_DIRS = new Set(['node_modules', '.git', 'coverage', 'dist', '.pnpm']);
 
@@ -161,6 +164,10 @@ export function listMarkdown(repoRoot, { dirs = SCAN_DIRS } = {}) {
       // Vendored trees are not an instruction surface: `skills/vault-sync/node_modules/` is real
       // and its bundled READMEs link into their own upstream repo layout, which is not ours to fix.
       if (posix.split('/').some((s) => PRUNE_DIRS.has(s))) continue;
+      // Archived changelog sections are history, like the root CHANGELOG.md, which is no scan
+      // root here. Ceiling: a link the next archive cut forgets to re-base goes unflagged; the
+      // 2026-11-22 cut was measured clean (19 links in 8 files, 0 findings) before this skip.
+      if (posix.startsWith(HISTORY_PREFIX)) continue;
       out.push(posix);
     }
   }

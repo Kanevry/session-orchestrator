@@ -19,8 +19,7 @@
  *   G3  tool_name ∈ {Edit, Write, MultiEdit}
  *   G4  tool_input.file_path present
  *   G5  extension ∈ {.mjs, .js, .cjs}
- *   G6  membership in hooks/_lib/hook-import-set.json (the committed
- *       hook-reachable allowlist) — anything else is not this probe's business
+ *   G6  Require the plugin checkout before checking membership in hooks/_lib/hook-import-set.json.
  *   C1  PRIMARY: ESLint on the single file; only `no-undef` and fatal/parse
  *       errors count as a failure (other rules belong to `npm run lint`)
  *   C2  SECONDARY (scripts/lib/** only — NEVER hooks/*.mjs, half of which run
@@ -43,8 +42,9 @@ import path from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 
-import { getProjectDir } from '../scripts/lib/platform.mjs';
+import { resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import { spawnSync } from '../scripts/lib/native-command.mjs';
+import { isPluginProject } from '../scripts/lib/scope-gate.mjs';
 
 /** Tool names whose payload carries an edited file path. */
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit']);
@@ -289,7 +289,12 @@ async function main() {
 
   if (!MODULE_EXTS.has(path.extname(filePath).toLowerCase())) return;    // G5
 
-  const projectDir = getProjectDir();
+  const projectDir = resolveSessionRoot(input.cwd);
+  if (!isPluginProject({ projectRoot: projectDir, pluginRoot: PLUGIN_ROOT })) {
+    if (process.env.SO_IMPORT_PROBE_TRACE) process.stderr.write('probe:untrusted-project\n');
+    return;
+  }
+
   const absFile = path.resolve(projectDir, filePath);
   const rel = toRepoRelative(projectDir, absFile);
   if (!rel) return;

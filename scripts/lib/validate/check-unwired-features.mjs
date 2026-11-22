@@ -374,6 +374,21 @@ const PROSE_EXCLUDED_DIRS = Object.freeze([...EXCLUDED_DIRS, '.orchestrator']);
 const PROSE_EXCLUDED_FILES = Object.freeze(['CHANGELOG.md', 'STATE.md']);
 
 /**
+ * Archived changelog sections (`docs/changelog/*.md`, cut out of the root
+ * `CHANGELOG.md` for the directory's 256 KiB text limit, #2216) are the same
+ * historical record and are excluded the same way, by repo-relative prefix so a
+ * directory named `changelog` elsewhere stays counted.
+ *
+ * @param {string} pluginRoot
+ * @param {string} absolute
+ * @returns {boolean} true when the file is part of the live prose corpus
+ */
+function isLiveProse(pluginRoot, absolute) {
+  if (PROSE_EXCLUDED_FILES.includes(path.basename(absolute))) return false;
+  return !path.relative(pluginRoot, absolute).split(path.sep).join('/').startsWith('docs/changelog/');
+}
+
+/**
  * This file excludes ITSELF from the consumer corpus. Load-bearing: every
  * `ALLOWLIST` key is a string literal here, so without the exclusion each
  * allowlist entry becomes its own read site and the check reports the key as
@@ -785,7 +800,7 @@ export function collectOrphanedProseModules(pluginRoot) {
     });
 
   const prose = walkCode(pluginRoot, [], PROSE_EXTENSIONS, PROSE_EXCLUDED_DIRS)
-    .filter((absolute) => !PROSE_EXCLUDED_FILES.includes(path.basename(absolute)))
+    .filter((absolute) => isLiveProse(pluginRoot, absolute))
     .sort()
     .map((absolute) => ({
       relative: path.relative(pluginRoot, absolute),
@@ -1139,7 +1154,7 @@ export function collectUnreachableLibraryModules(pluginRoot) {
   const instructionDocs = INSTRUCTION_DIRS.flatMap((dir) =>
     walkCode(path.join(pluginRoot, dir), [], PROSE_EXTENSIONS, PROSE_EXCLUDED_DIRS),
   )
-    .filter((file) => !PROSE_EXCLUDED_FILES.includes(path.basename(file)))
+    .filter((file) => isLiveProse(pluginRoot, file))
     .sort()
     .map((file) => ({ relative: path.relative(pluginRoot, file), body: readFileSync(file, 'utf8') }));
 

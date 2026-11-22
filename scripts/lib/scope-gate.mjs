@@ -109,6 +109,15 @@ export function findOwnScopeFile(projectRoot, ownIds, classify) {
   return { path: null, foreignPath };
 }
 
+/** Check whether the session root resolves to the plugin's own checkout. */
+export function isPluginProject({ projectRoot, pluginRoot }) {
+  try {
+    return realpathSync.native(projectRoot) === realpathSync.native(pluginRoot);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Guard context: control state belongs to the coordinator, relative grants to
  * the actual isolated checkout. Remote adoption requires unique OWN identity;
