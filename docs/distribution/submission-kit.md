@@ -31,12 +31,15 @@ Avoid version-dependent counts in directory descriptions. Use the live website a
 
 There is no form to fill in. The existing submission is scanned again whenever the owner selects “Submit latest version”, and the scanner also picks up new commits on its own schedule. Listing details recorded with the submission (homepage, privacy URL) are edited there; display name and short description follow the live version of `.claude-plugin/plugin.json`.
 
-What the scanner reported up to 2026-11-21, and where each point stands:
+What the scanner reported up to 2026-11-22, and where each point stands:
 
 - A line-ending rule in `.gitattributes` without `eol=lf` made it refuse every commit before scanning. Fixed in 5.21.0.
 - `templates/python-uv/pyproject.toml` did not parse. Fixed in 5.21.0.
-- `.mcp.json` starts the MCP server through a shell command that computes the program; the directory policy wants the program named. Not fixed in 5.21.0. Resubmit only from a release that names it.
-- Policy holds that need no action from the project: dependencies installed from a lockfile, a text file over 256 KB (`CHANGELOG.md`), more than 512 files. A reviewer clears these.
+- The root `.mcp.json` declared the MCP server a second time, next to the inline declaration in `.claude-plugin/plugin.json`, and started it through a shell command that computes the program (13 findings, rule “Can’t confirm which code runs”). The file moved to `mcp/servers.json`, which only the Codex and Cursor manifests point at. Whether the scanner still reads the moved file as a declaration shows only in the next scan.
+- The scan of 5.21.0 (2026-11-22) added a second blocking rule, “Plugin couldn’t be read completely” (1,643 files, 60.1 MB): the directory accepts a plugin it cannot read completely only from Verified organizations. The directory’s help page also names Verified status of the publishing organization as the condition for shipping command hooks and a local MCP server. Without it, no version of this plugin can be listed.
+- Policy holds a reviewer decides for a Verified organization: dependencies installed from a lockfile, a text file over 256 KB (`CHANGELOG.md`), more than 512 files, `bin/`, hooks that can approve tool calls.
+
+After every mirror push, read the scan of that commit back (Versions tab, then the commit) and record the fetch line, the policy result and the codes of blocking rules.
 
 Suggested short description, for the manifest and anywhere a listing asks for one: Session Orchestrator gives your coding agents an agreed plan, a check after each round of changes and a handover to the next session. `/session` reads the repository and proposes the scope, `/go` runs it in waves of parallel agents with tests and typecheck after each wave, and `/close` checks every planned item and files the rest as issues. Free and MIT.
 

@@ -17,7 +17,7 @@ export function configureNativeMcp(pluginRoot, { node = process.execPath, platfo
   if (pkg.name !== 'session-orchestrator') throw new Error('Expected a session-orchestrator plugin directory.');
   const server = path.join(root, 'scripts', 'mcp-server.mjs');
   if (!existsSync(server)) throw new Error('Native MCP server is missing; install the updated package first.');
-  const file = path.join(root, '.mcp.json');
+  const file = path.join(root, 'mcp', 'servers.json');
   const raw = readFileSync(file, 'utf8');
   const config = JSON.parse(raw);
   const current = config.mcpServers?.['session-orchestrator'];
@@ -30,8 +30,8 @@ export function configureNativeMcp(pluginRoot, { node = process.execPath, platfo
   config.mcpServers['session-orchestrator'] = { ...current, command: node, args: [server] };
   copyFileSync(file, backup);
   // Shared writer: the win32 rename retry matters here most — an open editor or
-  // a running MCP host holding .mcp.json made a bare renameSync fail (#1865).
-  const written = writeJsonAtomicSync(file, config, { tmpPrefix: '.mcp.json.windows-setup' });
+  // a running MCP host holding mcp/servers.json made a bare renameSync fail (#1865).
+  const written = writeJsonAtomicSync(file, config, { tmpPrefix: 'servers.json.windows-setup' });
   if (!written.ok) throw envelopeToError(written);
   return { changed: true, file, backup };
 }

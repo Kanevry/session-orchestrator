@@ -20,8 +20,9 @@
 #             What stands in for the click: the tag rule, this guard, and the
 #             pre-push hook, which lets a `github` tag through only on a proven
 #             curated snapshot or a version-only probe on one.
-#   install-check — verifies the public npm package in a clean consumer after
-#             a successful publish or when the exact version already exists.
+#   install-check — waits up to ten minutes for npm view to return the tagged
+#             version, then verifies the public package in a clean consumer.
+#             Runs after a successful publish or when the version already exists.
 #
 # `scripts/release.mjs --publish --trusted` hands the publish
 # to this workflow and verifies the result, provenance included, on the
@@ -181,14 +182,22 @@ jobs:
         (needs.publish.result == 'success' ||
           (needs.publish.result == 'skipped' && needs.guard.outputs.publish == 'false')) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions: {}
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+        with:
+          persist-credentials: false
+
       - name: Setup Node 24
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
         with:
           node-version: '24'
           package-manager-cache: false
+
+      - name: Wait for the tagged version on npm
+        run: node scripts/wait-for-npm-version.mjs --package session-orchestrator --version "${GITHUB_REF_NAME#v}" --timeout-s 600
 
       - name: Install the tagged version and exercise the shipped hook
         shell: bash

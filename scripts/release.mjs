@@ -59,7 +59,8 @@
 //   --publish --trusted   ADR-0018 route B (#1906): no local npm publish. Writes the
 //                         proof, tags and pushes (the GitHub tag push triggers
 //                         .github/workflows/publish.yml), then waits for the
-//                         registry receipt (provenance + per-file content).
+//                         registry receipt (provenance + per-file content)
+//                         and the workflow's public npm install check.
 //   --reconcile           Read-only resume after an accepted upload: from the
 //                         proof, verify the exact version is served as latest
 //                         with the checked integrity, then that a consumer
@@ -82,13 +83,16 @@
 //   node scripts/release.mjs --resume-tail --target X.Y.Z [--json]
 //
 // EXIT CODES:
-//   0  success
+//   0  success (trusted publish or trusted tail complete with install job passed)
 //   1  preflight/check failure (stale surface, missing CHANGELOG entry,
 //      tag/registry collision, mirror behind, dead token, CI not green,
 //      leakage-gate hit) OR post-publish reconciliation required OR
-//      --reconcile not yet installable (pending / failed / proof missing)
+//      --reconcile not yet installable (pending / failed / proof missing;
+//      a confirmed trusted receipt exits 0 even with installable no, as in --help)
+//      OR a published trusted release with a non-successful install check
 //   2  system/usage error before the npm receipt (git/npm spawn failure,
 //      missing NPM_TOKEN, unknown flag, --skip-ci combined with --publish)
+//   3  published, install job not measured — look at the Actions URL; never rerun --publish
 //
 // FAIL-CLOSED IS THE HOUSE RULE (the defect class this file kept re-growing):
 //   A preflight check reports on evidence it GATHERED. When the gathering
@@ -145,7 +149,7 @@ import {
   readMirrorSetting,
   verifyExportCommit,
 } from './lib/github-export.mjs';
-import { computeSnapshotTree, readSnapshotProbeReceipt } from './lib/snapshot-probe.mjs';
+import { CITATION_STEP, computeSnapshotTree, readSnapshotProbeReceipt } from './lib/snapshot-probe.mjs';
 import {
   archiveContentManifest,
   compareContentManifests,
@@ -1130,11 +1134,11 @@ const SNAPSHOT_PROBE_REMEDY = 'run: node scripts/snapshot-probe.mjs --local (--h
  * Verdict of the `snapshot-probe` preflight row (#1712). Release 5.13.0 found
  * three blockers only after the first curated GitHub push, because nobody had
  * ever run the suite on the exported tree. Green only for a receipt of THIS
- * snapshot tree with `ok: true`, every step `pass`, and at least one suite step
- * (`test` or `remote-gate`) — a validate-plugin-only receipt never ran a test.
+ * snapshot tree with `ok: true`, every step `pass`, at least one suite step
+ * (`test` or `remote-gate`), and citations checked against the current excluded paths.
  * Runs nothing itself. Every red detail ends with the remediation.
  *
- * @param {{ tree: {ok: boolean, snapshotTree?: string, reason?: string}, receiptResult?: {ok: boolean, receipt: any, reason?: string}|null }} input
+ * @param {{ tree: {ok: boolean, snapshotTree?: string, excludedPathsHash?: string, reason?: string}, receiptResult?: {ok: boolean, receipt: any, reason?: string}|null }} input
  * @returns {{ ok: boolean, detail: string }}
  */
 export function evaluateSnapshotProbeRow({ tree, receiptResult }) {
@@ -1153,6 +1157,10 @@ export function evaluateSnapshotProbeRow({ tree, receiptResult }) {
   const names = steps.map((s) => s.name);
   if (!names.some((n) => SNAPSHOT_SUITE_STEPS.includes(n))) {
     return red(`probe of tree ${short} ran no suite step (${names.join(', ') || 'no steps'})`);
+  }
+  if (!names.includes(CITATION_STEP)) return red(`probe of tree ${short} did not check excluded citations`);
+  if (!tree.excludedPathsHash || tree.excludedPathsHash !== receipt.excludedPathsHash) {
+    return red(`probe of tree ${short} does not cover the current excluded paths`);
   }
   return { ok: true, detail: `tree ${short} probed green (${names.join(', ')}; route ${receipt.route ?? 'unknown'})` };
 }
@@ -1511,7 +1519,7 @@ export function evaluateTrustedWorkflow(text) {
     if (unpinned !== undefined) return { armed: false, detail: `publish.yml job ${name} (environment npm-publish) uses ${JSON.stringify(unpinned)}, not pinned to a 40-hex commit SHA` };
   }
   // Only the environment-bound job may mint the OIDC token: another job with
-  // id-token: write (or write-all) could publish without the reviewer gate.
+  // id-token: write (or write-all) could publish outside the configured environment.
   const minting = jobs.find(([name, job]) => name !== armedJob[0] && (job?.permissions === 'write-all' || (job?.permissions && typeof job.permissions === 'object' && job.permissions['id-token'] === 'write')));
   if (minting) return { armed: false, detail: `publish.yml job ${minting[0]} outside environment npm-publish can mint the OIDC token (${minting[1].permissions === 'write-all' ? 'write-all' : 'id-token: write'})` };
   return { armed: true, detail: `publish.yml on push.tags ${pattern}, job ${armedJob[0]} in environment npm-publish with id-token: write` };
@@ -1913,7 +1921,7 @@ function run(cmd, args, opts = {}) {
     throw new Error(`${cmd} ${args.join(' ')}: ${err.message}`, { cause: err });
   }
   const res = spawnSync(native.cmd, native.args, { ...SPAWN_OPTS, ...(detached ? { detached: true } : {}), ...opts });
-  if (res.error) throw new Error(`${cmd} ${args.join(' ')}: ${res.error.message}`);
+  if (res.error) throw new Error(`${cmd} ${args.join(' ')}: ${res.error.message}`, { cause: res.error });
   return res;
 }
 
@@ -2691,6 +2699,11 @@ export function withTrustedReceipt(proof, checks, at) {
   return { ...proof, receiptAt: at, receipt: { route: 'trusted-publishing', checks } };
 }
 
+/** Add the public install job measurement to the existing release proof. */
+export function withInstallCheck(proof, { state, conclusion, url, reason }, at) {
+  return { ...proof, installCheck: { state, ...(conclusion && { conclusion }), url, ...(reason && { reason }), at } };
+}
+
 /**
  * Persist the proof atomically. Never throws: it runs after the irreversible
  * receipt, where a write failure must be reported, not turned into a pre-receipt
@@ -2914,11 +2927,11 @@ export function reconcileRelease(repoRoot, target, deps = {}) {
  * `proof.commit` ({@link trustedAnchorProblem}; reason `proof-unanchored`).
  *
  * @param {{readImpl?: Function, fetchEvidenceImpl?: Function, attempts?: number, pollMs?: number, sleepImpl?: (ms: number) => Promise<void>,
- *   readMirrorSettingImpl?: (repoRoot: string) => object, runImpl?: Function}} [deps] `runImpl` runs local git (`cat-file`)
+ *   readMirrorSettingImpl?: (repoRoot: string) => object, runImpl?: Function}} deps
+ * @param {ReturnType<typeof readReleaseProof>} read
  */
-export async function reconcileTrustedRelease(repoRoot, target, deps = {}) {
+async function reconcileTrustedReceipt(repoRoot, target, deps, read) {
   const base = { target, accepted: false, available: false, installable: false, attempts: 0 };
-  const read = readReleaseProof(repoRoot, target, { readImpl: deps.readImpl });
   if (!read.ok) return { ...base, ok: false, state: 'proof-missing', reason: 'proof-missing', detail: read.detail, proofPath: read.path };
   const { proof } = read;
   const fail = (reason, detail, attempts = 0) => ({ ...base, ok: false, state: 'failed', reason, detail, attempts, proofPath: read.path });
@@ -2947,10 +2960,25 @@ export async function reconcileTrustedRelease(repoRoot, target, deps = {}) {
     if (verdict.state !== 'pending' && verdict.state !== 'unreadable') return { ...fail(verdict.state, verdict.detail, attempt), checks: verdict.checks };
     if (attempt < attempts) await sleep(deps.pollMs ?? TRUSTED_POLL_MS);
   }
-  return { ...base, ok: false, state: 'pending', reason: verdict?.state ?? 'pending', detail: `${verdict?.detail ?? 'not run'} — approve the run in the GitHub environment npm-publish if it waits`, attempts, commit, proofPath: read.path };
+  return { ...base, ok: false, state: 'pending', reason: verdict?.state ?? 'pending', detail: `${verdict?.detail ?? 'not run'} — inspect the tag’s Actions run if it waits`, attempts, commit, proofPath: read.path };
 }
 
-/** Print a reconcile result and return the exit code (0 only when installable or superseded). */
+/** A trusted receipt proves publication. Installability needs a recorded pass or one fresh job lookup. */
+export async function reconcileTrustedRelease(repoRoot, target, deps = {}) {
+  const read = readReleaseProof(repoRoot, target, { readImpl: deps.readImpl });
+  const receipt = await reconcileTrustedReceipt(repoRoot, target, deps, read);
+  if (!receipt.ok) return receipt;
+  const installCheck = read.proof.installCheck?.state === 'passed'
+    ? read.proof.installCheck
+    : await waitForInstallCheck(repoRoot, target, resolveTrustedRepoSpec(repoRoot, deps), {
+      runImpl: deps.runImpl, now: deps.nowImpl, sleep: deps.sleepImpl, waitMs: 0,
+    });
+  const reason = installCheck.reason ?? installCheck.conclusion;
+  const detail = `${receipt.detail}; install job ${installCheck.state}${reason ? ` (${reason})` : ''}`;
+  return { ...receipt, installable: installCheck.state === 'passed', detail };
+}
+
+/** Print the registry verdict. A confirmed trusted receipt exits 0 even when installability is unverified. */
 export function printReconcileResult(result, { json = false, log = console.log, error = console.error } = {}) {
   if (json) {
     log(JSON.stringify(result, null, 2));
@@ -3567,8 +3595,86 @@ export async function runPublishRelease(repoRoot, target, deps = {}) {
 
 /** Poll interval of the route-B receipt wait. */
 export const TRUSTED_POLL_MS = 15_000;
-/** Default deadline of the route-B receipt wait (the owner approves the workflow run). */
+/** Default deadline for the registry to serve the trusted workflow’s receipt. */
 export const TRUSTED_WAIT_MS = 20 * 60_000;
+
+/** Display name of the install job in .github/workflows/publish.yml; a test binds both. */
+export const INSTALL_CHECK_JOB = 'Verify public npm install';
+/** Allow the install job's 20-minute timeout plus five minutes for a runner. */
+export const INSTALL_CHECK_WAIT_MS = 25 * 60_000;
+
+/** Judge only the install job in the selected publish run. Other jobs may still be running. */
+export function evaluateInstallCheck(workflowRun, jobs) {
+  if (!Array.isArray(jobs)) return { state: 'not-measured', reason: 'invalid jobs response' };
+  const job = jobs.find((entry) => entry?.name === INSTALL_CHECK_JOB);
+  if (!job) {
+    const state = workflowRun.status === 'completed' ? 'not-measured' : 'pending';
+    return { state, reason: `job "${INSTALL_CHECK_JOB}" missing from run ${workflowRun.databaseId}` };
+  }
+  if (job.status !== 'completed') return { state: 'pending', reason: `job "${INSTALL_CHECK_JOB}" has not completed` };
+  if (typeof job.conclusion !== 'string' || !job.conclusion.trim()) {
+    return { state: 'not-measured', reason: 'completed install job has no conclusion' };
+  }
+  return { state: job.conclusion === 'success' ? 'passed' : 'failed', conclusion: job.conclusion };
+}
+
+async function waitForInstallCheck(repoRoot, target, spec, {
+  runImpl = run,
+  now = Date.now,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  waitMs = INSTALL_CHECK_WAIT_MS,
+}) {
+  // resolveRepoSpec returns [HOST/]OWNER/REPO, or its raw input for an
+  // unrecognized remote. Only a normalized identity can select a run.
+  const mirror = /^(?:(?<host>[a-z0-9.-]+(?::[0-9]+)?)\/)?(?<owner>[a-z0-9][a-z0-9-]*)\/(?<name>[a-z0-9_.-]+)$/i.exec(spec)?.groups;
+  if (!mirror || mirror.name === '.' || mirror.name === '..') {
+    return { state: 'not-measured', reason: 'GitHub mirror could not be resolved', url: `${expectedTrustedIdentity(target).repository}/actions/workflows/publish.yml` };
+  }
+  const host = mirror.host ?? 'github.com';
+  const repo = `${mirror.owner}/${mirror.name}`;
+  const repositoryUrl = `https://${host}/${repo}`;
+  let url = `${repositoryUrl}/actions/workflows/publish.yml`;
+  const deadline = now() + waitMs;
+  const gh = (args) => {
+    // With no retries, each gh request still needs time to start and read GitHub.
+    const timeout = waitMs === 0 ? 20_000 : Math.max(1, deadline - now());
+    const result = runImpl('gh', args, { cwd: repoRoot, timeout, killSignal: 'SIGKILL', env: { ...process.env, GH_HOST: host } });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`gh run ${args[1]} exited ${result.status}: ${(result.stderr || 'no output').trim().slice(0, 300)}`);
+    try {
+      return JSON.parse(result.stdout);
+    } catch {
+      throw new Error(`gh run ${args[1]} returned no JSON`);
+    }
+  };
+  let reason;
+  do {
+    try {
+      // gh lists newest first. Older runs cannot supply evidence for a newer run.
+      const runs = gh(['run', 'list', '--repo', repo, '--workflow', 'publish.yml', '--branch', `v${target}`, '--json', 'databaseId,status,conclusion', '--limit', '5']);
+      if (!Array.isArray(runs)) throw new Error('invalid workflow run listing');
+      if (runs.length) {
+        const newest = runs[0];
+        if (!Number.isSafeInteger(newest?.databaseId) || newest.databaseId <= 0) throw new Error('invalid workflow run ID');
+        url = `${repositoryUrl}/actions/runs/${newest.databaseId}`;
+        const view = gh(['run', 'view', String(newest.databaseId), '--repo', repo, '--json', 'jobs']);
+        const verdict = evaluateInstallCheck(newest, view?.jobs);
+        if (verdict.state === 'passed' || verdict.state === 'failed') return { ...verdict, url };
+        reason = verdict.reason;
+      } else {
+        reason = 'no workflow run found for the tag';
+      }
+    } catch (err) {
+      reason = err?.message ?? err?.code ?? String(err);
+      if (err?.code === 'ENOENT' || err?.cause?.code === 'ENOENT') return { state: 'not-measured', reason, url };
+    }
+    const left = deadline - now();
+    if (left <= 0) break;
+    await sleep(Math.min(20_000, left));
+  } while (now() < deadline);
+  // A one-shot lookup (waitMs 0, --reconcile) never waited: no "timeout:" prefix there.
+  return { state: 'not-measured', reason: waitMs === 0 ? reason : `timeout: ${reason}`, url };
+}
 
 /**
  * The receipt-wait deadline: `SO_RELEASE_TRUSTED_WAIT_MS` (positive integer ms,
@@ -3586,6 +3692,17 @@ export function resolveTrustedWaitMs(env = process.env) {
   return Number(raw);
 }
 
+/** Resolve the GitHub mirror once for the release and install job lookups. */
+function resolveTrustedRepoSpec(repoRoot, deps) {
+  const opts = { repoRoot, vcs: 'github' };
+  if (deps.resolveRepoSpec) return deps.resolveRepoSpec(opts) ?? '';
+  const gitRun = deps.runImpl && ((args) => {
+    const result = deps.runImpl('git', args, { cwd: repoRoot });
+    return { ...result, ok: result.status === 0 };
+  });
+  return resolveRepoSpec({ ...opts, gitRun }) ?? '';
+}
+
 /**
  * ADR-0018 route B: hand the publish to `.github/workflows/publish.yml` and
  * verify the result. Takes NO publisher — nothing here runs `npm publish`.
@@ -3596,17 +3713,17 @@ export function resolveTrustedWaitMs(env = process.env) {
  * (curated mirror: the snapshot; plain mirror: the released HEAD) → poll the
  * registry every `pollMs` until the deadline, judging each round with
  * {@link judgeTrustedReceipt} → on `confirmed` write `receiptAt` + `receipt`,
- * then GitHub release and live site like {@link runPublishRelease}.
+ * then GitHub release, live site and the public install job on the mirror.
  *
  * @param {string} repoRoot
  * @param {string} target
  * @param {{artifact: {tarballPath: string, digest: string, integrity: string}, expectedHead?: string,
  *   tagAndPushImpl?: Function, fetchEvidenceImpl?: Function, ensureGithubReleaseImpl?: Function, verifyLiveSiteImpl?: Function,
  *   writeImpl?: Function, readTarballImpl?: (p: string) => Buffer, sleepImpl?: (ms: number) => Promise<void>, nowImpl?: () => number,
- *   waitMs?: number, pollMs?: number, tailTimeoutMs?: number}} deps
- * @returns {Promise<{status: 'complete'|'post-publish-reconciliation'|'awaiting-workflow'|'receipt-mismatch'|'handoff-incomplete',
+ *   waitMs?: number, pollMs?: number, tailTimeoutMs?: number, installWaitMs?: number, runImpl?: Function, resolveRepoSpec?: Function}} deps
+ * @returns {Promise<{status: 'complete'|'install-check-failed'|'install-check-not-measured'|'post-publish-reconciliation'|'awaiting-workflow'|'receipt-mismatch'|'handoff-incomplete',
  *   target: string, tag: string|null, pushed: string[], expectedCommit: string|null, receipt: object|null,
- *   release: object|null, live: object|null, proof: object, polls: number, detail: string, tagProgress?: object, githubSnapshot?: string}>}
+ *   release: object|null, live: object|null, proof: object, polls: number, detail: string, installCheck?: object, tagProgress?: object, githubSnapshot?: string}>}
  * @throws {TrustedRouteError} before any push (publisher handed in, no artifact, proof not written)
  */
 export async function runTrustedPublishRelease(repoRoot, target, deps = {}) {
@@ -3664,18 +3781,24 @@ export async function runTrustedPublishRelease(repoRoot, target, deps = {}) {
     return { ...handed, status: 'receipt-mismatch', receipt: verdict, proof: written, polls, detail: verdict.detail };
   }
   proof = withTrustedReceipt(proof, verdict.checks, new Date(now()).toISOString());
-  written = writeProof(proof);
-  const release = ensureGithubReleaseImpl(repoRoot, target);
+  writeProof(proof);
+  const repoSpec = resolveTrustedRepoSpec(repoRoot, deps);
+  const release = ensureGithubReleaseImpl(repoRoot, target, { repoSpec, runImpl: deps.runImpl });
   const live = await verifyLiveSiteImpl(target);
+  const installCheck = await waitForInstallCheck(repoRoot, target, repoSpec, { runImpl: deps.runImpl, now, sleep, waitMs: deps.installWaitMs });
+  written = writeProof(withInstallCheck(proof, installCheck, new Date(now()).toISOString()));
   const reconciliation = [];
+  if (!written.ok) reconciliation.push({ phase: 'install-check-proof', detail: written.detail });
   if (!release.ok) reconciliation.push({ phase: 'github-release', detail: release.detail });
   if (!live.ok) reconciliation.push({ phase: 'live-site', detail: live.detail });
   await settleDeferredTailSignals();
-  return { ...handed, status: reconciliation.length ? 'post-publish-reconciliation' : 'complete', receipt: verdict, release, live, proof: written, polls, reconciliation, detail: verdict.detail };
+  const status = reconciliation.length ? 'post-publish-reconciliation'
+    : installCheck.state === 'passed' ? 'complete' : `install-check-${installCheck.state}`;
+  return { ...handed, status, receipt: verdict, release, live, installCheck, proof: written, polls, reconciliation, detail: verdict.detail };
 }
 
 /**
- * Print a {@link runTrustedPublishRelease} outcome; exit 0 only when complete.
+ * An otherwise complete trusted publish with an unmeasured install job exits 3.
  * Same conventions as {@link printPublishOutcome}: progress on stdout, every
  * finding that needs the operator on stderr with the one command that resumes.
  *
@@ -3696,7 +3819,7 @@ export function printTrustedOutcome(outcome, target, io = {}) {
   log(`  tagged ${outcome.tag} and pushed to: ${outcome.pushed.join(', ')}; the workflow builds ${String(outcome.expectedCommit).slice(0, 12)}.`);
   if (outcome.status === 'awaiting-workflow') {
     error(`\nAWAITING WORKFLOW after ${outcome.polls} registry poll(s): ${outcome.detail}`);
-    error('  Approve the run in the GitHub environment npm-publish, then:');
+    error('  Inspect the tag’s Actions run, then:');
     error(`  ${resume}`);
     error('  Tag and push already happened; never rerun --publish.');
     return 1;
@@ -3711,11 +3834,24 @@ export function printTrustedOutcome(outcome, target, io = {}) {
   else error(`\nRECONCILIATION: ${outcome.release.detail}`);
   if (outcome.live.ok) log(`  site live at ${target} (${outcome.live.detail}).`);
   else error(`\nRECONCILIATION: live site did not reach ${target}. ${outcome.live.detail}`);
-  if (outcome.status !== 'complete') {
+  const needsReconciliation = outcome.status === 'post-publish-reconciliation';
+  if (needsReconciliation) {
     error(`  One command finishes the tail and skips what is already done: ${resume}`);
+  }
+  const { installCheck } = outcome;
+  if (installCheck.state === 'failed') {
+    error(`\n${PACKAGE_NAME}@${target} published, but install-check ${installCheck.conclusion} — check ${installCheck.url}`);
     return 1;
   }
-  log(`\nRelease complete: ${PACKAGE_NAME}@${target} is published by the trusted workflow, tagged, released and live.`);
+  if (installCheck.state === 'not-measured') {
+    error(`\n${PACKAGE_NAME}@${target} published; install-check not measured (${installCheck.reason}) — check ${installCheck.url}`);
+    return needsReconciliation ? 1 : 3;
+  }
+  if (needsReconciliation) {
+    log('  install-check passed.');
+    return 1;
+  }
+  log(`\nRelease complete: ${PACKAGE_NAME}@${target} is published by the trusted workflow, tagged, released and live; install-check passed.`);
   return 0;
 }
 
@@ -4047,12 +4183,13 @@ function remoteTagCommit(lsRemoteOutput, tag) {
  * @param {{runImpl?: Function, tailRunImpl?: typeof runTailChild, tailTimeoutMs?: number, log?: (s: string) => void,
  *   ensureGithubReleaseImpl?: Function, verifyLiveSiteImpl?: Function, reconcileReleaseImpl?: Function, readImpl?: Function,
  *   reconcileTrustedReleaseImpl?: Function, fetchEvidenceImpl?: Function, writeImpl?: Function, nowImpl?: () => number,
+ *   sleepImpl?: (ms: number) => Promise<void>, installWaitMs?: number, resolveRepoSpec?: Function,
  *   readMirrorSettingImpl?: (repoRoot: string) => object, gitRunnerImpl?: Function}} [deps]
  *   `runImpl` runs local git (sync); `tailRunImpl` runs every network child (push, fetch, ls-remote);
  *   `gitRunnerImpl` is the github-export runner of the push-URL and plain-push guards. Under a
  *   trusted proof a confirmed receipt is written into the proof (`receiptAt` + `receipt`, step
  *   `receipt-proof`) via {@link withTrustedReceipt}; `writeImpl` replaces the atomic writer.
- * @returns {Promise<{target: string, status: 'complete'|'incomplete'|'refused', commit: string|null, steps: Array<{phase: string, state: 'done'|'present'|'skipped'|'failed'|'refused'|'ok', detail: string}>}>}
+ * @returns {Promise<{target: string, status: 'complete'|'incomplete'|'refused', commit: string|null, steps: Array<{phase: string, state: 'done'|'present'|'skipped'|'failed'|'refused'|'ok'|'unmeasured', detail: string}>}>}
  */
 export async function resumeReleaseTail(repoRoot, target, deps = {}) {
   const runImpl = deps.runImpl ?? run;
@@ -4089,7 +4226,9 @@ export async function resumeReleaseTail(repoRoot, target, deps = {}) {
   // 1. The proof is the only source of the release commit.
   const read = readReleaseProof(repoRoot, target, { readImpl: deps.readImpl });
   if (!read.ok) return refuse('proof', `${read.detail} — without it there is no recorded commit to finish the tail for`);
-  const commit = read.proof.commit;
+  let proof = read.proof;
+  const writeProof = (updated) => writeReleaseProof(repoRoot, updated, { writeImpl: deps.writeImpl });
+  const commit = proof.commit;
   if (typeof commit !== 'string' || !FULL_SHA_RE.test(commit)) {
     return refuse('proof', `${relativePath(repoRoot, read.path)} records no commit (HEAD was unreadable at the receipt) — finish the tail by hand (skills/release/SKILL.md § Tail interrupted)`);
   }
@@ -4129,12 +4268,12 @@ export async function resumeReleaseTail(repoRoot, target, deps = {}) {
         return refuse('proof', `${label} ${sha.slice(0, 12)} has package.json version ${version === null ? 'unreadable' : JSON.stringify(version)}, not ${target} — nothing tagged or pushed`, commit);
       }
     }
-    const receipt = await (deps.reconcileTrustedReleaseImpl ?? reconcileTrustedRelease)(repoRoot, target, {
+    const receipt = await (deps.reconcileTrustedReleaseImpl ?? reconcileTrustedReceipt)(repoRoot, target, {
       readImpl: deps.readImpl,
       fetchEvidenceImpl: deps.fetchEvidenceImpl,
       readMirrorSettingImpl: () => setting,
       runImpl: deps.runImpl,
-    });
+    }, read);
     if (!receipt.ok && receipt.state !== 'pending') {
       return refuse('registry', `${receipt.state}: ${receipt.detail} — nothing tagged or pushed`, commit);
     }
@@ -4143,8 +4282,9 @@ export async function resumeReleaseTail(repoRoot, target, deps = {}) {
     // A confirmed receipt is persisted the way runTrustedPublishRelease does it.
     // writeReleaseProof never throws; a failure is a failed step (status
     // incomplete) and the next --resume-tail writes it again.
-    if (receipt.ok && !read.proof.receiptAt) {
-      const written = writeReleaseProof(repoRoot, withTrustedReceipt(read.proof, receipt.checks, new Date(now()).toISOString()), deps.writeImpl ? { writeImpl: deps.writeImpl } : {});
+    if (receipt.ok && (!proof.receiptAt || !proof.receipt)) {
+      proof = withTrustedReceipt(proof, receipt.checks, new Date(now()).toISOString());
+      const written = writeProof(proof);
       steps.push({ phase: 'receipt-proof', state: written.ok ? 'done' : 'failed', detail: written.detail });
     }
   }
@@ -4306,7 +4446,7 @@ export async function resumeReleaseTail(repoRoot, target, deps = {}) {
   // 6. GitHub release and live site need the tags (mirrors runPublishRelease)
   // and, under route B, the confirmed trusted receipt.
   if (trustedPending) {
-    const why = 'skipped: the trusted receipt is not confirmed yet — approve the run in the GitHub environment npm-publish, then rerun --resume-tail';
+    const why = 'skipped: the trusted receipt is not confirmed yet — inspect the tag’s Actions run, then rerun --resume-tail';
     steps.push({ phase: 'github-release', state: 'failed', detail: why });
     steps.push({ phase: 'live-site', state: 'skipped', detail: why });
   } else if (!tagsComplete) {
@@ -4321,9 +4461,26 @@ export async function resumeReleaseTail(repoRoot, target, deps = {}) {
     }
     const live = await verifyLiveSiteImpl(target);
     steps.push({ phase: 'live-site', state: live.ok ? 'ok' : 'failed', detail: live.detail });
+    if (trusted && proof.installCheck?.state === 'passed') {
+      steps.push({ phase: 'install-check', state: 'ok', detail: 'install job passed (recorded in proof)' });
+    } else if (trusted) {
+      const repoSpec = resolveTrustedRepoSpec(repoRoot, deps);
+      const installCheck = await waitForInstallCheck(repoRoot, target, repoSpec, {
+        runImpl, now, sleep: deps.sleepImpl, waitMs: deps.installWaitMs,
+      });
+      if (installCheck.state === 'not-measured') {
+        steps.push({ phase: 'install-check', state: 'unmeasured', detail: `install job not measured (${installCheck.reason}) — check ${installCheck.url}` });
+      } else if (installCheck.state === 'failed') {
+        steps.push({ phase: 'install-check', state: 'failed', detail: `install job ${installCheck.conclusion} — check ${installCheck.url}` });
+      } else {
+        steps.push({ phase: 'install-check', state: 'ok', detail: `install job passed — ${installCheck.url}` });
+      }
+      const written = writeProof(withInstallCheck(proof, installCheck, new Date(now()).toISOString()));
+      if (!written.ok) steps.push({ phase: 'install-check-proof', state: 'failed', detail: written.detail });
+    }
   }
 
-  const done = steps.every((s) => s.state !== 'failed' && s.state !== 'refused');
+  const done = steps.every((s) => !['failed', 'refused', 'unmeasured'].includes(s.state));
   return { target, status: done ? 'complete' : 'incomplete', commit, steps };
 }
 
@@ -4333,16 +4490,23 @@ export async function resumeReleaseTail(repoRoot, target, deps = {}) {
  * @returns {number}
  */
 export function printResumeTailOutcome(outcome, { json = false, log = console.log, error = console.error } = {}) {
+  const failed = outcome.status === 'refused' || outcome.steps.some((s) => s.state === 'failed' || s.state === 'refused');
+  const unmeasured = outcome.steps.find((s) => s.phase === 'install-check' && s.state === 'unmeasured');
+  const code = failed ? 1 : unmeasured ? 3 : outcome.status === 'complete' ? 0 : 1;
   if (json) {
     log(JSON.stringify(outcome, null, 2));
-    return outcome.status === 'complete' ? 0 : 1;
+    return code;
   }
   for (const step of outcome.steps) {
     const line = `  ${step.state.padEnd(7)} ${step.phase}: ${step.detail}`;
     if (step.state === 'failed' || step.state === 'refused') error(line);
     else log(line);
   }
-  if (outcome.status === 'complete') {
+  if (code === 3) {
+    error(`\n${PACKAGE_NAME}@${outcome.target} tail done; ${unmeasured.detail}`);
+    return 3;
+  }
+  if (code === 0) {
     log(`\nTail complete for ${PACKAGE_NAME}@${outcome.target}: tagged, pushed, released, live and installable. A second run changes nothing.`);
     return 0;
   }
@@ -4392,7 +4556,8 @@ async function main() {
     console.log('             the version on npmjs.com with 2FA, then `--resume-tail --target X.Y.Z` finishes tag, push, GitHub release and site.');
     console.log('  --direct   with --publish only: the pre-2027 route (npm publish with a Bypass-2FA token, tail in the same run).');
     console.log('  --trusted  with --publish (ADR-0018 route B): no local npm publish; proof, tag and push, then the GitHub workflow');
-    console.log('             publishes after approval in environment npm-publish; waits for the provenance + content receipt (SO_RELEASE_TRUSTED_WAIT_MS).');
+    console.log('             publishes in environment npm-publish; waits for the provenance + content receipt (SO_RELEASE_TRUSTED_WAIT_MS).');
+    console.log('             After a confirmed receipt, checks Verify public npm install every 20 s for up to 15 min.');
     console.log('             With --check: the route-B preflight only, incl. the publish-route row with the trusted-publisher evidence; publishes nothing.');
     console.log('             Refused with --direct, --reconcile, --resume-tail, --set-version and alone.');
     console.log('  Receipt boundary (--direct): before the confirmed npm receipt, failure aborts; after it, never rerun --publish.');
@@ -4407,7 +4572,7 @@ async function main() {
     console.log('               release commit, else refused before any push); a pending receipt still pushes missing tags (the GitHub tag starts');
     console.log('               the workflow); GitHub release and site wait for a confirmed receipt.');
     console.log(`               Every tail push/fetch runs in its own process group with a ${TAIL_CHILD_TIMEOUT_MS / 1000} s deadline; its PID is printed on stderr.`);
-    console.log('Exit codes: 0 success (--reconcile: installable or superseded; --resume-tail: tail complete), 1 preflight/check failure, post-publish reconciliation, --reconcile pending/failed/proof missing or --resume-tail incomplete/refused, 2 system/usage error before any npm receipt, OR an unconfirmed --publish stage (npm exited 0 but no receipt could be read: the version MAY be staged and the proof is written with staged.confirmed=false; check npm stage list, never rerun --publish).');
+    console.log('Exit codes: 0 success (--trusted: install job passed; --reconcile: installable, superseded or trusted receipt confirmed; --resume-tail: tail complete), 1 preflight/check failure, post-publish reconciliation, a measured non-successful --trusted install-check, --reconcile pending/failed/proof missing or --resume-tail incomplete/refused, 2 system/usage error before any npm receipt, OR an unconfirmed --publish stage (npm exited 0 but no receipt could be read: the version MAY be staged and the proof is written with staged.confirmed=false; check npm stage list, never rerun --publish), 3 published, install job not measured — look at the Actions URL; never rerun --publish.');
     return 0;
   }
 

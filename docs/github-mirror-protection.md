@@ -355,12 +355,12 @@ With the `include` allow-list the public tree carries what installers, the npm
 package, the site and the GitHub CI read: the plugin manifests
 (`.claude-plugin/`, `.codex-plugin/`, `.cursor-plugin/`, `.agents/`,
 `.cursor/`), the plugin content (`agents/`, `commands/`, `skills/`, `hooks/`,
-`scripts/`, `rules/`, `templates/`, `.claude/rules/`, …), `docs/`, `site/`
+`scripts/`, `rules/`, `templates/`, `mcp/`, `.claude/rules/`, …), `docs/`, `site/`
 with `vercel.json`, `.github/`, the shipped `.orchestrator/policy/` and
 `.orchestrator/steering/`, and the top-level files `package.json`,
 `package-lock.json`, `README.md`, `LICENSE`, `NOTICE`, `CHANGELOG.md`,
 `CONTRIBUTING.md`, `SECURITY.md`, `.gitattributes`, `.gitignore`,
-`.gitleaks.toml`, `.mailmap`, `.mcp.json`, `.npmrc`. The root shrinks from 57
+`.gitleaks.toml`, `.mailmap`, `.npmrc`. The root shrinks from 57
 to about 38 entries; `tests/`, `server/`, `marketing/`, the GitLab CI and the
 local tool configuration stay on GitLab only. Each `include` entry names its
 reader in its `reason`.

@@ -28,7 +28,7 @@
     { "path": "skills/", "reason": "The plugin skills themselves.", "issue": "#1594" },
     { "path": "templates/", "reason": "Templates the bootstrap and setup skills copy into consumer repositories.", "issue": "#1594" },
     { "path": ".claude/loop.md", "reason": "Loop body shipped with the plugin for the /loop command.", "issue": "#1594" },
-    { "path": ".mcp.json", "reason": "MCP server declaration the plugin installers read.", "issue": "#1594" },
+    { "path": "mcp/", "reason": "MCP server declaration the Codex and Cursor manifests point at; Claude Code reads the inline one in .claude-plugin/plugin.json.", "issue": "#1594" },
     { "path": ".npmrc", "reason": "Install settings (ignore-scripts) the GitHub CI jobs install under.", "issue": "#1594" },
     { "path": ".gitattributes", "reason": "Line-ending rules that keep Windows clones of the mirror working.", "issue": "#1594" },
     { "path": ".gitignore", "reason": "Keeps runtime state out of commits made in clones of the mirror.", "issue": "#1594" },

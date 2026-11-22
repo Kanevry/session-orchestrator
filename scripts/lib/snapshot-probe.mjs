@@ -11,16 +11,16 @@
  * (the slim mirror, #1594) the `test` step is `npm run test:mirror`, the same command GitHub's
  * `test` job runs: what GitHub runs passes on what GitHub gets.
  *
- * Only runs with a suite step write a receipt. Receipts are keyed by the snapshot TREE: a source commit that changes only excluded
- * files maps to the same tree and reuses the receipt; any change to a public file or to
- * the policy yields a new tree and invalidates it.
+ * A release receipt covers the suite and the citation scan. The snapshot tree identifies
+ * the public content. The excluded-path inventory and policy also affect the citation scan.
  */
 
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createGitRunner, readSourcePolicy, writeSnapshotTree } from './github-export.mjs';
+import { createGitRunner, findExcludedCitations, readSourcePolicy, writeSnapshotTree } from './github-export.mjs';
 import { isPublicExportExcluded } from './validate/check-owner-leakage.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
 import { runRemoteGate } from './pre-push-remote-gate.mjs';
@@ -31,7 +31,8 @@ export const RECEIPT_SCHEMA = 1;
 export const RECEIPT_DIR_REL = '.orchestrator/tmp/snapshot-probe';
 /** Basename of the materialized tree — offload derives the repo name from it. */
 export const SNAPSHOT_DIRNAME = 'session-orchestrator';
-export const KNOWN_STEPS = ['validate-plugin', 'test'];
+export const CITATION_STEP = 'excluded-citations';
+export const KNOWN_STEPS = [CITATION_STEP, 'validate-plugin', 'test'];
 /** Name of the step that replaces `test` when the suite runs on a remote host. */
 export const REMOTE_STEP = 'remote-gate';
 const HOST_ALIAS_SHAPE = /^[A-Za-z0-9._-]+$/;
@@ -123,19 +124,23 @@ function snapshotTreeOf(git, source) {
   const includes = policy.includes ?? null;
   const snap = writeSnapshotTree({ git, sourceSha, excludes: policy.excludes, includes });
   if (!snap.ok) return { ok: false, reason: snap.reason, sourceSha };
-  return { ok: true, sourceSha, excludes: policy.excludes, includes, ...snap };
+  // A private target can appear without changing the public tree. The policy can also
+  // change the treatment of a cited directory while removing the same set of files.
+  const excludedPathsHash = createHash('sha256')
+    .update(JSON.stringify([policy.excludes, includes, snap.removed.toSorted()])).digest('hex');
+  return { ok: true, sourceSha, excludes: policy.excludes, includes, excludedPathsHash, ...snap };
 }
 
 /**
  * Snapshot tree of a source commit, without materializing it or running anything.
  * Stable shape — the release preflight keys its receipt lookup on it.
  * @param {{ repoRoot: string, source?: string, git?: import('./github-export.mjs').GitRunner }} opts
- * @returns {{ ok: true, sourceSha: string, snapshotTree: string } | { ok: false, reason: string, sourceSha?: string }}
+ * @returns {{ ok: true, sourceSha: string, snapshotTree: string, excludedPathsHash: string } | { ok: false, reason: string, sourceSha?: string }}
  */
 export function computeSnapshotTree({ repoRoot, source = 'HEAD', git = createGitRunner(repoRoot) }) {
   const snap = snapshotTreeOf(git, source);
   if (!snap.ok) return snap;
-  return { ok: true, sourceSha: snap.sourceSha, snapshotTree: snap.tree };
+  return { ok: true, sourceSha: snap.sourceSha, snapshotTree: snap.tree, excludedPathsHash: snap.excludedPathsHash };
 }
 
 /**
@@ -210,7 +215,7 @@ function snapshotGit(cwd, args, env) {
  * Materialize `tree` into `<dir>/session-orchestrator` as a one-commit repo with no remote.
  * @returns {{ root: string, commit: string, exported: number }}
  */
-function materialize({ git, tree, dir, nodeModules, env }) {
+function materialize({ git, tree, dir, env }) {
   const root = join(dir, SNAPSHOT_DIRNAME);
   mkdirSync(root);
   const tarFile = join(dir, 'snapshot.tar');
@@ -224,7 +229,6 @@ function materialize({ git, tree, dir, nodeModules, env }) {
   snapshotGit(root, [...PROBE_GIT_CONFIG, 'init', '-q', '-b', 'main'], env);
   // A symlink is a FILE to git, so `.gitignore`'s `node_modules/` does not cover it.
   writeFileSync(join(root, '.git', 'info', 'exclude'), '/node_modules\n', { flag: 'a' });
-  if (existsSync(nodeModules)) symlinkSync(nodeModules, join(root, 'node_modules'), 'dir');
   snapshotGit(root, [...PROBE_GIT_CONFIG, 'add', '-A'], env);
   snapshotGit(root, [...PROBE_IDENTITY, ...PROBE_GIT_CONFIG, 'commit', '-q', '--no-verify', '-m', `snapshot ${tree}`], env);
   const commit = snapshotGit(root, ['rev-parse', 'HEAD'], env).trim();
@@ -232,6 +236,17 @@ function materialize({ git, tree, dir, nodeModules, env }) {
   const committedTree = snapshotGit(root, ['rev-parse', 'HEAD^{tree}'], env).trim();
   if (committedTree !== tree) throw new SnapshotProbeSystemError(`materialized tree ${committedTree} differs from snapshot tree ${tree}`);
   return { root, commit, exported };
+}
+
+/** Scan the pristine export against the tracked paths of the requested source commit. */
+function runCitationStep(git, root, snap) {
+  const started = Date.now();
+  const files = git(['ls-tree', '-r', '-z', '--name-only', snap.sourceSha]);
+  if (files.status !== 0) throw new SnapshotProbeSystemError('source tree unreadable — citations not measurable');
+  const sourceFiles = files.stdout.split('\0').filter(Boolean);
+  const findings = findExcludedCitations(root, snap.excludes, snap.includes, sourceFiles);
+  const pass = findings.length === 0;
+  return { name: CITATION_STEP, status: pass ? 'pass' : 'fail', exitCode: pass ? 0 : 1, durationMs: Date.now() - started, findings };
 }
 
 /**
@@ -312,15 +327,13 @@ function removeTreeOnExit(dir) {
  * @param {string} [opts.source='HEAD']
  * @param {boolean} [opts.keep=false] keep the materialized directory (returned as `dir`)
  * @param {string} [opts.tmpRoot]
- * @param {string[]|null} [opts.steps] default (null): `test` alone when the policy has an
- *   `include` list (validate-plugin reads CLAUDE.md, AGENTS.md, .husky/ and .gitlab-ci.yml,
- *   which that mirror does not carry), else `validate-plugin` and `test`. Under an `include`
- *   list the `test` step runs `npm run test:mirror`, what GitHub's `test` job runs.
+ * @param {string[]|null} [opts.steps] default (null): citations and the suite, plus
+ *   validate-plugin when there is no include list. Under an include list the suite
+ *   runs the GitHub mirror smoke.
  * @param {import('./github-export.mjs').GitRunner} [opts.git]
  * @param {typeof defaultRunner} [opts.runner]
  * @param {string} [opts.nodeModules]
- * @param {boolean} [opts.writeReceipt=true] write the tree-keyed receipt — only when a suite
- *   step (`test` or `remote-gate`) ran; a validate-plugin-only run leaves any receipt untouched
+ * @param {boolean} [opts.writeReceipt=true] write a receipt for runs with citations and a suite step
  * @param {() => Date} [opts.now]
  * @param {string|null} [opts.host=null] offload host alias: the `test` step then runs as one
  *   `remote-gate` step there (validate-plugin stays local). Refused with a system error for a
@@ -352,7 +365,7 @@ export async function runSnapshotProbe({
   const snap = snapshotTreeOf(git, source);
   if (!snap.ok) throw new SnapshotProbeSystemError(snap.reason);
   const mirror = snap.includes !== null;
-  const runSteps = steps ?? (mirror ? ['test'] : [...KNOWN_STEPS]);
+  const runSteps = steps ?? (mirror ? [CITATION_STEP, 'test'] : KNOWN_STEPS);
   if (mirror && host !== null && runSteps.includes('test')) {
     throw new SnapshotProbeSystemError('--host runs the full quality gate, which cannot pass on the curated mirror (the policy has an include list: no tests/, no eslint config); run the mirror smoke with --local instead');
   }
@@ -367,7 +380,7 @@ export async function runSnapshotProbe({
   const unregisterCleanup = keep ? () => {} : registerExitCleanup(() => removeTreeOnExit(dir));
   const env = buildProbeEnv();
   try {
-    const { root, commit, exported } = materialize({ git, tree: snap.tree, dir, nodeModules, env });
+    const { root, commit, exported } = materialize({ git, tree: snap.tree, dir, env });
     const expected = snap.sourceFiles - snap.removed.length;
     if (exported !== expected) throw new SnapshotProbeSystemError(`materialized ${exported} files, expected ${expected}`);
     // No `origin`: a test that reaches the source repo through a remote must fail here.
@@ -375,8 +388,12 @@ export async function runSnapshotProbe({
       throw new SnapshotProbeSystemError('the snapshot repo has a remote');
     }
 
+    /** @type {Record<string, any>[]} */
     const stepResults = [];
+    if (runSteps.includes(CITATION_STEP)) stepResults.push(runCitationStep(git, root, snap));
+    if (existsSync(nodeModules)) symlinkSync(nodeModules, join(root, 'node_modules'), 'dir');
     for (const name of runSteps) {
+      if (name === CITATION_STEP) continue;
       if (name === 'test' && host !== null) {
         stepResults.push(await runRemoteStep({ remoteGate, root, commit, repoRoot, host }));
         continue;
@@ -396,13 +413,13 @@ export async function runSnapshotProbe({
     }
 
     const ok = stepResults.every((s) => s.status === 'pass');
-    // Receipts are keyed by tree only: a run without a suite step must not replace a fuller one.
-    const receiptWritten = writeReceipt && stepResults.some((s) => s.name === 'test' || s.name === REMOTE_STEP);
+    const receiptWritten = writeReceipt && runSteps.includes(CITATION_STEP) && runSteps.includes('test');
     const finishedAt = now().toISOString();
     const result = {
       ok,
       sourceSha: snap.sourceSha,
       snapshotTree: snap.tree,
+      excludedPathsHash: snap.excludedPathsHash,
       snapshotCommit: commit,
       route,
       counts: { source: snap.sourceFiles, excluded: snap.removed.length, exported },
@@ -420,9 +437,12 @@ export async function runSnapshotProbe({
         schema: RECEIPT_SCHEMA,
         sourceSha: snap.sourceSha,
         snapshotTree: snap.tree,
+        excludedPathsHash: snap.excludedPathsHash,
         ok,
         route,
-        steps: stepResults.map(({ name, status, exitCode, durationMs }) => ({ name, status, exitCode, durationMs })),
+        steps: stepResults.map(({ name, status, exitCode, durationMs, findings }) => ({
+          name, status, exitCode, durationMs, ...(findings && { findings }),
+        })),
         finishedAt,
       };
       const file = receiptPath(repoRoot, snap.tree);

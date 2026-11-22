@@ -1,6 +1,6 @@
 # Measurement and transport contract
 
-The deterministic interfaces are implemented in [`scripts/lib/public-audit/`](../../../scripts/lib/public-audit/). Measurement functions are `measurePage({page,response,manifest})`, `measureResources({manifest,pageResults,fetcher,clock?})`, and `measureFiles({manifest,pageResults,fetcher,clock?})`. Resource/file measurements are asynchronous. Each page result is `{page,response,html}`, with HTML read by the shared reader.
+The deterministic interfaces are implemented in [`scripts/lib/public-audit/`](../../../scripts/lib/public-audit/). Measurement functions are `measurePage({page,response,manifest})`, `measureResources({manifest,pageResults,coreUrl?,fetcher,clock?})` (`coreUrl` defaults to the first manifest page), and `measureFiles({manifest,pageResults,fetcher,clock?})`. Resource/file measurements are asynchronous. Each page result is `{page,response,html}`, with HTML read by the shared reader.
 
 ## Observation shape and states
 

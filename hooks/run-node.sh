@@ -13,6 +13,8 @@
 #   sh run-node.sh [--fail-closed] <hook-script.mjs> [args...]
 #   - Resolution order: $SO_NODE_BIN override > PATH > well-known install dirs
 #     ($SO_NODE_SEARCH_DIRS, colon-separated, overrides the built-in list) > nvm.
+#   - A relative SO_NODE_BIN, PATH entry, search-list entry or nvm directory is
+#     skipped, never resolved against the cwd (the repo being worked on).
 #   - Found:   exec's node — stdin/stdout/stderr and exit code pass through
 #              unchanged (PreToolUse exit-2 blocking still works).
 #   - Missing with --fail-closed: prints a diagnostic every time and exits 2.
@@ -26,8 +28,18 @@ if [ "${1-}" = "--fail-closed" ]; then
   shift
 fi
 
-# 1. Explicit operator override wins.
-if [ -n "${SO_NODE_BIN:-}" ] && [ -x "${SO_NODE_BIN:-}" ]; then
+# 1. Explicit operator override wins — only as an absolute path. A relative
+#    value would resolve against the hook's cwd, the repo being worked on; it is
+#    ignored like an unset one. A drive-letter form (`C:/…`) counts only on
+#    Windows (`OS=Windows_NT`, inherited by Git Bash): on macOS and Linux it is
+#    a relative path. A backslash form is never taken, because a value without
+#    `/` would make `exec` search PATH.
+so_node_bin_abs=false
+case "${SO_NODE_BIN:-}" in
+  /*) so_node_bin_abs=true ;;
+  [A-Za-z]:/*) [ "${OS:-}" = Windows_NT ] && so_node_bin_abs=true ;;
+esac
+if [ "$so_node_bin_abs" = true ] && [ -x "${SO_NODE_BIN:-}" ]; then
   exec "${SO_NODE_BIN:-}" "$@"
 fi
 
@@ -37,6 +49,9 @@ fi
 # location (#1969). A clean PATH takes the plain lookup below without an extra
 # process; otherwise the absolute entries are searched in their PATH order.
 path_lookup=true
+# PATH for the few external tools the shim may still run (`find` below): the
+# inherited PATH when it is clean, else only its absolute entries.
+tool_path="${PATH-}"
 case ":${PATH-}:" in
   *::* | *:[!/]*)
     abs_path=""
@@ -61,6 +76,7 @@ case ":${PATH-}:" in
         /*) abs_path="${abs_path:+$abs_path:}$dir" ;;
       esac
     done
+    tool_path="$abs_path"
     # An empty PATH would itself mean the cwd, so only search a non-empty list.
     node_bin=""
     if [ -n "$abs_path" ]; then
@@ -82,10 +98,16 @@ search_dirs="${SO_NODE_SEARCH_DIRS:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:${
 old_ifs="${IFS-}"
 IFS=:
 for dir in $search_dirs; do
-  if [ -n "$dir" ] && [ -x "$dir/node" ]; then
-    IFS="$old_ifs"
-    exec "$dir/node" "$@"
-  fi
+  # Only absolute entries: a colon inside HOME or VOLTA_HOME splits an entry
+  # into fragments, and a relative fragment would resolve against the cwd.
+  case "$dir" in
+    /*)
+      if [ -x "$dir/node" ]; then
+        IFS="$old_ifs"
+        exec "$dir/node" "$@"
+      fi
+      ;;
+  esac
 done
 IFS="$old_ifs"
 
@@ -103,10 +125,15 @@ fi
 
 # 4. nvm keeps versioned dirs; any installed version is good enough for hooks.
 #    (Glob order is lexical, not semver — acceptable for a last-resort fallback.)
+#    A relative NVM_DIR or HOME would make the glob relative to the cwd: skipped.
 for cand in "${NVM_DIR:-${HOME:-}/.nvm}"/versions/node/*/bin/node; do
-  if [ -x "$cand" ]; then
-    exec "$cand" "$@"
-  fi
+  case "$cand" in
+    /*)
+      if [ -x "$cand" ]; then
+        exec "$cand" "$@"
+      fi
+      ;;
+  esac
 done
 
 if [ "$fail_closed" = true ]; then
@@ -121,7 +148,13 @@ fi
 #    and `find` only upgrades the check to a 6h TTL when it happens to exist.
 marker="${TMPDIR:-/tmp}/session-orchestrator-node-missing-${USER:-uid}"
 if [ -f "$marker" ]; then
-  expired="$(find "$marker" -mmin +360 2>/dev/null || true)"
+  # `find` is looked up on the absolute entries only; with none it counts as
+  # missing (no TTL upgrade), because an empty PATH would mean the cwd.
+  if [ -n "$tool_path" ]; then
+    expired="$(PATH="$tool_path"; find "$marker" -mmin +360 2>/dev/null || true)"
+  else
+    expired=""
+  fi
 else
   expired="yes"
 fi

@@ -15,7 +15,7 @@
  *   8.   Scan the client plugin caches (marketplace install, no env, cwd outside
  *        any checkout — GH Kanevry/session-orchestrator#64)
  *
- * `.mcp.json`'s bash bootstrap follows this order for the tiers it has and
+ * `mcp/servers.json`'s bash bootstrap follows this order for the tiers it has and
  * cites this block. What it shares with this function: tier 1, then tiers 2-5
  * with the same SO_PLATFORM reordering (trimmed, allowlisted claude / codex /
  * cursor / pi; anything else keeps the legacy order), env values trimmed, the
@@ -199,7 +199,7 @@ function _walkUp(startDir) {
  * `||` and shell `${X:-…}` both fire on unset/empty only, so a whitespace-only
  * value passes straight through and the scan globs a nonsense base
  * (`.claude/rules/development.md` § Env-var fallback whitespace trap).
- * `.mcp.json`'s bash bootstrap carries the same trim for the same reason —
+ * `mcp/servers.json`'s bash bootstrap carries the same trim for the same reason —
  * before 2026-08-28 it used `${CODEX_HOME:-$HOME/.codex}` and diverged from here on
  * exactly that input.
  *
@@ -234,7 +234,7 @@ function _pluginCacheBases() {
  * (`CODEX_HOME` before `~/.claude`), then `readdirSync` order within each. Two
  * cache copies sharing an mtime to the millisecond means the same content
  * installed twice, so the choice is arbitrary rather than wrong; what matters
- * is that it is DETERMINISTIC and identical to `.mcp.json`'s `[ "$c" -nt "$r" ]`,
+ * is that it is DETERMINISTIC and identical to `mcp/servers.json`'s `[ "$c" -nt "$r" ]`,
  * which is also strict. Untested by design — a test would pin an arbitrary
  * choice as a contract.
  *
@@ -287,7 +287,7 @@ function _scanPluginCaches(tried) {
  * Resolve the absolute path to the session-orchestrator plugin directory.
  *
  * Tier order is defined ONCE in this file's top docblock (§ TIER ORDER),
- * which also lists where `.mcp.json`'s bash bootstrap differs. Do not restate
+ * which also lists where `mcp/servers.json`'s bash bootstrap differs. Do not restate
  * it here — a second copy is what let the two drift.
  *
  * @param {string} [platformHint] Optional compatibility hint for wrapper callers

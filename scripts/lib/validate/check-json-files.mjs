@@ -99,6 +99,15 @@ if (mcpPath && mcpPath.endsWith('.json')) {
   } else {
     fail('mcpServers file not found (already reported above)');
   }
+} else if (pluginData.mcpServers && typeof pluginData.mcpServers === 'object') {
+  // Inline declaration: plugin.json already parsed above. Claude Code still loads a
+  // root .mcp.json in addition, and the plugin directory scan refuses a server name
+  // declared in both — so a root file beside the inline declaration is a failure.
+  if (existsSync(join(pluginRoot, '.mcp.json'))) {
+    fail('mcpServers is declared inline in plugin.json AND a root ./.mcp.json exists (Claude Code loads both)');
+  } else {
+    pass('mcpServers is declared inline in plugin.json (no root .mcp.json beside it)');
+  }
 } else {
   const mcpAbs = join(pluginRoot, '.mcp.json');
   if (existsSync(mcpAbs)) {
@@ -109,6 +118,27 @@ if (mcpPath && mcpPath.endsWith('.json')) {
     }
   } else {
     pass('mcpServers not found at conventional location (optional, skipped)');
+  }
+}
+
+// The Codex and Cursor manifests may point `mcpServers` at a file of their own; nothing
+// else parses it (their contract checks only that the path exists).
+for (const manifestRel of ['.codex-plugin/plugin.json', '.cursor-plugin/plugin.json']) {
+  const manifestAbs = join(pluginRoot, manifestRel);
+  if (!existsSync(manifestAbs)) continue;
+  let foreignPath = '';
+  try {
+    const value = JSON.parse(readFileSync(manifestAbs, 'utf8')).mcpServers;
+    if (typeof value === 'string') foreignPath = value;
+  } catch {
+    // An unparsable manifest is the manifest validator's finding, not this check's.
+  }
+  if (!foreignPath.endsWith('.json')) continue;
+  const foreignAbs = join(pluginRoot, foreignPath.replace(/^\.\//, ''));
+  if (existsSync(foreignAbs) && isValidJson(foreignAbs)) {
+    pass(`${manifestRel} mcpServers file is valid JSON: ${foreignPath}`);
+  } else {
+    fail(`${manifestRel} mcpServers file is missing or not valid JSON: ${foreignPath}`);
   }
 }
 

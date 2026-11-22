@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.21.1] - 2026-11-22
+
+The MCP server is declared once per harness: the root `.mcp.json` that repeated the Claude Code declaration, and that the Claude plugin directory scan refused, is gone from the tree. The trusted release route now measures the public install check to its end.
+
+### Fixed
+
+- **The MCP server is declared once per harness** (#824). The root `.mcp.json` moved to `mcp/servers.json`, and the Codex and Cursor manifests point at it. Claude Code keeps the inline declaration in `.claude-plugin/plugin.json`; it used to load the root file as well, and the Anthropic directory scan refused the repeated server name on every version. The launch command is byte-identical, so the plugin root still never comes from the client's working directory. Codex and Cursor installs pick the new path up on reinstall or update. The native Windows setup now rewrites `mcp/servers.json` and keeps its backup beside it. On a Git clone whose `.mcp.json` was edited by hand, the update stops with Git's "local changes would be overwritten" message: restore the file with `git checkout -- .mcp.json`, delete a leftover `.mcp.json.before-windows-setup`, update, then run the Windows setup again.
+- **A trusted release with an unmeasured public install check exits 3** (#2215, #2212). The release command retries transient GitHub CLI errors for up to 25 minutes and records the job result in the release proof. Exit 3 means the version is published and only the install result is outstanding. A failed job or another unfinished tail step exits 1. `--resume-tail` reuses a recorded pass or polls the job after the live-site check. `--reconcile` reuses the pass or checks the job once.
+- **The trusted release waits for the tagged npm version and reports the public install result** (#2212). The workflow waits up to ten minutes for the exact version before installing it in a clean consumer directory. The release command reports a passing or failed install check, or prints the Actions URL when it cannot measure the result.
+- **Release preflight catches public citations to paths omitted from the GitHub mirror** (#2213). The snapshot probe runs the same citation check as the export and records each finding. A failed or missing citation check blocks the release before the mirror push.
+
 ## [5.21.0] - 2026-11-22
 
 The npm package gains a `session-orchestrator doctor` command, and the publish workflow now installs each tagged version from the public registry and checks that the shipped guard blocks. so-hud recognises Windows program names and PowerShell secret reads, the hook shim searches only absolute PATH entries on every system, and every file of the npm package is now also in the public GitHub snapshot. Further: session-lock and registry locking fixes, many ux-grill and design-review fixes, gate events with duration and host, and vault pointers in the session briefing.

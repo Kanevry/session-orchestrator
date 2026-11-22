@@ -25,6 +25,7 @@ one-commit git repo WITHOUT any remote, and runs the steps there. Proves that wh
 runs passes on what GitHub gets.
 
 Steps:
+  excluded-citations check public files for citations of paths removed from the source tree
   test               with an 'include' list (the slim mirror, #1594): 'npm run test:mirror',
                      the smoke GitHub's 'test' job runs (manifests, syntax, dependencies,
                      SessionStart); without one: 'npm test', the full suite
@@ -34,8 +35,8 @@ Steps:
 
 Options:
   --source <rev>     source commit (default HEAD)
-  --steps <list>     comma-separated steps, from: ${KNOWN_STEPS.join(', ')} (default: 'test'
-                     under an 'include' list, else both)
+  --steps <list>     comma-separated steps, from: ${KNOWN_STEPS.join(', ')} (default: citations
+                     and test, plus validate-plugin without an 'include' list)
   --host <alias>     run the 'test' step on an offload host instead: one 'remote-gate' step
                      (the pre-push router's full gate against the snapshot commit, no gate
                      telemetry); validate-plugin still runs locally. Refused (exit 2) under
@@ -58,10 +59,9 @@ Exit codes:
      gate-timeout, a timed-out check, no test result) — no receipt is written
   3  the probe ran and the snapshot is red (a step failed or timed out)
 
-A receipt is written only when a suite step ran ('test' or 'remote-gate'); a
---steps validate-plugin run prints its result and leaves any existing receipt untouched.
-The release preflight accepts only receipts whose steps include a passing suite step:
-'test' (--local) or 'remote-gate' (--host).
+A receipt is written when both excluded-citations and a suite step ran. It records
+citation findings. The release preflight requires both steps to pass for the current
+public tree, source path inventory and export policy.
 
 Examples:
   node scripts/snapshot-probe.mjs --local --json     # slim mirror: the GitHub smoke
@@ -123,6 +123,7 @@ function humanSummary(r) {
   ];
   for (const s of r.steps) {
     lines.push(`  ${s.name}: ${s.status} (exit ${s.exitCode}, ${Math.round(s.durationMs / 1000)}s)`);
+    if (s.findings) for (const finding of s.findings) lines.push(`    ${finding}`);
     if (s.reason) lines.push(`    ${s.reason}`);
     if (s.failedFiles) for (const f of s.failedFiles) lines.push(`    FAIL ${f}`);
     if (s.tail) lines.push(...s.tail.split('\n').map((l) => `    | ${l}`));

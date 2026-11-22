@@ -76,7 +76,7 @@ Cursor / Pi on native Windows. WSL counts as Linux.
 | **Codex CLI version** | Feature requirement for the Codex route: **0.160 or later**, as documented in its setup guide. | Use the documented marketplace installation route. <!-- source: docs/codex-setup.md:7,37-56 --> |
 | **Claude Code plugin support** | Required for the Claude Code route; **no minimum version is declared** in `package.json` or `.claude-plugin/plugin.json`. | Use `/plugin` installation and the Claude Code hooks. <!-- sources: package.json:25-27; .claude-plugin/plugin.json:1-19; hooks/hooks.json:6-18 --> |
 | **POSIX sh** | Required for shell-wrapped hooks; Claude Code on Windows uses `sh` from Git for Windows. | Launch the configured hook wrappers, including scope and destructive-command guards. <!-- sources: hooks/hooks.json:14,49,69; hooks/run-node.sh:1-29 --> |
-| **npm** | Required for clone-based dependency setup and manual dependency repair; expose it on the harness PATH. | Install missing packages, run npm scripts or update a local clone. <!-- sources: package.json:64-78; scripts/self-update.mjs:200,299; .mcp.json:8 --> |
+| **npm** | Required for clone-based dependency setup and manual dependency repair; expose it on the harness PATH. | Install missing packages, run npm scripts or update a local clone. <!-- sources: package.json:64-78; scripts/self-update.mjs:200,299; mcp/servers.json:8 --> |
 | **Runtime Node packages** | Required, installed from `package.json`: `@babel/parser`, `ajv`, `js-yaml`, `mdast-util-to-string`, `remark`, `remark-parse`, `unified`, `yaml`, `zod`, `zx`. | Load scripts importing these parsers, validators and utilities. No separate global installation is needed. <!-- source: package.json:82-93 --> |
 | **Development Node packages** | Contributor requirement: `@commitlint/cli`, `@commitlint/config-conventional`, `@eslint/js`, `@vitest/coverage-v8`, `eslint`, `husky`, `lint-staged`, `prettier`, `vite`, `vitest`. | Run the corresponding lint, test, coverage, formatting and git-hook tooling from the checkout. Runtime-only installs can omit them. <!-- sources: package.json:64-78,94-105 --> |
 | **pnpm** | Optional, for consumer projects whose quality commands use it; this plugin checkout is npm-canonical. | Run those consumer quality commands. It is not required to install this plugin. <!-- sources: scripts/check-package-manager.mjs:140-158,193-235; .claude/rules/development.md:36-37 --> |
@@ -86,8 +86,8 @@ Cursor / Pi on native Windows. WSL counts as Linux.
 
 | Dependency | Status / scope | Without it, you cannot... |
 |---|---|---|
-| **Bash** | Feature requirement for the `.mcp.json` MCP server used by Codex CLI, Cursor and Pi. Claude Code starts its MCP server with Node. | Start the shell MCP server. The [native Node MCP setup](#native-windows-mcp-opt-in) avoids Bash and jq for that server. <!-- sources: .mcp.json:4-8; .claude-plugin/plugin.json:15-17; scripts/windows-setup.mjs:7-29 --> |
-| **jq** | Feature requirement for the `.mcp.json` shell MCP server (Codex CLI, Cursor and Pi); Claude Code's Node MCP does not need it. Also used by plugin validation and the shell grounding helper. | Parse MCP requests with the shell server or run `validate-plugin.mjs`; the grounding helper skips when jq is absent. The native Node MCP server does not need jq. <!-- sources: .mcp.json:4-8; .claude-plugin/plugin.json:15-17; scripts/mcp-server.sh:41-55; scripts/validate-plugin.mjs:32-37; scripts/compute-grounding-injection.sh:31-33; scripts/mcp-server.mjs:111-154 --> |
+| **Bash** | Feature requirement for the `mcp/servers.json` MCP server used by Codex CLI and Cursor. Claude Code starts its MCP server with Node. | Start the shell MCP server. The [native Node MCP setup](#native-windows-mcp-opt-in) avoids Bash and jq for that server. <!-- sources: mcp/servers.json:4-8; .claude-plugin/plugin.json:15-17; scripts/windows-setup.mjs:7-29 --> |
+| **jq** | Feature requirement for the `mcp/servers.json` shell MCP server (Codex CLI and Cursor); Claude Code's Node MCP does not need it. Also used by plugin validation and the shell grounding helper. | Parse MCP requests with the shell server or run `validate-plugin.mjs`; the grounding helper skips when jq is absent. The native Node MCP server does not need jq. <!-- sources: mcp/servers.json:4-8; .claude-plugin/plugin.json:15-17; scripts/mcp-server.sh:41-55; scripts/validate-plugin.mjs:32-37; scripts/compute-grounding-injection.sh:31-33; scripts/mcp-server.mjs:111-154 --> |
 | **GitLab and authenticated glab** | Optional GitLab integration; only needed for repositories using GitLab. | Use GitLab API-backed issue and merge-request operations. GitLab is not needed for a GitHub repository. <!-- sources: scripts/lib/vault-backfill/glab.mjs:29,53; scripts/lib/autopilot/mr-draft.mjs:144 --> |
 | **GitHub and authenticated gh** | Optional GitHub integration; only needed for repositories using GitHub. | Use GitHub API-backed issue, pull-request and protection-audit operations. <!-- sources: scripts/lib/autopilot/mr-draft.mjs:167; scripts/github-protection-audit.mjs:248-279 --> |
 | **A Markdown notes vault (`vault-dir` / `SO_VAULT_DIR`)** | Optional: enable it in Session Config with `vault-integration.enabled: true` and `vault-integration.vault-dir`. `SO_VAULT_DIR`, a `vault-dirs:` entry in your host-local `owner.yaml` that matches the working directory, or `paths.vault-dir` there (in that order) overrides the committed path on one machine. | Run `/portfolio` (with `gitlab-portfolio` enabled it exits with an error), mirror session and learning records into the vault at `/close` and `/evolve`, keep the live-status board `01-projects/_active-sessions.md`, or get the untracked-vault-files note at `/close`. <!-- sources: scripts/lib/config/host-paths.mjs:38; scripts/lib/config.mjs:88-89,114-133; skills/portfolio/SKILL.md:34,39; scripts/lib/gitlab-portfolio/cli.mjs:193-199,211-216; skills/vault-mirror/SKILL.md:26-32,277-279; skills/session-start/SKILL.md:117-119; skills/session-start/references/phase-1-7-vault-status-board.md:7,42; skills/session-end/SKILL.md:321,323; skills/session-end/references/phase-3-documentation-updates.md:208; skills/session-end/references/phase-3-7e-vault-orphans.md:11 --> |
@@ -112,9 +112,9 @@ PATH. <!-- source: hooks/run-node.sh:5-18,22-29 -->
 ### Native Windows MCP (opt-in)
 
 Claude Code does not need this setup: its manifest starts the MCP server with
-Node directly. This opt-in is only for harnesses that read `.mcp.json` (Codex
-CLI, Cursor and Pi); their native Windows operation has not yet been measured.
-<!-- sources: .claude-plugin/plugin.json:15-17; .mcp.json:4-8; scripts/windows-setup.mjs:7-29 -->
+Node directly. This opt-in is only for harnesses that read `mcp/servers.json` (Codex
+CLI and Cursor); their native Windows operation has not yet been measured.
+<!-- sources: .claude-plugin/plugin.json:15-17; mcp/servers.json:4-8; scripts/windows-setup.mjs:7-29 -->
 
 For an installed plugin in `plugins/cache`, run from the updated checkout in
 PowerShell: <!-- sources: scripts/windows-setup.mjs:9-18,37-40 -->
@@ -127,14 +127,14 @@ Run the setup script from the updated checkout, targeting the installed plugin
 inside `plugins/cache` (never a Git checkout). It changes only that installed
 plugin's MCP command to the current native Node executable and the absolute
 `scripts/mcp-server.mjs` path, preserving other servers and keeping the original
-configuration in `.mcp.json.before-windows-setup`. Restart the agent to load it.
+configuration in `mcp/servers.json.before-windows-setup`. Restart the agent to load it.
 To roll back, inspect the backup first and restore its original contents to
-`.mcp.json`. Remove `.mcp.json.before-windows-setup` before running setup again.
+`mcp/servers.json`. Remove `mcp/servers.json.before-windows-setup` before running setup again.
 Reinstalling the plugin replaces this local
 configuration; run setup again for the new install path. This opt-in avoids
 accidentally selecting Windows' `bash.exe` WSL launcher. The native server has
 the same two read-only tools and needs neither Bash nor jq.
-<!-- sources: scripts/windows-setup.mjs:7-34; .mcp.json:4-8; scripts/mcp-server.mjs:111-154 -->
+<!-- sources: scripts/windows-setup.mjs:7-34; mcp/servers.json:4-8; scripts/mcp-server.mjs:111-154 -->
 
 Windows package staging launches npm through its JavaScript entrypoint, so Node
 and npm must be installed together or npm must be on an absolute PATH.

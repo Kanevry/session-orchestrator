@@ -174,7 +174,8 @@ async function writeOwnReleaseMarker(repoRoot, sessionId) {
  * instead of exec'ing it, so node's parent was that intermediate sh and this
  * read null on every hook (measured 2026-10-21 on win-wsl, 3/3 runs; with an
  * `exec ` prefix the ppid matched). Every run-node.sh command in
- * `hooks/hooks.json` therefore starts with `exec sh …`; run-node.sh itself
+ * `hooks/hooks.json` therefore starts with `exec /bin/sh …` (absolute, so no
+ * `sh` from PATH runs); run-node.sh itself
  * execs node on every branch, so both hops are exec and depth 1 holds.
  * The other manifests (hooks-codex/-cursor/-pi.json) deliberately keep the
  * plain form: only a Claude hook can match its own CLAUDE_PID, so the prefix
