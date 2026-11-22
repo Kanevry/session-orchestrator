@@ -705,6 +705,20 @@ The local fallback depends on the push target (#1642):
   selected locally, and the MR pipeline catches that class. Only a deleted or
   renamed source file (`.mjs`/`.cjs`/`.js`) falls back to the full gate (#1643).
 
+Without an override the router picks the gate host by load (#2173). The
+candidates are the Session Config `remote-hosts` entries whose `roles-allowed`
+include `test`, in listed order. For each one it reads
+`offload status -H <alias> --json` and takes the first host that has a free
+`gate` slot (`klassen.gate.frei > 0`) and whose `last_5` is below its own
+`batch_last_max`. That host moves to the front, and the others stay behind it
+as fall-through routes. If no host qualifies, or the probe cannot measure one
+(timeout, no JSON, a `grund`, `null` values), the configured order stays as it
+is and one stderr line names each host's state. An unmeasurable probe never
+blocks a push. When a remote check hits its deadline, the failure line names
+`SO_GATE_HOSTS=<alias> git push` as the retry on a less loaded host. The
+threshold is offload's batch admission limit, because `status` reports no
+gate-specific load limit. offload itself admits a gate by `cpu_idle`.
+
 `SO_GATE_HOSTS` overrides the host order for one push without a config commit:
 `SO_GATE_HOSTS=hostA,hostB git push` tries exactly those aliases, in that order,
 instead of the configured `remote-hosts` list (whitespace-only counts as unset).

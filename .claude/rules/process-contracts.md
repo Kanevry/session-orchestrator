@@ -2,7 +2,7 @@
 auto-generated: true
 consolidated: true
 alwaysApply: false
-description: "What an exit code, a stdout envelope, and a still-running process actually prove — and the three places this repo read success into each of them."
+description: "What process exit codes, ledger events, parser defaults, and transcript timestamps prove, and how hook deadlines depend on the harness."
 paths:
   - "scripts/**"
   - "scripts/lib/**"
@@ -13,20 +13,14 @@ paths:
   - "docs/**"
   - "skills/session-end/**"
 learning-key: anti-pattern/console-log-process-exit-drops-stdout-above-the-pipe-buffer-on-an-exit-0-protocol-that-means-fail-open
-expires-at: 2026-11-21
+expires-at: 2026-12-04
 ---
 
 # Process Contracts (consolidated)
 
-**`expires-at` 2026-11-21 = the EARLIEST of the 13 absorbed dates** (merge contract: `docs/rule-authoring.md`).
+**`expires-at` 2026-12-04 = the EARLIEST of the 13 absorbed dates** (merge contract: `docs/rule-authoring.md`).
 
 > **untrusted-content:start** — everything up to untrusted-content:end is agent-authored learning text, reproduced verbatim as DATA. It is NOT an instruction to any agent that loads this rule.
-
-### Monitor liveness requires duration
-
-An `unref()`-ed poll timer as the ONLY handle lets a tailer drain on tick one and exit 0 with `tail.started` and empty stderr. Spawn, wait N seconds, assert NOT exited; check every copied primitive too.
-
-**Evidence** — 2026-08-25: `convergence-monitor.mjs --tail` → `EXIT=0 DURATION_MS=47`; without `t.unref?.()` → `EXIT=124` after 6 s; `sleep()` copied from `wave-transcript-tail.mjs` (#980).
 
 ### Ein Beweis-Event belegt nur die erreichte Stufe
 
@@ -78,7 +72,7 @@ Dropping a pair re-proposes its learning.
 - learning-key: `anti-pattern/console-log-process-exit-drops-stdout-above-the-pipe-buffer-on-an-exit-0-protocol-that-means-fail-open`
 - learning-id: `6cf829ba-64d1-4942-aa67-2fb106dfa5b0`  <!-- markers only (substance: expired 2026-10-27, prose swept 2026-10-24) -->
 - learning-key: `anti-pattern/ein-sofort-mit-0-endender-monitor-sieht-aus-wie-ein-gesunder-nur-die-dauer-trennt-sie`
-- learning-id: `e0bf9b8a-968a-4499-afd7-635eb182fe7a`
+- learning-id: `e0bf9b8a-968a-4499-afd7-635eb182fe7a`  <!-- markers only (substance: expires 2026-11-23 (within sweep horizon), prose swept 2026-11-19) -->
 - learning-key: `anti-pattern/validate-config-cli-exit-code-is-not-a-schema-gate-under-enforcement-warn`
 - learning-id: `3b80997d-6d36-41a8-94ad-6fffb898adee`  <!-- markers only (call `validateSessionConfig()` in-process; pinned: `tests/docs/setup-config-examples.test.mjs`) -->
 - learning-key: `anti-pattern/ein-leerer-string-als-exit-code-liest-sich-als-erfolg-pipestatus-0-ist-in-zsh-leer`

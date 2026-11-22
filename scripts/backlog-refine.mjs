@@ -8,18 +8,25 @@
  * Exit codes:
  *   0  report produced (with or without findings)
  *   1  usage error (bad flag, bad number, unresolvable or GitHub target)
- *   2  tracker unreadable — no report is printed
+ *   2  tracker unreadable or pagination incomplete — no report is printed
  */
 
 import { writeFileSync } from 'node:fs';
 
 import { isMainModule } from './lib/is-main-module.mjs';
 import { emitEvent } from './lib/events.mjs';
-import { fetchBacklog, fetchRelatedMrs, resolveTarget, targetDirectory } from './lib/backlog-refine/fetch.mjs';
+import {
+  fetchBacklog,
+  fetchRelatedMrs,
+  resolveTarget,
+  targetDirectory,
+} from './lib/backlog-refine/fetch.mjs';
 import { readConfiguredVcs } from './lib/vcs-repo-spec.mjs';
 import { BACKLOG_REFINE_EVENT } from './lib/backlog-refine/event.mjs';
+import { execFileSync } from './lib/native-command.mjs';
 
 const EVENT_TYPE = BACKLOG_REFINE_EVENT;
+const TAXONOMY_PATH = '.claude/rules/gitlab-labels.md';
 
 const USAGE = `backlog-refine — read-only backlog checker (GitLab)
 
@@ -39,7 +46,7 @@ FLAGS
   -h, --help                Show this help and exit.
 
 EXIT CODES
-  0  report produced   1  usage error   2  tracker unreadable (no report)
+  0  report produced   1  usage error   2  tracker unreadable or pagination incomplete (no report)
 `;
 
 /**
@@ -73,7 +80,8 @@ function parseArgs(argv) {
       case '--json':
       case '--markdown': {
         const f = arg.slice(2);
-        if (opts.format !== null && opts.format !== f) return { error: '--json and --markdown are mutually exclusive' };
+        if (opts.format !== null && opts.format !== f)
+          return { error: '--json and --markdown are mutually exclusive' };
         opts.format = f;
         break;
       }
@@ -96,7 +104,9 @@ function parseArgs(argv) {
         const n = /^\d+$/.test(r.v) ? Number(r.v) : NaN;
         const min = arg === '--closed-days' ? 1 : 0;
         if (!Number.isSafeInteger(n) || n < min) {
-          return { error: `${arg} must be a ${min === 1 ? 'positive' : 'non-negative'} integer, got "${r.v}"` };
+          return {
+            error: `${arg} must be a ${min === 1 ? 'positive' : 'non-negative'} integer, got "${r.v}"`,
+          };
         }
         if (arg === '--closed-days') opts.closedDays = n;
         else opts.maxMrLookups = n;
@@ -122,6 +132,28 @@ async function loadPure() {
     buildReport: report.buildReport,
     renderMarkdown: report.renderMarkdown,
   };
+}
+
+/** @param {string|undefined} checkoutRoot */
+function readTaxonomy(checkoutRoot) {
+  if (!checkoutRoot) return null;
+  const git = (args) => execFileSync('git', args, {
+    cwd: checkoutRoot,
+    encoding: 'utf8',
+    timeout: 10_000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, GIT_NO_LAZY_FETCH: '1' },
+  });
+  const resolveMain = () => git(['rev-parse', '--verify', 'origin/main^{commit}']).trim();
+  try {
+    const sha = resolveMain();
+    if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(sha)) return null;
+    const markdown = git(['show', `origin/main:${TAXONOMY_PATH}`]);
+    // Discard the lookup if the ref moved between the provenance reads.
+    return resolveMain() === sha ? { markdown, source: { path: TAXONOMY_PATH, sha } } : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -169,27 +201,46 @@ export async function main(argv, deps = {}) {
   const preferVcs = await readVcs(targetDirectory({ repo: opts.repo, cwd }));
   const target = resolve({ repo: opts.repo, host: opts.host, cwd, preferVcs });
   if (!target.ok) return fail(1, `cannot resolve target: ${target.reason}`);
+  const taxonomy = readTaxonomy(target.checkoutRoot);
 
-  const pure = deps.evaluateBacklog && deps.buildReport && deps.renderMarkdown && deps.selectMrLookups
-    ? deps
-    : { ...(await loadPure()), ...stripUndefined(deps) };
+  const pure =
+    deps.evaluateBacklog && deps.buildReport && deps.renderMarkdown && deps.selectMrLookups
+      ? deps
+      : { ...(await loadPure()), ...stripUndefined(deps) };
 
   const at = now();
   const backlog = fetchIssues({ target, closedDays: opts.closedDays, now: at });
   if (!backlog.ok) return fail(2, `tracker unreadable: ${backlog.reason}`);
+  if (backlog.paginationUnmeasured?.length > 0) {
+    stderr.write(
+      `backlog-refine: pagination completeness not measured for ${backlog.paginationUnmeasured.join(', ')} issues (first-page X-Total unavailable)\n`,
+    );
+  }
 
   const lookups = pure.selectMrLookups({ open: backlog.open, max: opts.maxMrLookups });
   const relatedMrs = lookups.iids.length > 0 ? fetchMrs({ target, iids: lookups.iids }) : new Map();
   const evaluation = pure.evaluateBacklog({
     open: backlog.open,
     closed: backlog.closed,
+    newestIid: backlog.newestIid,
+    taxonomyMarkdown: taxonomy?.markdown ?? null,
     relatedMrs,
     mrLookupCapped: lookups.capped,
     now: at,
     closedDays: opts.closedDays,
   });
-  const report = pure.buildReport({ target, evaluation, measuredAt: at.toISOString(), closedDays: opts.closedDays });
-  const output = opts.format === 'json' ? `${JSON.stringify(report, null, 2)}\n` : pure.renderMarkdown(report);
+  const report = pure.buildReport({
+    target,
+    evaluation,
+    measuredAt: at.toISOString(),
+    closedDays: opts.closedDays,
+  });
+  if (taxonomy) report.taxonomy = { ...report.taxonomy, source: taxonomy.source };
+  const sourceLine = taxonomy
+    ? `\nTaxonomy source: \`${taxonomy.source.path}\` at origin/main \`${taxonomy.source.sha}\`\n`
+    : '';
+  const output =
+    opts.format === 'json' ? `${JSON.stringify(report, null, 2)}\n` : pure.renderMarkdown(report) + sourceLine;
 
   if (opts.out) {
     try {

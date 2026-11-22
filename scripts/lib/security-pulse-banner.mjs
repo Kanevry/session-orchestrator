@@ -22,6 +22,7 @@
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 
 import { eventsFilePath } from './events.mjs';
+import { ROTATION_EVENT } from './events-schema.mjs';
 import { resolveLedgerPath } from './ledger-path.mjs';
 import { SECURITY_DELTA_EVENT } from './security-delta/contract.mjs';
 import { compareVersions, parseVersion } from './security-delta/runtime-floor.mjs';
@@ -239,11 +240,17 @@ export function checkCloseWithoutDelta({ sessionsFile, eventsFile }) {
   const events = readTailLines(eventsFile, EVENTS_TAIL_BYTES);
   if (events === null) return { measured: false, finding: false, reason: 'no-events-ledger' };
   let oldestSeen = null;
+  let startsAtRotation = false;
   for (const line of events.lines) {
     // Substring prefilter on the serialized needle: cheap, and exact for an
     // ASCII event name (no JSON escaping can apply).
     const ts = line.includes(SECURITY_DELTA_EVENT) ? parseLine(line) : null;
-    if (oldestSeen === null) oldestSeen = stampMs(parseLine(line)?.timestamp);
+    if (oldestSeen === null) {
+      const record = ts ?? parseLine(line);
+      oldestSeen = stampMs(record?.timestamp);
+      // A rotation whose archived part ends before the close began cannot hold its delta.
+      startsAtRotation ||= record?.event === ROTATION_EVENT && !((stampMs(record.last_ts) ?? Infinity) < newest.begun);
+    }
     if (ts?.event !== SECURITY_DELTA_EVENT) continue;
     // An event of another session never satisfies this close.
     // Ids are compared per class (raw UUID / semantic), classified by value
@@ -260,8 +267,8 @@ export function checkCloseWithoutDelta({ sessionsFile, eventsFile }) {
       return { measured: true, finding: false };
     }
   }
-  // A cut tail that begins after the close started cannot rule the event out.
-  if (events.truncated && (oldestSeen === null || oldestSeen > newest.begun)) {
+  // A cut or rotated ledger that starts after the close began cannot rule out a delta.
+  if ((events.truncated || startsAtRotation) && (oldestSeen === null || oldestSeen > newest.begun)) {
     return { measured: false, finding: false, reason: 'events-tail-too-short' };
   }
   return { measured: true, finding: true };

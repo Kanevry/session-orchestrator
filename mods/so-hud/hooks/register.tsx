@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 import type { SoBeacon, SoProfile, SoSnapshot } from '../types/index'
-import { ageBeacon, completeState, configHooksFire, displayText, findings, fireableHooks, holdsProfile, isAbsoluteRoot, PROFILES, profileLines, profileOf, profileText, statusText, validId, validateBeacon } from './logic'
+import { ageBeacon, comparablePath, completeState, configHooksFire, displayText, findings, fireableHooks, holdsProfile, hostFolder, isAbsoluteRoot, processTimeoutMs, PROFILES, profileLines, profileOf, profileText, statusText, validId, validateBeacon, windowsPath } from './logic'
 import { CD_SCRIPT, classifyAllOutward, collisionVerdict, findCollisions, findTraps, GITLINKS_SCRIPT, gitlinksFromRun, hasSecret, KIND_LABEL, plainSourceRefs, pushDestinations, pushNeedsConfirm, pushRemote, pushSources, redactDeep, redactText, REPO_CONFIG_READ, repoConfigEntries, trapVerdict, UNKNOWN_DIR, type Outward, type PushConfig, type PushFacts, type RepoConfig, type SecretHit } from './rules'
 
 // Only these closures cross helper boundaries; the engine table never does.
@@ -10,6 +10,7 @@ type IO = {
   list: EngineInterface['fs']['list']
   now: EngineInterface['clock']['now']
   env: () => ReturnType<EngineInterface['env']['get']>
+  timeoutEnv: () => ReturnType<EngineInterface['env']['get']>
   storeGet: EngineInterface['store']['get']
   storeSet: EngineInterface['store']['set']
   sessionId: EngineInterface['session']['id']
@@ -95,8 +96,13 @@ export const register: Register = (on, options) => {
   let choosing = false
   // When root() last asked `claude plugin list`; a miss is never stored, so without this every 15-second refresh spawned it.
   let pluginListAt: number | null = null
+  // The home beacon-io and `so-hud.mjs --register-root` write under (os.homedir()), from `identity` (GH#104).
+  let helperHome: string | null = null
+  // The limit of each beacon-io, plugin-list and collector call (GH#101), read once from SO_HUD_TIMEOUT_MS.
+  let timeoutMs: number | null = null
+  const limit = async (io: IO) => timeoutMs ??= processTimeoutMs(await io.timeoutEnv())
   const helper = async (io: IO, action: string, id = '', input: unknown = null) => {
-    const result = await io.run(['node', `${io.pluginRoot()}/hooks/beacon-io.mjs`, action, id], { stdin: JSON.stringify(input), timeoutMs: 3000 })
+    const result = await io.run(['node', `${io.pluginRoot()}/hooks/beacon-io.mjs`, action, id], { stdin: JSON.stringify(input), timeoutMs: await limit(io) })
     if (result.exitCode !== 0) throw new Error('beacon-io')
     return JSON.parse(result.stdout) as unknown
   }
@@ -120,7 +126,7 @@ export const register: Register = (on, options) => {
     const now = found ? null : await io.now()
     if (now !== null && (pluginListAt === null || now - pluginListAt >= PLUGIN_LIST_RETRY_MS)) {
       pluginListAt = now
-      const result = await io.run(['claude', 'plugin', 'list', '--json'], { timeoutMs: 3000 })
+      const result = await io.run(['claude', 'plugin', 'list', '--json'], { timeoutMs: await limit(io) })
       if (result.exitCode === 0) {
         const data = JSON.parse(result.stdout)
         const rows: unknown[] = Array.isArray(data) ? data : Array.isArray(data.plugins) ? data.plugins : []
@@ -167,10 +173,10 @@ export const register: Register = (on, options) => {
       const argv = ['node', `${soRoot}/scripts/so-hud.mjs`, '--json', '--repo-root', await io.cwd()]
       const sid = await io.sessionId()
       const withId = sessionIdFlag && UUID_RE.test(sid)
-      let result = await io.run(withId ? [...argv, '--session-id', sid] : argv, { timeoutMs: 3000 })
+      let result = await io.run(withId ? [...argv, '--session-id', sid] : argv, { timeoutMs: await limit(io) })
       if (withId && result.exitCode === 2) {
         sessionIdFlag = false
-        result = await io.run(argv, { timeoutMs: 3000 })
+        result = await io.run(argv, { timeoutMs: await limit(io) })
       }
       if (result.exitCode !== 0) throw new Error('collector-failed')
       const value = JSON.parse(result.stdout) as SoSnapshot
@@ -197,7 +203,7 @@ export const register: Register = (on, options) => {
     if (dir === UNKNOWN_DIR || dir.startsWith(`${UNKNOWN_DIR}/`)) return null
     const ran = await io.run(['bash', '-c', CD_SCRIPT, 'so-hud', dir], { cwd: sessionCwd, timeoutMs: 5000 })
     const out = ran.exitCode === 0 ? ran.stdout.trim() : ''
-    return out.startsWith('/') ? out : null
+    return out === '' ? null : hostFolder(out, sessionCwd)
   }
   const pushFacts = async (io: IO, hit: Outward, cwd: string): Promise<PushFacts> => {
     const git = async (args: string[]) => {
@@ -372,8 +378,9 @@ export const register: Register = (on, options) => {
     if (own?.session_id !== id) current = null
     if (validId(id)) {
       const now = new Date(await io.now()).toISOString()
-      const identity = await helper(io, 'identity').catch(() => null) as { pid: number } | null
-      own = { schema_version: 1, session_id: id, name: null, repo_name: cwd.split('/').at(-1) ?? null, branch: null,
+      const identity = await helper(io, 'identity').catch(() => null) as { pid: number; home?: unknown } | null
+      if (isAbsoluteRoot(identity?.home)) helperHome = identity.home
+      own = { schema_version: 1, session_id: id, name: null, repo_name: cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? null, branch: null,
         pid: identity?.pid ?? null, zustand: 'unbekannt', seit: now, warte_grund: null, heuristisch: false,
         kontext_prozent: null, letzter_request_at: null, modell: await io.model().catch(() => null), welle: null, aktualisiert_at: now }
     }
@@ -388,8 +395,10 @@ export const register: Register = (on, options) => {
       read: (path) => beneath.fs.read(path),
       list: (path) => beneath.fs.list(path),
       now: () => beneath.clock.now(),
-      // Native Windows usually sets only USERPROFILE (GH#89); an empty HOME falls through as well.
-      env: async () => (await beneath.env.get('HOME')) || beneath.env.get('USERPROFILE'),
+      // beacon-io's home first (GH#104: Git Bash sets a HOME that os.homedir() ignores on Windows). Before its first
+      // answer: HOME, then USERPROFILE (GH#89); an empty HOME falls through as well.
+      env: async () => helperHome ?? ((await beneath.env.get('HOME')) || beneath.env.get('USERPROFILE')),
+      timeoutEnv: () => beneath.env.get('SO_HUD_TIMEOUT_MS'),
       storeGet: (key) => beneath.store.get(key),
       storeSet: (key, value) => beneath.store.set(key, value),
       sessionId: () => beneath.session.id(),
@@ -544,7 +553,11 @@ export const register: Register = (on, options) => {
     const filePath = ['Edit', 'Write', 'NotebookEdit'].includes(e.tool)
       ? typeof args.file_path === 'string' ? args.file_path : typeof args.notebook_path === 'string' ? args.notebook_path : null : null
     if (filePath !== null && current !== null) {
-      const { hits } = findCollisions({ filePath, repoRoot: current.repo.root, ownSessionId: await io.sessionId(), peers: current.peers })
+      // Every side in one spelling (GH#100): a native `C:\x` file never matched a `C:/x` root before.
+      // Only on a Windows host: on POSIX a `\` belongs to the name and raw comparison stays as it was.
+      const spell = windowsPath(filePath) || windowsPath(current.repo.root) ? comparablePath : (p: string) => p
+      const peers = current.peers.map(p => p.scope_paths === null ? p : { ...p, scope_paths: p.scope_paths.map(spell) })
+      const { hits } = findCollisions({ filePath: spell(filePath), repoRoot: spell(current.repo.root), ownSessionId: await io.sessionId(), peers })
       const collision = collisionVerdict(hits, profile)
       if (collision.aktion === 'ablehnen') return done({ deny: collision.text })
       if (collision.aktion === 'warnen') toast(collision.text)

@@ -66,10 +66,12 @@ als Ausnahme im Check-in genannt (`vorab_geschrieben`). (`CLAUDE.md` heißt auf 
 `skills/_shared/instruction-file-resolution.md`.)
 
 Der Check-in liegt **vor der ersten schreibenden Aktion** (Phase 7.6, oder der Peer-Preflight der
-Operations-Route). Schreiber: `node scripts/fleet-checkin.mjs` liest das JSON von stdin, setzt
+Operations-Route). `node scripts/fleet-checkin.mjs --repo-root "<project-root>"` liest das JSON von stdin, setzt
 `zeit` (überschreibt immer), validiert (`validateCheckin()`), schreibt atomar mit Modus 0600 und
 emittiert `orchestrator.fleet.checkin` (Payload `session`, `repo`, `modus`, `kandidaten`,
-`navigator_state` — keine Pfade, keine Quota, kein `auftrag_ref`). stdout: eine JSON-Zeile
+`navigator_state` — keine Pfade, keine Quota, kein `auftrag_ref`). `<project-root>` ist der absolute
+Pfad zur Arbeitskopie der Session, wörtlich im Befehl (keine Shell-Variable aus einem früheren Aufruf, kein `$(git rev-parse --show-toplevel)`, #2139). Die CLI nutzt ihn für das Event-Ledger und zur Suche nach dem
+eigenen Claude-Transkript. stdout: eine JSON-Zeile
 `{ ok, path, navigator_state, navigator_adresse, fallback_due_at, event }`; `navigator_adresse` ist
 die vom Lease-Validator akzeptierte `adresse` einer aktiven Lease, sonst `null` (keine aktive
 Lease, kein Eintrag oder ein abgelehnter Wert — nie ein ungeprüfter String). `fallback_due_at` ist
@@ -279,8 +281,8 @@ und hat keine andere Arbeit:
    letzten 400 Zeichen enthalten weder `soll ich` noch `weiter mit`, `welche option` oder
    `freigabe für`: sonst gilt die Antwort als Frage an den Owner, und es schließt ebenfalls nicht.
    Auch eine Verneinung („noch nicht bereit zum Schließen“) zählt dort als Fertig-Antwort: nie ans
-   Ende stellen. Sie beginnt nichts Neues und beendet Monitore, Hintergrund-Shells und
-   Hintergrund-Agenten (Claude Code: TaskStop); solange einer läuft, gilt sie als nicht fertig.
+   Ende stellen. Sie beginnt nichts Neues und beendet Monitore, Hintergrund-Shells, Crons und
+   Hintergrund-Agenten (Claude Code: TaskStop, CronDelete; Rotations-Crons einer Lead-Session bleiben); solange eine der zu beendenden Aufgaben läuft, gilt sie als nicht fertig.
 4. Sie schließt nicht selbst: `/close` ist nicht modell-aufrufbar (`disable-model-invocation`), und
    den Abschluss löst der Koordinator aus. session-end (Phase 4.5) meldet im Zug von `/close` genau
    einmal den Fall `zug-<name>` (eigener Warte-Zug, gewollt) und schreibt keine Datei.
@@ -306,8 +308,10 @@ Navigator gewählt hat (#1839); die semantische ID kollidiert über Repos hinweg
 Schlüssel weder Auflagen noch Check-in, nimmt der Hook die Schlüssel aus den Check-ins, deren
 `session_uuid` genau zur nativen ID passt (`findCheckinSessionKeys()`, nur die jüngsten 256 Dateien, #1979).
 
-Gelesen wird über `node scripts/fleet-auflagen.mjs <session_id> [<session_id>...] --render` (Code:
-`readAuflagen()`). Der Leser probiert zuerst die prozesslokale native ID (wie beim Check-in, nur wenn
+`node scripts/fleet-auflagen.mjs <session_id> [<session_id>...] --repo-root "<project-root>" --render`
+liest die Auflagen mit `readAuflagen()`. Ohne `--repo-root` verwendet der Leser `CLAUDE_PROJECT_DIR`,
+falls gesetzt und nicht leer, sonst das aktuelle Arbeitsverzeichnis. Der Leser probiert zuerst
+die prozesslokale native ID (wie beim Check-in, nur wenn
 eine native UUID), dann die übergebenen IDs der Reihe nach; unter den angenommenen Dateien gewinnt die
 mit dem jüngsten `zeit` (eine fortgesetzte Session behält ihre UUID, eine ältere UUID-Datei darf eine
 frische semantische nicht verdecken; Gleichstand: Reihenfolge; ein `zeit` außerhalb der UTC-Sekundenform

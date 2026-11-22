@@ -108,7 +108,10 @@ import { homedir } from 'node:os';
 import { isAbsolute } from 'node:path';
 
 import { expandTilde } from '../common.mjs';
+import { parseSessionConfig, readConfigFile } from '../config.mjs';
 import { learningKeyOf } from '../learnings/kebab.mjs';
+import { inspectOwnerPatterns, matchOwnerPath } from '../validate/check-owner-leakage.mjs';
+import { resolveLearningNotePath } from '../vault-mirror/process.mjs';
 import {
   countReconcileBacklog,
   defaultLoadCandidatesForDedupe,
@@ -326,7 +329,7 @@ export function resolveEffectiveTargets({ targets, baselineRoot } = {}) {
  *
  * @param {Object} [params]
  * @param {string} [params.repoRoot]      - repo root; defaults to `process.cwd()` for the default loader/merge.
- * @param {number} [params.ruleExpiryDays]- explicit rule expiry window (passed to the emitter).
+ * @param {number} [params.ruleExpiryDays] - explicit rule expiry window for eligibility and emission.
  * @param {number} [params.minRuleDays]   - floor window (days) applied to the emitted `expires-at`
  *        so it never falls in the past (forwarded to the emitter — see `emitter.mjs`
  *        `computeExpiresAt`). Defaults internally (7d) when omitted.
@@ -423,6 +426,7 @@ async function runReconcileInner(
     const { eligible, rejected: rejectedLearnings } = filterEligible(learnings, {
       now: nowMs,
       minInsightChars,
+      ruleExpiryDays,
     });
 
     const confidenceOf = (l) =>
@@ -517,11 +521,39 @@ async function runReconcileInner(
     const keptEligible = sortedEligible.slice(0, maxProposalsPerRun);
     const cappedEligible = sortedEligible.slice(maxProposalsPerRun);
 
+    let vault;
+    let privateSlugPatterns;
+    if (repoRoot && keptEligible.length > 0) {
+      try {
+        const config = parseSessionConfig(await readConfigFile(repoRoot));
+        const integration = config['vault-integration'];
+        if (integration.enabled && integration.mode !== 'off' && integration['vault-dir']) {
+          const owner = inspectOwnerPatterns({ refresh: true });
+          if (owner.status === 'ok') {
+            // Tracked rules use the full CP6 list, including vault-clear slugs.
+            privateSlugPatterns = owner.policy.privateSlugs.map(
+              (slug) => new RegExp(`\\b${RegExp.escape(slug)}\\b`, 'i'),
+            );
+            vault = {
+              repoRoot,
+              vaultDir: expandTilde(integration['vault-dir']),
+              vaultName: integration['vault-name'],
+            };
+          }
+        }
+      } catch {
+        // Reconcile also runs in repositories without Session Config.
+      }
+    }
+
     // --- Pipeline step 4 — per eligible learning (wrapped per-item) ---------
     for (const learning of keptEligible) {
       try {
         const metadata = toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDays });
-        const { slug, path, content } = renderRule(learning, metadata);
+        const notePath = vault ? resolveLearningNotePath(learning, vault) : null;
+        const vaultNotePath = notePath && !matchOwnerPath(notePath) &&
+          !privateSlugPatterns.some((pattern) => pattern.test(notePath)) ? notePath : null;
+        const { slug, path, content } = renderRule(learning, metadata, { vaultNotePath });
         const candidateId = makeCandidateId(metadata.learningKey, slug);
 
         proposals.push({

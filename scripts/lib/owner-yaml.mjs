@@ -165,9 +165,6 @@ let _yamlWarned = false;
  * `require()` keeps the sync contract and only fails at CALL time — where the
  * failure is catchable — instead of at module load, where it is not.
  *
- * Same shape as the `getPicomatch()` pattern in `scripts/lib/rule-loader.mjs`
- * and `scripts/lib/validate-vendored-rules.mjs`.
- *
  * @returns {{ load: Function, dump: Function } | null} the module, or `null`
  *   when `node_modules` is absent / the package cannot be resolved.
  */
@@ -937,13 +934,16 @@ export function validateOwnerConfig(obj) {
  * knowable, which is the distinction CP11 needs in order to fail CLOSED rather
  * than assume "nothing configured".
  *
+ * Dropped sections report rawKeys for mapping entries with non-null values
+ * (blank strings are omitted). Values themselves are never copied into rawKeys.
+ *
  * @param {{ path?: string }} [opts]
  * @returns {{
  *   config: object,
  *   source: 'file'|'defaults'|'partial',
  *   errors: string[],
  *   reason?: 'yaml-parser-missing'|'unparseable',
- *   droppedSections?: Array<{ section: string, errors: string[] }>,
+ *   droppedSections?: Array<{ section: string, errors: string[], rawKeys: string[] }>,
  *   sectionWarnings?: Array<{ section: string, errors: string[] }>,
  * }}
  *
@@ -990,6 +990,18 @@ function hideHashSalt(config) {
     enumerable: false,
     configurable: true,
   });
+}
+
+/** Describe a rejected optional section using the original parsed mapping. */
+function describeDroppedSection(section, errors, raw) {
+  const rawKeys = isPlainObject(raw)
+    ? Object.entries(raw)
+      .filter(([, value]) =>
+        value !== undefined && value !== null && (typeof value !== 'string' || value.trim() !== '')
+      )
+      .map(([key]) => key)
+    : [];
+  return { section, errors, rawKeys };
 }
 
 /**
@@ -1071,7 +1083,7 @@ function loadOwnerConfigUnredacted(opts) {
       } else if (sec && !sec.valid) {
         // Present but malformed — already replaced by its default above. Report
         // it so a consumer can distinguish "not configured" from "unusable".
-        discardDropped.push({ section: name, errors: sec.errors });
+        discardDropped.push(describeDroppedSection(name, sec.errors, parsed[name]));
       }
     }
     // `vault-dirs:` (agents/vault#319) survives the discard too, raw — exactly as
@@ -1101,7 +1113,7 @@ function loadOwnerConfigUnredacted(opts) {
       // `undefined`: js-yaml's dump rejects undefined values on a write-back.
       if (defaults[name] === undefined) delete config[name];
       else config[name] = defaults[name];
-      droppedSections.push({ section: name, errors: sec.errors });
+      droppedSections.push(describeDroppedSection(name, sec.errors, parsed[name]));
       const firstError = sec.errors[0] ?? 'invalid section';
       console.warn(
         `WARN owner-yaml: dropping owner.yaml section "${name}" (${firstError}); using defaults`,

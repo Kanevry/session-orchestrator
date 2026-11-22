@@ -49,9 +49,11 @@ the peer's session in the new worktree. Delegate a code change through the norma
 workflow with its own verified scope, tests and review; it does not turn this entire run
 into a fabricated wave session.
 Before the first writing action, write the fleet check-in and read the fleet's constraints —
-the same step as session-start Phase 7.6 (`scripts/fleet-checkin.mjs`; fields and the
-Standard-Auflagen in `skills/_shared/fleet-protocol.md`). Read the Auflagen with
-`node scripts/fleet-auflagen.mjs <session_id> --render` (it adds this process's own native session UUID
+the same step as session-start Phase 7.6. Pass `--repo-root "<project-root>"`, the literal absolute path of this session's working copy
+(its worktree when applicable), as in Phase 7.6 (#2139). Pipe the check-in JSON into
+`node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/fleet-checkin.mjs" --repo-root "<project-root>"`
+(fields and Standard-Auflagen in `skills/_shared/fleet-protocol.md`). Read the Auflagen with
+`node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/fleet-auflagen.mjs" <session_id> --repo-root "<project-root>" --render` (it adds this process's own native session UUID
 itself and takes the newest accepted file; the navigator may key the file by either id, #1839), never the file directly: only a file whose `repo`
 resolves to this repo's git common dir is `accepted`, and a `rejected` one counts as absent
 (`skills/_shared/fleet-protocol.md` § `auflagen/<session_id>.json`). If no `auflagen/` file has appeared by

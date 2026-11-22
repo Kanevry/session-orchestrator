@@ -5,7 +5,7 @@ argument-hint: "[all|code|infra|ui|arch|session|audit|vault|feature] [--since <g
 tags: [quality, discovery, probes, issues]
 model: sonnet
 model-preference: sonnet
-model-preference-codex: gpt-5.4-mini
+model-preference-codex: gpt-6.2-astra
 model-preference-cursor: claude-sonnet-4-6
 description: >
   Use this skill when running systematic quality discovery and issue detection. Runs modular probes

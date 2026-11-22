@@ -93,6 +93,15 @@ async function refreshSource(prev, fetcher, key, nowIso) {
   }
 }
 
+function isCriticalVulnerability(finding) {
+  return finding.class === 'vuln' && finding.severity === 'critical';
+}
+
+function cachePriority(finding) {
+  if (finding.class === 'malicious') return 0;
+  return isCriticalVulnerability(finding) ? 1 : 2;
+}
+
 /** Reduce a contract finding to the cached shape (no file path, no fingerprint). */
 function reduceFinding(f, kevSet) {
   const ids = Array.isArray(f.ids) ? f.ids.filter((id) => typeof id === 'string') : [];
@@ -282,7 +291,11 @@ export async function refreshSecurityPulse({
         env,
       });
       const kevSet = new Set(Array.isArray(kev?.cves) ? kev.cves : []);
-      const findings = (check.findings ?? []).slice(0, MAX_CACHED_FINDINGS).map((f) => reduceFinding(f, kevSet));
+      const allFindings = check.findings ?? [];
+      const retainedFindings = allFindings.length > MAX_CACHED_FINDINGS
+        ? allFindings.toSorted((a, b) => cachePriority(a) - cachePriority(b)).slice(0, MAX_CACHED_FINDINGS)
+        : allFindings;
+      const findings = retainedFindings.map((f) => reduceFinding(f, kevSet));
       writeCacheJson(paths.repoFile, {
         schema: CACHE_SCHEMA,
         fetched_at: nowIso,
@@ -291,7 +304,7 @@ export async function refreshSecurityPulse({
         reason: check.reason ?? null,
         checked: check.checked ?? 0,
         unchecked: check.unchecked ?? 0,
-        findings_total: (check.findings ?? []).length,
+        findings_total: allFindings.length,
         findings,
       });
       summary.repo = {
@@ -301,7 +314,7 @@ export async function refreshSecurityPulse({
         unchecked: check.unchecked ?? 0,
         findings: findings.length,
         malicious: findings.filter((f) => f.class === 'malicious').length,
-        critical: findings.filter((f) => f.severity === 'critical').length,
+        critical: findings.filter(isCriticalVulnerability).length,
       };
     })();
 

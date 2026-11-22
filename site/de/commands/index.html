@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Befehle: Welchen tippst du, und was passiert danach</title>
-<meta name="description" content="Alle 32 Befehle von session-orchestrator nach Situation: wann du welchen nutzt, was du bekommst, wie du ihn in Claude Code, Codex, Cursor und Pi tippst und was er ändert.">
+<meta name="description" content="Alle 33 Befehle von session-orchestrator nach Situation: wann du welchen nutzt, was du bekommst, wie du ihn in Claude Code, Codex, Cursor und Pi tippst und was er ändert.">
 <link rel="canonical" href="https://session-orchestrator.com/de/commands">
 <link rel="alternate" hreflang="en" href="https://session-orchestrator.com/commands">
 <link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de/commands">
@@ -13,7 +13,7 @@
 <meta property="og:site_name" content="Session Orchestrator">
 <meta property="og:url" content="https://session-orchestrator.com/de/commands">
 <meta property="og:title" content="Befehle: Welchen tippst du, und was passiert danach">
-<meta property="og:description" content="Alle 32 Befehle von session-orchestrator nach Situation: wann du welchen nutzt, was du bekommst, wie du ihn in Claude Code, Codex, Cursor und Pi tippst und was er ändert.">
+<meta property="og:description" content="Alle 33 Befehle von session-orchestrator nach Situation: wann du welchen nutzt, was du bekommst, wie du ihn in Claude Code, Codex, Cursor und Pi tippst und was er ändert.">
 <meta property="og:image" content="https://session-orchestrator.com/de/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -21,7 +21,7 @@
 <meta property="og:locale" content="de_DE">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Befehle: Welchen tippst du, und was passiert danach">
-<meta name="twitter:description" content="Alle 32 Befehle von session-orchestrator nach Situation: wann du welchen nutzt, was du bekommst, wie du ihn in Claude Code, Codex, Cursor und Pi tippst und was er ändert.">
+<meta name="twitter:description" content="Alle 33 Befehle von session-orchestrator nach Situation: wann du welchen nutzt, was du bekommst, wie du ihn in Claude Code, Codex, Cursor und Pi tippst und was er ändert.">
 <meta name="twitter:image" content="https://session-orchestrator.com/de/og.png">
 <meta name="twitter:image:alt" content="Session Orchestrator: Aus deiner Aufgabe wird geprüfte Arbeit. Die Befehle /session, /go und /close neben einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
 <link rel="icon" href="/favicon.svg">
@@ -83,7 +83,7 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261107">
+<link rel="stylesheet" href="/assets/site.css?v=20261118">
 <link rel="stylesheet" href="/assets/commands.css?v=20261113">
 </head>
 <body class="guide-page commands-page">
@@ -91,9 +91,9 @@
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.20.0</span></span></a>
+    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.21.0</span></span></a>
     <nav class="nav" aria-label="Hauptnavigation">
-      <a href="/de#how">Ablauf</a>
+      <a href="/guide#how-it-works" hreflang="en">Ablauf</a>
       <a href="/de/commands" aria-current="page">Befehle</a>
       <a href="/de#install">Installieren</a>
       <a href="/guide" hreflang="en">Anleitung</a>
@@ -102,7 +102,7 @@
     </nav>
     <p class="lang"><a href="/commands" lang="en">EN</a><a href="/de/commands" aria-current="page" lang="de">DE</a></p>
     <details class="nav-menu"><summary>Menü</summary><nav class="nav" aria-label="Mobile Navigation">
-      <a href="/de#how">Ablauf</a>
+      <a href="/guide#how-it-works" hreflang="en">Ablauf</a>
       <a href="/de/commands" aria-current="page">Befehle</a>
       <a href="/de#install">Installieren</a>
       <a href="/guide" hreflang="en">Anleitung</a>
@@ -115,7 +115,7 @@
 <main id="main">
   <section class="sec" id="top">
     <div class="wrap">
-      <p class="eyebrow">32 Befehle &middot; Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
+      <p class="eyebrow">33 Befehle &middot; Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
       <h1 class="h-display">Welcher Befehl hilft mir gerade?</h1>
       <p class="lede">Such dir aus, was du tun willst. Jeder Befehl unten sagt, wann du ihn nutzt, was du bekommst, wie du ihn tippst und was danach passiert.</p>
 
@@ -176,8 +176,8 @@
   <div class="cmd-filter" id="cmd-filter-box" hidden>
     <label for="cmd-filter">Befehle filtern</label>
     <input type="search" id="cmd-filter" autocomplete="off" spellcheck="false" placeholder="zum Beispiel: test, issues, commit" aria-describedby="cmd-count">
-    <p class="cmd-count" id="cmd-count" role="status" aria-live="polite">32 von 32 Befehlen</p>
-    <p class="cmd-empty" id="cmd-empty" hidden>Kein Befehl passt. Leere das Feld, um alle 32 zu sehen.</p>
+    <p class="cmd-count" id="cmd-count" role="status" aria-live="polite">33 von 33 Befehlen</p>
+    <p class="cmd-empty" id="cmd-empty" hidden>Kein Befehl passt. Leere das Feld, um alle 33 zu sehen.</p>
   </div>
 
   <section class="cmd-group" id="start-here" aria-labelledby="start-here-h">
@@ -419,6 +419,18 @@
       <dt>Danach</dt><dd>Arbeite weiter. Wiederhole es alle 5 oder mehr Sessions.</dd>
       </dl>
       <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/memory-cleanup/SKILL.md">Quelle: skills/memory-cleanup/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="public-audit" data-command="public-audit">
+      <h3><a class="cmd-name" href="#public-audit"><code>/public-audit</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>Wann</dt><dd>Du willst prüfen, wie gut eine öffentliche Website gefunden werden kann: Weiterleitungen, Seiten-Metadaten, JSON-LD, Sitemaps, Robots-Regeln, Antworten an Crawler.</dd>
+      <dt>Du bekommst</dt><dd>Fehler, Chancen, bestandene Prüfungen und was nicht messbar war, jeweils mit Quell-URL. Keine SEO-Note, keine Aussagen zum Ranking.</dd>
+      <dt>Eingabe</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/public-audit [--manifest &lt;file&gt;] [--json] [--out &lt;file&gt;]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:public-audit</code></dd><dt>Cursor</dt><dd><code>/public-audit</code></dd><dt>Pi</dt><dd><code>/public-audit</code></dd></dl></dd>
+      <dt>Wirkung</dt><dd><span class="touch touch-read">Liest nur</span> <span class="touch-note">höchstens 5 GET-Anfragen je Host; schreibt eine Datei nur mit --out</span></dd>
+      <dt>Braucht</dt><dd>Ein Manifest mit der Website und ihren Seiten (Standard <code>.orchestrator/public-audit.md</code>).</dd>
+      <dt>Danach</dt><dd>Behebe die Fehler im Repo der Website. Sichtbarkeit in Suchmaschinen und Kontodaten deckt der Befehl nicht ab.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/public-audit/SKILL.md">Quelle: skills/public-audit/SKILL.md</a></p>
     </article>
     <article class="cmd-card" id="repo-audit" data-command="repo-audit">
       <h3><a class="cmd-name" href="#repo-audit"><code>/repo-audit</code></a></h3>
@@ -713,7 +725,7 @@ expires-at: 2027-01-12</code></pre></li>
     </details>
     <details class="bg-detail">
       <summary>10 Hook-Ereignisse</summary>
-      <p>Zeitpunkte in Claude Code, an denen die Guards und die Session-Aufzeichnungen laufen. Codex nutzt sechs davon; Pi bildet fünf über eine Brücke ab.</p>
+      <p>Zeitpunkte in Claude Code, an denen die Guards und die Session-Aufzeichnungen laufen. Codex nutzt sechs davon; Pi bildet fünf über eine Brücke ab. Der Schutz vor destruktiven Shell-Befehlen hat 18 Regeln. Bei aktivem Hook sperren 14 Regeln einen Befehl und 4 warnen.</p>
       <ul class="chips"><li><code>SessionStart</code></li><li><code>SessionEnd</code></li><li><code>PreToolUse</code></li><li><code>PostToolUse</code></li><li><code>Stop</code></li><li><code>SubagentStop</code></li><li><code>PostToolUseFailure</code></li><li><code>PostToolBatch</code></li><li><code>SubagentStart</code></li><li><code>CwdChanged</code></li></ul>
     </details>
     <details class="bg-detail">
@@ -758,6 +770,6 @@ expires-at: 2027-01-12</code></pre></li>
 <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
 <script src="/_vercel/insights/script.js" defer></script>
 <script src="/assets/commands.js?v=20261113" defer></script>
-<script src="/assets/ui.js?v=20260910" defer></script>
+<script src="/assets/ui.js?v=20261118" defer></script>
 </body>
 </html>

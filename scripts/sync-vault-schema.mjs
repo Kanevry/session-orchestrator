@@ -11,7 +11,8 @@
  *
  * Modes:
  *   --write  (default) Regenerate sentinel block in validator.mjs from canonical. Idempotent.
- *   --check            Exit 0 if block matches; exit 1 with unified diff on stderr if drifted.
+ *   --check            Compare the generated block with the vendored block.
+ * Both modes check for missing definitions of imported schema helpers.
  *
  * Path overrides:
  *   --canonical <path>   Override canonical .ts path.
@@ -22,7 +23,7 @@
  *
  * Exit codes:
  *   0 — success / no drift
- *   1 — drift detected (--check mode)
+ *   1 — drift detected (--check mode) or missing helper definition (both modes)
  *   2 — missing file
  *   3 — malformed sentinels (only one of begin/end present)
  *
@@ -34,6 +35,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse } from '@babel/parser';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -231,61 +233,95 @@ function buildGeneratedBlock() {
   return outputLines.join('\n');
 }
 
-// ── Locate / replace sentinel block in validator.mjs ─────────────────────────
-function updateValidator(validatorContent, generatedBlock, _dryRun = false) {
+// ── Locate the schema block in validator.mjs ─────────────────────────────────
+function locateSchemaBlock(validatorContent) {
   const beginIdx = validatorContent.indexOf(SENTINEL_BEGIN);
   const endIdx = validatorContent.indexOf(SENTINEL_END);
 
-  if (beginIdx !== -1 && endIdx === -1) {
+  if ((beginIdx === -1) !== (endIdx === -1)) {
     process.stderr.write(
-      `sync-vault-schema: error: found BEGIN sentinel but missing END sentinel in validator.mjs.\n`,
-    );
-    process.exit(3);
-  }
-  if (beginIdx === -1 && endIdx !== -1) {
-    process.stderr.write(
-      `sync-vault-schema: error: found END sentinel but missing BEGIN sentinel in validator.mjs.\n`,
+      'sync-vault-schema: error: malformed sentinels in validator.mjs (only one sentinel found).\n',
     );
     process.exit(3);
   }
 
-  // Build the full replacement block (sentinels + content)
-  const fullBlock = `${SENTINEL_BEGIN}\n${generatedBlock}\n${SENTINEL_END}`;
-
-  let updatedContent;
-
-  if (beginIdx !== -1 && endIdx !== -1) {
-    // Sentinels exist — replace the range between (and including) them
-    const afterEnd = endIdx + SENTINEL_END.length;
-    updatedContent =
-      validatorContent.slice(0, beginIdx) + fullBlock + validatorContent.slice(afterEnd);
-  } else {
-    // First run — no sentinels yet. Locate the existing inline schema block.
-    // Search for `const slugRegex = ` as start anchor.
-    const inlineStart = validatorContent.indexOf('const slugRegex = ');
-    if (inlineStart === -1) {
-      process.stderr.write(
-        `sync-vault-schema: error: no sentinels found and cannot locate inline schema anchor "const slugRegex = " in validator.mjs.\n`,
-      );
-      process.exit(2);
-    }
-    // Find end: `.passthrough();` (the final line of vaultFrontmatterSchema)
-    const inlineEnd = validatorContent.indexOf('.passthrough();', inlineStart);
-    if (inlineEnd === -1) {
-      process.stderr.write(
-        `sync-vault-schema: error: found start anchor but cannot locate ".passthrough();" in validator.mjs.\n`,
-      );
-      process.exit(2);
-    }
-    // Include to the end of that line
-    const eolAfterEnd = validatorContent.indexOf('\n', inlineEnd);
-    const replaceEnd = eolAfterEnd !== -1 ? eolAfterEnd : validatorContent.length;
-
-    updatedContent =
-      validatorContent.slice(0, inlineStart) + fullBlock + validatorContent.slice(replaceEnd);
+  if (beginIdx !== -1) {
+    return {
+      start: beginIdx,
+      end: endIdx + SENTINEL_END.length,
+      bodyStart: validatorContent.indexOf('\n', beginIdx) + 1,
+      bodyEnd: endIdx,
+    };
   }
 
-  return updatedContent;
+  // First run: the inline schema has no sentinel lines yet.
+  const start = validatorContent.indexOf('const slugRegex = ');
+  const inlineEnd = validatorContent.indexOf('.passthrough();', start);
+  if (start === -1 || inlineEnd === -1) {
+    process.stderr.write('sync-vault-schema: error: cannot locate inline schema in validator.mjs.\n');
+    process.exit(2);
+  }
+  const eolAfterEnd = validatorContent.indexOf('\n', inlineEnd);
+  const end = eolAfterEnd === -1 ? validatorContent.length : eolAfterEnd;
+  return { start, end, bodyStart: start, bodyEnd: end };
+}
+
+function importedHelperCalls(generatedBlock) {
+  const canonical = parse(canonicalSrc, { sourceType: 'module', plugins: ['typescript'] });
+  const imports = new Set();
+  for (const statement of canonical.program.body) {
+    if (statement.type !== 'ImportDeclaration' || statement.importKind === 'type') continue;
+    for (const specifier of statement.specifiers) {
+      if (specifier.importKind !== 'type' && specifier.local.name !== 'z') {
+        imports.add(specifier.local.name);
+      }
+    }
+  }
+
+  const calls = new Set();
+  if (imports.size === 0) return calls;
+  const nodes = [...parse(generatedBlock, { sourceType: 'module' }).program.body];
+  for (const node of nodes) {
+    if ((node.type === 'CallExpression' || node.type === 'OptionalCallExpression') &&
+        node.callee.type === 'Identifier' && imports.has(node.callee.name)) {
+      calls.add(node.callee.name);
+    }
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) {
+        for (const child of value) {
+          if (child?.type) nodes.push(child);
+        }
+      } else if (value?.type) {
+        nodes.push(value);
+      }
+    }
+  }
+  return calls;
+}
+
+function checkVendoredHelpers(generatedBlock, beforeBlock, afterBlock) {
+  const missing = importedHelperCalls(generatedBlock);
+  if (missing.size === 0) return;
+
+  // Exports can refer to declarations from the removed generated block.
+  const validator = parse(`${beforeBlock}\n${afterBlock}`, { sourceType: 'module', allowUndeclaredExports: true });
+  for (const statement of validator.program.body) {
+    const declaration = statement.declaration ?? statement;
+    if (declaration.type === 'FunctionDeclaration') {
+      // Hoisted: callable from the block wherever it stands.
+      missing.delete(declaration.id?.name);
+    } else if (declaration.type === 'VariableDeclaration' && statement.end <= beforeBlock.length) {
+      // A const/let after the block is still in its temporal dead zone when the
+      // block runs at import time (ReferenceError), so only declarations BEFORE count.
+      for (const { id, init } of declaration.declarations) {
+        if (id.type === 'Identifier' && init) missing.delete(id.name);
+      }
+    }
+  }
+  if (missing.size > 0) {
+    process.stderr.write(`sync-vault-schema: missing vendored helper(s) outside the schema block: ${[...missing].sort().join(', ')}\n`);
+    process.exit(1);
+  }
 }
 
 // ── Produce a simple unified diff (no external deps) ─────────────────────────
@@ -311,37 +347,13 @@ function unifiedDiff(labelA, labelB, linesA, linesB) {
 // ── Main ─────────────────────────────────────────────────────────────────────
 const validatorContent = readFileSync(validatorPath, 'utf8');
 const generatedBlock = buildGeneratedBlock();
+const { start, end, bodyStart, bodyEnd } = locateSchemaBlock(validatorContent);
+const beforeBlock = validatorContent.slice(0, start);
+const afterBlock = validatorContent.slice(end);
+checkVendoredHelpers(generatedBlock, beforeBlock, afterBlock);
 
 if (isCheck) {
-  // Extract current block from validator (between sentinels or inline)
-  const beginIdx = validatorContent.indexOf(SENTINEL_BEGIN);
-  const endIdx = validatorContent.indexOf(SENTINEL_END);
-
-  let currentBlock;
-  if (beginIdx !== -1 && endIdx !== -1) {
-    // Content between sentinels (exclusive)
-    const afterBegin = validatorContent.indexOf('\n', beginIdx) + 1;
-    currentBlock = validatorContent.slice(afterBegin, endIdx).trimEnd();
-  } else if (beginIdx !== -1 || endIdx !== -1) {
-    // One sentinel missing
-    process.stderr.write(
-      `sync-vault-schema: error: malformed sentinels in validator.mjs (only one sentinel found).\n`,
-    );
-    process.exit(3);
-  } else {
-    // No sentinels — compare against inline schema region
-    const inlineStart = validatorContent.indexOf('const slugRegex = ');
-    const inlineEnd = validatorContent.indexOf('.passthrough();');
-    if (inlineStart === -1 || inlineEnd === -1) {
-      process.stderr.write(
-        `sync-vault-schema: error: cannot locate inline schema in validator.mjs for comparison.\n`,
-      );
-      process.exit(2);
-    }
-    const eolAfterEnd = validatorContent.indexOf('\n', inlineEnd);
-    currentBlock = validatorContent.slice(inlineStart, eolAfterEnd).trimEnd();
-  }
-
+  const currentBlock = validatorContent.slice(bodyStart, bodyEnd).trimEnd();
   const { hasDiff, text } = unifiedDiff(
     'validator.mjs (current)',
     'canonical (generated)',
@@ -360,7 +372,7 @@ if (isCheck) {
 }
 
 // --write mode (default)
-const updatedContent = updateValidator(validatorContent, generatedBlock);
+const updatedContent = `${beforeBlock}${SENTINEL_BEGIN}\n${generatedBlock}\n${SENTINEL_END}${afterBlock}`;
 
 if (updatedContent === validatorContent) {
   process.stdout.write('sync-vault-schema: synced: 0 changes (already up-to-date).\n');

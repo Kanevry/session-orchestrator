@@ -26,7 +26,8 @@ guarded-url-envs:
   - APP_API_BASE_URL
   - APP_DATABASE_URL
 
-# Optional command that seeds deterministic test data before the run.
+# Optional seed-command metadata. Stufe 1 does NOT execute it; arrange
+# deterministic test data separately before the run.
 seed-command: npm run seed:e2e
 
 # Evaluation personas. Credentials are env NAMES only — the values live in
@@ -40,6 +41,31 @@ personas:
     login-env-email: LOGIN_EMAIL_ACCOUNTANT
     login-env-password: LOGIN_PASSWORD_ACCOUNTANT
     goal: Review a client's numbers and export them.
+
+# Optional top-level login: omit for unauthenticated runs. Replace the selectors
+# and success regex with this app's login flow; credential placeholders resolve
+# through the chosen persona's env NAMES above, never literal values.
+# Keep the absolute login URL on the same origin when changing base-url.
+# Runs after every successful viewport setup, before routes, in the same session.
+# One login persona per run; route-specific persona switching is unsupported.
+# Revisit when a second login persona is needed, using a separate run meanwhile.
+login-command:
+  persona: solo-operator
+  steps:
+    - open http://127.0.0.1:3100/login
+    - fill "#email" "${LOGIN_EMAIL}"
+    - fill "#password" "${LOGIN_PASSWORD}"
+    - click "#sign-in"
+    - wait --url "**/dashboard"
+  success: /dashboard
+
+# Optional top-level readiness: wait-only agent-browser command lines after each
+# successful route open / journey start open, before measurement / journey steps.
+# Choose app-specific readiness; networkidle alone may leave a skeleton visible.
+# Every command has a 120-second limit; failure skips with `measure-failed`.
+wait:
+  - wait --load networkidle
+  - wait --fn "!document.querySelector('[data-slot=skeleton]')"
 
 # Routes to measure. `title-pattern` is a regular expression matched against
 # the page title. `frame` is optional and only used by the Pencil coverage
@@ -76,6 +102,11 @@ routes:
 # An `open` step must resolve to the same origin as `base-url`, else
 # `step-open-off-origin`. A step may not carry `--session`: the run owns its
 # session, and a step that retargets it aborts with `step-session-override`.
+# Login lines use the same splitStepLine/assertStepArgv allowlist before session
+# creation, then again before and after credential substitution; no shell is
+# involved. Login takes no screenshots; a failed first login open aborts as
+# `base-url-unreachable`, other command/success failures abort as `login-failed`
+# with a secret-free message. The browser closes in finally; login repeats each run.
 #
 # `start` must resolve to the SAME ORIGIN as `base-url` (a path is the normal
 # form). An off-origin `start` aborts with `journey-start-off-origin` — with a

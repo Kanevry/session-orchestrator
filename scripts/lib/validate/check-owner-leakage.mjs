@@ -5,7 +5,6 @@ import { join, extname, relative, basename, sep, resolve, dirname, isAbsolute } 
 import { argv } from 'node:process';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 // eslint-disable-next-line no-restricted-imports -- import leaf (#1244): consumer repos copy this scanner standalone for their own pre-commit, so it cannot depend on native-command.mjs (#1864)
 import { execFileSync } from 'node:child_process';
 
@@ -423,24 +422,7 @@ function isMissingDirectSibling(err) {
   return typeof err?.url === 'string' && CP11_DIRECT_SIBLING_URLS.has(err.url);
 }
 
-function rawConfidentialNamesKeyState(ownerYamlPath) {
-  let parsed;
-  try {
-    const yaml = createRequire(import.meta.url)('js-yaml');
-    parsed = yaml.load(readFileSync(ownerYamlPath, 'utf8'));
-  } catch {
-    return 'unknown';
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return 'unknown';
-  const paths = parsed.paths;
-  if (paths === null || typeof paths !== 'object' || Array.isArray(paths)) return 'absent';
-  const value = paths['confidential-names-file'];
-  if (value === undefined || value === null) return 'absent';
-  if (typeof value === 'string' && value.trim() === '') return 'absent';
-  return 'configured';
-}
-
-export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
+export async function getConfidentialNamePatterns({ loadOwnerConfig } = {}) {
   let helpers;
   try {
     helpers = {
@@ -469,15 +451,10 @@ export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
   try {
     const { resolveHostPath } = helpers.hostPaths;
     const { inspectConfidentialNames } = helpers.confidentialNames;
-    const { resolveOwnerYamlPath } = helpers.ownerYaml;
-
-    const hostCtx = (loadHostPaths ?? helpers.hostPaths.loadHostPaths)();
-
-    if (
-      hostCtx.ownerConfig === undefined &&
-      hostCtx.source === undefined &&
-      hostCtx.reason === undefined
-    ) {
+    let owner;
+    try {
+      owner = (loadOwnerConfig ?? helpers.ownerYaml.loadOwnerConfig)();
+    } catch {
       return {
         patterns: [],
         disabledReason:
@@ -485,46 +462,40 @@ export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
       };
     }
 
-    const namesPath = resolveHostPath('confidential-names-file', '', hostCtx);
+    const namesPath = resolveHostPath('confidential-names-file', '', {
+      env: process.env,
+      ownerConfig: owner.config,
+    });
 
     if (typeof namesPath !== 'string' || namesPath.trim() === '') {
-      if (existsSync(resolveOwnerYamlPath())) {
-        if (hostCtx.reason === 'yaml-parser-missing') {
+      if (owner.reason === 'yaml-parser-missing') {
+        return {
+          patterns: [],
+          disabledReason:
+            "owner.yaml exists but 'js-yaml' is not installed, so a configured confidential-names-file cannot be resolved (run 'npm install')",
+        };
+      }
+      if (owner.reason === 'unparseable') {
+        return {
+          patterns: [],
+          disabledReason:
+            'owner.yaml exists but could not be parsed, so a configured confidential-names-file cannot be resolved',
+        };
+      }
+      const droppedPaths = owner.droppedSections?.find(({ section }) => section === 'paths');
+      if (droppedPaths) {
+        if (droppedPaths.rawKeys.includes('confidential-names-file')) {
           return {
             patterns: [],
             disabledReason:
-              "owner.yaml exists but 'js-yaml' is not installed, so a configured confidential-names-file cannot be resolved (run 'npm install')",
+              'owner.yaml has an invalid paths: section, so a configured confidential-names-file cannot be resolved',
           };
         }
-        if (hostCtx.reason === 'unparseable') {
-          return {
-            patterns: [],
-            disabledReason:
-              'owner.yaml exists but could not be parsed, so a configured confidential-names-file cannot be resolved',
-          };
-        }
-        if (hostCtx.droppedSections?.some((d) => d.section === 'paths')) {
-          const rawKey = rawConfidentialNamesKeyState(resolveOwnerYamlPath());
-          if (rawKey === 'configured') {
-            return {
-              patterns: [],
-              disabledReason:
-                'owner.yaml has an invalid paths: section, so a configured confidential-names-file cannot be resolved',
-            };
-          }
-          if (rawKey === 'unknown') {
-            return {
-              patterns: [],
-              disabledReason:
-                'owner.yaml has an invalid paths: section and could not be re-read, so a configured confidential-names-file cannot be ruled out',
-            };
-          }
-          return {
-            patterns: [],
-            inertWarn:
-              'CP11 inactive — owner.yaml\'s paths: section was dropped as invalid, but it configures no confidential-names-file',
-          };
-        }
+        return {
+          patterns: [],
+          inertWarn:
+            "CP11 inactive — owner.yaml's paths: section was dropped as invalid, but it configures no confidential-names-file",
+        };
       }
       return { patterns: [] }; // (b) the ~99% default — inactive, silent.
     }

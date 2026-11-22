@@ -126,6 +126,7 @@ export const EVENTS_WINDOW_READERS = Object.freeze([
   { label: 'session-work-trees', spec: './session-work-trees.mjs' },
   { label: 'session-end/close-without-plan', spec: './session-end/close-without-plan.mjs' },
   { label: 'session-ledger-census', spec: '../session-ledger-census.mjs' },
+  { label: 'guard-friction-census', spec: '../guard-friction-census.mjs' },
 ]);
 
 /**

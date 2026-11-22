@@ -7,14 +7,12 @@
  * Detection signals (all key on host_class rather than project):
  *
  *   1. oom-kill      — stop events with exitCode 137 or "Out of memory" marker
- *   2. heartbeat-gap — registry sweep.log entries for the same host
- *                      (session disappeared without a clean stop — freeze proxy)
- *   3. concurrent-session-pressure — session-start events inside a start wave:
+ *   2. concurrent-session-pressure — session-start events inside a start wave:
  *                      `recent_starts_count` (foreign starts in the last 5 min,
  *                      emitted since #1650) >= startWaveMin. Re-aimed in #1654
  *                      off `peer_count`, a standing state (see the detector).
- *   4. disk-full     — events with ENOSPC / "no space left" markers
- *   5. thermal-throttle — sustained high CPU load + unexpected slow-wave marker
+ *   3. disk-full     — events with ENOSPC / "no space left" markers
+ *   4. thermal-throttle — sustained high CPU load + unexpected slow-wave marker
  *
  * The detector is additive and idempotent. It produces CANDIDATES; the /evolve
  * analyze flow still runs them through the standard dedupe + user-confirmation
@@ -40,14 +38,11 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   startWaveMin: 5,
   /** CPU load percentage that marks a thermal-throttle signal. */
   thermalCpuLoadPct: 85,
-  /** Heartbeat gap threshold in minutes above which a session is "frozen". */
-  heartbeatGapMinutes: 30,
 });
 
 /** Signal classifiers — narrow enum for candidate subjects. */
 export const HW_SIGNALS = Object.freeze([
   'oom-kill',
-  'heartbeat-gap',
   'concurrent-session-pressure',
   'disk-full',
   'thermal-throttle',
@@ -87,20 +82,6 @@ function detectOomKill(events) {
     timestamp: e.timestamp,
     raw: { exit_code: e.exit_code, session: e.session ?? null },
   }));
-}
-
-function detectHeartbeatGap(sweepLogEntries, thresholdMin) {
-  // lead report 2026-11-10: consume sweepZombies' fields, not a detector-only mock shape.
-  return sweepLogEntries
-    .filter((e) => e.reason === 'stale-heartbeat'
-      && typeof (e.age_minutes ?? e.gap_minutes) === 'number'
-      && (e.age_minutes ?? e.gap_minutes) >= thresholdMin)
-    .map((e) => ({
-      signal: 'heartbeat-gap',
-      host_class: e.host_class ?? null,
-      timestamp: e.timestamp ?? e.swept_at,
-      raw: { gap_minutes: e.age_minutes ?? e.gap_minutes, session_id: e.session_id },
-    }));
 }
 
 /**
@@ -231,8 +212,7 @@ function detectThermalThrottle(events, thresholdPct) {
 
 /**
  * Group hits by (signal, host_class), count occurrences, and emit candidates
- * whose count meets the minOccurrences threshold. Historical heartbeat sweep
- * records lack host_class; retain them together under an unknown host.
+ * with a known host_class whose count meets the minOccurrences threshold.
  *
  * @param {object[]} hits — per-signal hit objects from detectors
  * @param {number} minOccurrences
@@ -241,14 +221,13 @@ function detectThermalThrottle(events, thresholdPct) {
 export function aggregateCandidates(hits, minOccurrences) {
   const buckets = new Map();
   for (const h of hits) {
-    // lead report 2026-11-10: old sweep logs had no host anchor at all.
-    if (!h.host_class && h.signal !== 'heartbeat-gap') continue;
+    if (!h.host_class) continue;
     const key = `${h.signal}::${h.host_class}`;
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = {
         signal: h.signal,
-        host_class: h.host_class ?? null,
+        host_class: h.host_class,
         occurrences: 0,
         first_seen: h.timestamp,
         last_seen: h.timestamp,
@@ -289,20 +268,17 @@ export function aggregateCandidates(hits, minOccurrences) {
  *
  * @param {object}   input
  * @param {object[]} [input.events=[]]          — parsed events.jsonl entries
- * @param {object[]} [input.sweepLogEntries=[]] — parsed registry sweep.log entries
  * @param {object}   [input.thresholds]         — override DEFAULT_THRESHOLDS
  * @returns {object[]} hardware-pattern candidates (type+subject+signal+host_class+occurrences+samples)
  */
 export function detectHardwarePatterns({
   events = [],
-  sweepLogEntries = [],
   thresholds = {},
 } = {}) {
   const t = { ...DEFAULT_THRESHOLDS, ...thresholds };
 
   const hits = [
     ...detectOomKill(events),
-    ...detectHeartbeatGap(sweepLogEntries, t.heartbeatGapMinutes),
     ...detectConcurrentSessionPressure(events, t.startWaveMin),
     ...detectDiskFull(events),
     ...detectThermalThrottle(events, t.thermalCpuLoadPct),

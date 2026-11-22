@@ -83,6 +83,45 @@ export const validId = (v: unknown): v is string => typeof v === 'string' && /^[
  * Node module (and `path.win32.isAbsolute('\\x')` is true for a path that still depends on the current drive).
  */
 export const isAbsoluteRoot = (v: unknown): v is string => typeof v === 'string' && /^(?:\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/])/.test(v)
+/**
+ * The one comparable spelling of a path from any host (GH#100, #104, #106): every `\` becomes `/`, a drive path
+ * (`C:\x`, `C:/x`) and Git Bash's `/c/x` both become `/c/x` with the drive letter lower-cased, UNC `\\server\share`
+ * becomes `//server/share`. Only for paths from a Windows host ({@link windowsPath}): on POSIX a `\` is part of a
+ * name, and splitting `x\y.ts` into two parts would hide a match a pattern `a/*` had. Trailing separators are kept: a
+ * scope pattern `dir/` means "below dir", and the collision guard's own normalizer drops them for root and file.
+ * Ceiling: past the drive letter, case is kept, so `C:\Repo` and `C:\repo` stay apart on case-insensitive NTFS;
+ * revisit if a report shows a model writing a path in another case than git prints it.
+ */
+/** A drive (`C:\x`, `C:/x`) or UNC (`\\server\share`, `//server/share`) path: the session runs on a Windows host. */
+export const windowsPath = (path: string): boolean => /^(?:[A-Za-z]:[\\/]|\\\\|\/\/)/.test(path)
+export function comparablePath(path: string): string {
+  const slashed = path.replace(/\\/g, '/')
+  const drive = /^([A-Za-z]):(?=\/)/.exec(slashed)
+  if (drive) return `/${(drive[1] ?? '').toLowerCase()}${slashed.slice(2)}`
+  return slashed.replace(/^\/([A-Za-z])(?=\/|$)/, (_, letter: string) => `/${letter.toLowerCase()}`)
+}
+/**
+ * A folder printed by a shell, as the host can use it as a working folder (GH#106): on a Windows host (the session's
+ * own folder is a drive or UNC path) Git Bash's `/c/x` becomes `C:/x`, a drive or UNC path stays, and any other POSIX
+ * path (`/tmp` is Git's own install folder there) is null, which asks. On any other host an absolute POSIX path stays.
+ */
+export function hostFolder(printed: string, sessionCwd: string): string | null {
+  if (!windowsPath(sessionCwd)) return printed.startsWith('/') ? printed : null
+  if (/^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]|\/\/[^/]+\/[^/])/.test(printed)) return printed
+  const drive = /^\/([a-z])(\/.*)?$/.exec(comparablePath(printed))
+  return drive ? `${(drive[1] ?? '').toUpperCase()}:${drive[2] ?? '/'}` : null
+}
+/** The default limit for each beacon-io, `claude plugin list` and collector call (ms); slower hosts raise it (GH#101). */
+export const PROCESS_TIMEOUT_MS = 3000
+/**
+ * The limit from `SO_HUD_TIMEOUT_MS`: whole milliseconds from 1000 to 60000, surrounding blanks ignored; anything else
+ * (unset, blank, a fraction, out of range) is the default. The 15-second refresh never overlaps itself, so 60 s is safe.
+ */
+export function processTimeoutMs(raw: string | null | undefined): number {
+  const text = (raw ?? '').trim()
+  const ms = /^\d{1,6}$/.test(text) ? Number(text) : Number.NaN
+  return ms >= 1000 && ms <= 60_000 ? ms : PROCESS_TIMEOUT_MS
+}
 export function validateBeacon(v: unknown): v is SoBeacon {
   if (!v || typeof v !== 'object') return false
   const b = v as SoBeacon

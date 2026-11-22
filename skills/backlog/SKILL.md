@@ -37,9 +37,20 @@ mkdir -p .orchestrator/tmp
 node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/backlog-refine.mjs" [--repo <path|group/name>] [--host <host>] --json --out .orchestrator/tmp/backlog-refine-report.json
 ```
 
-- Exit 2 means the tracker could not be read. Report the stderr reason and stop. Never substitute a hand count or a partial list.
+- Exit 2 means the checker could not read its inputs or write its report, or the fetched count disagrees with `X-Total`. Report the stderr reason and stop.
+- Read stderr on exit 0 for any list whose pagination completeness could not be measured.
 - Exit 1 is a usage error: fix the arguments and rerun.
 - Read the report file. Quote `population`, the `checks` table (`fired` / `of`, `noisy`, `unmeasured` where a row carries it, every `not-measured` with its `reason`) and `metrics` from it. Every number in your output comes from this file, never from memory.
+- Quote `taxonomy.source` when present. The checker reads the target rule with
+  `git show origin/main:.claude/rules/gitlab-labels.md`. <!-- path-check: example -->
+  Labels come from backticks in the second column of the first `Achse` table. The checker and
+  the Lead maintenance helper read the same rule on `origin/main` and use its `Typ` row. The
+  checker also accepts `Type` and reads backticked labels with surrounding text. The Lead helper
+  accepts only `Typ` and reports cells with surrounding text as ambiguous, as measured on
+  2026-11-19 using the fleet's only rule file. With no source, the checker uses the legacy type
+  heuristic and the Lead helper reports the axis as not measurable. The checker reports
+  `Typ-Achse nicht messbar` when the rule file is present and the type row is missing, empty or
+  ambiguous.
 
 ## Phase 3: Present
 

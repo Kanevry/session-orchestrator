@@ -44,6 +44,7 @@ When detection returns a worktree object AND `isWorktreeClean()` returns `true`,
 > **Authoritative impl:** import `detectAutoPromotedWorktree` + `isWorktreeClean` from `scripts/lib/session-end/worktree-cleanup.mjs`. All git invocation MUST go through the injection-safe arg-array form (`execFileSync('git', ['-C', dir, …])`, #577 HARDEN-001) — never the legacy `execSync(\`git -C ${var} …\`)` template-literal shell form.
 
 ```js
+import path from 'node:path';
 import { execFileSync } from '${PLUGIN_ROOT}/scripts/lib/native-command.mjs';
 import { detectAutoPromotedWorktree, isWorktreeClean } from '${PLUGIN_ROOT}/scripts/lib/session-end/worktree-cleanup.mjs';
 
@@ -57,9 +58,22 @@ if (!promoted) {
   const repoMainRoot = mainLine ? mainLine.slice('worktree '.length).trim() : null;
 
   if (isWorktreeClean(promoted.wtPath)) {
-    // Clean path: PRD §3 P3 Gherkin row 2 — auto-remove
-    console.warn(`session-end Phase 4a: auto-promoted worktree ${promoted.wtPath} is clean — removing via 'git worktree remove'`);
-    execFileSync('git', ['-C', repoMainRoot, 'worktree', 'remove', promoted.wtPath], { encoding: 'utf8' });
+    // Desk rule `tidy` (#2176), read fresh right before the effect. It only holds back:
+    // inaktiv/do → as today, tell → as today plus a notice line, anything stricter → keep.
+    const { readDeskFiles, tidyDecision, markRead, appendDeskNotice } = await import('${PLUGIN_ROOT}/scripts/lib/desk-rules.mjs');
+    const tidy = tidyDecision(readDeskFiles(), new Date());
+    markRead('so-session-end', tidy.value);
+    if (tidy.action === 'keep') {
+      // Say it in the close report: the worktree stays because of the desk rule.
+      console.warn(`session-end Phase 4a: desk rule tidy=${tidy.value} (presence ${tidy.wirksam ?? 'unknown'}) — worktree ${promoted.wtPath} left in place`);
+    } else {
+      // Clean path: PRD §3 P3 Gherkin row 2 — auto-remove
+      console.warn(`session-end Phase 4a: auto-promoted worktree ${promoted.wtPath} is clean — removing via 'git worktree remove'`);
+      execFileSync('git', ['-C', repoMainRoot, 'worktree', 'remove', promoted.wtPath], { encoding: 'utf8' });
+      if (tidy.notice) {
+        appendDeskNotice({ rule: 'tidy', wirksam: tidy.wirksam, session: sessionId, repo: path.basename(repoMainRoot), ref: promoted.branch ?? '', text: 'Removed a finished, clean work folder; its branch is kept.' });
+      }
+    }
   } else {
     // Dirty path: PRD §3 P3 Gherkin row 3 — AUQ before any destructive action
     // [AUQ block — see Dirty path subsection below]

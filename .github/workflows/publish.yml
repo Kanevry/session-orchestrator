@@ -4,12 +4,12 @@
 # release tag onto the snapshot commit; there is no manual dispatch. A failed
 # run is retried with "Re-run jobs".
 #
-# Two jobs:
+# Jobs:
 #   guard   — no environment, so it never asks for a review. Fails unless the
 #             ref is a tag equal to `v` + package.json version, then asks the
 #             registry whether that version exists: 200 → publish=false (the
 #             version is already on npm, e.g. released via `npm stage publish`
-#             or `--direct`; the run is a no-op and succeeds), 404 →
+#             or `--direct`; only the install check runs), 404 →
 #             publish=true, anything else → the job fails.
 #   publish — only when guard says publish=true. Bound to the environment
 #             `npm-publish`, which admits only `v*` tags (deployment policy)
@@ -20,6 +20,8 @@
 #             What stands in for the click: the tag rule, this guard, and the
 #             pre-push hook, which lets a `github` tag through only on a proven
 #             curated snapshot or a version-only probe on one.
+#   install-check — verifies the public npm package in a clean consumer after
+#             a successful publish or when the exact version already exists.
 #
 # `scripts/release.mjs --publish --trusted` hands the publish
 # to this workflow and verifies the result, provenance included, on the
@@ -170,3 +172,60 @@ jobs:
             echo "::error::version $version is neither X.Y.Z nor X.Y.Z-<id>.N with a lowercase <id> of two or more characters"
             exit 1
           fi
+
+  install-check:
+    name: Verify public npm install
+    needs: [guard, publish]
+    if: >-
+      ${{ !cancelled() && needs.guard.result == 'success' &&
+        (needs.publish.result == 'success' ||
+          (needs.publish.result == 'skipped' && needs.guard.outputs.publish == 'false')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Setup Node 24
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install the tagged version and exercise the shipped hook
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          consumer="$(mktemp -d "$RUNNER_TEMP/so-consumer.XXXXXX")"
+          cd "$consumer"
+          echo '{"name":"so-release-check","private":true}' > package.json
+          npm install --registry=https://registry.npmjs.org --cache "$consumer/.npm-cache" \
+            --ignore-scripts --no-audit --no-fund --save-exact "session-orchestrator@$version"
+          node - "$version" <<'NODE'
+          const assert = require('node:assert/strict');
+          const { spawnSync } = require('node:child_process');
+          const path = require('node:path');
+
+          const packageRoot = path.resolve('node_modules/session-orchestrator');
+          assert.equal(require(path.join(packageRoot, 'package.json')).version, process.argv[2]);
+
+          // Send a policy test case through stdin. The shell command is never run.
+          const hook = spawnSync(process.execPath, [path.join(packageRoot, 'hooks/pre-bash-destructive-guard.mjs')], {
+            encoding: 'utf8',
+            input: JSON.stringify({
+              session_id: 'release-check',
+              tool_name: 'Bash',
+              tool_input: { command: 'rm -rf /' },
+              cwd: process.cwd(),
+              hook_event_name: 'PreToolUse',
+            }),
+            env: { ...process.env, CLAUDE_PLUGIN_ROOT: packageRoot, CLAUDE_PROJECT_DIR: process.cwd() },
+          });
+          assert.ifError(hook.error);
+          assert.equal(hook.status, 0, hook.stderr);
+          assert.equal(JSON.parse(hook.stdout).hookSpecificOutput.permissionDecision, 'deny');
+          NODE
+          {
+            echo '## Public npm install passed'
+            echo "- [session-orchestrator@$version](https://www.npmjs.com/package/session-orchestrator/v/$version)"
+            echo "- $(node --version) on $RUNNER_OS, checked at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            echo '- Installed with lifecycle scripts disabled and verified the shipped Bash guard rejects the destructive test input.'
+          } >> "$GITHUB_STEP_SUMMARY"

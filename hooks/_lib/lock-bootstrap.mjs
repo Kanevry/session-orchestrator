@@ -27,8 +27,8 @@
  *
  * scripts/lib/session-lock.mjs `buildLock()` has written `last_heartbeat`
  * itself since Epic #583 W2-I3 (`last_heartbeat` = `started_at` at genesis).
- * This helper's tmp+rename overlay therefore re-writes an identical
- * `last_heartbeat`, and its remaining job is `semantic_session_id`, which
+ * This helper's guarded overlay preserves the latest `last_heartbeat`, and
+ * its remaining job is `semantic_session_id`, which
  * `acquire()` / `forceAcquire()` are not given here.
  *
  * @module hooks/_lib/lock-bootstrap
@@ -238,6 +238,16 @@ async function isSameClaudeProcess(lock, claudePid) {
 /** Re-reads of a just-acquired lock that answers ENOENT, and the pause between them (#1494). */
 const ENRICH_READ_RETRIES = 5;
 const ENRICH_READ_RETRY_MS = 10;
+
+/** Fixed diagnostic: never interpolate a path or untrusted mutex body. */
+function warnBusyMutation() {
+  process.stderr.write('⚠ lock-bootstrap: session.lock.write remains busy — this session runs without a lock\n');
+}
+
+/** The primary lock is already held when only its enrichment stays busy. */
+function warnBusyEnrichment() {
+  process.stderr.write('⚠ lock-bootstrap: session.lock.write remains busy; lock held with its ownership proof, but not enriched (semantic_session_id, claude_pid)\n');
+}
 
 /**
  * Bootstrap the session.lock for this hook invocation.
@@ -518,9 +528,12 @@ export async function bootstrapLock({
       // that both saw it used to force it, both got ok:true, and the later
       // rename won. With onlyIfNotLive the loser gets the winner's live lock
       // back as 'active' and bails into the conflict signal below. The same-
-      // session refresh of a LIVE lock keeps the unconditional overwrite.
+      // session refresh of a LIVE lock is conditional on the exact owner
+      // generation observed before the async predecessor check (#2073).
       const reclaim = forcedFrom === 'stale-heartbeat' || forcedFrom === 'corrupt';
-      acquireResult = forceAcquireFn({ sessionId, mode, ttlHours, repoRoot, ...(reclaim ? { onlyIfNotLive: true } : {}) });
+      acquireResult = forceAcquireFn({ sessionId, mode, ttlHours, repoRoot,
+        ...(reclaim ? { onlyIfNotLive: true } : { expectedLock: acquireResult.existingLock }),
+      });
     } catch {
       return null;
     }
@@ -555,6 +568,7 @@ export async function bootstrapLock({
   // failure is swallowed and the bail proceeds. The return contract is unchanged —
   // bootstrapLock STILL returns null on this path.
   if (!acquireResult || acquireResult.ok !== true) {
+    if (acquireResult?.reason === 'busy') warnBusyMutation();
     // #1494 / #599: a lock path that exists but cannot be read (EACCES, or a
     // directory) is never reclaimed — but it is no longer silent either. The
     // WARN is discarded by the harness, so the read_anomaly event (the one
@@ -582,103 +596,32 @@ export async function bootstrapLock({
     return null;
   }
 
-  // Step 2: enrich the lock with v2 fields (last_heartbeat + semantic_session_id).
-  // We re-read the file fresh (acquire() just wrote it) and overlay the new
-  // fields, then atomically tmp+rename. acquire() already writes
-  // last_heartbeat (Epic #583 W2-I3), so that half of the overlay re-writes an
-  // identical value; semantic_session_id is the half that adds information.
-  const lockFile = path.join(repoRoot, '.orchestrator', 'session.lock');
-  let raw;
-  // ENOENT right after ok:true is most likely a racer holding OUR fresh lock in
-  // its tombstone: a second start that saw the same stale lock renames it
-  // aside, finds it live and links it back within microseconds
-  // (session-lock.mjs reclaimIfNotLive). Reading once and giving up left the
-  // lock ours but without semantic_session_id, owner proof and lock.acquired
-  // (#1494 review: two racers are enough). Bounded: 5 retries × 10 ms, so a lock
-  // that is really gone costs this hook at most ~50 ms. Measured 2026-10-02
-  // (2000 live-restore reclaims, load average ~9): the racer's rename→link-back
-  // window was p50 0.34 ms, p99 2.4 ms, max 31.7 ms. Ceiling (BV-004): a window
-  // longer than ~50 ms still ends in the lockless-enrichment null above;
-  // revisit if lock.acquired goes missing for sessions that own the lock.
-  for (let attempt = 0; raw === undefined; attempt += 1) {
-    try {
-      raw = fs.readFileSync(lockFile, 'utf8');
-    } catch (err) {
-      if (err?.code !== 'ENOENT' || attempt >= ENRICH_READ_RETRIES) return null;
+  // Step 2: the fresh owner read, enrichment write and ownership proof share
+  // the primary mutation mutex with acquire/heartbeat/takeover/release (#2073).
+  // A busy writer or a legacy reclaimer's short empty-path window is retried
+  // within the existing ~50ms bootstrap budget; an observed foreign owner is
+  // final and can never be enriched with our identity.
+  let enrichment;
+  try {
+    const { enrichOwnedSessionLock } = await import('../../scripts/lib/session-lock.mjs');
+    for (let attempt = 0; ; attempt += 1) {
+      enrichment = enrichOwnedSessionLock({ repoRoot, sessionId, semanticSessionId, claudePid });
+      if (enrichment.ok) break;
+      if (!['busy', 'no-lock'].includes(enrichment.reason) || attempt >= ENRICH_READ_RETRIES) {
+        if (enrichment.reason === 'busy') warnBusyEnrichment();
+        return null;
+      }
       await new Promise((resolve) => setTimeout(resolve, ENRICH_READ_RETRY_MS));
     }
-  }
-  let baseLock;
-  try {
-    baseLock = JSON.parse(raw);
-    if (typeof baseLock !== 'object' || baseLock === null) return null;
   } catch {
     return null;
   }
-  // The file can belong to another session by now. The reclaim above is
-  // single-winner since #1494 (tombstone rename + link-create in
-  // forceAcquire's onlyIfNotLive), but a plain forceAcquire — the same-session
-  // refresh, an operator's Phase-1.2 force-take — still overwrites
-  // unconditionally, and a link-back that loses to a third writer drops the
-  // lock it was restoring (session-lock.mjs reclaimIfNotLive, ceiling 2).
-  // Enriching a foreign lock would stamp OUR label onto ITS record and write
-  // an owner proof that verifies against it, so it is left as is.
-  if (baseLock.session_id !== sessionId) return null;
-
-  const startedAt = typeof baseLock.started_at === 'string'
-    ? baseLock.started_at
-    : new Date().toISOString();
-
-  const enriched = {
-    ...baseLock,
-    // last_heartbeat is the basis for liveness — set to started_at on bootstrap
-    // so an immediate liveness check (< ttl_hours from now) succeeds.
-    last_heartbeat: startedAt,
-    // semantic_session_id is an attribution/history label, normally semantic
-    // even when the physical session_id is a UUID-v4. Fall back to mirroring
-    // session_id only for backward-compatible display when no label was provided;
-    // it never changes the raw ownership key.
-    semantic_session_id:
-      typeof semanticSessionId === 'string' && semanticSessionId.length > 0
-        ? semanticSessionId
-        : (typeof baseLock.session_id === 'string' ? baseLock.session_id : sessionId),
-    // #1641: the process-bound witness a later /clear in this same process
-    // recognises its predecessor by (isSameClaudeProcess). Absent, not null,
-    // when the harness sets no CLAUDE_PID.
-    ...(typeof claudePid === 'number' ? { claude_pid: claudePid } : {}),
-  };
-
-  {
-    const w = writeJsonAtomicSync(lockFile, enriched, { tmpPrefix: '.session.lock.boot.tmp' });
-    if (!w.ok) {
-      // Failed to overwrite — base lock is still on disk, so we degrade
-      // gracefully. Return null so the caller logs no spurious success.
-      return null;
-    }
+  const enriched = enrichment.lock;
+  if (enrichment.ownerProof && !enrichment.ownerProof.ok) {
+    process.stderr.write(
+      `⚠ lock-bootstrap: owner-proof write failed (${enrichment.ownerProof.reason ?? 'unknown'}) — /close degrades to proof-less release behaviour\n`,
+    );
   }
-
-  // Step 2b (#987 Part 1): persist the durable ownership proof at lock
-  // genesis. `enriched` is byte-identical to the on-disk lock at this point
-  // (the v2 overlay never touches pid/host/started_at), so the proof written
-  // here will verify via isLockOwnedByProof() against any later re-read. The
-  // proof is supplementary evidence only: it never bridges a raw-id mismatch
-  // through semantic_session_id or STATE.md `session` equality.
-  // This single call covers BOTH the plain-acquire and the forceAcquire
-  // branch — both flow through the enriched write above. Best-effort like
-  // the surrounding breadcrumb writes: writeOwnerProof() is no-throw by
-  // contract and a failure never bails the bootstrap — but it is no longer
-  // SILENT (#987 Part 2 review finding): a failed proof write means this
-  // session's /close will degrade to the weaker proof-less release path, so
-  // a one-line stderr WARN gives the operator the only signal there is.
-  try {
-    const { writeOwnerProof } = await import('../../scripts/lib/session-lock.mjs');
-    const proofResult = writeOwnerProof({ repoRoot, lock: enriched });
-    if (proofResult && !proofResult.ok) {
-      process.stderr.write(
-        `⚠ lock-bootstrap: owner-proof write failed (${proofResult.reason ?? 'unknown'}) — /close degrades to proof-less release behaviour\n`,
-      );
-    }
-  } catch { /* best-effort — a missing proof never breaks session-start */ }
 
   // Step 3: best-effort observability breadcrumb.
   // #1636 Pkt 2: a live peer that works here while its lock sits in another

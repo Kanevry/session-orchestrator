@@ -6,28 +6,29 @@
  *   - {@link compareFingerprints} is PURE — two arrays in, three arrays out. It
  *     is the whole classification rule and needs no filesystem to be tested.
  *   - {@link compareRuns} is the thin I/O wrapper: it loads the current run's
- *     findings, locates the baseline run via `run-record.mjs`, applies the pure
- *     function, subtracts the UNMEASURED set, and patches the run-record's
+ *     findings, recovers the baseline findings across measurement gaps, applies
+ *     the pure function, subtracts the UNMEASURED set, and patches the run-record's
  *     `compare` counts.
  *
- * Imports `./run-record.mjs` only (which is itself fs + `./paths.mjs` +
- * `./schema.mjs`). No shell-out, no network.
+ * Imports `./run-record.mjs` and `./schema.mjs`. No shell-out, no network.
  *
  * THE TWO WAYS A `fixed` CLASSIFICATION LIES, both surfaced rather than hidden:
  *
- *   1. A rule left the RUBRIC. If the baseline ran under a different
+ *   1. A rule left the RUBRIC. If any run contributing to the baseline used a different
  *      `rubric_hash`, a fingerprint that disappeared may no longer be
  *      checked for. `compareRuns` still compares (refusing to compare would
  *      lose the persisting set too) but returns `rubricChanged: true`, and the
  *      `fixed` array then carries FIXED-OR-RUBRIC-CHANGED semantics — a fact
  *      for the caller to render, never a filter applied here.
  *
- *   2. A measurement never RAN. A route whose `open` failed, a viewport whose
+ *   2. A measurement was INCOMPLETE. A route whose `open` failed, a viewport whose
  *      `set device` did not take, one `eval` that threw — every such step is a
  *      `skipped[]` entry in the run record precisely because zero findings for
  *      a check that never ran is indistinguishable from a clean check
  *      (`schema.mjs` § SKIP_REASONS). Previous findings under a skipped scope
  *      are therefore removed from `fixed` and returned as `unmeasured`.
+ *      A capped target-size scan leaves only that check's missing findings
+ *      unmeasured on the affected route and viewport.
  *
  * Exports:
  *   compareFingerprints(previousFindings, currentFindings)
@@ -35,11 +36,13 @@
  */
 
 import {
-  findPreviousRun,
   readFindings,
   readRunRecords,
   updateRunRecordCompare,
 } from './run-record.mjs';
+import { CHECK_IDS, LOCATOR_MAX_LENGTH } from './schema.mjs';
+
+const TARGET_SIZE_CAP_MARKER = 'eval:target-size:truncated';
 
 /** Sort findings by fingerprint so every consumer sees one deterministic order. */
 function byFingerprint(findings) {
@@ -104,86 +107,102 @@ export function compareFingerprints(previousFindings, currentFindings) {
   return { new: byFingerprint(fresh), persisting: byFingerprint(persisting), fixed: byFingerprint(fixed) };
 }
 
-/**
- * Parse ONE `skipped[].what` into the locator scope it invalidates.
- *
- * `collect.mjs` emits exactly five `what` shapes (measured 2026-09-12 against
- * `scripts/lib/ux-grill/collect.mjs` — `skipEntry(` call sites at :745, :748,
- * :765, :774, :991):
- *
- *   `viewport:<vp>`                    device-mismatch  → the whole viewport
- *   `viewport:<vp>|eval:viewport-width` measure-failed  → the whole viewport
- *   `route:<path>|<vp>`                route-unreachable→ that route × viewport
- *   `<path>|<vp>|<call>`               measure-failed   → that route × viewport
- *   `journey:<name>`                   route-unreachable→ that journey, all viewports
- *
- * The last shape carries no viewport, so it invalidates the journey on EVERY
- * viewport — widening rather than guessing, because the cost of a
- * false `unmeasured` is a finding reported as still-open, while the cost of a
- * missed one is an outage reported as `fixed`.
- *
- * @param {string} what
- * @returns {{kind: 'viewport', viewport: string}
- *   | {kind: 'route', route: string, viewport: string|null}
- *   | {kind: 'journey', name: string}
- *   | null} `null` for an unrecognised shape (it invalidates nothing)
- */
-function skipScope(what) {
-  if (typeof what !== 'string' || what.length === 0) return null;
-  const segments = what.split('|');
-  const head = segments[0];
-  if (head.startsWith('viewport:')) {
-    const viewport = head.slice('viewport:'.length);
-    return viewport.length > 0 ? { kind: 'viewport', viewport } : null;
-  }
-  if (head.startsWith('route:')) {
-    const route = head.slice('route:'.length);
-    return route.length > 0 ? { kind: 'route', route, viewport: segments[1] ?? null } : null;
-  }
-  if (head.startsWith('journey:')) {
-    const name = head.slice('journey:'.length);
-    return name.length > 0 ? { kind: 'journey', name } : null;
-  }
-  // Bare `<route>|<viewport>|<call>` — the measure-failed shape.
-  if (segments.length >= 2 && head.length > 0) {
-    return { kind: 'route', route: head, viewport: segments[1] };
-  }
-  return null;
+/** Split the name from the viewport immediately before a known suffix. */
+function legacyPair(kind, text) {
+  const separator = text.lastIndexOf('|');
+  if (separator < 0) return { kind, name: text, viewport: null };
+  return { kind, name: text.slice(0, separator), viewport: text.slice(separator + 1) };
 }
 
-/**
- * Build a predicate over finding LOCATORS from a run's `skipped[]`.
- *
- * Finding locators are `route|viewport|selector` or `journey|viewport|<name>`
- * (`schema.mjs` § makeFinding).
- *
- * @param {Array<{what: string, reason: string}>} skipped
- * @returns {(locator: string) => boolean} true when the locator sits under a
- *   scope this run did not measure
- */
-function unmeasuredMatcher(skipped) {
-  const scopes = [];
-  for (const entry of Array.isArray(skipped) ? skipped : []) {
-    const scope = skipScope(entry?.what);
-    if (scope) scopes.push(scope);
+/** Recover scopes from ledger entries written before `skipped[].scope`. */
+function legacySkipScope(what) {
+  if (typeof what !== 'string' || what.length === 0) return null;
+  if (what.startsWith('viewport:')) {
+    return { kind: 'viewport', viewport: what.slice('viewport:'.length).replace(/\|eval:viewport-width$/, '') };
   }
-  if (scopes.length === 0) return () => false;
-  return (locator) => {
-    if (typeof locator !== 'string') return false;
-    const segments = locator.split('|');
-    for (const scope of scopes) {
-      if (scope.kind === 'viewport' && segments[1] === scope.viewport) return true;
-      if (
-        scope.kind === 'route' &&
-        segments[0] === scope.route &&
-        (scope.viewport === null || segments[1] === scope.viewport)
-      ) {
-        return true;
+  if (what.startsWith('route:')) return legacyPair('route', what.slice('route:'.length));
+  if (what.startsWith('journey:')) {
+    const text = what.slice('journey:'.length);
+    const step = /\|step \d+ \([^)]+\): agent-browser [^|]*$/.exec(text);
+    // Start and readiness skips in older runs did not record a viewport.
+    return step
+      ? legacyPair('journey', text.slice(0, step.index))
+      : { kind: 'journey', name: text, viewport: null };
+  }
+  const call = /\|(?:get:title|a11y|eval:target-size(?::truncated)?|eval:overflow|errors|wait)$/.exec(what);
+  return call ? legacyPair('route', what.slice(0, call.index)) : null;
+}
+
+function locatorPart(value) {
+  return value.replace(/[\n\r\0]/g, ' ');
+}
+
+function isTargetSizeFinding(finding) {
+  return finding.checkId === CHECK_IDS.TARGET_SIZE_FLOOR || finding.checkId === CHECK_IDS.TARGET_SIZE_TARGET;
+}
+
+/** Build a predicate over findings from a run's skips and target-size scan evidence. */
+function unmeasuredMatcher(skipped, currentFindings) {
+  const scopes = [];
+  const truncatedTargetPrefixes = new Set();
+  for (const entry of Array.isArray(skipped) ? skipped : []) {
+    const scope = entry?.scope ?? legacySkipScope(entry?.what);
+    if (!scope) continue;
+    const { kind, name, viewport } = scope;
+    const vp = typeof viewport === 'string' ? locatorPart(viewport) : null;
+    if (kind === 'viewport') {
+      scopes.push(({ locator }) => viewportInLocator(locator) === vp);
+    } else if (kind === 'route' && typeof name === 'string') {
+      const prefix = (vp === null ? `${locatorPart(name)}|` : `${locatorPart(name)}|${vp}|`).slice(0, LOCATOR_MAX_LENGTH);
+      if (typeof entry.what === 'string' && entry.what.endsWith(`|${TARGET_SIZE_CAP_MARKER}`)) {
+        truncatedTargetPrefixes.add(prefix);
+      } else {
+        scopes.push(({ locator }) => locator.startsWith(prefix));
       }
-      if (scope.kind === 'journey' && segments[0] === 'journey' && segments[2] === scope.name) return true;
+    } else if (kind === 'journey' && typeof name === 'string') {
+      const journeyName = locatorPart(name);
+      if (vp === null) {
+        scopes.push(({ locator }) => {
+          if (!locator.startsWith('journey|')) return false;
+          const separator = locator.indexOf('|', 'journey|'.length);
+          return separator >= 0 && locator.slice(separator + 1) === journeyName.slice(0, LOCATOR_MAX_LENGTH - separator - 1);
+        });
+      } else {
+        const expected = `journey|${vp}|${journeyName}`.slice(0, LOCATOR_MAX_LENGTH);
+        scopes.push(({ locator }) => locator === expected);
+      }
     }
-    return false;
+  }
+  // Older runs recorded the cap only in the evidence of returned findings.
+  for (const finding of currentFindings) {
+    if (finding.evidence?.truncated === true && isTargetSizeFinding(finding) && typeof finding.locator === 'string') {
+      if (!hasPrefix(finding.locator, truncatedTargetPrefixes)) {
+        const scopePrefix = /^(?:[^|]*\|){2}/.exec(finding.locator)?.[0] ?? finding.locator;
+        truncatedTargetPrefixes.add(scopePrefix);
+      }
+    }
+  }
+  if (scopes.length === 0 && truncatedTargetPrefixes.size === 0) return null;
+  return (finding) => {
+    const locator = finding?.locator;
+    if (typeof locator !== 'string') return false;
+    if (isTargetSizeFinding(finding) && hasPrefix(locator, truncatedTargetPrefixes)) return true;
+    return scopes.some((matches) => matches(finding));
   };
+}
+
+function hasPrefix(locator, prefixes) {
+  // Long stored locators can end before the viewport or its separator.
+  for (const prefix of prefixes) {
+    if (locator.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+function viewportInLocator(locator) {
+  const start = locator.indexOf('|');
+  const end = locator.indexOf('|', start + 1);
+  return start >= 0 && end >= 0 ? locator.slice(start + 1, end) : null;
 }
 
 /**
@@ -197,7 +216,7 @@ function unmeasuredMatcher(skipped) {
  * @param {string} [opts.build] - `'dev'`/`'prod'`; read from the record when omitted
  * @param {string} [opts.rubricHash] - this run's rubric hash; read from the record
  *   when omitted. Drives `rubricChanged` only — never the baseline selection.
- * @param {Array<{what: string, reason: string}>} [opts.skipped] - this run's
+ * @param {Array<{what: string, reason: string, scope?: object}>} [opts.skipped] - this run's
  *   skips; read from the record when omitted
  * @returns {{
  *   runId: string, previousRunId: string|null, baseline: boolean, rubricChanged: boolean,
@@ -206,7 +225,7 @@ function unmeasuredMatcher(skipped) {
  *   recordUpdated: number, skippedLines: {current: number, previous: number, ledger: number}
  * }} `fixed` carries FIXED-OR-RUBRIC-CHANGED semantics whenever
  *   `rubricChanged` is true (see module header). `unmeasured` carries previous
- *   findings whose route/viewport/journey this run did not measure — they are
+ *   findings whose scope this run did not fully measure — they are
  *   NOT in `fixed` and NOT in `persisting`.
  * @throws {TypeError} when `manifestHash`/`build` can be resolved from neither
  *   the arguments nor the ledger — comparing without a compare key would silently
@@ -221,7 +240,8 @@ export function compareRuns({ repoRoot, runId, manifestHash, build, rubricHash, 
   }
 
   const { records, skippedLines: ledgerSkippedLines } = readRunRecords(repoRoot, { limit: Infinity });
-  const currentRecord = records.find((record) => record.run_id === runId) ?? null;
+  const currentIndex = records.findIndex((record) => record.run_id === runId);
+  const currentRecord = records[currentIndex];
 
   const effectiveManifestHash = manifestHash ?? currentRecord?.manifest_hash;
   const effectiveBuild = build ?? currentRecord?.build;
@@ -235,28 +255,43 @@ export function compareRuns({ repoRoot, runId, manifestHash, build, rubricHash, 
   }
 
   const currentRead = readFindings(repoRoot, runId);
-  const previousRecord = findPreviousRun(repoRoot, {
-    manifestHash: effectiveManifestHash,
-    build: effectiveBuild,
-    beforeRunId: runId,
-  });
-
-  let result;
-  let previousRead = { findings: [], skippedLines: 0 };
-  if (previousRecord === null) {
-    // Baseline run: everything measured is new by definition. Not "clean" —
-    // a first run with 40 findings has 40 new ones.
-    result = { new: byFingerprint(currentRead.findings), persisting: [], fixed: [] };
-  } else {
-    previousRead = readFindings(repoRoot, previousRecord.run_id);
-    result = compareFingerprints(previousRead.findings, currentRead.findings);
+  const previousFindings = new Map();
+  const baselineRubricHashes = new Set();
+  const gaps = [];
+  let previousRecord = null;
+  let previousSkippedLines = 0;
+  const end = currentIndex < 0 ? records.length : currentIndex;
+  // A finding from an older run is still a baseline candidate only if every
+  // intervening matching run left its scope unmeasured. A clean run closes
+  // all gaps and lets us stop reading older files.
+  for (let index = end - 1; index >= 0; index -= 1) {
+    const record = records[index];
+    if (record.manifest_hash !== effectiveManifestHash || record.build !== effectiveBuild) continue;
+    if (previousRecord === null) {
+      previousRecord = record;
+      baselineRubricHashes.add(record.rubric_hash);
+    }
+    const previousRead = readFindings(repoRoot, record.run_id);
+    previousSkippedLines += previousRead.skippedLines;
+    for (const [fingerprint, finding] of indexByFingerprint(previousRead.findings)) {
+      if (!previousFindings.has(fingerprint) && gaps.every((isGap) => isGap(finding))) {
+        previousFindings.set(fingerprint, finding);
+        baselineRubricHashes.add(record.rubric_hash);
+      }
+    }
+    const isGap = unmeasuredMatcher(record.skipped, previousRead.findings);
+    if (!isGap) break;
+    gaps.push(isGap);
   }
-
-  const isUnmeasured = unmeasuredMatcher(effectiveSkipped);
+  // A first run reports every measured finding as new.
+  const result = previousRecord === null
+    ? { new: byFingerprint(currentRead.findings), persisting: [], fixed: [] }
+    : compareFingerprints([...previousFindings.values()], currentRead.findings);
+  const isUnmeasured = unmeasuredMatcher(effectiveSkipped, currentRead.findings);
   const unmeasured = [];
   const fixed = [];
   for (const finding of result.fixed) {
-    (isUnmeasured(finding?.locator) ? unmeasured : fixed).push(finding);
+    (isUnmeasured?.(finding) ? unmeasured : fixed).push(finding);
   }
 
   const counts = { new: result.new.length, persisting: result.persisting.length, fixed: fixed.length };
@@ -267,9 +302,8 @@ export function compareRuns({ repoRoot, runId, manifestHash, build, rubricHash, 
     previousRunId: previousRecord?.run_id ?? null,
     baseline: previousRecord === null,
     rubricChanged:
-      previousRecord !== null &&
       effectiveRubricHash !== null &&
-      previousRecord.rubric_hash !== effectiveRubricHash,
+      [...baselineRubricHashes].some((hash) => hash !== effectiveRubricHash),
     new: result.new,
     persisting: result.persisting,
     fixed,
@@ -278,7 +312,7 @@ export function compareRuns({ repoRoot, runId, manifestHash, build, rubricHash, 
     recordUpdated: updated,
     skippedLines: {
       current: currentRead.skippedLines,
-      previous: previousRead.skippedLines,
+      previous: previousSkippedLines,
       ledger: ledgerSkippedLines,
     },
   };

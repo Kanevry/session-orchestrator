@@ -673,7 +673,6 @@ async function isVaultRepairRoot(root) {
   let vault;
   try {
     const { resolveVaultDir, readConfigFile } = await import('../scripts/lib/config.mjs');
-    const { loadHostPaths } = await import('../scripts/lib/config/host-paths.mjs');
     const { _parseVaultIntegration } = await import('../scripts/lib/config/vault-integration.mjs');
     const { expandTilde } = await import('../scripts/lib/common.mjs');
     let resolved;
@@ -683,16 +682,16 @@ async function isVaultRepairRoot(root) {
     } else {
       const { loadOwnerConfig, validateOwnerSections } = await import('../scripts/lib/owner-yaml.mjs');
       const owner = loadOwnerConfig();
-      const host = loadHostPaths({ownerLoader: () => owner});
-      if (!host.source || host.reason || !validateOwnerSections(host.ownerConfig).sections['vault-dirs'].valid) {
+      const host = { env: process.env, ownerConfig: owner.config };
+      if (!owner.source || owner.reason || !validateOwnerSections(host.ownerConfig).sections['vault-dirs'].valid) {
         throw new Error('Vault owner resolution unavailable');
       }
       resolved = resolveVaultDir(null, host);
-      if (resolved.source !== 'match' && host.droppedSections?.some(({ section }) => section === 'paths')) {
+      if (resolved.source !== 'match' && owner.droppedSections?.some(({ section }) => section === 'paths')) {
         throw new Error('Vault owner paths unavailable');
       }
       if (resolved.source === 'committed') {
-        if (host.source === 'defaults' && owner.errors?.length) throw new Error('Vault owner defaults are not measurable');
+        if (owner.source === 'defaults' && owner.errors?.length) throw new Error('Vault owner defaults are not measurable');
         const committed = _parseVaultIntegration(await readConfigFile(root))['vault-dir'];
         resolved = resolveVaultDir(committed, host);
       }

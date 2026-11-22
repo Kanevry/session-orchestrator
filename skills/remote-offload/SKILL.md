@@ -4,7 +4,7 @@ user-invocable: false
 tags: [reference, remote, offload, wave-executor, resource-gate]
 model: haiku
 model-preference: sonnet
-model-preference-codex: gpt-5.4-mini
+model-preference-codex: gpt-6.2-sol
 model-preference-cursor: claude-sonnet-4-6
 description: Use when local resource pressure would shrink or coordinator-direct a wave, a wave plan carries heavy build/test/audit roles (test, ui, perf), or the operator says offload, remote host, or auslagern — reference for routing that wave role to a declared SSH-reachable host instead of reducing agent count
 ---
@@ -24,7 +24,7 @@ Repo-side half of #1160: `remote-hosts:` declares hosts, `wave-resource-gate.mjs
 | Implementation + patch | `offload claude <repo> -H <alias> --write --patch <path> < prompt.txt` |
 | Remove finished jobs | `offload clean -H <alias> --older-than <hours>` |
 
-Exit codes (`offload --help`, measured 2026-09-02): `0` ok · `1` usage/config · `2` host unreachable/not ready · `3` remote command failed · `4` sync failed · `5` timeout · `6` empty diff on a `--write` run · `7` account quota exhausted (429) · `8` write lock held. Same map as `OFFLOAD_EXIT_REASONS` in `scripts/lib/wave-executor/remote-dispatch.mjs`.
+Exit codes (`offload --help`, measured 2026-09-02): `0` ok · `1` usage/config · `2` host unreachable/not ready · `3` remote command failed · `4` sync failed · `5` timeout · `6` empty diff on a `--write` run · `7` account quota exhausted (429) · `8` write lock held · `10` admission refused (only with the stderr line `offload: admission=refused` as the last admission verdict; offload >= 1.8.0 first waits up to `RO_ADMISSION_WAIT`, default 600 s, for a slot). Same map as `OFFLOAD_EXIT_REASONS` in `scripts/lib/wave-executor/remote-dispatch.mjs`.
 
 ## 1. Decision rule — offload vs reduce
 

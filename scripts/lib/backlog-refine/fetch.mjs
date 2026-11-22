@@ -10,7 +10,12 @@ import { statSync } from 'node:fs';
 import path from 'node:path';
 
 import { spawnSync } from '../native-command.mjs';
-import { detectVcsFamily, redactUrlCredentials, resolveGitlabProjectTarget } from '../vcs-repo-spec.mjs';
+import { dotGitAncestor } from '../platform.mjs';
+import {
+  detectVcsFamily,
+  redactUrlCredentials,
+  resolveGitlabProjectTarget,
+} from '../vcs-repo-spec.mjs';
 
 /** Per-call timeout for one `glab api` request. */
 export const DEFAULT_TIMEOUT_MS = 30000;
@@ -27,11 +32,12 @@ const PROJECT_PATH_RE = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/;
 const HOST_RE = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?$/;
 
 /**
- * @typedef {{ iid: number, title: string, description: string, labels: string[],
+ * @typedef {{ iid: number, project_id: number, title: string, description: string, labels: string[],
  *   state: string, created_at: string|null, updated_at: string|null, closed_at: string|null,
  *   web_url: string|null, milestone: string|null, tasks: { count: number, completed: number },
  *   merge_requests_count: number }} NormalizedIssue
- * @typedef {{ ok: true, vcs: 'gitlab', host: string, projectPath: string, cwd: string }} Target
+ * @typedef {{ ok: true, vcs: 'gitlab', host: string, projectPath: string, cwd: string, checkoutRoot?: string }} Target
+ * @typedef {{ iid: number, state: string, title?: string, project_id?: number }} RelatedMr
  * @typedef {(bin: string, args: string[], opts: { cwd: string, timeout: number }) =>
  *   { status: number|null, stdout?: string, stderr?: string, signal?: string|null, error?: { code?: string } }} Run
  */
@@ -59,15 +65,23 @@ function nonNegInt(v) {
  */
 export function normalizeIssue(raw) {
   const r = raw && typeof raw === 'object' ? raw : {};
-  const tcs = r.task_completion_status && typeof r.task_completion_status === 'object' ? r.task_completion_status : {};
+  const tcs =
+    r.task_completion_status && typeof r.task_completion_status === 'object'
+      ? r.task_completion_status
+      : {};
   const labels = Array.isArray(r.labels)
-    ? r.labels.map((l) => (l && typeof l === 'object' ? l.name : l)).filter((l) => typeof l === 'string')
+    ? r.labels
+        .map((l) => (l && typeof l === 'object' ? l.name : l))
+        .filter((l) => typeof l === 'string')
     : [];
   const milestone =
-    r.milestone && typeof r.milestone === 'object' && typeof r.milestone.title === 'string' ? r.milestone.title : null;
+    r.milestone && typeof r.milestone === 'object' && typeof r.milestone.title === 'string'
+      ? r.milestone.title
+      : null;
   const str = (v) => (typeof v === 'string' ? v : null);
   return {
     iid: r.iid,
+    project_id: nonNegInt(r.project_id),
     title: typeof r.title === 'string' ? r.title : '',
     description: typeof r.description === 'string' ? r.description : '',
     labels,
@@ -80,6 +94,12 @@ export function normalizeIssue(raw) {
     tasks: { count: nonNegInt(tcs.count), completed: nonNegInt(tcs.completed_count) },
     merge_requests_count: nonNegInt(r.merge_requests_count),
   };
+}
+
+/** @param {Target} target */
+function withCheckoutRoot(target) {
+  const checkoutRoot = dotGitAncestor(target.cwd);
+  return checkoutRoot ? { ...target, checkoutRoot } : target;
 }
 
 /**
@@ -99,7 +119,13 @@ function resolveCheckout(dir, gitRun, preferVcs = null) {
   if (family.vcs === 'github') return { ok: false, reason: 'github-not-supported' };
   const gl = resolveGitlabProjectTarget(opts);
   if (!gl) return { ok: false, reason: 'no-gitlab-remote' };
-  return { ok: true, vcs: 'gitlab', host: gl.host, projectPath: decodeURIComponent(gl.encodedProjectPath), cwd: dir };
+  return {
+    ok: true,
+    vcs: 'gitlab',
+    host: gl.host,
+    projectPath: decodeURIComponent(gl.encodedProjectPath),
+    cwd: dir,
+  };
 }
 
 /** @param {string} p */
@@ -134,26 +160,35 @@ export function targetDirectory({ repo, cwd = process.cwd() } = {}) {
  *   `preferVcs`: the configured `vcs:` of the checkout {@link targetDirectory} names
  * @returns {Target|{ ok: false, reason: string }}
  */
-export function resolveTarget({ repo: rawRepo, host: rawHost, cwd = process.cwd(), gitRun, preferVcs = null } = {}) {
+export function resolveTarget({
+  repo: rawRepo,
+  host: rawHost,
+  cwd = process.cwd(),
+  gitRun,
+  preferVcs = null,
+} = {}) {
   const repo = rawRepo ?? null;
-  const host = rawHost ?? null;
+  let host = rawHost ?? null;
   if (host !== null) {
-    if (typeof host !== 'string' || !HOST_RE.test(host)) return { ok: false, reason: 'invalid-host' };
-    if (/(^|\.)github\.com(:\d+)?$/i.test(host)) return { ok: false, reason: 'github-not-supported' };
+    if (typeof host !== 'string' || !HOST_RE.test(host))
+      return { ok: false, reason: 'invalid-host' };
+    if (/(^|\.)github\.com(:\d+)?$/i.test(host))
+      return { ok: false, reason: 'github-not-supported' };
+    host = host.toLowerCase();
   }
 
   if (repo === null || repo === '') {
     const t = resolveCheckout(cwd, gitRun, preferVcs);
-    if (t.ok && host !== null && host.toLowerCase() !== t.host) return { ...t, host: host.toLowerCase() };
-    return t;
+    if (!t.ok) return t;
+    return host !== null && host !== t.host.toLowerCase() ? { ...t, host } : withCheckoutRoot(t);
   }
   if (typeof repo !== 'string') return { ok: false, reason: 'invalid-repo' };
 
   const asDir = path.resolve(cwd, repo);
   if (isDirectory(asDir)) {
     const t = resolveCheckout(asDir, gitRun, preferVcs);
-    if (t.ok && host !== null && host.toLowerCase() !== t.host) return { ...t, host: host.toLowerCase() };
-    return t;
+    if (!t.ok) return t;
+    return host !== null && host !== t.host.toLowerCase() ? { ...t, host } : withCheckoutRoot(t);
   }
 
   if (/github\.com/i.test(repo)) return { ok: false, reason: 'github-not-supported' };
@@ -162,13 +197,24 @@ export function resolveTarget({ repo: rawRepo, host: rawHost, cwd = process.cwd(
     return { ok: false, reason: 'invalid-repo' };
   }
 
-  let resolvedHost = host !== null ? host.toLowerCase() : null;
-  if (resolvedHost === null) {
-    const here = resolveCheckout(cwd, gitRun, preferVcs);
-    if (!here.ok) return { ok: false, reason: here.reason === 'github-not-supported' ? 'no-host' : `no-host: ${here.reason}` };
-    resolvedHost = here.host;
+  const here = resolveCheckout(cwd, gitRun, preferVcs);
+  if (host === null && !here.ok) {
+    return {
+      ok: false,
+      reason: here.reason === 'github-not-supported' ? 'no-host' : `no-host: ${here.reason}`,
+    };
   }
-  return { ok: true, vcs: 'gitlab', host: resolvedHost, projectPath: repo, cwd };
+  const resolvedHost = host ?? here.host;
+  /** @type {Target} */
+  const target = { ok: true, vcs: 'gitlab', host: resolvedHost, projectPath: repo, cwd };
+  if (
+    here.ok &&
+    resolvedHost.toLowerCase() === here.host.toLowerCase() &&
+    repo.toLowerCase() === here.projectPath.toLowerCase()
+  ) {
+    return withCheckoutRoot(target);
+  }
+  return target;
 }
 
 /**
@@ -178,30 +224,58 @@ export function resolveTarget({ repo: rawRepo, host: rawHost, cwd = process.cwd(
  * @param {string} endpoint
  * @param {Run} run
  * @param {number} timeoutMs
- * @returns {{ ok: true, items: any[] } | { ok: false, reason: string }}
+ * @param {boolean} [include] request response headers (issue lists only)
+ * @returns {{ ok: true, items: any[], total: number|null } | { ok: false, reason: string }}
  */
-function getArray(target, endpoint, run, timeoutMs) {
+function getArray(target, endpoint, run, timeoutMs, include = false) {
   let r;
   try {
-    r = run('glab', ['api', '--hostname', target.host, endpoint], { cwd: target.cwd, timeout: timeoutMs });
+    r = run(
+      'glab',
+      ['api', '--hostname', target.host, ...(include ? ['--include'] : []), endpoint],
+      { cwd: target.cwd, timeout: timeoutMs },
+    );
   } catch (err) {
     return { ok: false, reason: `glab api: ${err?.code ?? 'spawn error'}` };
   }
   if (r?.error?.code === 'ENOENT') return { ok: false, reason: 'glab not installed' };
-  if (r?.error?.code === 'ETIMEDOUT' || r?.signal) return { ok: false, reason: `glab api timed out after ${timeoutMs} ms` };
+  if (r?.error?.code === 'ETIMEDOUT' || r?.signal)
+    return { ok: false, reason: `glab api timed out after ${timeoutMs} ms` };
   if (r?.error) return { ok: false, reason: `glab api: ${r.error.code ?? 'spawn error'}` };
   if (r?.status !== 0) {
-    const firstLine = redactUrlCredentials(String(r?.stderr ?? '').trim().split('\n')[0] ?? '').slice(0, 200);
-    return { ok: false, reason: `glab api exit ${r?.status ?? 'unknown'}${firstLine ? `: ${firstLine}` : ''}` };
+    const firstLine = redactUrlCredentials(
+      String(r?.stderr ?? '')
+        .trim()
+        .split('\n')[0] ?? '',
+    ).slice(0, 200);
+    return {
+      ok: false,
+      reason: `glab api exit ${r?.status ?? 'unknown'}${firstLine ? `: ${firstLine}` : ''}`,
+    };
+  }
+  let body = String(r.stdout ?? '');
+  let total = null;
+  // Older glab versions/proxies may omit headers. Plain JSON remains usable,
+  // but cannot establish whether offset pagination dropped an issue.
+  if (/^HTTP\/\S+\s+\d{3}(?:[^\r\n]*)\r?\n/.test(body)) {
+    const separator = /\r?\n\r?\n/.exec(body);
+    if (separator) {
+      const headers = body.slice(0, separator.index).split(/\r?\n/).slice(1);
+      for (const header of headers) {
+        const match = /^x-total:\s*(\d+)\s*$/i.exec(header);
+        if (match && Number.isSafeInteger(Number(match[1]))) total = Number(match[1]);
+      }
+      body = body.slice(separator.index + separator[0].length);
+    }
   }
   let parsed;
   try {
-    parsed = JSON.parse(String(r.stdout ?? ''));
+    parsed = JSON.parse(body);
   } catch {
     return { ok: false, reason: 'glab api returned non-JSON' };
   }
   if (!Array.isArray(parsed)) return { ok: false, reason: 'glab api returned a non-array' };
-  return { ok: true, items: parsed };
+  return { ok: true, items: parsed, total };
 }
 
 /**
@@ -215,12 +289,22 @@ function getArray(target, endpoint, run, timeoutMs) {
 function fetchAllPages(target, query, run, timeoutMs) {
   const base = `projects/${encodeURIComponent(target.projectPath)}/issues?${query}&per_page=${PER_PAGE}`;
   const byIid = new Map();
+  let total = null;
   for (let page = 1; page <= PAGE_CAP; page++) {
-    const res = getArray(target, `${base}&page=${page}`, run, timeoutMs);
+    const res = getArray(target, `${base}&page=${page}`, run, timeoutMs, true);
     if (!res.ok) return { ok: false, reason: `page ${page}: ${res.reason}` };
+    if (page === 1) total = res.total;
     // Dedupe by iid: an issue moving between pages mid-read must not count twice.
     for (const raw of res.items) byIid.set(raw?.iid, raw);
-    if (res.items.length < PER_PAGE) return { ok: true, items: [...byIid.values()] };
+    if (res.items.length < PER_PAGE) {
+      if (total !== null && byIid.size !== total) {
+        return {
+          ok: false,
+          reason: `pagination count mismatch: ${byIid.size} unique issues fetched; first-page X-Total ${total}`,
+        };
+      }
+      return { ok: true, items: [...byIid.values()], paginationMeasured: total !== null };
+    }
   }
   return { ok: false, reason: 'page-cap' };
 }
@@ -229,9 +313,15 @@ function fetchAllPages(target, query, run, timeoutMs) {
  * Read all open issues and the issues closed within the window.
  *
  * @param {{ target: Target, closedDays?: number, now?: Date, run?: Run, timeoutMs?: number }} opts
- * @returns {{ ok: true, open: NormalizedIssue[], closed: NormalizedIssue[] } | { ok: false, reason: string }}
+ * @returns {{ ok: true, open: NormalizedIssue[], closed: NormalizedIssue[], newestIid?: number, paginationUnmeasured?: string[] } | { ok: false, reason: string }}
  */
-export function fetchBacklog({ target, closedDays = 30, now = new Date(), run = defaultRun, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+export function fetchBacklog({
+  target,
+  closedDays = 30,
+  now = new Date(),
+  run = defaultRun,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+}) {
   // Ascending creation order keeps pages stable while new issues are filed.
   const order = 'order_by=created_at&sort=asc';
   const open = fetchAllPages(target, `state=opened&${order}`, run, timeoutMs);
@@ -247,8 +337,25 @@ export function fetchBacklog({ target, closedDays = 30, now = new Date(), run = 
   );
   if (!closed.ok) return { ok: false, reason: `closed issues ${closed.reason}` };
 
+  const newest = getArray(
+    target,
+    `projects/${encodeURIComponent(target.projectPath)}/issues?order_by=created_at&sort=desc&per_page=1`,
+    run,
+    timeoutMs,
+    true,
+  );
+  if (!newest.ok) return { ok: false, reason: `newest issue ${newest.reason}` };
+  const newestIid = nonNegInt(newest.items[0]?.iid);
+  if (newest.items.length > 0 && newestIid === 0)
+    return { ok: false, reason: 'newest issue response has no valid iid' };
+
   return {
     ok: true,
+    newestIid,
+    paginationUnmeasured: [
+      !open.paginationMeasured ? 'open' : null,
+      !closed.paginationMeasured ? 'closed' : null,
+    ].filter(Boolean),
     open: open.items.map(normalizeIssue),
     closed: closed.items
       .map(normalizeIssue)
@@ -257,13 +364,18 @@ export function fetchBacklog({ target, closedDays = 30, now = new Date(), run = 
 }
 
 /**
- * Look up related merge requests, one call per issue. A failed call marks only
- * that issue `not-measured`.
+ * Look up related merge requests and merge requests configured to close the
+ * issue. A failed closing lookup still leaves the related list usable.
  *
  * @param {{ target: Target, iids: number[], run?: Run, timeoutMs?: number }} opts
- * @returns {Map<number, { state: 'measured', mrs: { iid: number, state: string }[] } | { state: 'not-measured', reason: string }>}
+ * @returns {Map<number, { state: 'measured', mrs: RelatedMr[], closedBy: RelatedMr[]|null } | { state: 'not-measured', reason: string }>}
  */
-export function fetchRelatedMrs({ target, iids, run = defaultRun, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+export function fetchRelatedMrs({
+  target,
+  iids,
+  run = defaultRun,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+}) {
   const out = new Map();
   const project = encodeURIComponent(target.projectPath);
   for (const iid of iids ?? []) {
@@ -271,13 +383,24 @@ export function fetchRelatedMrs({ target, iids, run = defaultRun, timeoutMs = DE
       out.set(iid, { state: 'not-measured', reason: 'invalid-iid' });
       continue;
     }
-    const res = getArray(target, `projects/${project}/issues/${iid}/related_merge_requests?per_page=${PER_PAGE}`, run, timeoutMs);
-    out.set(
-      iid,
-      res.ok
-        ? { state: 'measured', mrs: res.items.map((mr) => ({ iid: mr?.iid, state: mr?.state })) }
-        : { state: 'not-measured', reason: res.reason },
-    );
+    const base = `projects/${project}/issues/${iid}`;
+    const related = getArray(target, `${base}/related_merge_requests?per_page=${PER_PAGE}`, run, timeoutMs);
+    if (!related.ok) {
+      out.set(iid, { state: 'not-measured', reason: related.reason });
+      continue;
+    }
+    const closing = getArray(target, `${base}/closed_by?per_page=${PER_PAGE}`, run, timeoutMs);
+    const mrFields = (mr) => ({
+      iid: mr?.iid,
+      state: mr?.state,
+      title: mr?.title,
+      project_id: mr?.project_id,
+    });
+    out.set(iid, {
+      state: 'measured',
+      mrs: related.items.map(mrFields),
+      closedBy: closing.ok ? closing.items.map(mrFields) : null,
+    });
   }
   return out;
 }

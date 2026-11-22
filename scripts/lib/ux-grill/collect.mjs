@@ -15,7 +15,7 @@
  * 2. **No secret ever lands on disk** (PRD § 3 AC "nur die Env-NAMEN"): persona
  *    credentials exist only as local variables handed to an `execFile` argv array.
  *    Substituted journey step text is never written to an artefact, a finding, a
- *    message or stderr — only the step INDEX is.
+ *    message or stderr. Step skips use the command verb and a fixed diagnostic.
  * 3. **One seam to the browser**: every `agent-browser` invocation goes through
  *    the injected `exec`. `defaultExec` is the only place in this module that
  *    touches `node:child_process`, and it always uses an argv ARRAY — a manifest
@@ -32,6 +32,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { redactSpans } from '../redact-spans.mjs';
 import {
   CHECK_IDS,
   SEVERITY_BY_CHECK,
@@ -67,6 +68,19 @@ const EXEC_MAX_BUFFER = 16 * 1024 * 1024;
 
 /** Per-command wall-clock cap. `agent-browser`'s own waits default to 25 s, so this only catches a wedged daemon. */
 const EXEC_TIMEOUT_MS = 120_000;
+
+// Re-read the document so a transition started by a finishing animation is
+// included too. Decorative loops and paused animations need no settling time.
+const AXE_SETTLED_EVAL = `(async () => {
+  const deadline = performance.now() + 2000;
+  while (document.getAnimations().some(animation =>
+    animation.playState === 'running' && Number.isFinite(animation.effect?.getComputedTiming().endTime)
+  )) {
+    if (performance.now() >= deadline) throw new Error('Timed out waiting for animations before axe');
+    await new Promise(resolve => setTimeout(resolve, 32));
+  }
+  return null;
+})()`;
 
 /**
  * How many steps a journey may run PAST its `max-steps` before we stop.
@@ -181,13 +195,30 @@ export class CollectError extends Error {
   }
 }
 
+/** Keep process failures distinct from CLI diagnostics, which may describe UX failures. */
+function processFailureKind(error) {
+  if (error?.signal) return 'signal';
+  if (error?.killed || ['ABORT_ERR', 'ETIMEDOUT', 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes(error?.code)) {
+    return 'aborted';
+  }
+  const spawnSyscall = typeof error?.syscall === 'string' && error.syscall.startsWith('spawn ');
+  if (spawnSyscall || ['ENOENT', 'EACCES'].includes(error?.code)) return 'spawn';
+  return undefined;
+}
+
+const PROCESS_FAILURE_MESSAGES = Object.freeze({
+  spawn: 'agent-browser could not start',
+  signal: 'agent-browser was terminated by a signal',
+  aborted: 'agent-browser execution was aborted',
+});
+
 /**
  * Spawn `agent-browser` with an argv ARRAY (never a shell string) and resolve —
  * not reject — on a non-zero exit, so the caller can record a skip.
  *
  * @param {string[]} args - argv passed verbatim to `agent-browser`
  * @param {{timeout?: number, cwd?: string}} [opts]
- * @returns {Promise<{stdout: string, stderr: string, code: number}>}
+ * @returns {Promise<{stdout: string, stderr: string, code: number, processFailure?: 'spawn'|'signal'|'aborted'}>}
  */
 export function defaultExec(args, opts = {}) {
   return new Promise((resolve) => {
@@ -196,12 +227,13 @@ export function defaultExec(args, opts = {}) {
       args,
       { maxBuffer: EXEC_MAX_BUFFER, timeout: opts.timeout ?? EXEC_TIMEOUT_MS, cwd: opts.cwd },
       (error, stdout, stderr) => {
+        const processFailure = processFailureKind(error);
         resolve({
           stdout: String(stdout ?? ''),
           stderr: String(stderr ?? ''),
-          // `error.code` is the exit status for a normal failure and a string
-          // (e.g. 'ETIMEDOUT') when the child was killed — normalise to a number.
+          // Keep the numeric status contract for other commands.
           code: error ? (typeof error.code === 'number' ? error.code : 1) : 0,
+          ...(processFailure ? { processFailure } : {}),
         });
       },
     );
@@ -275,7 +307,8 @@ export function journeyLocator(viewportName, name) {
  * run's session is this module's isolation boundary — the captures, the error
  * buffer and the `close` in the `finally` all hang off it — and a step that
  * retargets it would drive (and then leave behind) somebody else's browser.
- * `collect()` appends its own `--session` LAST, so it also wins on argv order.
+ * `collect()` appends its own `--session`; substituted tokens are checked again
+ * by prepareStepArgv rather than relying on the CLI's option precedence.
  *
  * @param {string} line
  * @returns {string[]} argv tokens (possibly empty for a blank/comment line)
@@ -297,6 +330,7 @@ export function splitStepLine(line) {
       } else current += ch;
       continue;
     }
+    const whitespace = /\s/.test(ch);
     if (ch === '"' || ch === "'") {
       quote = ch;
       started = true;
@@ -308,7 +342,7 @@ export function splitStepLine(line) {
       started = true;
       continue;
     }
-    if (/\s/.test(ch)) {
+    if (whitespace) {
       if (started) out.push(current);
       current = '';
       started = false;
@@ -326,14 +360,13 @@ export function splitStepLine(line) {
 }
 
 /**
- * Assert a split journey-step argv is inside the allowed vocabulary.
+ * Assert a split or credential-substituted step argv is inside the allowed vocabulary.
  *
  * Two rules, both DENY-shaped:
  *
  * 1. `argv[0]` must be in {@link STEP_VERBS}. The refused verb IS named in the
- *    message — it is manifest text an operator wrote, not a value — but the
- *    rest of the argv never is: a step carries `${LOGIN_PASSWORD}` before
- *    substitution and the substituted secret after it.
+ *    message. prepareStepArgv validates it before substitution, so only a literal
+ *    allowlisted verb reaches its second check; the rest of argv is never named.
  * 2. An `open` step must resolve to `baseUrl`'s origin, the same predicate
  *    `routes[].path` and `journeys[].start` already pass. Without it, `open`
  *    was the one allowlisted verb that could still walk the run — and its
@@ -341,7 +374,7 @@ export function splitStepLine(line) {
  *
  * `baseUrl` is REQUIRED: a guard whose predicate is optional is not a guard.
  *
- * @param {string[]} argv - as returned by {@link splitStepLine}
+ * @param {string[]} argv - split tokens, or substituted tokens with a prevalidated literal verb
  * @param {{baseUrl: string}} opts
  * @returns {string[]} the same argv, so callers can chain
  * @throws {CollectError} `step-verb-not-allowed`, `step-open-off-origin`
@@ -357,7 +390,7 @@ export function assertStepArgv(argv, { baseUrl } = {}) {
   if (!STEP_VERBS.has(verb)) {
     throw new CollectError(
       'step-verb-not-allowed',
-      `journey step verb ${JSON.stringify(String(verb))} is not in the allowed UI vocabulary`,
+      'journey step verb is not in the allowed UI vocabulary',
     );
   }
   if (verb === 'open') {
@@ -463,12 +496,29 @@ export function findingsFromAxe(axeJson, { route, viewport, build, evidence } = 
   return findings;
 }
 
+function targetBoxes(payload) {
+  const boxes = Array.isArray(payload) ? payload : payload?.targets;
+  return Array.isArray(boxes) ? boxes : null;
+}
+
+/** Older measurements have no exemption flags and contribute zero. */
+function countTargetExemptions(counts, boxes) {
+  for (const box of boxes) {
+    if (box?.exempt === undefined) continue;
+    for (const key of ['inline', 'hit_area']) {
+      const flag = box.exempt?.[key];
+      if (flag === true) counts[key]++;
+      else if (flag !== false) counts.partial = true;
+    }
+  }
+}
+
 /**
  * Target-size findings from the `measures.mjs` TARGET_SIZE_EVAL payload.
  *
  * The eval answers a plain OBJECT `{targets, scanned, truncated}` (measured
- * against the real browser 2026-09-12) — `targets` holding only the
- * non-compliant boxes. A bare ARRAY is accepted too, so a caller that already
+ * against the real browser 2026-09-12). Each undersized box can carry exemption
+ * flags. A bare ARRAY is accepted too, so a caller that already
  * projected `.targets` keeps working. `truncated: true` means the scan hit its
  * cap, which is stamped onto every finding of that page: a truncated scan is a
  * population statement, and a finding derived from one must say so.
@@ -489,14 +539,19 @@ export function findingsFromTargets(targets, { route, viewport, build, evidence,
       'findingsFromTargets: pass `classify` (measures.mjs classifyTargetSize) — thresholds are not duplicated here',
     );
   }
-  const list = Array.isArray(targets) ? targets : Array.isArray(targets?.targets) ? targets.targets : [];
-  const truncated = !Array.isArray(targets) && targets?.truncated === true;
+  const bareBoxes = Array.isArray(targets);
+  const list = targetBoxes(targets) ?? [];
+  const truncated = !bareBoxes && targets?.truncated === true;
   const findings = [];
   for (const box of list) {
+    if (box?.exempt?.inline === true) continue;
+    const hitArea = box?.exempt?.hit_area === true;
+    if (hitArea && box.verdict !== 'target') continue;
     const width = Number(box?.width);
     const height = Number(box?.height);
     if (!Number.isFinite(width) || !Number.isFinite(height)) continue;
-    const band = classifier({ width, height });
+    // The eval classifies raw dimensions and rounds only the reported size.
+    const band = (hitArea || !bareBoxes) && box.verdict !== undefined ? box.verdict : classifier({ width, height });
     if (band !== 'floor' && band !== 'target') continue;
     const checkId = band === 'floor' ? CHECK_IDS.TARGET_SIZE_FLOOR : CHECK_IDS.TARGET_SIZE_TARGET;
     findings.push(
@@ -609,25 +664,26 @@ export function findingsFromErrors(errors, { route, viewport, build, evidence } 
 
 /**
  * Journey findings (PRD § 3 AC): `journey-failed` when `success` was never
- * reached, otherwise `journey-step-count` when the journey needed more steps
- * than `max-steps`. A journey that succeeded within budget yields none.
+ * reached, with a diagnostic when a step reply was ambiguous. A successful
+ * journey exceeding `max-steps` produces `journey-step-count`.
  *
  * @param {{name: string, viewport: string, stepsRun: number, maxSteps: number,
- *   success: boolean, build: string, evidence?: object}} ctx
+ *   success: boolean, stepFailed?: boolean, build: string, evidence?: object}} ctx
  * @returns {object[]}
  */
-export function journeyFindings({ name, viewport, stepsRun, maxSteps, success, build, evidence } = {}) {
+export function journeyFindings({ name, viewport, stepsRun, maxSteps, success, stepFailed, build, evidence } = {}) {
   const locator = journeyLocator(viewport, name);
   const steps = Number(stepsRun) || 0;
   const budget = Number(maxSteps);
   if (!success) {
+    const diagnostic = stepFailed ? ' (ambiguous agent-browser step reply)' : '';
     return [
       makeFinding({
         checkId: CHECK_IDS.JOURNEY_FAILED,
         locator,
         severity: SEVERITY_BY_CHECK[CHECK_IDS.JOURNEY_FAILED],
         build,
-        message: `journey did not reach its success condition after ${steps} step(s)`,
+        message: `journey did not reach its success condition after ${steps} step(s)${diagnostic}`,
         evidence: { ...(evidence ?? {}), stepsRun: steps, maxSteps: budget },
       }),
     ];
@@ -727,9 +783,21 @@ function parseViewport(value) {
   return match ? [Number(match[1]), Number(match[2])] : null;
 }
 
-/** `makeRunRecord` rejects unknown skip reasons, so every skip goes through this shape. */
-function skipEntry(what, reason) {
-  return { what, reason };
+/** Keep the display text alongside the recorded measurement scope. */
+function skipEntry(what, reason, scope) {
+  return { what, reason, scope };
+}
+
+/** One report row per label. The ledger still records each affected scope. */
+function summarizeSkips(skipped) {
+  const byWhat = new Map();
+  for (const { what, reason } of skipped) {
+    if (!byWhat.has(what)) byWhat.set(what, { what, reasons: [], count: 0 });
+    const row = byWhat.get(what);
+    row.count += 1;
+    if (!row.reasons.includes(reason)) row.reasons.push(reason);
+  }
+  return [...byWhat.values()];
 }
 
 /**
@@ -741,15 +809,16 @@ function skipEntry(what, reason) {
  * @param {Map<string,string>} [opts.envMap] - resolved env-file map from `loadManifest()`
  *   (VALUES; never written anywhere). MUST be a `Map` — the same type `manifest.mjs` uses.
  * @param {string} opts.rubricHash - hash of `skills/ux-grill/rubric-v2.md`
- * @param {(args: string[], opts?: object) => Promise<{stdout: string, stderr: string, code: number}>} [opts.exec]
+ * @param {typeof defaultExec} [opts.exec]
  * @param {string} [opts.runId]
  * @param {() => Date} [opts.now] - clock seam for the run-record timestamp
  * @param {object} [opts.measures] - injected `measures.mjs` namespace (tests); defaults to the real module
  * @param {(persona: object, envMap: Map<string,string>) => {email: string, password: string}} [opts.resolveCredentials]
  *   defaults to `manifest.mjs` `resolvePersonaCredentials`, loaded lazily
- * @returns {Promise<{runId: string, runDir: string, findings: object[], runRecord: object, skipped: object[]}>}
- * @throws {CollectError} on a precondition failure, or when the FIRST route of the
- *   FIRST viewport cannot be opened (`base-url-unreachable` — the app is not running)
+ * @returns {Promise<{runId: string, runDir: string, findings: object[], runRecord: object,
+ *   skipped: object[], skipSummary: Array<{what: string, reasons: string[], count: number}>}>}
+ * @throws {CollectError} on a precondition failure, or when the first login or
+ *   route open fails (`base-url-unreachable` — the app is not running)
  */
 export async function collect({
   repoRoot,
@@ -788,6 +857,36 @@ export async function collect({
   const routes = Array.isArray(frontmatter.routes) ? frontmatter.routes : [];
   const journeys = Array.isArray(frontmatter.journeys) ? frontmatter.journeys : [];
   const personas = Array.isArray(frontmatter.personas) ? frontmatter.personas : [];
+
+  // BV-004: one login persona per run; revisit when a manifest needs a second
+  // route persona. Journeys can still name their own credential substitutions.
+  let login = null;
+  if (frontmatter['login-command'] !== undefined) {
+    const command = frontmatter['login-command'];
+    if (!command || typeof command !== 'object' || Array.isArray(command)
+      || typeof command.persona !== 'string' || command.persona.trim().length === 0
+      || !Array.isArray(command.steps) || !command.steps.every((line) => typeof line === 'string')
+      || (command.success !== undefined && typeof command.success !== 'string')) {
+      throw new CollectError('invalid-login-command', 'login-command needs a persona, string steps and an optional success regex');
+    }
+    const persona = personas.find((entry) => entry?.name === command.persona);
+    if (!persona) throw new CollectError('invalid-login-command', 'login-command persona must name a declared persona');
+    let successRe = null;
+    if (command.success !== undefined) {
+      try {
+        successRe = new RegExp(command.success);
+      } catch {
+        throw new CollectError('invalid-login-command', 'login-command success must be a valid regex');
+      }
+    }
+    for (const line of command.steps) assertStepArgv(splitStepLine(line), { baseUrl });
+    login = { persona, steps: command.steps, successRe };
+  }
+  const waits = frontmatter.wait === undefined ? [] : frontmatter.wait;
+  if (!Array.isArray(waits) || !waits.every((line) => typeof line === 'string')) {
+    throw new CollectError('invalid-wait', 'wait must be a list of wait commands');
+  }
+  for (const line of waits) assertWaitStep(line, baseUrl);
 
   // Every manifest DEFECT is decided here, before a browser exists: a run that
   // dies half-way has already written artefacts and appended nothing to the
@@ -833,6 +932,7 @@ export async function collect({
   const skipped = [];
   const ranViewports = [];
   const ranRoutes = new Set();
+  const targetSizeExempt = { inline: 0, hit_area: 0, partial: false };
   let isFirstOpen = true;
 
   const run = (args) => exec([...args, '--session', session]);
@@ -843,17 +943,26 @@ export async function collect({
       const vpName = String(viewport?.name ?? 'viewport');
       const applied = await applyViewport(run, viewport, measuresNs);
       if (!applied.ok) {
-        skipped.push(
-          applied.reason === 'measure-failed'
-            ? skipEntry(`viewport:${vpName}|eval:viewport-width`, SKIP_REASONS.MEASURE_FAILED)
-            : skipEntry(`viewport:${vpName}`, SKIP_REASONS.DEVICE_MISMATCH),
-        );
+        const measureFailed = applied.reason === SKIP_REASONS.MEASURE_FAILED;
+        const reason = measureFailed ? SKIP_REASONS.MEASURE_FAILED : SKIP_REASONS.DEVICE_MISMATCH;
+        const what = `viewport:${vpName}${measureFailed ? '|eval:viewport-width' : ''}`;
+        for (const route of routes) {
+          const scope = { kind: 'route', name: String(route?.path ?? '/'), viewport: vpName };
+          skipped.push(skipEntry(what, reason, scope));
+        }
+        for (const journey of journeys) {
+          const scope = { kind: 'journey', name: String(journey?.name ?? 'journey'), viewport: vpName };
+          skipped.push(skipEntry(what, reason, scope));
+        }
         continue;
       }
       ranViewports.push(vpName);
+      // Device changes may reset cookies; retention has not been measured.
+      if (login) isFirstOpen = await runLogin({ run, login, baseUrl, envMap, resolveCredentials, isFirstOpen });
 
       for (const route of routes) {
         const routePath = String(route?.path ?? '/');
+        const scope = { kind: 'route', name: routePath, viewport: vpName };
         // Clear BEFORE opening so the buffer holds only THIS route's errors;
         // read AFTER the measurements so anything the measuring evals trigger is
         // still attributed to the route that produced it.
@@ -863,65 +972,82 @@ export async function collect({
           if (isFirstOpen) {
             throw new CollectError('base-url-unreachable', `cannot open route ${routePath} — is the build running?`);
           }
-          skipped.push(skipEntry(`route:${routePath}|${vpName}`, SKIP_REASONS.ROUTE_UNREACHABLE));
+          skipped.push(skipEntry(`route:${routePath}|${vpName}`, SKIP_REASONS.ROUTE_UNREACHABLE, scope));
           continue;
         }
         isFirstOpen = false;
-        ranRoutes.add(routePath);
-
-        const stem = artefactStem({ route: routePath, viewport: vpName });
         /** A measurement that did not happen is a SKIP, never a silent zero. */
         const measureFailed = (call) => {
-          skipped.push(skipEntry(`${routePath}|${vpName}|${call}`, SKIP_REASONS.MEASURE_FAILED));
+          skipped.push(skipEntry(`${routePath}|${vpName}|${call}`, SKIP_REASONS.MEASURE_FAILED, scope));
         };
+        const measuredValue = (call, payload) => {
+          const value = payload.ok ? (payload.value ?? null) : null;
+          if (value === null) measureFailed(call);
+          return value;
+        };
+        if (!await runWaits(run, waits, baseUrl)) {
+          measureFailed('wait');
+          continue;
+        }
+        ranRoutes.add(routePath);
+        const stem = artefactStem({ route: routePath, viewport: vpName });
 
-        const titleRead = readCommandPayload(await run(['get', 'title', '--json']));
-        if (!titleRead.ok) measureFailed('get:title');
-        const title = titleRead.ok ? readTitle(titleRead.value) : '';
+        // Command measurements can also return a nested result, including null.
+        const titleValue = measuredValue('get:title', readEvalPayload(await run(['get', 'title', '--json'])));
+        const title = titleValue === null ? '' : readTitle(titleValue);
 
-        const axeResult = await run(['a11y', '--tags', 'wcag2a,wcag2aa', '--json']);
         const axePath = path.join(aDir, `${stem}.json`);
-        fs.writeFileSync(axePath, axeResult.stdout, 'utf8');
-        const axeRead = readCommandPayload(axeResult);
-        if (!axeRead.ok) measureFailed('a11y');
+        const readyForAxe = readCommandPayload(await run(['eval', AXE_SETTLED_EVAL, '--json'])).ok;
+        let axe = null;
+        if (readyForAxe) {
+          const axeResult = await run(['a11y', '--tags', 'wcag2a,wcag2aa', '--json']);
+          fs.writeFileSync(axePath, axeResult.stdout, 'utf8');
+          axe = measuredValue('a11y', readEvalPayload(axeResult));
+        } else {
+          measureFailed('a11y');
+        }
 
         const targetsRead = await evalJson(run, measuresNs.TARGET_SIZE_EVAL);
-        if (!targetsRead.ok) measureFailed('eval:target-size');
-        const targets = targetsRead.ok ? targetsRead.value : null;
-        const overflowRead = await evalJson(run, measuresNs.OVERFLOW_EVAL);
-        if (!overflowRead.ok) measureFailed('eval:overflow');
-        const overflow = overflowRead.ok ? overflowRead.value : null;
-        const errorsRead = readCommandPayload(await run(['errors', '--json']));
-        if (!errorsRead.ok) measureFailed('errors');
+        const boxes = targetsRead.ok ? targetBoxes(targetsRead.value) : null;
+        const targets = boxes === null ? null : targetsRead.value;
+        if (boxes === null) measureFailed('eval:target-size');
+        else countTargetExemptions(targetSizeExempt, boxes);
+        if (targets?.truncated === true || targets?.exempt_budget_exhausted === true) {
+          targetSizeExempt.partial = true;
+        }
+        if (targets?.truncated === true) measureFailed('eval:target-size:truncated');
+        const overflow = measuredValue('eval:overflow', await evalJson(run, measuresNs.OVERFLOW_EVAL));
+        const errors = measuredValue('errors', readEvalPayload(await run(['errors', '--json'])));
 
         const measurePath = path.join(mDir, `${stem}.json`);
         fs.writeFileSync(measurePath, `${JSON.stringify({ route: routePath, viewport: vpName, title, targets, overflow }, null, 2)}\n`, 'utf8');
 
         const fullShot = path.join(shotsDir, `${screenshotName({ route: routePath, viewport: vpName, variant: 'full' })}.png`);
         const foldShot = path.join(shotsDir, `${screenshotName({ route: routePath, viewport: vpName, variant: 'fold' })}.png`);
-        await run(['screenshot', fullShot, '--full']);
+        const capturedFull = await captureFullPage(run, viewport, fullShot);
+        if (!capturedFull) measureFailed('screenshot:full');
         await run(['screenshot', foldShot]);
 
         const evidence = {
-          screenshotFull: relative(fullShot),
+          ...(capturedFull ? { screenshotFull: relative(fullShot) } : {}),
           screenshotFold: relative(foldShot),
-          axe: relative(axePath),
+          ...(readyForAxe ? { axe: relative(axePath) } : {}),
           measures: relative(measurePath),
         };
         const ctx = { route: routePath, viewport: vpName, build, evidence };
-        if (axeRead.ok) findings.push(...findingsFromAxe(axeRead.value, ctx));
-        if (targetsRead.ok) {
+        if (axe !== null) findings.push(...findingsFromAxe(axe, ctx));
+        if (targets !== null) {
           findings.push(...findingsFromTargets(targets, { ...ctx, classify: measuresNs.classifyTargetSize }));
         }
-        if (overflowRead.ok) {
+        if (overflow !== null) {
           const overflowFinding = findingFromOverflow(overflow, ctx);
           if (overflowFinding) findings.push(overflowFinding);
         }
-        if (titleRead.ok) {
+        if (titleValue !== null) {
           const titleFinding = findingFromTitle(title, route?.['title-pattern'], ctx);
           if (titleFinding) findings.push(titleFinding);
         }
-        if (errorsRead.ok) findings.push(...findingsFromErrors(errorsRead.value, ctx));
+        if (errors !== null) findings.push(...findingsFromErrors(errors, ctx));
       }
 
       for (const journey of journeys) {
@@ -937,6 +1063,7 @@ export async function collect({
           shotsDir,
           relative,
           resolveCredentials,
+          waits,
         });
         findings.push(...outcome.findings);
         if (outcome.skipped) skipped.push(outcome.skipped);
@@ -961,6 +1088,7 @@ export async function collect({
     timestamp: now().toISOString(),
     viewports: ranViewports,
     routes: [...ranRoutes],
+    targetSizeExempt,
     findings,
     skipped,
   });
@@ -969,7 +1097,7 @@ export async function collect({
   // module imports `./paths.mjs` + `./schema.mjs` only.
   appendRunRecord(repoRoot, runRecord);
 
-  return { runId, runDir, findings, runRecord, skipped };
+  return { runId, runDir, findings, runRecord, skipped, skipSummary: summarizeSkips(skipped) };
 }
 
 /** Ask the daemon for a worktree-scoped session name; fall back to the deterministic one. */
@@ -979,6 +1107,74 @@ async function resolveSession(exec, repoRoot, runId) {
   if (probe.code !== 0 || raw.length === 0) return sessionName(repoRoot, runId);
   const sanitized = raw.replace(/[^A-Za-z0-9._-]/g, '-');
   return sanitized.startsWith('uxgrill') ? sanitized : `uxgrill-${sanitized}`;
+}
+
+/** UI commands may emit plain text or a JSON envelope, including failure at exit 0. */
+function commandSucceeded(result) {
+  if (!result || result.code !== 0) return false;
+  const parsed = parseEvalOutput(result.stdout);
+  const value = parsed.ok ? parsed.value : null;
+  return !(value && typeof value === 'object' && 'success' in value && value.success !== true);
+}
+
+/** Read journey steps in JSON mode so an unreadable reply is detectable. */
+function journeyStepOutcome(result) {
+  if (Object.hasOwn(PROCESS_FAILURE_MESSAGES, result?.processFailure)) return 'tool-failed';
+  const parsed = parseEvalOutput(result?.stdout);
+  if (parsed.value?.success === true && result.code === 0) return 'ok';
+  // The CLI can report a UI failure, lose its reply, or emit a daemon error.
+  // The observed success condition decides whether the journey succeeded.
+  return 'ambiguous';
+}
+
+/** Keep readiness declarations narrower than the general journey UI vocabulary. */
+function assertWaitStep(line, baseUrl) {
+  const argv = splitStepLine(line);
+  if (argv[0] !== 'wait') throw new CollectError('invalid-wait', 'wait entries must use the wait verb');
+  return assertStepArgv(argv, { baseUrl });
+}
+
+/** A failed readiness command invalidates this capture, without exposing command output. */
+async function runWaits(run, waits, baseUrl) {
+  for (const line of waits) {
+    const argv = assertWaitStep(line, baseUrl);
+    try {
+      if (!commandSucceeded(await run(argv))) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Login returns the remaining first-open state; errors never carry argv or credentials. */
+async function runLogin({ run, login, baseUrl, envMap, resolveCredentials, isFirstOpen }) {
+  let unreachableError = null;
+  try {
+    const credentials = (resolveCredentials ?? defaultResolveCredentials)(login.persona, envMap);
+    for (const line of login.steps) {
+      const argv = prepareStepArgv(line, credentials, baseUrl);
+      if (argv.length === 0) continue;
+      if (!commandSucceeded(await run(argv))) {
+        if (argv[0] === 'open' && isFirstOpen) {
+          unreachableError = new CollectError('base-url-unreachable', 'cannot open login — is the build running?');
+          throw unreachableError;
+        }
+        throw new CollectError('login-failed', 'login failed');
+      }
+      if (argv[0] === 'open') isFirstOpen = false;
+    }
+    if (login.successRe && !await journeySucceeded(run, login.successRe)) {
+      throw new CollectError('login-failed', 'login failed');
+    }
+    return isFirstOpen;
+  } catch (error) {
+    // Only this locally constructed, value-free error may cross the redaction
+    // boundary. Resolvers/exec can throw their own secret-bearing CollectError.
+    if (unreachableError !== null && error === unreachableError) throw error;
+    // Credential resolvers and browser errors can include secret-bearing text.
+    throw new CollectError('login-failed', 'login failed');
+  }
 }
 
 /** `get title --json` may answer a bare string or `{title: "..."}`. */
@@ -1001,6 +1197,47 @@ function readUrl(payload) {
  */
 async function evalJson(run, script) {
   return readEvalPayload(await run(['eval', String(script ?? ''), '--json']));
+}
+
+const SCREENSHOT_GEOMETRY = `({
+  width: window.innerWidth, height: window.innerHeight, scale: window.devicePixelRatio,
+  pageHeight: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)
+})`;
+const MAX_CAPTURE_HEIGHT = 16_384;
+
+/** A tall device capture can wrap to the top once its bitmap exceeds Chromium's texture limit (#2035). */
+async function captureFullPage(run, viewport, file) {
+  const capture = async () => commandSucceeded(await run(['screenshot', file, '--full']));
+  // applyViewport gives an explicit WxH priority over a device profile.
+  if (!viewport.device || parseViewport(viewport.viewport)) return capture();
+  const { value: original } = await evalJson(run, SCREENSHOT_GEOMETRY);
+  if (!original || ![original.width, original.height, original.pageHeight, original.scale]
+    .every((n) => Number.isFinite(n) && n > 0)) return false;
+  if (original.pageHeight * original.scale <= MAX_CAPTURE_HEIGHT) return capture();
+  if (original.pageHeight > MAX_CAPTURE_HEIGHT) return false;
+
+  // Capture at scale 1, then ALWAYS restore the device before returning or rethrowing:
+  // a throw inside `finally` would swallow the capture's own error (no-unsafe-finally).
+  let captured = false;
+  let captureError = null;
+  try {
+    const resized = await run(['set', 'viewport', String(original.width), String(original.height), '1']);
+    if (commandSucceeded(resized)) {
+      const { value: actual } = await evalJson(run, SCREENSHOT_GEOMETRY);
+      if (actual?.scale === 1 && actual.width === original.width && actual.height === original.height
+          && actual.pageHeight === original.pageHeight) captured = await capture();
+    }
+  } catch (err) {
+    captureError = err;
+  }
+  const restored = await run(['set', 'device', String(viewport.device)]);
+  const { value: actual } = await evalJson(run, SCREENSHOT_GEOMETRY);
+  if (!commandSucceeded(restored) || actual?.scale !== original.scale
+      || actual.width !== original.width || actual.height !== original.height) {
+    throw new CollectError('device-restore-failed', 'could not restore device emulation after the full-page screenshot');
+  }
+  if (captureError) throw captureError;
+  return captured;
 }
 
 /**
@@ -1061,10 +1298,11 @@ async function applyViewport(run, viewport, measuresNs) {
  * into a URL, which is what let an absolute off-origin `start` receive a
  * substituted password.
  *
- * @returns {Promise<{findings: object[], skipped: {what: string, reason: string}|null}>}
+ * @returns {Promise<{findings: object[], skipped: object|null}>}
  */
-async function runJourney({ run, journey, viewportName, startUrl, baseUrl, build, personas, envMap, shotsDir, relative, resolveCredentials }) {
+async function runJourney({ run, journey, viewportName, startUrl, baseUrl, build, personas, envMap, shotsDir, relative, resolveCredentials, waits }) {
   const name = String(journey?.name ?? 'journey');
+  const scope = { kind: 'journey', name, viewport: viewportName };
   const maxSteps = Number(journey?.['max-steps']);
   const steps = Array.isArray(journey?.steps) ? journey.steps : [];
   const successPattern = journey?.success;
@@ -1091,48 +1329,84 @@ async function runJourney({ run, journey, viewportName, startUrl, baseUrl, build
     // The journey never started, so `success: false` says nothing about the
     // product — filing `journey-failed` here would read as a UX defect and, on
     // the next run, as `fixed` once the page is reachable again.
-    return { findings: [], skipped: skipEntry(`journey:${name}`, SKIP_REASONS.ROUTE_UNREACHABLE) };
+    return { findings: [], skipped: skipEntry(`journey:${name}`, SKIP_REASONS.ROUTE_UNREACHABLE, scope) };
+  }
+  if (!await runWaits(run, waits, baseUrl)) {
+    return { findings: [], skipped: skipEntry(`journey:${name}`, SKIP_REASONS.MEASURE_FAILED, scope) };
   }
   let stepsRun = 0;
   let success = false;
+  let stepFailed = false;
+  let skipped = null;
   const shots = [];
 
   {
     const hardCap = Number.isFinite(maxSteps) ? maxSteps + JOURNEY_STEP_OVERRUN : steps.length;
-    for (const line of steps) {
+    for (const [index, line] of steps.entries()) {
       if (stepsRun >= hardCap) break;
       // Re-asserted here, not only in collect()'s pre-flight: a guard that
       // depends on its caller having run another guard is not a guard (BV-002).
-      // Before substitution — the verb and the `open` location are manifest
-      // text, and the assertion must never see a credential.
-      const argv = assertStepArgv(splitStepLine(line), { baseUrl }).map(
-        (token) => substituteCredentials(token, credentials),
-      );
+      // Validate both before and after single-pass substitution. The second
+      // check never includes substituted values in its diagnostics.
+      const argv = prepareStepArgv(line, credentials, baseUrl);
       if (argv.length === 0) continue;
-      await run(argv);
+      let result;
+      try {
+        result = await run([...argv, '--json']);
+      } catch (error) {
+        // Inspect the exception without serializing its possibly secret-bearing argv.
+        result = { processFailure: processFailureKind(error) };
+      }
+      const outcome = journeyStepOutcome(result);
+      if (outcome === 'tool-failed') {
+        success = await journeySucceeded(run, successRe);
+        if (!success) {
+          const reason = PROCESS_FAILURE_MESSAGES[result.processFailure];
+          const what = `journey:${safeLocatorPart(name)}|${safeLocatorPart(viewportName)}|step ${index + 1} (${argv[0]}): ${reason}`;
+          skipped = skipEntry(what, SKIP_REASONS.MEASURE_FAILED, scope);
+          break;
+        }
+      }
+      if (outcome === 'ambiguous') stepFailed = true;
       stepsRun += 1;
       const shot = path.join(shotsDir, `${screenshotName({ route: name, viewport: viewportName, variant: `step-${stepsRun}` })}.png`);
       await run(['screenshot', shot]);
       shots.push(relative(shot));
-      if (await journeySucceeded(run, successRe)) {
-        success = true;
-        break;
-      }
+      success ||= await journeySucceeded(run, successRe);
+      if (success) break;
     }
   }
 
   return {
-    findings: journeyFindings({
+    findings: skipped ? [] : journeyFindings({
       name,
       viewport: viewportName,
       stepsRun,
       maxSteps,
       success,
+      stepFailed,
       build,
-      evidence: { screenshots: shots, start },
+      evidence: { screenshots: shots, start: redactSpans(start, personaSecretPatterns(credentials, personas, envMap)) },
     }),
-    skipped: null,
+    skipped,
   };
+}
+
+/** Redact known persona values in free-form journey evidence. */
+function personaSecretPatterns(credentials, personas, envMap) {
+  const secrets = [
+    credentials?.email,
+    credentials?.password,
+    ...personas.flatMap((persona) => [
+      envMap.get(persona?.['login-env-email']),
+      envMap.get(persona?.['login-env-password']),
+    ]),
+  ].filter((value) => typeof value === 'string' && value.length > 0);
+  return secrets.flatMap((value) => [
+    value,
+    JSON.stringify(value).slice(1, -1),
+    encodeURIComponent(value.toWellFormed()),
+  ]).map((value) => new RegExp(RegExp.escape(value)));
 }
 
 /**
@@ -1150,6 +1424,19 @@ function substituteCredentials(token, credentials) {
   return token.replace(/\$\{LOGIN_(EMAIL|PASSWORD)\}/g, (_, key) =>
     key === 'EMAIL' ? (credentials.email ?? '') : (credentials.password ?? ''),
   );
+}
+
+/** Keep substituted credentials in one token and out of options and foreign opens. */
+function prepareStepArgv(line, credentials, baseUrl) {
+  const raw = assertStepArgv(splitStepLine(line), { baseUrl });
+  const argv = raw.map((token) => {
+    const substituted = substituteCredentials(token, credentials);
+    if (/\$\{LOGIN_(EMAIL|PASSWORD)\}/.test(token) && substituted.startsWith('-')) {
+      throw new CollectError('step-credential-option', 'credential placeholder resolves to an option — refusing step');
+    }
+    return substituted;
+  });
+  return assertStepArgv(argv, { baseUrl });
 }
 
 /** Test the journey `success` pattern against the current URL and the body text. */

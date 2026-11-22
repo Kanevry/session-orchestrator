@@ -17,6 +17,7 @@ import { resolveEventsLedgerRoot } from '../../platform.mjs';
 import { resolveLedgerPath } from '../../ledger-path.mjs';
 import { canonicalizeSessions, isMeasuredSession } from '../../sessions-canonical.mjs';
 import { findSessionConfigBlock } from '../../config/section-extractor.mjs';
+import { isValidLockTtlHours } from '../../session-lock-shape.mjs';
 
 // Default session-lock TTL in hours — mirrors DEFAULT_TTL_HOURS in
 // scripts/lib/session-lock.mjs. Inlined to keep this category stdlib-only
@@ -48,7 +49,7 @@ export function lockIsLive(lock, nowMs) {
   if (Number.isNaN(ms)) return false;
   if (ms > nowMs + 5 * 60 * 1000) return false;
   const ttlHours = typeof lock.ttl_hours === 'number' ? lock.ttl_hours : DEFAULT_LOCK_TTL_HOURS;
-  return (nowMs - ms) < ttlHours * 3600 * 1000;
+  return isValidLockTtlHours(ttlHours) && (nowMs - ms) < ttlHours * 3600 * 1000;
 }
 
 export function runCategory4(root) {

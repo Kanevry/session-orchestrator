@@ -65,8 +65,9 @@
  * `owner-yaml.mjs` means "no host override", never a dead guard.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { isAbsolute, resolve } from 'node:path';
 
 const require = createRequire(import.meta.url);
 
@@ -124,8 +125,8 @@ const STANDARD_OFF = new Set(STANDARD_OFF_HOOKS);
 const RELAXED_WARN = new Set(RELAXED_WARN_RULES);
 const SAFETY = new Set(SAFETY_HOOKS);
 
-/** Per-process memo of the owner.yaml `hooks` section (hook processes are single-use). */
-let _ownerHooks;
+/** @type {Map<string, {profile?: unknown, disabled?: unknown} | null>} */
+const ownerHooksByCwd = new Map();
 
 /**
  * Warn once per process (hook subprocess is single-use, so this is effectively
@@ -151,35 +152,38 @@ function normalizeProfile(raw) {
  * raw file names a top-level `hooks:` key, so a host without the section pays
  * one small file read, not a parse. Never throws.
  *
+ * @param {string} cwd
  * @returns {{ profile?: unknown, disabled?: unknown } | null}
  */
-function ownerHooks() {
-  if (_ownerHooks !== undefined) return _ownerHooks;
-  _ownerHooks = null;
+function ownerHooks(cwd) {
+  if (ownerHooksByCwd.has(cwd)) return ownerHooksByCwd.get(cwd) ?? null;
+  ownerHooksByCwd.set(cwd, null);
   try {
     const { loadOwnerConfig, resolveOwnerYamlPath } = require('../../scripts/lib/owner-yaml.mjs');
-    const ownerYaml = resolveOwnerYamlPath();
-    if (!/^hooks[ \t]*:/m.test(readFileSync(ownerYaml, 'utf8'))) return _ownerHooks;
+    const configPath = resolveOwnerYamlPath();
+    const ownerYaml = isAbsolute(configPath) ? configPath : resolve(realpathSync(cwd), configPath);
+    if (!/^hooks[ \t]*:/m.test(readFileSync(ownerYaml, 'utf8'))) return null;
     const hooks = loadOwnerConfig({ path: ownerYaml }).config?.hooks;
-    if (hooks !== null && typeof hooks === 'object' && !Array.isArray(hooks)) _ownerHooks = hooks;
+    if (hooks !== null && typeof hooks === 'object' && !Array.isArray(hooks)) ownerHooksByCwd.set(cwd, hooks);
   } catch {
     // Missing/unreadable owner.yaml or a module that fails to load → no host override.
   }
-  return _ownerHooks;
+  return ownerHooksByCwd.get(cwd) ?? null;
 }
 
 /** Test seam: forget the memoized owner.yaml section and the unknown-profile warning. */
 export function _resetHookProfileCache() {
-  _ownerHooks = undefined;
+  ownerHooksByCwd.clear();
   _unknownProfileWarned = false;
 }
 
 /**
  * Resolve the active profile: env > owner.yaml > default.
  *
+ * @param {string} [cwd] Working directory for a relative config home.
  * @returns {"strict"|"standard"|"relaxed"|"minimal"|"off"}
  */
-export function resolveHookProfile() {
+export function resolveHookProfile(cwd = process.cwd()) {
   const rawEnv = (process.env.SO_HOOK_PROFILE ?? '').trim();
   if (rawEnv) {
     const fromEnv = normalizeProfile(rawEnv);
@@ -192,7 +196,7 @@ export function resolveHookProfile() {
       _unknownProfileWarned = true;
     }
   }
-  const fromOwner = ownerHooks()?.profile;
+  const fromOwner = ownerHooks(cwd)?.profile;
   return OWNER_PROFILES.includes(fromOwner) ? normalizeProfile(fromOwner) : DEFAULT_PROFILE;
 }
 
@@ -200,12 +204,13 @@ export function resolveHookProfile() {
  * Union of SO_DISABLED_HOOKS and the owner.yaml `hooks.disabled` entries that
  * are no SAFETY_HOOKS, lowercased.
  *
+ * @param {string} cwd
  * @returns {Set<string>}
  */
-function resolveDisabledHooks() {
+function resolveDisabledHooks(cwd) {
   const lower = (s) => s.trim().toLowerCase();
   const names = (process.env.SO_DISABLED_HOOKS ?? '').split(',').map(lower);
-  const fromOwner = ownerHooks()?.disabled;
+  const fromOwner = ownerHooks(cwd)?.disabled;
   if (Array.isArray(fromOwner)) {
     names.push(...fromOwner.filter((n) => typeof n === 'string').map(lower).filter((n) => !SAFETY.has(n)));
   }
@@ -217,15 +222,16 @@ function resolveDisabledHooks() {
  *
  * @param {string} hookName       - canonical hook file stem (e.g. "on-session-start")
  * @param {boolean} [defaultEnabled=true]  - fallback when no profile/disable-list applies
+ * @param {string} [cwd] Working directory for a relative config home.
  * @returns {boolean}  true = run the hook; false = skip (exit 0)
  */
-export function shouldRunHook(hookName, defaultEnabled = true) {
+export function shouldRunHook(hookName, defaultEnabled = true, cwd = process.cwd()) {
   const name = hookName.trim().toLowerCase();
 
   // A disabled list takes precedence over the profile for listed names.
-  if (resolveDisabledHooks().has(name)) return false;
+  if (resolveDisabledHooks(cwd).has(name)) return false;
 
-  const profile = resolveHookProfile();
+  const profile = resolveHookProfile(cwd);
 
   if (profile === 'off') return false;
   if (profile === 'minimal') return MINIMAL_HOOKS.has(name);

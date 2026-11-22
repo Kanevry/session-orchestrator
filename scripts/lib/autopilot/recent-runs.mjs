@@ -5,10 +5,14 @@
  * `readRecentAutopilotRuns({ repoRoot, limit })` reads
  * `<repoRoot>/.orchestrator/metrics/autopilot.jsonl`, parses each JSONL line
  * (tolerating corrupt/partial lines), and returns the most-recent `limit`
- * records. The ONLY consumer is the dispatcher launch-gate (#682): it feeds the
- * returned array into `computeSuitabilityVerdict({ recentRuns })`
- * (scripts/lib/autonomy/suitability.mjs) whose G2 kill-switch gate counts the
- * records and reads each record's `kill_switch` field.
+ * records. The dispatcher skill describes passing them to
+ * `computeSuitabilityVerdict({ recentRuns })` for the G2 kill-switch gate.
+ *
+ * NAMED CEILING (BV-004, #1852): no production code calls the verdict engine
+ * with a CI reading, so G3's handling of running/canceled phases is exercised
+ * only in tests. Revisit when the dispatcher or autopilot wires the launch gate
+ * into executable code: pass the full `{ status, phase }` CI reading and test
+ * that it reaches G3 through that entry point.
  *
  * CONTRACT (mirrors the never-throws + tolerant-parse idioms in
  * scripts/lib/autopilot/telemetry.mjs and the trailing-line skip in

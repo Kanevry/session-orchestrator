@@ -35,11 +35,12 @@
  * renamed corpus still converts (they convert nothing now — harmless). See the
  * CONVERT_TYPES doc for the full 2026-07-02 instance census.
  *
- * Pure functions — depends only on the pure `learnings/schema` type registry
- * (a frozen constant; no I/O). Deterministic, no file I/O.
+ * Pure functions — the eligibility gates use the learning type registry and
+ * the shared reconcile expiry calculation.
  */
 
-import { LEARNING_TYPE_REGISTRY, LEARNING_TTL_DAYS, deriveExpiresAt } from '../learnings/schema.mjs';
+import { LEARNING_TYPE_REGISTRY, LEARNING_TTL_DAYS } from '../learnings/schema.mjs';
+import { resolveRuleExpiryMs } from './expiry.mjs';
 
 /**
  * Recovery-stub / legacy-backfill placeholder insight signature (issue #741.2).
@@ -96,21 +97,20 @@ export const CONVERT_TYPES = new Set(
  *     rejects an insight that is non-empty but too short to be useful; it is
  *     opt-in (inert when omitted).
  *   - already-expired-at-proposal (#741.1c, opt-in via `now`): a learning
- *     whose natural TTL (`created_at` + per-type TTL) already elapsed before
- *     proposal time is rejected honestly instead of silently floored back to
- *     life. Inert when `now` is omitted, so existing single-arg callers are
- *     unaffected.
+ *     is rejected when its rule expiry elapsed before proposal time. The
+ *     check uses the expiry before the emitter applies its minimum lifetime.
  *
  * Defensive: a null / non-object record, or one missing `type`, is rejected
  * (never throws).
  *
  * @param {unknown} learning - an in-memory learning object.
- * @param {{ now?: number, minInsightChars?: number }} [opts] - now: injectable
- *        clock (ms epoch) gating the expiry check; minInsightChars: opt-in
- *        minimum insight length gating the placeholder check.
+ * @param {{ now?: number, minInsightChars?: number, ruleExpiryDays?: number }} [opts]
+ *   `now` enables the expiry check with a clock in epoch ms. `minInsightChars`
+ *   sets the minimum insight length. `ruleExpiryDays` sets the explicit expiry
+ *   window from `created_at`.
  * @returns {{ eligible: boolean, reason: string }}
  */
-export function classifyLearning(learning, { now, minInsightChars } = {}) {
+export function classifyLearning(learning, { now, minInsightChars, ruleExpiryDays } = {}) {
   if (
     learning === null ||
     typeof learning !== 'object' ||
@@ -156,16 +156,18 @@ export function classifyLearning(learning, { now, minInsightChars } = {}) {
   }
 
   // Already-expired-at-proposal gate (#741.1c, opt-in via `now`) — a learning
-  // whose natural TTL already elapsed before proposal time is rejected
-  // honestly rather than silently floored back to life at emit time.
+  // whose expiry already elapsed before proposal time is rejected honestly
+  // rather than silently floored back to life at emit time.
   if (typeof now === 'number' && Number.isFinite(now)) {
-    const naturalExpiryIso = deriveExpiresAt(learning.created_at, type);
-    const naturalExpiryMs = Date.parse(naturalExpiryIso);
-    if (Number.isFinite(naturalExpiryMs) && naturalExpiryMs < now) {
+    const expiryMs = resolveRuleExpiryMs(learning, ruleExpiryDays, now);
+    if (Number.isFinite(expiryMs) && expiryMs < now) {
       const ttlDays = LEARNING_TTL_DAYS[type] ?? LEARNING_TTL_DAYS.default;
+      const source = Number.isFinite(ruleExpiryDays)
+        ? `created_at + ${ruleExpiryDays}d (rule-expiry-days)`
+        : `created_at + ${ttlDays}d or extended expires_at`;
       return {
         eligible: false,
-        reason: `already-expired-at-proposal — natural TTL (created_at + ${ttlDays}d) elapsed at ${naturalExpiryIso.slice(0, 10)} before proposal`,
+        reason: `already-expired-at-proposal — expiry (${source}) elapsed at ${new Date(expiryMs).toISOString().slice(0, 10)} before proposal`,
       };
     }
   }
@@ -181,7 +183,7 @@ export function classifyLearning(learning, { now, minInsightChars } = {}) {
  * (each rejection carrying the specific audit reason).
  *
  * @param {unknown[]} learnings - list of in-memory learning objects.
- * @param {{ now?: number, minInsightChars?: number }} [opts] - forwarded verbatim
+ * @param {{ now?: number, minInsightChars?: number, ruleExpiryDays?: number }} [opts] - forwarded verbatim
  *        to {@link classifyLearning} for every record.
  * @returns {{ eligible: object[], rejected: Array<{ learning: object, reason: string }> }}
  */

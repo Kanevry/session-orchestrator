@@ -62,6 +62,8 @@ const MODE_ALLOWED = ['warn', 'strict', 'off'];
  *   mode:          "warn" (invalid values silently fall back to "warn")
  *   vault-name:    null   (absent = downstream callers use deriveRepo() default)
  *   gitlab-groups: null   (#1094 — non-empty string[] or null; see _groupsFromScalar)
+ *   briefing-search: false (#2169 — strict boolean; session-start vault pointers,
+ *                           read by scripts/print-vault-pointers.mjs)
  *
  * `gitlab-groups` accepts a comma string (`a, b`), a flow array (`[a, b]`) and,
  * in block form only, a YAML block list (`gitlab-groups:` + indented `- a`
@@ -72,7 +74,7 @@ const MODE_ALLOWED = ['warn', 'strict', 'off'];
  * matching quotes.
  *
  * @param {string} content — full file contents
- * @returns {{enabled: boolean, "vault-dir": string|null, mode: string, "vault-name": string|null, "gitlab-groups": string[]|null}}
+ * @returns {{enabled: boolean, "vault-dir": string|null, mode: string, "vault-name": string|null, "gitlab-groups": string[]|null, "briefing-search": boolean}}
  */
 export function _parseVaultIntegration(content) {
   const defaults = {
@@ -81,6 +83,7 @@ export function _parseVaultIntegration(content) {
     mode: 'warn',
     'vault-name': null,
     'gitlab-groups': null,
+    'briefing-search': false,
   };
   if (typeof content !== 'string' || content === '') return defaults;
 
@@ -122,6 +125,7 @@ export function _parseVaultIntegration(content) {
   let mode = 'warn';
   let vaultName = null;
   let gitlabGroups = null;
+  let briefingSearch = false;
   // Items of a YAML block list under a value-less `gitlab-groups:` line; null
   // while no such list is open.
   let groupItems = null;
@@ -170,6 +174,11 @@ export function _parseVaultIntegration(content) {
         if (v === '' || v === 'none' || v === 'null') vaultName = null;
         else vaultName = v;
         break;
+      case 'briefing-search':
+        // Strict booleans only, like `enabled`: anything else keeps the default.
+        if (v.toLowerCase() === 'true') briefingSearch = true;
+        else if (v.toLowerCase() === 'false') briefingSearch = false;
+        break;
       case 'gitlab-groups': {
         // A value replaces any earlier one; an empty value opens a block list,
         // which replaces it only once it has collected an item. The value goes
@@ -190,6 +199,7 @@ export function _parseVaultIntegration(content) {
     mode,
     'vault-name': vaultName,
     'gitlab-groups': gitlabGroups,
+    'briefing-search': briefingSearch,
   };
 }
 
@@ -269,7 +279,7 @@ const INLINE_GROUPS_ARRAY_RE = /(^|,)\s*gitlab-groups\s*:\s*(\[[^\]]*\])\s*(?=,|
  * vault-integration return shape. Supports unquoted values including `~/` paths.
  *
  * @param {string} raw — full literal including braces
- * @returns {{enabled: boolean, "vault-dir": string|null, mode: string, "vault-name": string|null, "gitlab-groups": string[]|null}}
+ * @returns {{enabled: boolean, "vault-dir": string|null, mode: string, "vault-name": string|null, "gitlab-groups": string[]|null, "briefing-search": boolean}}
  */
 function _parseInlineObject(raw) {
   let stripped = raw.replace(/^\s*\{/, '').replace(/\}\s*$/, '').trim();
@@ -309,12 +319,14 @@ function _parseInlineObject(raw) {
       : vaultNameRaw;
   const groupsRaw = groupsArray ?? kv.get('gitlab-groups');
   const gitlabGroups = groupsRaw === undefined ? null : _groupsFromScalar(groupsRaw);
+  const briefingSearch = kv.get('briefing-search') === 'true';
   return {
     enabled,
     'vault-dir': vaultDir,
     mode,
     'vault-name': vaultName,
     'gitlab-groups': gitlabGroups,
+    'briefing-search': briefingSearch,
   };
 }
 

@@ -72,8 +72,8 @@ For each of the 9 built-in analyzer learning types, apply these heuristics.
   `git log --name-only --format="" <session_start_ref>..<end_ref> | sort | uniq -c | sort -rn`
   with `<end_ref>` = the record's `end_ref` / `session_end_ref`; when neither exists use `HEAD` plus `--until=<completed_at>`. When the record carries `session_work_trees: [{tree, start_ref}]`, run the same log once per entry, each inside its own tree (`git -C <tree> log …`) with its own ref — never apply one tree's ref in another tree — and add the results to the counts. Records without `session_start_ref` fall back to `git log --name-only --format="" --since=<started_at> --until=<completed_at>`.
 - **Prefer the ref range; label the fallback.** Only 26 of 201 real records carry `session_start_ref` (measured 2026-09-12), so most analyses land on the time-window fallback. That window also picks up commits a PARALLEL session made on the same branch in the same hours — it attributes foreign commits to this session. Use the ref range wherever the record has one, and mark every candidate whose evidence came from the fallback as `window: time (unattributed)` in its `evidence`.
-- Within a session: a file changed in 3+ commits of that session's range is fragile. Here the population rule's `n` counts the **commits in that session's range**, not records — one session is always one record, so counting records would WARN on every within-session check
-- Cross-session: if a file appears in 3+ different sessions' ranges, flag it
+- Flag a file changed in 3+ commits within each of at least 3 distinct sessions. Exclude `CHANGELOG.md`, `docs/`, and `package*.json`.
+- For the within-session check, the population rule's `n` counts the **commits in that session's range**.
 - Subject = file path (relative to project root)
 
 #### 2. effective-sizing (type: `effective-sizing`)
@@ -119,11 +119,10 @@ For each of the 9 built-in analyzer learning types, apply these heuristics.
 
 > **v3.1.0 / Sub-Epic #160 (C2, issue #171).** Keyed on `host_class` rather than project — surfaces hardware-bound problems that affect the user across every repo on the same machine. Complements the project-keyed types above.
 
-- Read `.orchestrator/metrics/events.jsonl` (session + wave events) and the registry `sweep.log` at `~/.config/session-orchestrator/sessions/sweep.log`. Both are optional — missing files produce no candidates.
-- Invoke `scripts/lib/hardware-pattern-detector.mjs` → `detectHardwarePatterns({events, sweepLogEntries, thresholds})`. Thresholds come from Session Config `resource-thresholds` when present, falling back to `DEFAULT_THRESHOLDS`.
-- Five detection signals (aggregated per `(signal, host_class)` pair, ≥2 occurrences required):
+- Read `.orchestrator/metrics/events.jsonl` (session + wave events). A missing file produces no candidates.
+- Invoke `scripts/lib/hardware-pattern-detector.mjs` → `detectHardwarePatterns({events, thresholds})`. Thresholds come from Session Config `resource-thresholds` when present, falling back to `DEFAULT_THRESHOLDS`.
+- Four detection signals (aggregated per `(signal, host_class)` pair, ≥2 occurrences required):
   - **oom-kill** — `orchestrator.turn.stopped` (or its deprecated alias `orchestrator.session.stopped`, which `hooks/on-stop.mjs` still emits with `deprecated: true` until **2027-03-06**) with `exit_code: 137` or OOM-marker in `error`. Both names are accepted for the deprecation window because every OOM record already on disk carries only the legacy name; the detector's set lives in `OOM_TERMINAL_EVENTS` (`scripts/lib/hardware-pattern-detector.mjs`) and drops the alias on that date.
-  - **heartbeat-gap** — registry sweep-log entries with `gap_minutes` above `resource-thresholds.zombie-threshold-min`
   - **concurrent-session-pressure** — session-start events inside a start wave: `recent_starts_count ≥ 5` foreign starts in the preceding 5 min (`DEFAULT_THRESHOLDS.startWaveMin`, mirrors `START_WAVE_MIN` in `hooks/on-session-start.mjs`). Re-aimed in #1654 off `peer_count ≥ concurrent-sessions-warn`, which held on 67.4% of M4 starts (a standing condition, HR-101). Events without a numeric `recent_starts_count` (all pre-#1650 records) are skipped, never counted. Not fed from `concurrent-sessions-warn`.
   - **disk-full** — events whose `error` matches `ENOSPC` / "no space left"
   - **thermal-throttle** — events whose `resource_snapshot.cpu_load_pct` crosses `cpu-load-max-pct`

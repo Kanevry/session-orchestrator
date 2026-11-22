@@ -1,5 +1,7 @@
 # Website imagery
 
+`site/video/gate-readme.webp` is the standalone README illustration of the quality gate. Its public URL stays available for Markdown embeds that load the WebP directly.
+
 The current hero is an original AI-generated illustration of a miniature agent production facility. It shows a human in an elevated control room directing planning, parallel work, inspection and handover. It is a visual metaphor, not a product screenshot or evidence of a running session.
 
 Generated on 2026-09-10 with the built-in Codex image tool. The tool did not expose a model selector, so no specific model version is claimed. Art direction: a cutaway production facility, a human at the control desk above small ceramic and metal agents at distinct stations, graphite architecture, warm white materials, one restrained lime accent. No text, logos, neon gradients or generic interface collage. The owner chose the production-facility direction after reviewing a robot-arm concept.

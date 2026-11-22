@@ -257,5 +257,17 @@ export function validateEventRecord(record) {
     errors.push('quality_gate wave_number must be a positive safe integer when present');
   }
 
+  // #2197: run time and gate host. Both optional — records written before them stay
+  // valid, and a missing duration means "not measured", never 0.
+  if (['orchestrator.quality_gate.passed', 'orchestrator.quality_gate.failed'].includes(record.event)) {
+    if (Object.hasOwn(record, 'duration_ms') &&
+      (!Number.isSafeInteger(record.duration_ms) || record.duration_ms < 0)) {
+      errors.push('quality_gate duration_ms must be a non-negative safe integer when present');
+    }
+    if (Object.hasOwn(record, 'host') && (typeof record.host !== 'string' || record.host.length === 0)) {
+      errors.push('quality_gate host must be a non-empty string when present');
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }

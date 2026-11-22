@@ -1,6 +1,8 @@
 import { expect, mock, test, type Plugin } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { SoBeacon, SoSnapshot } from '../types/index'
+import { comparablePath, hostFolder, windowsPath } from '../hooks/logic'
+import { findCollisions } from '../hooks/rules'
 
 const at = '2026-10-10T15:10:00.000Z'
 const measured: Omit<SoSnapshot, 'age_ms'> = {
@@ -12,14 +14,14 @@ const measured: Omit<SoSnapshot, 'age_ms'> = {
   peers: [], vault: { enabled: false, mode: 'warn', last_run: null, board: null }, degraded: [],
 }
 const UUID = '3f1c2b9a-6d4e-4f7a-9b2c-1e5d8a7c6b40'
-function world(on: On, collector: 'ok' | 'failed' | 'invalid' | 'missing' | 'pre-1730' = 'ok', env: Record<string, string> = { HOME: '/home/test' }, registered = '') {
+function world(on: On, collector: 'ok' | 'failed' | 'invalid' | 'missing' | 'pre-1730' = 'ok', env: Record<string, string> = { HOME: '/home/test' }, registered = '', identityHome?: string) {
   const writes: SoBeacon[] = []
   const statuses: string[] = []
-  const calls = { pluginList: 0, collector: [] as string[][] }
+  const calls = { pluginList: 0, collector: [] as string[][], reads: [] as string[], timeouts: [] as (number | undefined)[] }
   const clock = mock.clock(on, { now: Date.parse(at) })
   mock.env(on, env)
   mock.store(on)
-  on('fs.read', () => ({ value: registered }))
+  on('fs.read', (_$, e) => { calls.reads.push((e as { path?: string }).path ?? ''); return { value: registered } })
   on('fs.list', () => ({ value: [] }))
   on('session.id', () => ({ value: collector === 'pre-1730' ? UUID : 'test-session' }))
   on('session.cwd', () => ({ value: '/repo' }))
@@ -27,10 +29,11 @@ function world(on: On, collector: 'ok' | 'failed' | 'invalid' | 'missing' | 'pre
   on('session.usage', () => ({ value: { startedAt: Date.parse(at), context: { window: 200000, tokens: 40000, percent: 20 }, rateLimits: [] } }))
   on('process.run', (_$, e) => {
     let stdout = 'null'
-    if (e.argv.includes('identity')) stdout = '{"pid":123}'
+    if (e.argv.includes('identity')) stdout = JSON.stringify({ pid: 123, home: identityHome })
     else if (e.argv.includes('write')) writes.push(JSON.parse(e.init?.stdin ?? '{}') as SoBeacon)
     else if (e.argv.some(a => a.endsWith('/scripts/so-hud.mjs'))) {
       calls.collector.push([...e.argv])
+      calls.timeouts.push(e.init?.timeoutMs)
       if (collector === 'failed') return { value: { exitCode: 6, stdout: '', stderr: 'measurement failed', isStdoutTruncated: false, isStderrTruncated: false } }
       // A collector from before #1730 knows no --session-id: strict parseArgs, usage exit 2.
       if (collector === 'pre-1730' && e.argv.includes('--session-id')) return { value: { exitCode: 2, stdout: '', stderr: 'so-hud: --json erforderlich; siehe --help\n', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -107,6 +110,47 @@ test('a drive-letter root registered under USERPROFILE is used without HOME', { 
   const { calls } = world(on, 'ok', { USERPROFILE: 'C:\\Users\\test' }, 'C:\\so\n')
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   expect(calls.collector[0]?.[1]).toBe('C:\\so/scripts/so-hud.mjs')
+})
+// Catches (GH#104): Git Bash sets HOME=/c/Users/x while beacon-io and `--register-root` write under os.homedir()
+// (USERPROFILE on Windows); the mod read HOME first and never saw the registered root or the beacons.
+test('the registered root is read under the helper\'s home, not a differing HOME', { options: {} }, async ($, on) => {
+  const { calls } = world(on, 'ok', { HOME: '/c/Users/git', USERPROFILE: 'C:\\Users\\test' }, 'C:\\so\n', 'C:\\Users\\test')
+  await $.session.start({ cwd: 'C:\\repo', surface: 'terminal', isInteractive: true })
+  // The kit resolves a non-POSIX path below the plugin folder on macOS/Linux, so the read is matched by its tail.
+  expect(calls.reads[0]).toMatch(/C:\\Users\\test\/\.config\/session-orchestrator\/hud\/so-root$/)
+})
+// Catches (GH#101): the fixed 3-second limit that ends in collector-failed on slower hosts; SO_HUD_TIMEOUT_MS raises it.
+for (const [raw, ms] of [['9000', 9000], [' 9000 ', 9000], ['   ', 3000], ['abc', 3000], ['1.5', 3000], ['999', 3000], ['60001', 3000]] as const) {
+  test(`SO_HUD_TIMEOUT_MS=${JSON.stringify(raw)} gives the collector ${ms} ms`, { options: { soRoot: '/so' } }, async ($, on) => {
+    const { calls } = world(on, 'ok', { HOME: '/home/test', SO_HUD_TIMEOUT_MS: raw })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    expect(calls.timeouts[0]).toBe(ms)
+  })
+}
+// Catches (GH#100): the collision guard compared raw strings, so a native Windows file never fell under its root.
+for (const [file, root, pattern] of [
+  ['C:\\repo\\src\\a.ts', 'C:/repo', 'src/**'],
+  ['c:/repo/src/a.ts', 'C:\\repo\\', 'src\\a.ts'],
+  ['/c/repo/src/a.ts', 'C:/repo', 'C:\\repo\\src\\'],
+  ['\\\\srv\\share\\repo\\src\\a.ts', '//srv/share/repo', 'src/'],
+] as const) {
+  test(`collision found for ${file} under ${root} (${pattern})`, () => {
+    const peers = [{ session_id: 'peer', gleiches_working_copy: true, scope_paths: [comparablePath(pattern)] }]
+    expect(findCollisions({ filePath: comparablePath(file), repoRoot: comparablePath(root), ownSessionId: 'own', peers }).hits).toHaveLength(1)
+  })
+}
+test('another drive is no collision; POSIX paths are not respelled', () => {
+  const peers = [{ session_id: 'peer', gleiches_working_copy: true, scope_paths: ['src/**'] }]
+  expect(findCollisions({ filePath: comparablePath('D:\\repo\\src\\a.ts'), repoRoot: comparablePath('C:\\repo'), ownSessionId: 'own', peers }).hits).toHaveLength(0)
+  expect(comparablePath('/home/x/repo/')).toBe('/home/x/repo/')
+  expect(windowsPath('/repo/a/x\\y.ts')).toBe(false)
+})
+// Catches (GH#106): Git Bash prints `/c/x` after a `cd`, which a native Windows process cannot use as its folder.
+test('a folder printed by Git Bash becomes a drive path on a Windows host only', () => {
+  expect(hostFolder('/c/Users/x/repo', 'C:\\Users\\x')).toBe('C:/Users/x/repo')
+  expect(hostFolder('/tmp', 'C:\\Users\\x')).toBeNull()
+  expect(hostFolder('//srv/share/r', 'C:\\Users\\x')).toBe('//srv/share/r')
+  expect(hostFolder('/c/Users/x', '/home/x')).toBe('/c/Users/x')
 })
 // Catches (#1730): this mod passing --session-id to a Session Orchestrator from before #1730 — its collector exits 2 on
 // the unknown flag and every measurement failed for good.

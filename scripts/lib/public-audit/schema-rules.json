@@ -1,0 +1,9 @@
+{
+  "Person": { "required": ["name"], "recommended": ["url", "sameAs"] },
+  "Organization": { "required": ["name", "url"], "recommended": ["logo", "sameAs"] },
+  "Article": {
+    "required": ["headline", "author", "datePublished", "image"],
+    "recommended": ["dateModified", "publisher"]
+  },
+  "Product": { "required": ["name", "image"], "recommended": ["description", "offers"] }
+}

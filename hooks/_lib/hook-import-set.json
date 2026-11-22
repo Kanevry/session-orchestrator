@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-13T11:48:52.570Z",
-  "head": "4c6582249cfae868ed12d3d5ac803377818a0205",
+  "generated_at": "2026-11-18T08:45:08.607Z",
+  "head": "14f25002d1fc7a1acdd964825843c6be6b787c6c",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -1272,6 +1272,42 @@
       "reachable_from": [
         "post-bash-write-verify.mjs",
         "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/hook-stdin-limit.mjs",
+      "reachable_from": [
+        "codex-apply-patch-guard.mjs",
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-context-threshold.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-agent-cap.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-destructive-guard.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
+        "pre-edit-sessions-ledger-guard.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "pre-tool-state-md-path-guard.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {

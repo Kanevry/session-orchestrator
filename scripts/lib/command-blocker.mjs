@@ -9668,10 +9668,8 @@ export function extractRedirectTargets(command) {
 
 /**
  * Minimal glob-to-RegExp for redirect target-denylist matching (#983).
- * Same shape as the picomatch-absent fallback in scripts/lib/rule-loader.mjs
- * (`**` = any path segments, `*` = within-segment, `?` = single char) —
- * duplicated locally because this module is hook-hot-path pure (no imports
- * beyond node built-ins, no I/O at import time; see header invariant).
+ * Supports `**` across path segments, `*` within a segment, and `?` for a
+ * single character. Kept local to preserve the module's hook import boundary.
  *
  * CASE-INSENSITIVE (#994 R2): the returned RegExp carries the `i` flag
  * UNCONDITIONALLY — no platform detection. Detection is unsafe in both

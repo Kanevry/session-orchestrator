@@ -4,7 +4,7 @@ user-invocable: false
 tags: [orchestration, execution, agents, waves]
 model: inherit
 model-preference: opus
-model-preference-codex: gpt-5.4-mini
+model-preference-codex: gpt-6.2-sol
 model-preference-cursor: claude-sonnet-4-6
 description: >
   Use this skill when executing the agreed session plan in waves with role-based execution and parallel subagents. Handles inter-wave
@@ -84,7 +84,7 @@ Before starting the first wave (Discovery role):
 1. `git status --short` — ensure clean working directory (commit or stash if needed)
 2. Verify no parallel session conflicts (unexpected modified files)
 3. Confirm the agreed plan is still valid (no new critical issues since planning)
-4. **Verify `jq` is installed** — run `command -v jq`. If not found, warn the user: "⚠ jq is not installed. Scope and command enforcement hooks will be DISABLED. Install jq (`brew install jq` / `apt install jq`) to enable security enforcement." Do NOT proceed with waves until user acknowledges.
+4. **Check `jq` for shell snippets that call it** — run `command -v jq` before using those snippets. The scope and command enforcement hooks run without `jq`. In Scope Manifest step 4, keep the configured `enforcement` value in `wave-scope.json` regardless of `jq` availability.
 5. **Read Session Config**: Parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`. Extract these fields:
    - `persistence` (default: true), `enforcement` (default: warn), `isolation` (default: auto)
    - `agents-per-wave` (default: 6), `max-turns` (default: auto), `pencil` (default: null)

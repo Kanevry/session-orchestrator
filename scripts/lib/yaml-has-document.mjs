@@ -10,10 +10,10 @@
  * run without node_modules, and must not gain a static js-yaml edge.
  *
  * @param {string} text
- * @returns {boolean} true when every line is blank or a `#` comment
+ * @returns {boolean} true when the input contains a YAML document
  */
 export function yamlHasDocument(text) {
   return String(text)
-    .split(/\r?\n/)
-    .some((line) => !/^\s*(#.*)?$/.test(line));
+    .split(/\r\n|[\r\n\u2028\u2029]/)
+    .some((line) => !/^\s*(#.*)?$/.test(line) && !/^\.\.\.(?:[ \t]+(?:#.*)?)?$/.test(line));
 }

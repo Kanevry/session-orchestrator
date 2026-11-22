@@ -79,7 +79,9 @@
 
 /* Cold entry context and local section links. */
 .lead-context { max-width: 48ch; margin: 0 0 20px; color: var(--fg-2); }
-.lead-sections { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 20px; font-size: .85rem; }
+.lead-sections { display: flex; flex-wrap: wrap; gap: 0 20px; margin-top: 12px; font-size: .85rem; }
+/* 23 px tall as bare text links: below the 24 px floor of WCAG 2.5.8 (ux-grill 2026-11-18, #1756). */
+.lead-sections a { display: inline-flex; align-items: center; min-height: 44px; }
 
 /* Keep labels at their drawn size; contain scrolling inside the figure. */
 .lead-diagram-scroll { max-width: 100%; overflow-x: auto; }

@@ -5,7 +5,7 @@ argument-hint: "[--dry-run]"
 tags: [learning, rules, intelligence, meta]
 model: sonnet
 model-preference: sonnet
-model-preference-codex: gpt-5.4-mini
+model-preference-codex: gpt-6.2-sol
 model-preference-cursor: claude-sonnet-4-6
 args-schema:
   - flag: --dry-run
@@ -119,7 +119,7 @@ MAX_PROPOSALS_PER_RUN=$(echo "$CONFIG" | jq -r '.reconcile["max-proposals-per-ru
 ```
 
 When `RULE_EXPIRY_DAYS` is empty, pass `ruleExpiryDays: undefined` to `runReconcile` so the engine uses its per-type TTL. Defaults when the `reconcile` block is absent or a field is missing:
-- `rule-expiry-days`: empty → per-type TTL (`deriveExpiresAt`, default 60d). Preserves FA2 behaviour; matches the `null` resolver default.
+- `rule-expiry-days` uses the per-type TTL when empty (`deriveExpiresAt`, default 60d), matching the `null` resolver default. A positive integer N uses the learning's `created_at` plus N days as the eligibility cutoff and as the basis for the generated rule's `expires-at`, subject to the `min-rule-days` floor on the emitted date.
 - `confidence-floor`: 0.5
 - `mode`: warn (enum `off` | `warn`)
 - `min-rule-days`: 7 — floor window (days) applied to a proposed rule's `expires-at` so a

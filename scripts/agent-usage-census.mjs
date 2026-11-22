@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * agent-usage-census.mjs — CLI shell over scripts/lib/agent-usage-census.mjs (#1617).
+ * agent-usage-census.mjs — CLI shell over scripts/lib/agent-usage-census.mjs (#1617, #2170).
  *
  * Reads Claude Code subagent transcripts (read-only) and reports per agent type:
  * dispatches, observed models, turns and output per run, cache rebuilds after
@@ -52,6 +52,8 @@ async function main() {
     console.log('Per agent type over the subagent transcripts of the last N days (read-only):');
     console.log('  dispatches, observed models (share of turns), turns/run and output tokens/run (median),');
     console.log('  cache rebuilds after > 5 min gaps, median start context.');
+    console.log('  Second section (#2170): tool calls before the first edit, classified as');
+    console.log('  search / read / install / check / other (Bash commands after `cd … &&`).');
     console.log('');
     console.log(`  --days N   window in days (default ${DEFAULT_DAYS})`);
     console.log('  --root D   transcript root (default ~/.claude/projects)');

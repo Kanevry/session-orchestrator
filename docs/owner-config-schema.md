@@ -92,8 +92,11 @@ const result = loadOwnerConfig();
 //   config: <merged with getDefaults()>,
 //   source: 'file' | 'partial' | 'defaults' | ...,
 //   path: '<absolute path>',
-//   errors: string[], warnings: string[], droppedSections: string[],
+//   errors: string[], warnings: string[],
+//   droppedSections?: Array<{ section: string, errors: string[], rawKeys: string[] }>,
 // }
+// rawKeys = keys of the dropped section that carried a non-empty value, so a
+// caller (CP11) can tell "key present" without re-reading the file (#1270).
 
 // Test override
 const result2 = loadOwnerConfig({ path: '/tmp/test-owner.yaml' });

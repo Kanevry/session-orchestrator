@@ -10,42 +10,42 @@
 
 | Path | Purpose |
 |------|---------|
-| `skills/` | 53 user-facing skills (+ `_shared/` internal) |
-| `commands/` | Two command files (`/session`, `/templates-ack`). The other 30 slash commands are skills with explicit `user-invocable: true` — one definition per name (a command + same-named skill lists twice in the `/` picker); measured 2026-11-14 (census below) |
+| `skills/` | 54 user-facing skills (+ `_shared/` internal); measured 2026-11-20 @ f8a432df (census below) |
+| `commands/` | Two command files (`/session`, `/templates-ack`). The other 31 slash commands are skills with explicit `user-invocable: true` — one definition per name (a command + same-named skill lists twice in the `/` picker); measured 2026-11-20 @ f8a432df (census below) |
 | `agents/` | 14 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory). The authoring spec is NOT here — it lives in `docs/agent-authoring.md`, because Claude Code registers every `agents/*.md` as a dispatchable agent by directory convention |
-| `hooks/` | Hook event matchers + handlers (19 matcher entries / 29 plugin-wired handler files [31 on-disk; the extra two are Husky-wired or wired only in the Codex manifest — see Inventory below], 10 distinct events) |
+| `hooks/` | Hook event matchers + handlers (19 matcher entries / 31 plugin-wired handler files [33 on-disk; the extra two are Husky-wired or wired only in the Codex manifest — see Inventory below], 10 distinct events; measured 2026-11-20 @ f8a432df) |
 | `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (18 rules — 14 `severity: block`, 4 `severity: warn`); measured 2026-10-27 @ c47d0fd7 (census below) |
 | `.orchestrator/steering/` | This directory — persistent stable context docs |
 | `.orchestrator/metrics/` | Runtime JSONL telemetry: sessions, learnings, autopilot, events, subagents |
-| `.claude/rules/` | 32 always-on rule files loaded by Claude Code |
+| `.claude/rules/` | 32 always-on rule files loaded by Claude Code; measured 2026-11-20 @ f8a432df |
 | `scripts/` | Node.js automation scripts (`.mjs` only) — includes `generate-agents-skills.mjs` (writes the portable cross-harness surface), `site-numbers.mjs` (the website census), `validate-plugin.mjs` |
 | `scripts/lib/` | Shared library modules (no `.sh` — bash-free since 2026-04-30) — includes `plugin-update-banner.mjs` (installed-vs-published check), `sessions-canonical.mjs`, `session-lock.mjs`, `config/*.mjs` parsers |
-| `scripts/lib/validate/` | 47 `check-*.mjs` validator modules — 45 wired into `scripts/validate-plugin.mjs`, 2 (`check-test-fixture-shapes`, `check-test-value-bans`) run from CI / `.husky/pre-commit` |
-| `tests/` | vitest test suite mirroring `scripts/lib/` + `tests/skills/` (838 `*.test.mjs` files, census below) |
+| `scripts/lib/validate/` | 48 `check-*.mjs` validator modules — 45 wired into `scripts/validate-plugin.mjs`, 3 (`check-test-cousins`, `check-test-fixture-shapes`, `check-test-value-bans`) run from CI / `.husky/pre-commit`; measured 2026-11-20 @ f8a432df |
+| `tests/` | vitest test suite mirroring `scripts/lib/` + `tests/skills/` (900 `*.test.mjs` files, measured 2026-11-20 @ f8a432df, census below) |
 | `templates/` | Vendorable scaffolding (`_shared/rules/`, `_shared/loop.md`) copied into consumer repos |
 | `rules/` | The DELIVERABLE rule library shipped out via `/bootstrap --sync-rules` — opposite role to `.claude/rules/` |
 | `docs/` | PRDs, ADRs, retros, audits, marketplace, CI setup, `agent-authoring.md` |
-| `docs/adr/` | 22 architecture decision records (18 numbered + 4 dated 2026-05-10 records) |
+| `docs/adr/` | 22 architecture decision records (18 numbered + 4 dated 2026-05-10 records); measured 2026-11-20 @ f8a432df |
 | `.claude-plugin/` | Claude Code plugin manifest (`plugin.json`, `marketplace.json`) |
 | `.codex-plugin/` | Codex CLI plugin manifest |
 | `.cursor-plugin/plugin.json` | Portable plugin manifest; kept outside root so Codex resolves its native manifest |
 | `AGENTS.md` (root) | Byte-identical GENERATED copy of `CLAUDE.md` for the 7 of 8 harnesses that read `AGENTS.md` |
-| `.agents/skills/` | Portable GENERATED mirror of all 53 skills and both command files (55 entries) — spec-legal frontmatter + pointer body, never duplicated instructions |
+| `.agents/skills/` | Portable GENERATED mirror of all 54 skills and both command files (56 entries, `ls .agents/skills | wc -l`, measured 2026-11-20 @ f8a432df) — spec-legal frontmatter + pointer body, never duplicated instructions |
 | `skills/*/references/` | Progressive-disclosure detail split out of oversized SKILL.md bodies: `skills/session-start/references`, `skills/wave-executor/references`, `skills/session-end/references`, `skills/architecture/references` |
 | `site/` | The public website (`index.html`, `llms.txt`, `llms-full.txt`, `_census.json`) |
 | `assets/` | Repo assets (`icon.svg`, the Codex composer icon). Logo files live in `site/brand/a3-terminalmodule/`, the social image is `site/og.png` |
 
 ## Inventory (canonical)
 
-- **Skills:** 53 user-facing — measured 2026-11-14 @ 68d2bc75 (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
-- **Slash commands:** 32 — measured 2026-11-14 @ 68d2bc75 (`{ ls commands/*.md | sed 's|commands/||; s|\.md$||'; grep -l '^user-invocable: true' skills/*/SKILL.md | sed 's|skills/||; s|/SKILL.md$||'; } | sort -u | wc -l`): two command files (`/session`, `/templates-ack`) + 30 user-invocable skills (`/architecture`, `/autopilot`, `/backlog`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/deepen`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/test-audit`, `/tmux-layout`, `/ux-grill`, `/write-executable-plan`). Claude Code lists a skill with NO `user-invocable` key as well, so every skill states it (`grep -L '^user-invocable:' skills/*/SKILL.md` → none; 23 say `false`, #1515)
-- **Agents:** 14 — measured 2026-09-06 (`ls agents/*.md | wc -l`): `analyst`, `architect-reviewer`, `code-implementer`, `db-specialist`, `dialectic-deriver`, `docs-writer`, `eval-judge`, `qa-strategist`, `security-reviewer`, `session-reviewer`, `skill-applied-judge`, `test-writer`, `ui-developer`, `ux-evaluator`
-- **Hook event matchers / handlers:** 19 matcher entries / 29 plugin-wired handler files (31 on-disk) — measured 2026-11-03 @ abdc2f18 (`grep -c '"matcher"' hooks/hooks.json`; `grep -o '[a-z0-9-]*\.mjs' hooks/hooks.json | sort -u | wc -l`; `ls hooks/*.mjs | wc -l`). `hooks/codex-apply-patch-guard.mjs` is on-disk but absent from `hooks/hooks.json` (it is wired in `hooks/hooks-codex.json`); `hooks/wave-scope-commit-guard.mjs` is on-disk but intentionally NOT a plugin hook — it is the repository's Git pre-commit guard via Husky (`.husky/pre-commit`), because it guards git index/commit state rather than a plugin lifecycle event. Counting basis: "plugin-wired" = distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "Husky-wired" = referenced inside `.husky/pre-commit`; "on-disk" = `ls hooks/*.mjs`.
-- **Rules:** 32 always-on files — measured 2026-11-03 @ abdc2f18 (`ls .claude/rules/*.md | wc -l`). This number moves whenever the reconcile engine materialises or consolidates generated rules — re-measure, never quote from memory.
-- **Validators:** 47 `scripts/lib/validate/check-*.mjs` modules — measured 2026-11-03 @ abdc2f18 (`ls scripts/lib/validate/check-*.mjs | wc -l`); 45 are referenced by `scripts/validate-plugin.mjs`, the other two (`check-test-fixture-shapes`, `check-test-value-bans`) by `.gitlab-ci.yml` / `.husky/pre-commit`.
-- **ADRs:** 22 — measured 2026-11-03 @ abdc2f18 (`ls docs/adr/*.md | wc -l`): 18 numbered `00NN-*.md` plus 4 dated `2026-05-10-*.md` records.
-- **Tests:** 830+ test files — a floor, because the exact count moves with every new test file; measured 2026-11-03 @ abdc2f18: `find tests -name '*.test.mjs' | wc -l` → 838. The runtime test-case total is only knowable from a `npm test` run; the static floor is 17,799 `it()`/`test()` definitions (`rg -c --no-filename -e '^\s*(it|test)(\.\w+)?\(' tests --glob '*.test.mjs'`, summed) and the real number is higher because of parameterised blocks.
-- **Destructive-command policy:** 18 rules, 14 blocking and 4 warning — measured 2026-11-03 @ abdc2f18 (`node -e` count of `.rules[].severity` in `.orchestrator/policy/blocked-commands.json`). The total includes both blocking and warning rules.
+- **Skills:** 54 user-facing — measured 2026-11-20 @ f8a432df (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
+- **Slash commands:** 33 — measured 2026-11-20 @ f8a432df (`{ ls commands/*.md | sed 's|commands/||; s|\.md$||'; grep -l '^user-invocable: true' skills/*/SKILL.md | sed 's|skills/||; s|/SKILL.md$||'; } | sort -u | wc -l`): two command files (`/session`, `/templates-ack`) + 31 user-invocable skills (`/architecture`, `/autopilot`, `/backlog`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/deepen`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/public-audit`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/test-audit`, `/tmux-layout`, `/ux-grill`, `/write-executable-plan`). Claude Code lists a skill with NO `user-invocable` key as well, so every skill states it (`grep -L '^user-invocable:' skills/*/SKILL.md` → none; 23 say `false`, #1515)
+- **Agents:** 14 — measured 2026-11-20 @ f8a432df (`ls agents/*.md | wc -l`): `analyst`, `architect-reviewer`, `code-implementer`, `db-specialist`, `dialectic-deriver`, `docs-writer`, `eval-judge`, `qa-strategist`, `security-reviewer`, `session-reviewer`, `skill-applied-judge`, `test-writer`, `ui-developer`, `ux-evaluator`
+- **Hook event matchers / handlers:** 19 matcher entries / 31 plugin-wired handler files (33 on-disk) — measured 2026-11-20 @ f8a432df (`grep -c '"matcher"' hooks/hooks.json`; `grep -o '[a-z0-9-]*\.mjs' hooks/hooks.json | sort -u | wc -l`; `ls hooks/*.mjs | wc -l`). `hooks/codex-apply-patch-guard.mjs` is on-disk but absent from `hooks/hooks.json` (it is wired in `hooks/hooks-codex.json`); `hooks/wave-scope-commit-guard.mjs` is on-disk but intentionally NOT a plugin hook — it is the repository's Git pre-commit guard via Husky (`.husky/pre-commit`), because it guards git index/commit state rather than a plugin lifecycle event. Counting basis: "plugin-wired" = distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "Husky-wired" = referenced inside `.husky/pre-commit`; "on-disk" = `ls hooks/*.mjs`.
+- **Rules:** 32 always-on files — measured 2026-11-20 @ f8a432df (`ls .claude/rules/*.md | wc -l`). This number moves whenever the reconcile engine materialises or consolidates generated rules — re-measure, never quote from memory.
+- **Validators:** 48 `scripts/lib/validate/check-*.mjs` modules — measured 2026-11-20 @ f8a432df (`ls scripts/lib/validate/check-*.mjs | wc -l`); 45 are referenced by `scripts/validate-plugin.mjs`, the other three (`check-test-cousins`, `check-test-fixture-shapes`, `check-test-value-bans`) by `.gitlab-ci.yml` / `.husky/pre-commit`.
+- **ADRs:** 22 — measured 2026-11-20 @ f8a432df (`ls docs/adr/*.md | wc -l`): 18 numbered `00NN-*.md` plus 4 dated `2026-05-10-*.md` records.
+- **Tests:** 900+ test files — a floor, because the exact count moves with every new test file; measured 2026-11-20 @ f8a432df: `find tests -name '*.test.mjs' | wc -l` → 900. The runtime test-case total is only knowable from a `npm test` run; the static floor is 18,754 `it()`/`test()` definitions (`rg -c --no-filename -e '^\s*(it|test)(\.\w+)?\(' tests --glob '*.test.mjs'`, summed) and the real number is higher because of parameterised blocks.
+- **Destructive-command policy:** 18 rules, 14 blocking and 4 warning — measured 2026-11-20 @ f8a432df (`node -e` count of `.rules[].severity` in `.orchestrator/policy/blocked-commands.json`). The total includes both blocking and warning rules.
 
 ## Key Skills (frequently referenced)
 
@@ -77,12 +77,12 @@
 | PreToolUse | `Edit\|Write\|MultiEdit` | `hooks/enforce-scope.mjs` + `hooks/config-protection.mjs` + `hooks/pre-edit-sessions-ledger-guard.mjs` + `hooks/pre-tool-state-md-path-guard.mjs` |
 | PreToolUse | `Bash\|Monitor` | `hooks/pre-bash-destructive-guard.mjs` + `hooks/pre-bash-staging-fence.mjs` + `hooks/pre-bash-memory-propose-audit.mjs` + `hooks/pre-bash-sessions-ledger-guard.mjs` + `hooks/pre-tool-state-md-path-guard.mjs` + `hooks/pre-bash-templates-first.mjs` + `hooks/pre-bash-issue-budget.mjs` + `hooks/enforce-commands.mjs` |
 | PreToolUse | `PowerShell` | `hooks/pre-bash-destructive-guard.mjs` + `hooks/enforce-commands.mjs` |
-| PreToolUse | `Agent` | `hooks/pre-task-scope-disjoint.mjs` |
+| PreToolUse | `Agent` | `hooks/pre-task-scope-disjoint.mjs` + `hooks/pre-agent-cap.mjs` |
 | PreToolUse | `AskUserQuestion` | `hooks/pre-auq-clarity.mjs` |
 | PostToolUse | `Edit\|Write` | `hooks/post-edit-validate.mjs` |
 | PostToolUse | `Edit\|Write\|MultiEdit` | `hooks/post-tooluse-frontend-slop.mjs` + `hooks/post-edit-import-probe.mjs` |
 | PostToolUse | `Bash\|Monitor` | `hooks/post-bash-write-verify.mjs` |
-| PostToolUse | `*` | `hooks/loop-guard.mjs` |
+| PostToolUse | `*` | `hooks/loop-guard.mjs` + `hooks/post-tool-context-threshold.mjs` |
 | Stop | `""` | `hooks/on-stop.mjs` |
 | SubagentStop | `""` | `hooks/on-stop.mjs` + `hooks/subagent-telemetry.mjs` + `hooks/post-subagent-discovery-validator.mjs` |
 | PostToolUseFailure | `""` | `hooks/post-tool-failure-corrective-context.mjs` + `hooks/post-bash-issue-budget-refund.mjs` |
@@ -91,4 +91,4 @@
 | SubagentStart | `""` | `hooks/subagent-telemetry.mjs` |
 | CwdChanged | `""` | `hooks/cwd-change-restore.mjs` |
 
-> Table is exhaustive: one row per matcher entry — **19 matcher entries / 29 plugin-wired handler files** across 10 distinct events — see `hooks/hooks.json` (SSOT). Measured 2026-11-03 @ abdc2f18 with the hook census commands above.
+> Table is exhaustive: one row per matcher entry — **19 matcher entries / 31 plugin-wired handler files** across 10 distinct events — see `hooks/hooks.json` (SSOT). Measured 2026-11-20 @ f8a432df with the hook census commands above.

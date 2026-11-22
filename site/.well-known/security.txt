@@ -1,0 +1,7 @@
+# Security contact for session-orchestrator.com (RFC 9116).
+# The only reporting channel is GitHub Private Vulnerability Reporting, as stated in SECURITY.md.
+Contact: https://github.com/Kanevry/session-orchestrator/security/advisories/new
+Expires: 2027-11-01T00:00:00.000Z
+Preferred-Languages: en, de
+Canonical: https://session-orchestrator.com/.well-known/security.txt
+Policy: https://github.com/Kanevry/session-orchestrator/blob/main/SECURITY.md

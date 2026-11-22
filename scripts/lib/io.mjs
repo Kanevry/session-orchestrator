@@ -30,6 +30,8 @@ import {
 import path, { dirname } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 
+import { HOOK_STDIN_MAX_BYTES } from './hook-stdin-limit.mjs';
+
 /**
  * Whether a hook tool carries a POSIX shell command in tool_input.command.
  * PowerShell has a separate command policy and is not parsed as POSIX shell.
@@ -288,7 +290,6 @@ const READ_STDIN_TIMEOUT_MS = 5_000; // 5 s guard
  * @throws {Error} If the 1 MB size limit or the timeout is exceeded.
  */
 export async function readStdin(opts = {}) {
-  const MAX_BYTES = 1_048_576; // 1 MB guard
   const requested = Number(opts?.timeoutMs);
   const TIMEOUT_MS = Number.isFinite(requested) && requested > 0
     ? requested
@@ -316,7 +317,7 @@ export async function readStdin(opts = {}) {
     const onData = (chunk) => {
       if (controller.signal.aborted) return;
       totalBytes += Buffer.byteLength(chunk, 'utf8');
-      if (totalBytes > MAX_BYTES) {
+      if (totalBytes > HOOK_STDIN_MAX_BYTES) {
         cleanup();
         reject(new Error(`io.mjs: stdin payload exceeds 1 MB limit (${totalBytes} bytes read)`));
         return;

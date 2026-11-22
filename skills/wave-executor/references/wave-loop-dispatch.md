@@ -499,13 +499,16 @@ After `wave-scope.json` is written for this wave and before assembling the `Agen
 
 > **⚠ Measure before you inject — on Claude Code this step is usually a NET LOSS (#931b).** `docs/instruction-delivery.md` measured the delivery path on 2026-07-30: every `.claude/rules/*.md` already reaches a dispatched agent through Claude Code's **native project-instruction loading**, so a `$RULES_BLOCK` prepended on top arrives a *second* time. Measured on a real wave: the scoped block was 122,875 B against a 169,961 B corpus — glob scoping saved **4.0%**, of which 85.5% came from the tier axis alone, while injecting alongside undiminished native delivery cost **+72%** (292,836 B). The coordinator SHOULD therefore check the block's size before prepending it, and MAY skip the injection with a logged Deviation when the harness already delivers the corpus natively — that is not a shortcut, it is the measured decision. Inject unconditionally only on a harness that does NOT auto-load `.claude/rules/` (Codex CLI, Pi, Cursor), where this block is the sole delivery path and the saving is real. See `docs/instruction-delivery.md` §1.2 and §5.
 
-**Gate:** runs when `.claude/rules/` exists. When it does not, the CLI prints nothing and exits 0 — zero behaviour change. This step never blocks dispatch: any non-zero exit or empty output means "inject nothing, continue" (same best-effort framing as Pre-Dispatch Grounding Injection above).
+**Gate:** runs when `.claude/rules/` exists. An absent rules directory produces empty stdout and exit 0. On a nonzero exit, keep the loader's stderr visible, report the WARN as a wave deviation, and proceed with an empty rule block.
 
 **Per-wave scoping (not per-agent):** the rule set is computed ONCE per wave from the wave's `allowedPaths` union (the same `wave-scope.json` source used elsewhere), not per agent. The CLI resolves `scopePaths` from `allowedPaths`, `mode` from the `session-type:` frontmatter in the active harness's `STATE.md`, and `hostClass` from `.orchestrator/host.json` — all overridable, all degrading to "no gating" when unreadable. Default state and scope paths resolve independently: state-directory override first, then active-harness and legacy fallback.
 
 **Invocation:** once per wave, run from the repo root and capture stdout as `$RULES_BLOCK`:
 
-    RULES_BLOCK="$(node "$PLUGIN_ROOT/scripts/print-applicable-rules.mjs" --context wave 2>/dev/null)"
+    RULES_BLOCK="$(node "$PLUGIN_ROOT/scripts/print-applicable-rules.mjs" --context wave)" || {
+        printf 'WARN: wave rule loading failed (exit %s). Continuing without the rule block.\n' "$?" >&2
+        RULES_BLOCK=''
+    }
 
 `--context wave` (issue #692) excludes `tier: coordinator-only` rules (owner-persona, lsp, mvp-scope, loop-and-monitor) from the wave-agent prompt — those are operator/coordinator-context rules a wave implementation agent does not need. `tier: always` and `tier: wave-only` rules are unaffected; omitting the flag (or passing `--context coordinator`) disables wave-tier exclusion. Use `--wave-scope <path>` only if `wave-scope.json` is not at the default `.claude/wave-scope.json`. The CLI returns:
 - a Markdown block (header `## Applicable Rules (scoped to this wave)`, a preamble naming the block's fence token, then each matching rule's raw content wrapped in `<rule-<token> index="i/N" src="<repo-relative path>">` … `</rule-<token>>`) when one or more rules apply, OR
@@ -555,7 +558,7 @@ This replaces the older prose slot "Relevant patterns from `<state-dir>/rules/`"
 
 When it is empty (no corpus, no qualifying entries, or any CLI failure), dispatch that agent unchanged — the prompt is then byte-identical to the legacy one.
 
-**Instrumentation (why this one is measurable and its neighbours are not).** The rule injection above is a SHOULD and emits no signal either way, so "did the coordinator actually inject?" has been unanswerable after the fact — a gap the #1014 discovery wave had to leave open. This CLI emits `orchestrator.learnings.index.injected` to `.orchestrator/metrics/events.jsonl` (via `scripts/emit-event.mjs`, the canonical `emitEvent()` path — the same route `scripts/compute-grounding-injection.sh` uses for `orchestrator.grounding.injected`), carrying `count`, `scope_matched`, `global_count`, `candidates`, `truncated`, `bytes`, and `scope_source`. The before/after measurement is therefore a fact in the event log, not a matter of prose compliance. Emission is best-effort and suppressible with `--no-event`; a failed emit never blocks dispatch.
+**Instrumentation.** This CLI emits `orchestrator.learnings.index.injected` to `.orchestrator/metrics/events.jsonl` (via `scripts/emit-event.mjs`, the canonical `emitEvent()` path — the same route `scripts/compute-grounding-injection.sh` uses for `orchestrator.grounding.injected`), carrying `count`, `scope_matched`, `global_count`, `candidates`, `truncated`, `bytes`, and `scope_source`. The event records the Learnings-Index injection. Emission is best-effort and suppressible with `--no-event`. A failed emit never blocks dispatch.
 
 #### Pre-Dispatch: File-Scope Injection (#1020)
 

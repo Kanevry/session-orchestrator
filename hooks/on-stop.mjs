@@ -525,7 +525,8 @@ async function handleStop(input, reaperTrigger = null) {
   // (hook must remain silent and non-blocking).
   if (sessionId) {
     try {
-      // heartbeat() returns null when no entry exists — a SILENT no-op that
+      // heartbeat() logs lock skips itself and returns { skipped: 'lock' }.
+      // A missing or invalid entry returns null — a SILENT no-op that
       // would otherwise make the loss permanent for the rest of the session
       // (e.g. after a zombie sweep, or a harness UUID rotation with no fresh
       // SessionStart). We do NOT re-register here: this hook has no access to

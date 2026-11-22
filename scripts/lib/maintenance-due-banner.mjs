@@ -561,7 +561,7 @@ export async function computeMaintenanceDue(opts = {}) {
         if (sweepable.length > 0) {
           parts.push(
             `${sweepable.map((r) => `${r.file} ${r.expiresAt}`).join(', ')} → ` +
-              'node scripts/sweep-expired-rules.mjs (dry-run first)',
+              `node scripts/sweep-expired-rules.mjs --horizon-days ${GENERATED_RULE_EXPIRY_HORIZON_DAYS} (dry-run first)`,
           );
         }
         if (stuck.length > 0) {
@@ -630,7 +630,7 @@ export async function computeMaintenanceDue(opts = {}) {
  * own line whenever their count is above 0, cooldown or not.
  *
  * @param {{repoRoot?: string, config?: object, now?: Date|number, platform?: string}} [opts]
- * @returns {Promise<null | {severity: 'warn', message: string}>}
+ * @returns {Promise<null | {severity: 'warn', message: string, due: string[], undeterminable: string[], deadIndexLinks: number}>}
  */
 export async function checkMaintenanceDue(opts = {}) {
   try {
@@ -641,7 +641,16 @@ export async function checkMaintenanceDue(opts = {}) {
       computed.deadIndexLinks > 0
         ? `memory: ${computed.deadIndexLinks} tote Index-Links — /memory-cleanup`
         : null;
-    const deadOnly = deadLine ? { severity: 'warn', message: deadLine } : null;
+    // #2196: structured identities for the session-start repeat gate — which
+    // signals are due, never the dates or counts inside their detail text.
+    const facts = {
+      due: computed.due.map((d) => d.id),
+      undeterminable: [...computed.undeterminable],
+      deadIndexLinks: computed.deadIndexLinks,
+    };
+    const deadOnly = deadLine
+      ? { severity: 'warn', message: deadLine, ...facts, due: [], undeterminable: [] }
+      : null;
     if (computed.due.length === 0 && computed.undeterminable.length === 0) return deadOnly;
 
     // Cooldown — no new config key: the housekeeping session's own record IS
@@ -667,7 +676,7 @@ export async function checkMaintenanceDue(opts = {}) {
       ' — run /session housekeeping.' +
       (deadLine ? `\n${deadLine}` : '');
 
-    return { severity: 'warn', message };
+    return { severity: 'warn', message, ...facts };
   } catch {
     // Defensive catch-all — a session-start banner must never throw.
     return null;

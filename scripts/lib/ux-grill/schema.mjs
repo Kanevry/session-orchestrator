@@ -258,6 +258,8 @@ export function countBySeverity(findings) {
  * @param {Array<{severity: string}>} [opts.findings] - drives `counts_by_severity`
  *   and `provisional_count` when those are not passed explicitly.
  * @param {{high: number, medium: number, low: number}} [opts.countsBySeverity]
+ * @param {{inline: number, hit_area: number, partial: boolean}} [opts.targetSizeExempt] -
+ *   exemptions on measured pages, partial for skipped exemption checks, truncated scans or malformed flags.
  * @param {number} [opts.provisionalCount]
  * @param {{new: number, persisting: number, fixed: number}} [opts.compare]
  * @param {Array<{what: string, reason: string}>} [opts.skipped] - `reason` must
@@ -277,6 +279,7 @@ export function makeRunRecord({
   findings,
   countsBySeverity,
   provisionalCount,
+  targetSizeExempt,
   compare,
   skipped,
   pencilCoverage,
@@ -292,6 +295,10 @@ export function makeRunRecord({
   }
   if (!VALID_BUILDS.includes(build)) {
     throw new TypeError(`makeRunRecord: build must be one of ${VALID_BUILDS.join('|')}, got ${String(build)}`);
+  }
+  if (targetSizeExempt !== undefined && (typeof targetSizeExempt?.partial !== 'boolean' ||
+      ![targetSizeExempt.inline, targetSizeExempt.hit_area].every(n => Number.isSafeInteger(n) && n >= 0))) {
+    throw new TypeError('makeRunRecord: invalid target_size_exempt counters');
   }
   const findingList = findings ?? [];
   if (!Array.isArray(findingList)) {
@@ -313,6 +320,7 @@ export function makeRunRecord({
     viewports: viewports ?? [],
     routes: routes ?? [],
     counts_by_severity: countsBySeverity ?? countBySeverity(findingList),
+    ...(targetSizeExempt === undefined ? {} : { target_size_exempt: targetSizeExempt }),
     provisional_count: provisionalCount ?? findingList.filter((f) => f?.provisional).length,
     compare: compare ?? { new: 0, persisting: 0, fixed: 0 },
     skipped: skipped ?? [],

@@ -52,9 +52,8 @@
  * asserts below are unaffected either way: they reject on control characters,
  * dangerous invisibles, wrapper-forgery literals and length, never on colons.
  *
- * The frontmatter parser THIS module's asserts are shaped for is HAND-ROLLED,
- * not a YAML library (`rule-loader.mjs` imports only node:fs/path/module): a
- * `:` in a scalar is harmless there, a mid-line `#` is harmless, quotes
+ * The frontmatter parser in `rule-loader.mjs` is hand-rolled: a `:` in a
+ * scalar is harmless there, a mid-line `#` is harmless, quotes
  * survive — the ONE escape is a newline, which starts a new top-level key.
  * That is why the machine-value asserts below are shaped as "no control
  * characters / exact token shape" and NOT as YAML quoting or colon escaping,

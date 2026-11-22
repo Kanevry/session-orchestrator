@@ -968,8 +968,8 @@ function worstPipeline(candidates) {
  *                        > 0 (#1390). Without it a `failed` run of the very
  *                        commit on another ref disappeared behind a `green`.
  *   - `droppedStatuses`  their statuses, in API order, same gate. Evidence
- *                        only: they never enter the verdict or `ambiguous`,
- *                        which stay the #857 ref-preference result.
+ *                        only: they do not enter the severity ranking or
+ *                        `ambiguous`.
  *
  * @param {Array<any>} selected
  * @param {any} chosen
@@ -992,6 +992,20 @@ function candidateEvidence(selected, chosen, dropped) {
     out.droppedStatuses = dropped.map((p) => sanitizeApiText(p.status));
   }
   return out;
+}
+
+function gitlabRunningResult(pipeline, evidence) {
+  return {
+    status: 'unknown',
+    ok: false,
+    phase: 'running',
+    details: {
+      currentPipelineId: pipeline.id,
+      cliUsed: 'glab',
+      reason: `pipeline-${sanitizeApiText(pipeline.status)}`,
+      ...evidence,
+    },
+  };
 }
 
 /**
@@ -1131,18 +1145,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
   }
 
   if (pipelineStatus === 'running' || pipelineStatus === 'pending') {
-    return {
-      status: 'unknown',
-      ok: false,
-      // #856: additive — "verdict pending", distinct from "unreadable".
-      phase: 'running',
-      details: {
-        currentPipelineId: currentPipeline.id,
-        cliUsed: 'glab',
-        reason: `pipeline-${sanitizeApiText(pipelineStatus)}`,
-        ...evidence,
-      },
-    };
+    return gitlabRunningResult(currentPipeline, evidence);
   }
 
   if (pipelineStatus === 'failed' || pipelineStatus === 'canceled') {
@@ -1214,6 +1217,16 @@ async function checkGitlab(repoRoot, now, deps = {}) {
       pipelineStatus === 'canceled' &&
       !redRun.some((p) => p.status === 'failed') &&
       !(evidence.droppedStatuses ?? []).includes('failed');
+
+    // #1852: a canceled run without a failure has no verdict. Report an
+    // in-flight same-SHA sibling with its own ID and ref for the banner.
+    if (canceledWithoutFailure && failingJobName === undefined) {
+      const inFlight = foreign.find((p) => p.status === 'running' || p.status === 'pending');
+      if (inFlight) {
+        const dropped = pipelines.filter((p) => p?.sha === currentSha && p !== inFlight);
+        return gitlabRunningResult(inFlight, candidateEvidence([inFlight], inFlight, dropped));
+      }
+    }
 
     return {
       status: 'red',
@@ -1367,9 +1380,12 @@ async function checkGithub(repoRoot, now, deps = {}) {
   // priority even in an inconsistent row; only completed success grants green.
   // Counts are additive diagnostics, never a new status or gate authority.
   const checkRunCounts = { success: 0, failure: 0, inProgress: 0, queued: 0, cancelled: 0, skipped: 0, neutral: 0, waiting: 0, other: 0 };
+  const failedRuns = [];
   for (const run of checkRuns) {
-    if (run?.conclusion === 'failure' || run?.conclusion === 'action_required') checkRunCounts.failure++;
-    else if (run?.status === 'completed' && run?.conclusion === 'success') checkRunCounts.success++;
+    if (['failure', 'action_required', 'timed_out', 'startup_failure'].includes(run?.conclusion)) {
+      failedRuns.push(run);
+      checkRunCounts.failure++;
+    } else if (run?.status === 'completed' && run?.conclusion === 'success') checkRunCounts.success++;
     else if (run?.status === 'completed' && run?.conclusion === 'cancelled') checkRunCounts.cancelled++;
     else if (run?.status === 'completed' && run?.conclusion === 'skipped') checkRunCounts.skipped++;
     else if (run?.status === 'completed' && run?.conclusion === 'neutral') checkRunCounts.neutral++;
@@ -1378,9 +1394,6 @@ async function checkGithub(repoRoot, now, deps = {}) {
     else if (run?.status === 'queued' && run?.conclusion === null) checkRunCounts.queued++;
     else checkRunCounts.other++;
   }
-  const failedRuns = checkRuns.filter(
-    (r) => r?.conclusion === 'failure' || r?.conclusion === 'action_required',
-  );
   const failedRun = failedRuns[0];
 
   if (failedRun) {
@@ -1545,7 +1558,8 @@ async function checkGithub(repoRoot, now, deps = {}) {
  * findings — and the #1390 "same-sha rows the ref preference set aside"
  * (`droppedCount`/`droppedStatuses`) — are delivered through ADDITIVE `details`
  * fields and `details.reason`. GitHub's `checkRunCounts` counts each row once:
- * `failure` includes action_required; `other` includes malformed/inconsistent
+ * `failure` includes action_required, timed_out and startup_failure;
+ * `other` includes malformed/inconsistent
  * rows and unsupported statuses/conclusions. Non-success reasons are
  * check-runs-in-progress, check-runs-queued, check-runs-cancelled,
  * check-runs-skipped, check-runs-neutral, check-runs-waiting (#1526),
@@ -1554,7 +1568,8 @@ async function checkGithub(repoRoot, now, deps = {}) {
  * and the session-start renderer prints nothing for one.
  *
  * `phase` (#856, additive) marks a reading that carries NO verdict yet:
- * `'running'` beside `status: 'unknown'` (GitLab HEAD pipeline running/pending;
+ * `'running'` beside `status: 'unknown'` (GitLab HEAD pipeline running/pending,
+ * including a same-SHA sibling of a canceled pipeline with no observed failure;
  * GitHub check runs only in progress/queued), `'canceled'` beside
  * `status: 'red'` (GitLab HEAD pipeline canceled, with no `failed` row in the
  * red run back to the last green and no same-sha `failed` set aside by the ref

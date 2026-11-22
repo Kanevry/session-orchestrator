@@ -139,7 +139,7 @@ function writesOutput(segment: string): boolean {
 
 /** The words of a segment as the command receives them: redirections dropped (input ones when `input`), quotes removed. */
 function argWords(text: string, input = false): string[] {
-  return dropRedirections(rawWords(text), input).map(dequote)
+  return dropRedirections(rawWords(text), input).map(word => dequote(windowsPath(word)))
 }
 
 // Words that can come before the real command without changing what it does. `eval` with unquoted
@@ -205,18 +205,26 @@ function readCommand(segment: string, input: boolean): { words: string[]; assign
       i += 1
       continue
     }
-    if (word === 'env' || word === 'sudo' || word === 'nice') {
+    // The program word as every rule reads it ({@link baseName}): `/usr/bin/env`, `sudo.exe` and `NPX.CMD` are the runners.
+    const name = baseName(word)
+    if (name === 'env' || name === 'sudo' || name === 'nice') {
       i += 1
-      skipOptions(word === 'env' ? ENV_VALUED : word === 'sudo' ? SUDO_VALUED : NICE_VALUED, word === 'env')
+      skipOptions(name === 'env' ? ENV_VALUED : name === 'sudo' ? SUDO_VALUED : NICE_VALUED, name === 'env')
       continue
     }
-    if (word === 'timeout' || word === 'gtimeout') {
+    // Windows `cmd /c …` / `cmd /k …` runs the words after it (GH#99: `cmd /c set`). NAMED CEILING (BV-004): its
+    // quoted several-word form (`cmd /c "git push origin main"`) is one word here; revisit if it shows up in practice.
+    if (name === 'cmd' && /^\/[ck]$/i.test(words[i + 1] ?? '')) {
+      i += 2
+      continue
+    }
+    if (name === 'timeout' || name === 'gtimeout') {
       i += 1
       skipOptions(TIMEOUT_VALUED)
       i += 1 // the duration
       continue
     }
-    if (word === 'caffeinate') {
+    if (name === 'caffeinate') {
       i += 1
       skipOptions(CAFFEINATE_VALUED)
       continue
@@ -225,10 +233,11 @@ function readCommand(segment: string, input: boolean): { words: string[]; assign
   }
   // npx vercel, npx --yes npm publish, pnpm dlx vercel, npm exec -- changeset: the tool is the next
   // word after the runner's own options.
-  if (words[i] === 'npx' || words[i] === 'bunx') {
+  const runner = baseName(words[i] ?? '')
+  if (runner === 'npx' || runner === 'bunx') {
     i += 1
     skipOptions(RUNNER_VALUED)
-  } else if ((words[i] === 'pnpm' && (words[i + 1] === 'dlx' || words[i + 1] === 'exec')) || (words[i] === 'npm' && (words[i + 1] === 'exec' || words[i + 1] === 'x'))) {
+  } else if ((runner === 'pnpm' && (words[i + 1] === 'dlx' || words[i + 1] === 'exec')) || (runner === 'npm' && (words[i + 1] === 'exec' || words[i + 1] === 'x'))) {
     i += 2
     skipOptions(RUNNER_VALUED)
   }
@@ -548,9 +557,23 @@ function innerAt(word: string, inners: readonly Inner[]): Inner | null {
   return m ? (inners[Number(m[1])] ?? null) : null
 }
 
+/**
+ * The program a command word names, read the same on every platform (GH#98): the folder part (`/` or `\`, also the
+ * alias-bypassing leading `\`), a Windows program extension (`.exe`, `.cmd`, `.bat`, `.com`, `.ps1`) and the letter case are
+ * dropped, so `git.exe`, `GIT.EXE`, `"C:\Program Files\Git\cmd\git.exe"` and `npm.cmd` meet every rule as `git` and
+ * `npm`. Exemption lists read through it too: `ECHO`, `./echo` and `sort.exe` count as `echo` and `sort` — the program
+ * the shell finds for them on a case-insensitive file system or on Windows.
+ */
 function baseName(word: string): string {
-  return word.replace(/^\\/, '').split('/').pop() ?? word
+  return (word.split(/[\\/]/).pop() ?? word).replace(/\.(?:exe|cmd|bat|com|ps1)$/i, '').toLowerCase()
 }
+
+// An unquoted Windows program path as written (`C:\tools\git.exe`, `.\npm.cmd`, `~\bin\gh.exe`): the shell's quote
+// removal would drop its backslashes (`C:toolsgit.exe`), so they are read as folder separators first. Only with a
+// drive, `.`, `..` or `~` in front: a bare `g\it.exe` stays bash's `git.exe`. NAMED CEILING (BV-004): a relative path
+// with no such prefix (`tools\git.exe`, PowerShell runs it) keeps bash's reading; revisit if it shows up in practice.
+const WINDOWS_PROGRAM = /^(?:[A-Za-z]:|\.{1,2}|~)\\[^\s"'`$]*\.(?:exe|cmd|bat|com)$/i
+const windowsPath = (raw: string): string => (WINDOWS_PROGRAM.test(raw) ? raw.replace(/\\/g, '/') : raw)
 
 /** A folder a later `cd arg` moves to, given the folder so far (null = the session folder). */
 function joinDir(dir: string | null, arg: string | undefined): string {
@@ -1156,7 +1179,10 @@ function mergeSpans(spans: Span[]): Span[] {
 
 /** The text with `$'…'` escapes decoded and every quote and backslash dropped, so `pu"sh"` and `$'\x70ush'` read as `push`. */
 function normalizeWords(text: string): string {
-  return text
+  // A Windows program path (`"C:\Program Files\Git\cmd\git.exe"`) is read a second time with its backslashes as
+  // folders, so its program word survives the backslash removal below (GH#98); the first reading keeps `g\it.exe` as `git.exe`.
+  const windows = text.replace(/\\(?=[^\s"'`;&|()<>]*\.(?:exe|cmd|bat|com)(?![\w.]))/gi, '/')
+  return (windows === text ? text : `${text}\n${windows}`)
     .replace(/\$'((?:[^'\\]|\\.)*)'/g, (_m: string, body: string) =>
       body.replace(/\\x([0-9a-fA-F]{1,2})|\\u([0-9a-fA-F]{1,4})|\\([0-7]{1,3})|\\(.)/g, (_e: string, hex?: string, uni?: string, oct?: string, ch?: string) =>
         hex !== undefined ? String.fromCharCode(parseInt(hex, 16)) : uni !== undefined ? String.fromCharCode(parseInt(uni, 16)) : oct !== undefined ? String.fromCharCode(parseInt(oct, 8)) : (ch ?? '')))
@@ -2183,12 +2209,13 @@ const ENV_FILE = /^(?:\.env(?:rc)?|\.env[._-][\w.-]+|[\w.-]+\.env|\.env[._-]?[*?
 const ENV_TEMPLATE = /(?:^|[._-])(?:example|sample|template|schema)(?:[._-]|$)/i
 
 function isEnvFile(arg: string): boolean {
-  const base = arg.replace(/^\d*</, '').split('/').pop() ?? ''
+  const base = arg.replace(/^\d*</, '').split(/[\\/]/).pop() ?? ''
   return ENV_FILE.test(base) && !ENV_TEMPLATE.test(base)
 }
 
 // Commands that print the content of a file they are given.
-const ENV_READERS = new Set(['cat', 'less', 'more', 'head', 'tail', 'bat', 'nl', 'strings', 'grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk', 'gawk', 'cut', 'sort', 'uniq', 'tac', 'rev', 'xxd', 'od', 'hexdump', 'hd', 'base64', 'base32', 'basenc', 'diff', 'paste', 'column', 'jq', 'yq', 'tr', 'fold', 'fmt', 'pr', 'expand', 'iconv'])
+// PowerShell's own readers come lower-cased ({@link baseName}): `Get-Content`/`gc`, `type`, `Select-String`/`sls` (GH#99).
+const ENV_READERS = new Set(['get-content', 'gc', 'type', 'select-string', 'sls', 'cat', 'less', 'more', 'head', 'tail', 'bat', 'nl', 'strings', 'grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk', 'gawk', 'cut', 'sort', 'uniq', 'tac', 'rev', 'xxd', 'od', 'hexdump', 'hd', 'base64', 'base32', 'basenc', 'diff', 'paste', 'column', 'jq', 'yq', 'tr', 'fold', 'fmt', 'pr', 'expand', 'iconv'])
 
 // `s/^\([A-Z_][A-Z0-9_]*\)=.*/\1/p` under -n: the key of each KEY=value line and nothing else
 // (each class holds only the exact tokens A-Z, a-z, 0-9 and _, so it cannot span `=`: `[--z]` does).
@@ -2527,11 +2554,39 @@ function dumpsEnvironment(words: readonly string[], tainted: ReadonlySet<string>
 }
 
 /**
+ * The text with PowerShell's environment reads spelled as the shell's (GH#99): `$env:github_token` and
+ * `${Env:GITHUB_TOKEN}` become `$GITHUB_TOKEN` and `${GITHUB_TOKEN}`, upper-cased because Windows' names ignore case,
+ * so every secret-variable rule reads them. Fail-closed for bash: its `${x:OFFSET}` substring form reads as `$OFFSET`.
+ */
+function powerShellEnv(text: string): string {
+  return text
+    // `$env:NAME` alone as a statement prints its value in PowerShell: read as `echo $NAME`. An assignment
+    // (`$env:X_TOKEN = 'v'`) or a property (`$env:X_TOKEN.Length`) is no such statement.
+    // A double-quoted string alone at the start of a statement is printed too, `$env:` expanded inside it
+    // (`"tok: $env:X_TOKEN"`): read as `echo "…"`. Single quotes do not expand and stay untouched.
+    .replace(/(^|[;|&{])([ \t]*)(?="[^"\n]*\$\{?env:[A-Za-z_])/gim, (_m: string, before: string, blank: string) => `${before}${blank}echo `)
+    .replace(/(^|[;|&{(])([ \t]*)(\$\{?)env:([A-Za-z_][A-Za-z0-9_]*)(\}?)(?=[ \t]*(?:$|[;|&)}]))/gim, (_m: string, before: string, blank: string, open: string, name: string, close: string) => `${before}${blank}echo ${open}${name.toUpperCase()}${close}`)
+    .replace(/(\$\{?)env:([A-Za-z_][A-Za-z0-9_]*)/gi, (_m: string, open: string, name: string) => `${open}${name.toUpperCase()}`)
+}
+
+// PowerShell cmdlets and aliases that read an item of the `Env:` drive (`Get-ChildItem Env:`, `gci env:`, `dir env:`,
+// `Get-Item Env:GITHUB_TOKEN`, GH#99), lower-cased as {@link baseName} gives them.
+const ENV_DRIVE_READERS: ReadonlySet<string> = new Set(['get-childitem', 'gci', 'dir', 'ls', 'get-item', 'gi', 'get-content', 'gc', 'cat', 'type', 'get-itemproperty', 'gp', 'get-itempropertyvalue', 'gpv'])
+// Get-ChildItem and its aliases, whose `-Name` switch prints item names instead of the items.
+const GCI_NAMES: ReadonlySet<string> = new Set(['get-childitem', 'gci', 'dir', 'ls'])
+// An `Env:` drive path as an argument, `-Path:Env:X` included; group 1 is the item name (empty: the whole drive).
+const ENV_DRIVE = /^(?:-[A-Za-z]+:)?env:[\\/]?(.*)$/i
+// `[Environment]::GetEnvironmentVariable('NAME')` / `…Variables()` not on the right of an assignment; group 1 is the
+// plural `s`, group 2 the argument as written. NAMED CEILING (BV-004): read anywhere in the text, so a quoted search
+// for the full call (`rg '[Environment]::GetEnvironmentVariables()'`) is refused too; revisit if that shows up.
+const ENV_METHOD = /(?<!=\s*)\[(?:System\.)?Environment\]::GetEnvironmentVariable(s?)\s*\(\s*([^),]*)/gi
+
+/**
  * Every trap the rules name in a shell command, once per id, in reading order. All of them, not the
  * first: on `locker` a `regel` trap only warns, so `git add -A && cat .env` must still carry the SEC-008 one.
  */
 export function findTraps(command: string): Trap[] {
-  const line = dataView(joinContinuations(command))
+  const line = powerShellEnv(dataView(joinContinuations(command)))
   const found = collectTraps(line, 0, line, new Set(), command)
   return found.filter((trap, i) => found.findIndex(other => other.id === trap.id) === i)
 }
@@ -2592,14 +2647,35 @@ function collectTraps(line: string, depth: number, root: string, inherited: Read
       })
     }
 
-    if (ENV_READERS.has(cmd) && args.some(isEnvFile) && !readsKeysOnly(cmd, args)) {
-      const file = args.find(isEnvFile) ?? '.env'
+    // Also each word as written, `\` kept as a folder separator: quote removal turns PowerShell's `.\.env.local` or
+    // `C:\proj\.env` into `..env.local` / `C:proj.env` before isEnvFile sees it (GH#99). Either reading counts.
+    const rawEnvFile = ENV_READERS.has(cmd) ? dropRedirections(rawWords(segment), false).map(word => word.replace(/["']/g, '')).find(isEnvFile) : undefined
+    if (ENV_READERS.has(cmd) && (args.some(isEnvFile) || rawEnvFile !== undefined) && !readsKeysOnly(cmd, args)) {
+      const file = args.find(isEnvFile) ?? rawEnvFile ?? '.env'
       found.push({
         id: 'sec008-env-datei',
         klasse: 'sec008',
         title: `${cmd} ${file}`,
         why: 'Gibt Secret-Werte in Transkript und Log aus (SEC-008: never emit, do not mask).',
         fix: `sed -n 's/^\\([A-Z_][A-Z0-9_]*\\)=.*/\\1/p' ${file}   # nur die Schlüssel`,
+      })
+    }
+
+    // A whole `Env:` drive, a wildcard over it, or one secret-shaped item of it (GH#99).
+    // `Get-ChildItem Env: -Name` prints the names only, the trap's own recipe: exempt for exactly that statement —
+    // program, the bare `Env:` drive and an unquoted `-Name`, no other word, no pipe after it. Not `-Filter '-Name'`,
+    // not `"-Name"`, not `… -Name | …`: anything else is read as before, fail-closed.
+    const rawArgs = rawWords(segment).slice(1)
+    const afterSegment = text.slice(text.indexOf(segment) + segment.length)
+    const namesOnly = GCI_NAMES.has(cmd) && args.length === 2 && rawArgs.length === 2 && rawArgs.some(arg => /^-name$/i.test(arg)) && rawArgs.some(arg => /^env:[\\/]?$/i.test(arg)) && !/^\s*\|(?!\|)/.test(afterSegment)
+    const driveItem = ENV_DRIVE_READERS.has(cmd) && !namesOnly ? args.map(arg => ENV_DRIVE.exec(arg)?.[1]).find(item => item !== undefined) : undefined
+    if (driveItem !== undefined && (driveItem === '' || /[*?[]/.test(driveItem) || SECRET_VAR.test(`$${driveItem.toUpperCase()}`) || lineTaint.has(driveItem.toUpperCase()))) {
+      found.push({
+        id: 'sec008-env-dump',
+        klasse: 'sec008',
+        title: `${first} ${args.join(' ')}`,
+        why: 'Das Env:-Laufwerk druckt die Werte der Umgebungsvariablen ins Transkript (SEC-008).',
+        fix: 'Get-ChildItem Env: -Name   # Schlüssel; Einzelwert: if ($env:VAR) { "VAR: set" }',
       })
     }
 
@@ -2668,12 +2744,29 @@ function collectTraps(line: string, depth: number, root: string, inherited: Read
     })
   }
 
+  for (const m of text.matchAll(ENV_METHOD)) {
+    const name = (m[2] ?? '').trim().replace(/^["']|["']$/g, '')
+    if (m[1] === '' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !SECRET_VAR.test(`$${name.toUpperCase()}`) && !lineTaint.has(name.toUpperCase())) continue
+    found.push({
+      id: m[1] !== '' ? 'sec008-env-dump' : 'sec008-echo-secret',
+      klasse: 'sec008',
+      title: `[Environment]::GetEnvironmentVariable${m[1]}(${m[2] ?? ''})`,
+      why: 'Gibt Werte von Umgebungsvariablen ins Transkript aus (SEC-008).',
+      fix: 'if ($env:VAR) { "VAR: set" }   # gesetzt? ohne Wert',
+    })
+    break
+  }
+
   const tainted = new Set(inherited)
   for (const stages of splitPipelines(text)) {
     // Not commandWords: a bare `env` is the command here, not a prefix. `if env; then` runs it too,
     // and so do `(env)`, `command env`, `builtin set` and `FOO=1 env`.
     const head = argWords(stripGroup(stages[0] ?? ''), true)
-    while (PREFIXES.has(head[0] ?? '') || head[0] === 'builtin' || ASSIGNMENT.test(head[0] ?? '')) head.shift()
+    for (;;) {
+      if (PREFIXES.has(head[0] ?? '') || head[0] === 'builtin' || ASSIGNMENT.test(head[0] ?? '')) head.shift()
+      else if (baseName(head[0] ?? '') === 'cmd' && /^\/[ck]$/i.test(head[1] ?? '')) head.splice(0, 2) // `cmd /c set` (GH#99)
+      else break
+    }
     // The keys-only filter must read the dump directly: `env | tee /dev/stderr | cut -d= -f1` printed it first.
     // `printenv NAME` prints the bare value with no `=`, so no filter makes it keys-only.
     const filtered = !(baseName(head[0] ?? '') === 'printenv' && head.slice(1).some(a => !a.startsWith('-'))) && isKeysOnlyFilter(stages[1] ?? '')
@@ -2868,7 +2961,8 @@ function heredocTrap(text: string, tainted: ReadonlySet<string>): Trap | null {
 }
 
 // The builtins that print their arguments: echo, printf and zsh's print (#1699).
-const PRINTERS: ReadonlySet<string> = new Set(['echo', 'printf', 'print'])
+// `echo` is PowerShell's alias of Write-Output too (GH#99).
+const PRINTERS: ReadonlySet<string> = new Set(['echo', 'printf', 'print', 'write-output', 'write-host', 'write'])
 // A function definition head as one word: `f()`, `f(){` (#1699).
 const FUNCTION_HEAD = /^[\w.:-]+\(\)\{?$/
 

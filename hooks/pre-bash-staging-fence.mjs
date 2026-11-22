@@ -172,18 +172,6 @@ const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'fish'
  */
 const SU_LIKE_SHELLS = new Set(['su', 'runuser', 'sg']);
 
-/**
- * Payload recursion depth for {@link scanForStagedPaths}. ONE level: it covers
- * `bash -c "git add x"` and `xargs -I{} sh -c "git add x"`, which is the whole
- * measured regression class (2026-09-20), and keeps a hook that runs on EVERY
- * Bash call from re-tokenizing an arbitrarily nested string.
- *
- * NAMED CEILING (BV-004): `bash -c "bash -c 'git add x'"` is not recorded.
- * REVISIT TRIGGER: raise to 2 if a doubly-nested staging command is ever
- * observed in a wave transcript.
- */
-const MAX_PAYLOAD_DEPTH = 1;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -278,7 +266,7 @@ async function extractStagedPaths(command) {
   if (lib.oversizedCommand(command) !== null) return { recognised: true, paths: ['*'] };
   const paths = new Set();
   const state = { recognised: false };
-  scanForStagedPaths(command, lib, paths, state, 0);
+  scanForStagedPaths(command, lib, paths, state, 'command');
   return { recognised: state.recognised, paths: [...paths] };
 }
 
@@ -355,11 +343,17 @@ function nestedShellPayloads(segment, resolved, lib) {
  * marker is invented (the fence only records; see extractStagedPaths'
  * ceilings). A throw records nothing for this segment, for the same reason.
  *
- * NAMED CEILING (BV-004): xargs feeding a NON-shell program (`echo b.txt |
- * xargs git add`) is not read — `pipedShellData` covers shells only, and the
- * blocker's literal-pipe reader behind it is not exported; reimplementing it
- * here would be a second shell grammar. REVISIT TRIGGER: the blocker exports
- * its pipeline-data reader, or a wave agent is observed staging via xargs.
+ * For xargs, `pipedShellData` calls the blocker's `xargsCommandLines` reader.
+ * It builds commands for direct git invocations, wrappers such as `xargs env`,
+ * and shells taking `-c` and its script from the input items (#2013). The
+ * last form needs one shell-argv reading after the reader splits the items,
+ * taken only when the xargs segment has no fixed `-c` script.
+ *
+ * Named ceiling (BV-004): the fence inherits the deny-side over-read of
+ * `xargsCommandLines` (every item window is read, #2006), so
+ * `printf '%s\n' x -c 'git add b' | xargs -d '\n' -n 2 sh` records `b` though
+ * nothing is staged. A false record can stop a sibling's commit at the
+ * commit guard. REVISIT: a reported false cross-agent overlap.
  *
  * @param {Array<{ text: string, quoted: boolean }>} segment
  * @param {{ pipedShellData?: Function }} lib
@@ -375,22 +369,24 @@ function pipedShellLines(segment, lib) {
 }
 
 /**
- * One tokenize + per-segment pass of {@link extractStagedPaths}, re-entered
- * once per nested shell payload (bounded by {@link MAX_PAYLOAD_DEPTH}).
+ * One tokenize + per-segment pass of {@link extractStagedPaths}. An outer
+ * command can supply a payload directly or via argv built by xargs. A payload
+ * is scanned for staging only. A shell nested inside a payload, or inside the
+ * data of a fixed xargs `-c` script, is not read again: a named ceiling
+ * (BV-004); revisit if observed in a wave transcript.
  *
  * Accumulates into the caller's `paths` set and `state.recognised` flag rather
  * than returning, so a nested hit and a top-level hit compose:
  * `git add a && bash -c "git add b"` records BOTH.
  *
  * @param {string} command
- * @param {{ tokenizeCommand: Function, splitChainSegments: Function,
- *           resolveSegmentVerb: Function, argvWordsWithoutRedirects: Function }} lib
+ * @param {typeof import('../scripts/lib/command-blocker.mjs')} lib
  * @param {Set<string>} paths - OUT
  * @param {{ recognised: boolean }} state - OUT
- * @param {number} depth
+ * @param {'command'|'xargs'|'payload'} source
  * @returns {void}
  */
-function scanForStagedPaths(command, lib, paths, state, depth) {
+function scanForStagedPaths(command, lib, paths, state, source) {
   let segments;
   try {
     segments = lib.splitChainSegments(lib.tokenizeCommand(command));
@@ -398,8 +394,15 @@ function scanForStagedPaths(command, lib, paths, state, depth) {
     return;
   }
 
+  function scanPayload(payload, nextSource) {
+    if (typeof payload === 'string' && mayStage(payload)) {
+      scanForStagedPaths(payload, lib, paths, state, nextSource);
+    }
+  }
+
   for (const segment of segments) {
     const resolved = lib.resolveSegmentVerb(segment);
+    const { verb, index } = resolved;
 
     // A staging command nested in `bash -c "…"` resolves to the verb `bash`,
     // so the loop below never sees it. Before #1404 the raw-text regex matched
@@ -408,18 +411,21 @@ function scanForStagedPaths(command, lib, paths, state, depth) {
     // 2026-09-20: `bash -c "git add src/foo.ts"` → no fence file at all). The
     // fence is cross-agent collision detection, so a miss is silent in BOTH
     // directions — re-enter the same extraction on the payload.
-    if (depth < MAX_PAYLOAD_DEPTH) {
-      for (const payload of [...nestedShellPayloads(segment, resolved, lib), ...pipedShellLines(segment, lib)]) {
-        // The G3 pre-filter again, on the payload: same cheap question, same
-        // tolerated false positives, and it keeps an unrelated `-c` operand
-        // from paying for a second tokenize.
-        if (typeof payload === 'string' && mayStage(payload)) {
-          scanForStagedPaths(payload, lib, paths, state, depth + 1);
-        }
+    if (source === 'command') {
+      const fixed = nestedShellPayloads(segment, resolved, lib);
+      for (const payload of fixed) scanPayload(payload, 'payload');
+      // The shell-argv reading applies only without a fixed `-c`: then the reader builds
+      // shell argv lines; with one, the items are data the fixed script may never run.
+      for (const line of pipedShellLines(segment, lib)) {
+        scanPayload(line, verb === 'xargs' && fixed.length === 0 ? 'xargs' : 'payload');
       }
+    } else if (source === 'xargs' && DASH_C_SHELLS.has(verb) && !SU_LIKE_SHELLS.has(verb)) {
+      // #2013: read the resolved shell's argv. A later `-c` following a
+      // script filename or passed to another program is just an argument.
+      const words = lib.argvWordsWithoutRedirects(segment, index + 1);
+      scanPayload(lib.shellCommandString(words, { zsh: verb === 'zsh', ksh: verb === 'ksh' }), 'payload');
     }
 
-    const { verb, index } = resolved;
     if (verb !== 'git' || index < 0) continue;
 
     let i = index + 1;

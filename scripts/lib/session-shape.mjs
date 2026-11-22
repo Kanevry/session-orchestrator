@@ -84,6 +84,7 @@ const MAX_TURNS_DEFAULT = Object.freeze({ housekeeping: 8, feature: 15, deep: 25
 const HOUSEKEEPING_LOOP = Object.freeze([
   'drift-check',
   'sweep',
+  'generated-rules-expiring',
   'evolve',
   'reconcile',
   'dialectic',

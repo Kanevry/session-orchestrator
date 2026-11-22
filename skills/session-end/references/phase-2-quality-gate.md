@@ -10,7 +10,7 @@ Run ALL checks listed in the verification checklist. If any check fails: fix if 
 
 ### Phase 2.0a: Echo-Stub Detection (GH #42)
 
-`gate-full.mjs` emits a top-level `stubbed: {}` map in its JSON result, keyed by check name (`typecheck`, `test`, `lint`); value is `{ kind: 'echo'|'noop' }`. When any check was short-circuited as a stub, `runCheck()` already returned `status: 'pass'` — so the overall gate verdict is green, but the result is meaningless.
+`gate-full.mjs` emits a top-level `stubbed: {}` map in its JSON result, keyed by check name (`typecheck`, `test`, `lint`); value is `{ kind: 'echo'|'noop' }`. `runCheck()` returns `status: 'pass'` for a detected stub without running the command, so the Full Gate can exit 0 whenever the other checks pass or are skipped.
 
 **Detection:** immediately after parsing the `gate-full` JSON result, evaluate:
 
@@ -18,7 +18,7 @@ Run ALL checks listed in the verification checklist. If any check fails: fix if 
 const stubbedEntries = Object.entries(result.stubbed ?? {});
 ```
 
-**If `stubbedEntries.length > 0`**, surface a HIGH WARN block in the close summary:
+**If `stubbedEntries.length > 0` and `enforcement` is `strict` or `warn`**, surface a HIGH WARN block in the close summary:
 
 ```
 ⚠ QUALITY GATE STUBBED — <N> command(s) are echo/noop stubs, not real checks:

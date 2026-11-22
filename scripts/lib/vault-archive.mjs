@@ -259,7 +259,11 @@ export function buildArchiveFields({
   // a frontmatter object built elsewhere); anything else (missing, number,
   // array, an invalid Date, …) falls back to `dateStr`.
   let created;
-  if (typeof base.created === 'string' && /^\d{4}-\d{2}-\d{2}(?:[Tt ]|$)/.test(base.created)) {
+  if (
+    typeof base.created === 'string' &&
+    (ISO_DATE_RE.test(base.created.replace('t', 'T')) ||
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(base.created))
+  ) {
     created = base.created.slice(0, 10);
   } else if (base.created instanceof Date && !Number.isNaN(base.created.getTime())) {
     created = base.created.toISOString().slice(0, 10);

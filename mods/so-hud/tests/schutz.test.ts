@@ -167,6 +167,36 @@ test('rule trap is refused on ausgewogen', opts(), async ($, on) => {
   expect(JSON.stringify(await $.tool.call(bash('git add -A')))).toContain('commit-discipline-add')
   expect(w.runs).toEqual([])
 })
+// Catches GH#99: PowerShell reads of `.env` and of the environment running past the SEC-008 traps the Bash spelling meets.
+const powershell = (command: string) => ({ tool: 'PowerShell', command }) as never
+for (const command of ['Get-Content .env', 'gc .env', 'type .env', 'Get-ChildItem Env:', 'dir env:', 'Get-Item Env:GITHUB_TOKEN', '$env:GITHUB_TOKEN', '$Env:github_token', 'Write-Output $env:GITHUB_TOKEN', "[Environment]::GetEnvironmentVariable('GITHUB_TOKEN')", 'cmd /c set',
+  // Backslash paths lost their `\` to quote removal before the `.env` check; a lone double-quoted string prints too.
+  'Get-Content .\\.env.local', 'gc .\\.env.production', 'type .\\config\\.env.local', 'Get-Content ..\\.env.local', 'Get-Content C:\\Users\\b\\proj\\.env | Select -First 3',
+  '"tok: $env:GITHUB_TOKEN"', 'Get-ChildItem Env: | Select-Object Name, Value', 'Get-ChildItem Env: | Format-List',
+  // A `-Name` that is a switch's value or a quoted string, or a names listing piped on, is no names-only listing.
+  "gci Env: -Exclude '-Name'", "Get-ChildItem Env: -Filter '-Name'", 'Get-ChildItem Env: "-Name"', 'Get-ChildItem Env: -Name | % { (Get-Item "Env:$_").Value }']) {
+  test(`PowerShell ${command} is refused like cat .env; core never runs`, opts(), async ($, on) => {
+    const w = world(on)
+    expect(JSON.stringify(await $.tool.call(powershell(command)))).toContain('sec008')
+    expect(w.runs).toEqual([])
+  })
+}
+// Catches: the GH#99 traps refusing reads that print no secret value.
+for (const command of ['$env:PATH', '$env:GITHUB_TOKEN.Length', 'Get-Content .env.example', 'Get-Content .\\.env.example', '"$env:PATH"', "'tok: $env:GITHUB_TOKEN'", 'Get-ChildItem Env: -Name', 'gci env: -name', 'if ($env:GITHUB_TOKEN) { "GITHUB_TOKEN: set" }']) {
+  test(`PowerShell ${command} runs`, opts(), async ($, on) => {
+    const w = world(on)
+    await $.tool.call(powershell(command))
+    expect(w.runs).toEqual(['PowerShell'])
+  })
+}
+// Catches: a whole-text `env:$` match refusing harmless POSIX commands that only mention `env:$NAME` as text.
+for (const command of ['git commit -m "docs: explain env:$HOME usage"', "printf 'env:$PATH\\n'", 'docker run -e FOO=env:$X img']) {
+  test(`Bash ${command} runs`, opts(), async ($, on) => {
+    const w = world(on)
+    await $.tool.call(bash(command))
+    expect(w.runs).toEqual(['Bash'])
+  })
+}
 
 // ---- Outward actions (F9) ----------------------------------------------------------
 // Catches: a push to main running without two explicit owner steps, running twice, or leaving no receipt.
@@ -462,6 +492,26 @@ test('a Monitor push to main is asked', opts(), async ($, on) => {
   expect(w.asks).toHaveLength(1)
   expect(w.runs).toEqual([])
 })
+// Catches GH#98: an outward action spelled with the Windows program name (folder, `.exe`/`.cmd`/`.bat`, case) running unasked.
+for (const command of ['git.exe push origin main', 'GIT.EXE push origin main', '"C:\\Program Files\\Git\\cmd\\git.exe" push origin main', "& 'C:\\Program Files\\Git\\cmd\\git.exe' push origin main", 'C:\\tools\\git.exe push origin main', 'gh.exe pr merge 5 --merge', 'npm.cmd publish', 'npm.bat publish', 'npm.ps1 publish', 'npx.cmd vercel --prod']) {
+  test(`${command} asks the owner like its plain spelling`, opts(), async ($, on) => {
+    const w = world(on, { answer: () => null })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await $.tool.call(bash(command))
+    expect(w.asks).toHaveLength(1)
+    expect(w.runs).toEqual([])
+  })
+}
+// Catches: the GH#98 normalisation asking for a Windows-named local call or for the name as echoed text.
+for (const command of ['git.exe status', 'echo git.exe push origin main']) {
+  test(`${command} runs without a question`, opts(), async ($, on) => {
+    const w = world(on, { answer: () => null })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    await $.tool.call(bash(command))
+    expect(w.asks).toHaveLength(0)
+    expect(w.runs).toEqual(['Bash'])
+  })
+}
 // Catches: the locker fail-open path releasing an outward action when the gate itself fails.
 test('a gate failure on locker still refuses git push origin main', opts('locker'), async ($, on) => {
   const w = world(on, { surfaces: 'throws' })

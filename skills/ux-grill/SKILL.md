@@ -46,6 +46,30 @@ Read `soul.md` in this skill directory before anything else. It defines WHO you 
 - A native macOS app → out of scope in v2; web only.
 - A non-loopback target → refused, not degraded. Both `loadManifest()` and `collect()` assert it.
 
+## Offload host — one command
+
+When this machine must not build, serve or drive a browser (a fleet rule, a loaded host, or no `agent-browser`), run Stufe 1 on a remote-offload host instead. App and browser then share the host, so the loopback rule holds for real:
+
+```bash
+node scripts/ux-grill-offload.mjs --repo <target repo> --app-dir <app dir, e.g. website> --host m5 [--out <dir>]
+```
+
+What the one command does:
+
+- It reads the admission from `offload status --json`. A full or blocked class stops at once with exit 2 and the reason.
+- It builds a `git archive` image of `--ref` (default `HEAD`). The target checkout itself is only read. The image carries the existing manifest and ledger from `--out` (default: the target repo), so `compareRuns` sees earlier runs.
+- On the host it runs `npm ci` and the build, then serves the app on loopback as a child of the offload job. For Next.js that is `next start -H localhost`, because `-H 127.0.0.1` loops next-intl's unprefixed pages into 307s. When no manifest exists yet, it bootstraps one from a deterministic crawl of the landing page. Then it runs `collect` and `compareRuns`.
+- The manifest, the ledger lines of this run and the run directory come back into `--out`. An existing manifest is never overwritten. Both offload jobs are cleaned up afterwards.
+
+Limits of the offload path:
+
+- It never files issues. Phase 4 and `reconcileFindings` stay with you.
+- It carries no credentials. A manifest with `env-file` or `login-command` is refused (`needs-credentials`); run those on a machine that holds the env file.
+- A non-Next app needs `--start "<cmd with {port}>"`.
+- The port is part of the manifest hash. A later run reuses the manifest's port and stops (`port-busy`) rather than changing it.
+
+Without `offload` on `PATH` the command says so and exits 2.
+
 ## Phase 0: Target + Stufe 1
 
 ### 0.1 Resolve the argument
@@ -104,15 +128,19 @@ Both name a variable and never its value. A guarded env pointing at production i
 
 ### 0.4 Stufe 1 — one Bash call, coordinator-direct
 
-Hash `rubric-v2.md` first (`rubric_hash` is the comparability key, and `collect()` requires `rubricHash` as a caller-supplied argument — it does not hash the file itself). Then run the mechanical pass as **exactly one** Bash invocation from the coordinator thread: a short ESM runner written to `.orchestrator/tmp/` that imports `loadManifest` from `scripts/lib/ux-grill/manifest.mjs` and `collect` from `scripts/lib/ux-grill/collect.mjs`, calls `collect({repoRoot, manifest, envMap, rubricHash})`, and prints the returned `{runId, runDir, findings, runRecord, skipped}` as JSON on stdout.
+Hash `rubric-v2.md` first (`rubric_hash` records rubric changes, and `collect()` requires `rubricHash` as a caller-supplied argument — it does not hash the file itself). Then run the mechanical pass as **exactly one** Bash invocation from the coordinator thread: a short ESM runner written to `.orchestrator/tmp/` that imports `loadManifest` from `scripts/lib/ux-grill/manifest.mjs` and `collect` from `scripts/lib/ux-grill/collect.mjs`, calls `collect({repoRoot, manifest, envMap, rubricHash})`, and prints the returned `{runId, runDir, findings, runRecord, skipped, skipSummary}` as JSON on stdout.
 
 Three properties of this step are load-bearing:
 
 - **No dispatched agent runs Stufe 1.** It is deterministic and LLM-free; an agent would add cost, non-determinism and a transcript for nothing.
 - **Working files live in `.orchestrator/tmp/`**, never `/tmp` (does not survive a resume) and never an untracked path that the owner-leakage gate would scan.
-- **A `CollectError` is a stop, not a warning.** `base-url-unreachable` means the app is not running; every later measurement would be meaningless.
+- **A `CollectError` is a stop, not a warning.** `base-url-unreachable` means the first login or route open failed before any successful open; every later measurement would be meaningless.
 
-Then compare and reconcile, in the same runner. Call `compareRuns` from `scripts/lib/ux-grill/compare.mjs` — it uses `findPreviousRun` and `readFindings` from `scripts/lib/ux-grill/run-record.mjs` to locate the last run with the same `manifest_hash`, delegates the set arithmetic to `compareFingerprints`, and classifies each fingerprint as `new | persisting | fixed` (runs whose `rubric_hash` differs are non-comparable — everything reads `new`). Write the counts back with `updateRunRecordCompare` from `scripts/lib/ux-grill/run-record.mjs`; the record `appendRunRecord` wrote during Stufe 1 carries the schema defaults until you do. Then call `reconcileFindings` from `scripts/lib/ux-grill/reconcile.mjs`, which wraps `triageDecision` / `createFinding` / `updateFinding` from `scripts/lib/test-runner/issue-reconcile.mjs` and builds each issue's text with `buildIssueTitle` / `buildUxGrillIssueBody`. When `pencil.file` is set, the optional coverage step is `scripts/lib/ux-grill/pencil-coverage.mjs`; unreachable Pen.app is a `pencil-unavailable` skip, never an error.
+The manifest may set an optional top-level `login-command` mapping: `{persona: <name>, steps: [<agent-browser command lines>], success?: <regex>}`. After every successful `applyViewport`, before visiting routes, Stufe 1 runs those steps in the same browser session; credentials use `${LOGIN_EMAIL}` / `${LOGIN_PASSWORD}` placeholders resolved from that persona's env names. Login and journey steps pass the same `splitStepLine` / `assertStepArgv` checks before session creation, then again before and after single-pass credential substitution. A token containing a credential placeholder that resolves to a leading `-` is refused before execution (`step-credential-option`); an `open` target must still resolve to the base-url origin after substitution. Commands never go through a shell. Login takes no screenshots; its first unsuccessful open result aborts with `base-url-unreachable` and a fixed, secret-free message. Other command errors, rejected login steps, credential-resolver errors and a failed optional success regex abort with `login-failed` without exposing their text. A successful login open consumes the first-open state, so a subsequent route failure is a `route-unreachable` skip. Only one login persona is supported per run; route-specific persona switching is unsupported. Revisit that limit when a second login persona is needed.
+
+An optional top-level `wait` list contains wait-only step lines, run after each successful route open or journey start open, before measurement or journey steps. Use app-specific readiness, for example `wait --load networkidle` or `wait --fn "!document.querySelector('[data-slot=skeleton]')"`, to avoid measuring a loading screen. Each command has a 120-second limit; a readiness failure skips that route or journey with the existing `measure-failed` reason. `seed-command` is not executed. The browser closes in `finally`, including after login failures, and login repeats on every run.
+
+Then compare and reconcile, in the same runner. Call `compareRuns` from `scripts/lib/ux-grill/compare.mjs`. It reads ledger history with the same `manifest_hash` and `build` from newest to oldest. For each measurement scope, it carries earlier findings forward across consecutive runs that skipped that scope. It passes those findings to `compareFingerprints` and returns finding arrays `new`, `persisting`, `fixed`, `unmeasured` plus numeric `counts` for `new`, `persisting`, `fixed`. It internally patches the run record with those counts; the runner must **not** call `updateRunRecordCompare` again or pass finding arrays as counts. Comparison still runs when the `rubric_hash` differs. `rubricChanged` is set if the latest matching run or any older run contributing findings across a gap has a different hash. Render `fixed` as **fixed-or-rubric-changed** in that case. Previous findings in skipped scopes become `unmeasured`, never `fixed`. Then call `reconcileFindings` from `scripts/lib/ux-grill/reconcile.mjs`, which wraps `triageDecision` / `createFinding` / `updateFinding` from `scripts/lib/test-runner/issue-reconcile.mjs` and builds each issue's text with `buildIssueTitle` / `buildUxGrillIssueBody`. When `pencil.file` is set, the optional coverage step is `scripts/lib/ux-grill/pencil-coverage.mjs`; unreachable Pen.app is a `pencil-unavailable` skip, never an error.
 
 ### 0.5 Read the artefacts — and only them
 
@@ -181,7 +209,7 @@ Plain text, in this order:
 - **Resolved decisions** — each journey finding and how the operator settled it.
 - **Contradictions surfaced** — the primary output. Two screens of ONE journey that cannot both be true, with BOTH screenshot paths. If none: say so plainly; a run that surfaces none either had a coherent product or was not grilling hard enough.
 - **Open questions** — genuine unknowns; no confident guess in their place.
-- **Mechanical summary** — counts by severity from `countBySeverity()`, the provisional count (`target-size-*` on a `build: dev` manifest), the `new | persisting | fixed` split, and **every** entry of `skipped[]` with its reason. All four `SKIP_REASONS` are shown, never folded away — `device-mismatch`, `measure-failed`, `route-unreachable`, `pencil-unavailable`. A skipped mobile viewport reported as a clean one is the exact failure the verification exists to prevent, and a check that never ran reads as `fixed` in the next compare.
+- **Mechanical summary** — counts by severity from `countBySeverity()`, the provisional count (`target-size-*` on a `build: dev` manifest), the `new | persisting | fixed | unmeasured` split (`fixed-or-rubric-changed` when `rubricChanged`), and one row per `what` from `skipSummary`, including its reasons and the number of skips. Include the optional `pencil-unavailable` skip if reported by the coverage step. The run record retains every raw skip and its scope. Report a skipped mobile viewport as unmeasured.
 
 ## Phase 4: Hand-off
 

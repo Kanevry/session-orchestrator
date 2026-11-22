@@ -52,6 +52,12 @@
    ```
    `scripts/emit-session.mjs` calls `validateSession` from `scripts/lib/session-schema.mjs` before appending, stamps `schema_version: 1` if absent, and uses `appendJsonl` (atomic for lines < PIPE_BUF). Exit 1 on validation error, exit 2 on I/O error — block session close in both cases so malformed metrics can never reach disk.
 
+   **`breadth` (#2164).** `emit-session.mjs` records `max_concurrent_subagents` as the largest number of distinct Agent subagents active at once.
+   `subagent_time_share` is the fraction of session wall time with at least one such subagent active. Overlapping intervals count once.
+   These metrics give a lower bound on delegation because they exclude Codex and offload jobs launched through Bash.
+   A readable `subagents.jsonl` with no observed intervals yields `0` for both metrics. An unknown session identity or window, or unavailable lifecycle data without usable stop events, yields `null`.
+   `coordinator_peak_context_k` is the highest observed coordinator context in thousands of tokens.
+
    **`session_profile` (#1247):** when `$METRICS_ENTRY` omits the `session_profile` key, `emit-session.mjs` fills it itself from this repo's own `<state-dir>/STATE.md` `session-profile` frontmatter (e.g. `ultradeep`) — no coordinator-side plumbing needed; an explicit value on the entry always wins and is never overwritten.
 
    **`outcome` (#1824):** the session-level goal behind the tasks. `emit-session.mjs` fills `{ statement, observable, source }` itself from the STATE.md keys `outcome-statement` / `outcome-observable` / `outcome-source` (`readOutcome()` in `scripts/lib/state-md.mjs`), under the same ownership gate as `session_profile` (STATE.md frontmatter `session` must equal the record's `session_id`, else a WARN and no `outcome`). The coordinator adds ONLY what it measured: `"outcome": {"observed": "<observed|not-observable-in-session|not-measured>"}` in `$METRICS_ENTRY`, where `observed` is allowed only when the observable named in STATE.md was actually checked in this session. Without that key `observed` defaults to `not-measured`. A STATE.md without the three keys yields a record WITHOUT `outcome` — absent, never an empty object (absent-is-not-zero, `docs/events-schema.md`). The record's top-level `outcome` is not the wave-level `waves[].outcome` that `render-sessions.mjs` reads for a wave's Quality cell. Never in the telemetry ping: `projectUsagePing` (`scripts/lib/telemetry/schema.mjs`) projects a closed field whitelist.

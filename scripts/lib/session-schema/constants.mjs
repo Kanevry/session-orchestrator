@@ -318,4 +318,6 @@ export const OPTIONAL_FIELDS = Object.freeze([
   // record before #1824: 0 of 658 carried one, measured 2026-10-26 @ 6b6a1773).
   // Never coerced to an empty object; `observed` defaults to `not-measured`.
   'outcome',
+  // #2164 — { max_concurrent_subagents, subagent_time_share, coordinator_peak_context_k, sources }.
+  'breadth',
 ]);

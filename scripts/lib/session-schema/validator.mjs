@@ -297,6 +297,24 @@ function _validateAgentSummary(entry) {
 }
 
 function _validateOptionalFields(entry) {
+  if (entry.breadth !== undefined && entry.breadth !== null) {
+    if (!isPlainObject(entry.breadth)) throw new ValidationError('breadth must be an object or null');
+    const { max_concurrent_subagents: peak, subagent_time_share: share,
+      coordinator_peak_context_k: context, sources } = entry.breadth;
+    if (peak !== undefined && peak !== null && (!Number.isInteger(peak) || peak < 0)) {
+      throw new ValidationError('breadth.max_concurrent_subagents must be a non-negative integer or null');
+    }
+    if (share !== undefined && share !== null && (!Number.isFinite(share) || share < 0 || share > 1)) {
+      throw new ValidationError('breadth.subagent_time_share must be between 0 and 1 or null');
+    }
+    if (context !== undefined && context !== null && (!Number.isFinite(context) || context < 0)) {
+      throw new ValidationError('breadth.coordinator_peak_context_k must be non-negative or null');
+    }
+    if (sources !== undefined && (!Array.isArray(sources) || sources.some((s) => typeof s !== 'string'))) {
+      throw new ValidationError('breadth.sources must be an array of source names');
+    }
+  }
+
   if (entry.effectiveness !== undefined && entry.effectiveness !== null) {
     if (!isPlainObject(entry.effectiveness)) {
       throw new ValidationError('effectiveness must be an object or null');

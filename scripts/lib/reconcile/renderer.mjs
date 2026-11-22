@@ -292,7 +292,7 @@ function renderEvidence(evidence) {
  *   delivery wrapper's framing — issue #1015. The record is REJECTED, never
  *   repaired.
  */
-export function renderRule(learning, metadata) {
+export function renderRule(learning, metadata, { vaultNotePath } = {}) {
   if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) {
     throw new Error('renderer: metadata must be a non-null object');
   }
@@ -470,6 +470,9 @@ export function renderRule(learning, metadata) {
     '## Provenance',
     `- learning-key: \`${metadata.learningKey}\``,
     `- learning-id: \`${learningId}\``,
+    ...(typeof vaultNotePath === 'string' && /^40-learnings\/(?:[a-z0-9-]+\/)?[a-z0-9-]+\.md$/.test(vaultNotePath)
+      ? [`- vault-note: \`${vaultNotePath}\``]
+      : []),
     `- source-session: \`${sourceSession}\``,
     // #1101: the seal, its one un-derivable input, and the recipe to re-check
     // both — everything an offline reader needs, in the file itself.

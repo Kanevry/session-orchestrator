@@ -85,8 +85,9 @@ Thumbs.db
 # Eval HTML run-reports — derived views, rebuildable from eval.jsonl (#803/#808)
 .orchestrator/eval/
 
-# Vitest coverage artifacts (#263)
+# Vitest coverage artifacts (#263) and coverage-shard blob reports (#2098)
 coverage/
+.vitest-reports/
 
 # Per-session runtime state (machine-specific, never committable). The globs
 # below are the SAME patterns bootstrap's store-lock-ignore step writes into

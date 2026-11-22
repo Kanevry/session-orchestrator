@@ -4,7 +4,7 @@
  *
  * The trigger signal for the default-on design review. Two halves:
  *
- *   1. `classifyUiPaths()` — pure glob classification. The defaults name
+ *   1. `classifyUiPaths()` — glob classification. The defaults name
  *      APPLICATION UI SOURCE only (components, pages and routes, app styles,
  *      in-app copy catalogues). Reports, research and audit HTML, eval and
  *      fixture pages, scaffolds, exported designs, e-mail templates, video
@@ -21,10 +21,10 @@
  * reviewer checks lives in agentic-designer's review contract, not here.
  */
 
-import { statSync } from 'node:fs';
+import { opendirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import picomatch from 'picomatch';
 
+import { matchGlob } from './glob-match.mjs';
 import { spawnSync } from './native-command.mjs';
 import { resolveBaselineRange } from './vcs-repo-spec.mjs';
 
@@ -57,7 +57,10 @@ export const DEFAULT_UI_EXCLUDES = Object.freeze([
   '**/{test-utils,testUtils,test-helpers}.*',
   '**/{test-utils,testUtils,test-helpers,mocks}/**',
   // generated and tool output
-  '**/{node_modules,dist,build,out,.next,.nuxt,.svelte-kit,.astro,coverage,vendor}/**',
+  '**/{node_modules,dist,build,out,.next,.nuxt,.svelte-kit,.astro,coverage,vendor,.venv,__pycache__}/**',
+  // (`target` is build output at these locations: `app/target/page.tsx` is UI)
+  'target/**',
+  '{apps,packages,crates,modules}/*/target/**',
   '**/{playwright-report,test-results,blob-report,storybook-static,.orchestrator}/**',
   // (not a bare `generated` directory: `src/components/generated/Chart.tsx` is UI)
   '**/{__generated__,gql}/**',
@@ -96,36 +99,250 @@ function nonEmptyStrings(list) {
   return Array.isArray(list) ? list.filter((g) => typeof g === 'string' && g.trim()).map((g) => g.trim()) : [];
 }
 
+/** Literal glob characters whose meaning is the same in every matcher. */
+const PLAIN_CHAR = /^[A-Za-z0-9_./@~ -]$/;
+/** Brace alternatives use literals and at most one star. Slash and range checks follow below. */
+const PLAIN_BRACE_ALT = /^[A-Za-z0-9_./@~ -]*(?:\*[A-Za-z0-9_./@~ -]*)?$/;
+/** A character class of letters and digits, with ascending `x-y` ranges only. */
+const PLAIN_CLASS = /^(?:[A-Za-z0-9](?:-[A-Za-z0-9])?)+$/;
+const MAX_JUDGED_GLOB = 1024;
+
 /**
- * Pure classifier: which of `files` are UI files?
+ * The glob grammar this classifier can judge: literal characters
+ * (`A-Z a-z 0-9 _ . / @ ~ -` and space), `*`, `?`, `**`, a character
+ * class of letters and digits (`[abc]`, `[a-z0-9]`), and one level of
+ * `{a,b}` alternatives of literals and at most one star, with no adjacent
+ * dot and star, range or slash. Inside it, `glob-match.mjs` and
+ * picomatch 4 (`dot: true`, the matcher before #2138) agree; a differential
+ * run over generated globs and paths backs that (MR !443 review round 4).
+ *
+ * Everything else cannot be judged: POSIX and negated classes, ranges,
+ * parentheses and extglobs, backslash escapes, nested braces, overlong
+ * patterns. The classifier then fails CLOSED: an include glob of this kind
+ * matches every file, an exclude glob of this kind excludes nothing, and the
+ * caller gets a warning naming the glob. An allowlist, not a list of known
+ * divergences: review round 4 found divergent forms that a denylist missed.
+ *
+ * BV-004 ceiling: a guard, not picomatch parity. Revisit with the first
+ * shipped or consumer glob outside this grammar (#2143).
+ *
+ * @param {string} glob
+ * @returns {string|null} why the glob cannot be judged, or null when it can.
+ */
+export function divergentGlobReason(glob) {
+  if (glob.length > MAX_JUDGED_GLOB) return `a pattern longer than ${MAX_JUDGED_GLOB} characters`;
+  if (glob.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) return 'an empty, "." or ".." segment';
+  // picomatch's fast path for exactly these two needs a character after the last dot (`a.` does not match).
+  if (glob === '*.*' || glob === '**/*.*') return 'the picomatch fast path "*.*"';
+  if (glob.split('/').some((segment) => segment.includes('**') && segment !== '**')) return 'a "**" that is not a whole segment';
+  for (const [, body] of glob.matchAll(/\{([^{}]*)\}/g)) {
+    // picomatch keeps `{Card*}` (no comma) as literal braces; glob-match groups it (MR !443 R5).
+    if (!body.includes(',') && !body.includes('..')) return 'a brace with one alternative';
+    const alternatives = body.split(',');
+    if (alternatives.some((alt) => /^\**$/.test(alt))) return 'an empty or "*"-only brace alternative';
+    // picomatch rejects "a.." against "{a.*.,b}"; glob-match accepts it (MR !443 R6).
+    if (alternatives.some((alt) => /\.\*|\*\./.test(alt))) return 'a "." next to "*" in a brace alternative';
+    if (alternatives.some((alt) => !PLAIN_BRACE_ALT.test(alt))) return 'a brace alternative outside the literal-or-single-star grammar';
+  }
+  // picomatch does not let `a*/**` match `ab` (no child segment); glob-match does.
+  const trail = /(?:^|\/)([^/]*)(?:\/\*\*)+$/.exec(glob);
+  if (trail && trail[1] !== '**' && trail[1].endsWith('*')) return 'a segment ending in "*" before a final "/**"';
+  let inBraces = false;
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*' || c === '?' || PLAIN_CHAR.test(c)) {
+      if (inBraces && c === '.' && glob[i + 1] === '.') return 'a brace range "{x..y}"';
+      if (inBraces && c === '/') return 'a "/" inside braces';
+      continue;
+    }
+    if (c === '[') {
+      const close = glob.indexOf(']', i + 1);
+      const body = close < 0 ? glob.slice(i + 1) : glob.slice(i + 1, close);
+      if (body.startsWith('!') || body.startsWith('^')) return 'a negated class "[!…]"';
+      if (body.includes('[:')) return 'a POSIX named class "[[:…:]]"';
+      if (close < 0 || !PLAIN_CLASS.test(body) || /([A-Za-z0-9])-([A-Za-z0-9])/.test(body) && !ascendingRanges(body)) {
+        return `the character class "${glob.slice(i, close < 0 ? glob.length : close + 1)}"`;
+      }
+      i = close;
+      continue;
+    }
+    if (c === '{' && !inBraces) {
+      inBraces = true;
+      continue;
+    }
+    if (c === '{') return 'nested braces';
+    if (c === ',' && inBraces) continue;
+    if (c === '}' && inBraces) {
+      inBraces = false;
+      continue;
+    }
+    return `the character "${c === '\n' ? '\\n' : c}"`;
+  }
+  return inBraces ? 'an unclosed "{"' : null;
+}
+
+function ascendingRanges(body) {
+  return [...body.matchAll(/([A-Za-z0-9])-([A-Za-z0-9])/g)].every(([, a, b]) => a <= b &&
+    (/\d/.test(a) === /\d/.test(b)) && (a.toLowerCase() === a) === (b.toLowerCase() === b));
+}
+
+/**
+ * A control character or line separator in a path. Such paths cannot get a
+ * coverage key and need an explicit owner override to clear the close gate.
+ *
+ * @param {string} filePath
+ * @returns {boolean}
+ */
+export function hasControlChar(filePath) {
+  // eslint-disable-next-line no-control-regex -- control characters are exactly what this detects
+  return /[\u0000-\u001f\u007f\u2028\u2029]/.test(filePath);
+}
+
+/**
+ * A path the matchers read differently: a control character in a file name, an
+ * empty, `.` or `..` segment (git never lists one), and off Windows a
+ * backslash. picomatch turned backslashes into separators on win32 only,
+ * glob-match does it everywhere.
+ *
+ * @param {string} filePath
+ * @param {string} [platform]
+ * @returns {boolean}
+ */
+export function unjudgeablePath(filePath, platform = process.platform) {
+  return hasControlChar(filePath) ||
+    (platform !== 'win32' && filePath.includes('\\')) ||
+    filePath.replace(/\\/g, '/').split('/').some((segment) => segment === '' || segment === '.' || segment === '..');
+}
+
+function divergenceWarnings(globs, kind) {
+  return globs.flatMap((glob) => {
+    const reason = divergentGlobReason(glob);
+    if (!reason) return [];
+    const effect = kind === 'include' ? 'counted as matching every file' : 'ignored, it excludes nothing';
+    return [`WARN design-review ${kind} glob "${glob}" uses ${reason}, which the glob matcher cannot judge: ${effect} (fail-closed, #2138)`];
+  });
+}
+
+const EMBEDDED_SCAN_ENTRIES = 4096;
+
+function descendantMatcher(globs) {
+  // Before the first globstar, the directory has to match one segment at a
+  // time. The globstar can absorb remaining segments before a matching file.
+  const prefixes = globs.map((glob) => {
+    const segments = glob.split('/');
+    const globstar = segments.indexOf('**');
+    return { segments: globstar === -1 ? segments : segments.slice(0, globstar), recursive: globstar !== -1 };
+  });
+  return (directory) => {
+    const parts = directory.split('/');
+    return prefixes.some(({ segments, recursive }) =>
+      (recursive || parts.length < segments.length) &&
+      segments.slice(0, parts.length).every((segment, i) => matchGlob(parts[i], segment)));
+  };
+}
+
+/** True on a UI match, false after a complete scan, null if the scan cannot decide. */
+function embeddedUiMatch(repoRoot, rootPath, matchesUi, canScan) {
+  const pending = [rootPath];
+  let entries = 0;
+  try {
+    const root = realpathSync(repoRoot);
+    while (pending.length > 0) {
+      const relative = pending.pop();
+      const path = join(root, relative);
+      // Do not open a directory reached through a symlink.
+      if (realpathSync(path) !== path) return null;
+      if (++entries > EMBEDDED_SCAN_ENTRIES) return null;
+      const dir = opendirSync(path);
+      try {
+        for (let entry = dir.readSync(); entry; entry = dir.readSync()) {
+          if (entry.name === '.git' || entry.name === 'node_modules') continue;
+          const child = `${relative}/${entry.name}`;
+          if (unjudgeablePath(child)) return true;
+          const isDirectory = entry.isDirectory();
+          if (isDirectory && canScan.excluded(child)) continue;
+          if (matchesUi(child)) return true;
+          if (isDirectory && canScan.descendant(child)) pending.push(child);
+        }
+      } finally {
+        dir.closeSync();
+      }
+    }
+  } catch {
+    return null;
+  }
+  return false;
+}
+
+/**
+ * Which of `files` are UI files? Pure when `repoRoot` is omitted.
  *
  * `include` REPLACES the default UI globs when non-empty; `exclude` is ADDED to
  * the default exclusions, which always apply.
  *
+ * A configured glob that `divergentGlobReason()` flags fails closed and adds
+ * one entry to `warnings`. So does a path the matchers read differently
+ * (`unjudgeablePath`): it counts as UI whatever the globs say, with one warning.
+ * Directory entries are checked without their trailing slash. With `repoRoot`,
+ * a bounded scan also checks their contents. An inconclusive scan counts as UI.
+ *
  * @param {string[]} files — repo-relative paths, forward slashes (git output).
- * @param {{ include?: string[], exclude?: string[] }} [opts]
- * @returns {{ touched: boolean, paths: string[] }} `paths` lists only the UI files, sorted.
+ * @param {{ include?: string[], exclude?: string[], repoRoot?: string }} [opts]
+ * @returns {{ touched: boolean, paths: string[], warnings: string[] }} `paths` lists only the UI files, sorted.
  */
 export function classifyUiPaths(files, opts = {}) {
   const include = nonEmptyStrings(opts.include);
-  const isUi = picomatch(include.length > 0 ? include : [...DEFAULT_UI_GLOBS], { dot: true });
-  const isExcluded = defaultExcluder(nonEmptyStrings(opts.exclude));
-  const paths = [...new Set(Array.isArray(files) ? files : [])]
-    .filter((f) => typeof f === 'string' && f.length > 0)
-    .filter((f) => isUi(f) && !isExcluded(f))
-    .sort();
-  return { touched: paths.length > 0, paths };
+  const exclude = nonEmptyStrings(opts.exclude);
+  const warnings = [...divergenceWarnings(include, 'include'), ...divergenceWarnings(exclude, 'exclude')];
+  const uiGlobs = include.length > 0 ? include : DEFAULT_UI_GLOBS;
+  const extra = exclude.filter((glob) => !divergentGlobReason(glob));
+  const isExcluded = defaultExcluder(extra);
+  const includeAll = uiGlobs.some((glob) => divergentGlobReason(glob) !== null);
+  const isUi = (f) => (includeAll || uiGlobs.some((glob) => matchGlob(f, glob))) && !isExcluded(f);
+  // A trailing globstar can exclude a whole subtree. File-only excludes and
+  // test/email excludes with exceptions cannot prove every descendant excluded.
+  const subtreeExcludes = [...DEFAULT_UI_EXCLUDES, ...extra].filter((glob) => glob.endsWith('/**') || glob === '**');
+  const canScan = {
+    excluded: (dir) => subtreeExcludes.some((glob) => dir !== glob && matchGlob(dir, glob)),
+    descendant: includeAll ? () => true : descendantMatcher(uiGlobs),
+  };
+  const candidates = [...new Set(Array.isArray(files) ? files : [])]
+    .filter((f) => typeof f === 'string' && f.length > 0);
+  const paths = [];
+  for (const f of candidates) {
+    // Porcelain marks untracked embedded repos with a trailing slash. Strip it
+    // for matching so globs like apps/* still match the directory name.
+    const directory = f.endsWith('/');
+    const globPath = directory ? f.slice(0, -1) : f;
+    if (unjudgeablePath(globPath)) {
+      warnings.push(`WARN design-review path ${JSON.stringify(f)} has a control character, an empty, "." or ".." segment or (off Windows) a backslash, which the glob matcher cannot judge: counted as UI (fail-closed, #2138)`);
+    } else if (!isUi(globPath)) {
+      if (!directory || !opts.repoRoot || canScan.excluded(globPath) || !canScan.descendant(globPath)) continue;
+      const match = embeddedUiMatch(opts.repoRoot, globPath, isUi, canScan);
+      if (match === false) continue;
+      if (match === null) {
+        warnings.push(`WARN design-review could not finish scanning ${JSON.stringify(f)} within the ${EMBEDDED_SCAN_ENTRIES}-directory budget or read its contents: counted as unhashable UI (fail-closed, #2150)`);
+        paths.push(f);
+        continue;
+      }
+    }
+    if (directory) {
+      warnings.push(`WARN design-review path ${JSON.stringify(f)} is a directory or embedded repository inside the UI globs: it cannot be hashed and is refused (fail-closed, #2138)`);
+    }
+    paths.push(f);
+  }
+  return { touched: paths.length > 0, paths: paths.sort(), warnings };
 }
 
 /** `DEFAULT_UI_EXCLUDES` + extra globs, plus e-mail template and test directories outside UI trees. */
 function defaultExcluder(extra = []) {
-  const m = (globs) => picomatch([...globs], { dot: true });
-  const listed = m([...DEFAULT_UI_EXCLUDES, ...extra]);
-  const emailDir = m(EMAIL_TEMPLATE_DIRS);
-  const emailKeep = m(EMAIL_KEEP);
-  const testDir = m(TEST_DIRS);
-  const testKeep = m(TEST_KEEP);
-  return (f) => listed(f) || (emailDir(f) && !emailKeep(f)) || (testDir(f) && !testKeep(f));
+  const listed = [...DEFAULT_UI_EXCLUDES, ...extra];
+  return (filePath) => {
+    const matches = (globs) => globs.some((glob) => matchGlob(filePath, glob));
+    return matches(listed) ||
+      (matches(EMAIL_TEMPLATE_DIRS) && !matches(EMAIL_KEEP)) ||
+      (matches(TEST_DIRS) && !matches(TEST_KEEP));
+  };
 }
 
 /**
@@ -326,8 +543,14 @@ function ownCommitShas(repoRoot, { sinceRefSha, sinceMs }) {
     window = entries.slice(anchor + 1);
   }
   // An amend replaces the commit HEAD was on (the entry before it); that commit
-  // is no longer an original, or it would lift its fingerprint's count.
-  const superseded = new Set(entries.flatMap((e, i) => (i > 0 && e.subject.startsWith('commit (amend): ') ? [entries[i - 1].sha] : [])));
+  // is no longer an original, or it would lift its fingerprint's count. A no-op
+  // amend (same tree, metadata and second) yields the same SHA again and
+  // supersedes nothing (#2065 point 1).
+  const superseded = new Set(entries.flatMap((entry, i) => (
+    i > 0 && entry.subject.startsWith('commit (amend): ') && entries[i - 1].sha !== entry.sha
+      ? [entries[i - 1].sha]
+      : []
+  )));
   window = window.filter((e) => CREATED_HERE.test(e.subject) || REPLAYED.test(e.subject));
   if (window.length === 0) return { ok: true, shas: new Map(), replayed: new Set(), originals: new Map() };
 

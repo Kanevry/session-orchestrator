@@ -43,10 +43,16 @@ const result = await runQualityGateWithRetry({
 
 ### Skip Conditions
 
-- `verification-auto-fix.enabled: false` (default) → fall back to single-shot
-  quality-gate, abort on first failure (current behavior preserved per PRD § 3
-  Gherkin negative path).
-- `verification-auto-fix.max-retries: 0` → equivalent to disabled.
+- `verification-auto-fix.enabled: false` (default) → no retry loop. The
+  role-default Incremental gate reports failures and exits 0; they become fix
+  tasks for the next wave (`wave-loop-review.md` § 3 Adapt Plan). A wave that
+  touched shared code runs the Full Gate instead (`wave-loop-review.md` §
+  Shared-lib touch auto-promotion; exit 2 when red), and its failures follow
+  the same step. The Full Gate after the Quality wave must pass. The hard abort
+  above applies to the auto-fix path only (#2189).
+- `verification-auto-fix.enabled: true` with `max-retries: 0` → the gate runs
+  once without a fixer and the wave hard-aborts when it is red (not the same as
+  disabled).
 
 ### Anti-pattern (BE-012 awareness)
 

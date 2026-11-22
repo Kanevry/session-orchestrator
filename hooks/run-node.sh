@@ -31,12 +31,11 @@ if [ -n "${SO_NODE_BIN:-}" ] && [ -x "${SO_NODE_BIN:-}" ]; then
   exec "${SO_NODE_BIN:-}" "$@"
 fi
 
-# 2. PATH as inherited from the harness.
-# Git Bash / MSYS / Cygwin (#1969): a relative PATH entry such as `.` taken over
-# from the Windows PATH makes `command -v node` pick a node.exe from the hook's
-# cwd (the repo). There, search only the absolute entries. The check runs only
-# when PATH holds an empty or relative entry, so a clean PATH and every
-# Darwin/Linux run take the unchanged lookup below without an extra process.
+# 2. PATH as inherited from the harness — absolute entries only, on every OS.
+# Relative PATH entries are never searched: an empty entry, `.` or `bin` resolve
+# against the hook's cwd (the repo being worked on), not against an install
+# location (#1969). A clean PATH takes the plain lookup below without an extra
+# process; otherwise the absolute entries are searched in their PATH order.
 path_lookup=true
 case ":${PATH-}:" in
   *::* | *:[!/]*)
@@ -45,21 +44,33 @@ case ":${PATH-}:" in
     while [ -n "$rest" ]; do
       dir="${rest%%:*}"
       rest="${rest#*:}"
+      # An unexpanded `~` or `~/…` entry (fnm, mise, nodenv) means the home folder:
+      # rewrite it to an absolute HOME path. `~user/…` is never resolved. A colon
+      # in HOME would split the result into further, possibly relative, entries:
+      # then the entry is dropped like any other relative one.
+      case "${HOME-}" in
+        *:*) ;;
+        /*)
+          case "$dir" in
+            \~) dir="$HOME" ;;
+            \~/*) dir="$HOME/${dir#\~/}" ;;
+          esac
+          ;;
+      esac
       case "$dir" in
         /*) abs_path="${abs_path:+$abs_path:}$dir" ;;
       esac
     done
-    # uname itself is looked up on the absolute entries, never in cwd.
-    case "$(PATH="$abs_path"; uname -s 2>/dev/null)" in
-      MINGW* | MSYS* | CYGWIN*)
-        node_bin="$(PATH="$abs_path"; command -v node 2>/dev/null)"
-        if [ -n "$node_bin" ]; then
-          exec "$node_bin" "$@"
-        fi
-        # No node on an absolute entry: never fall back to the relative ones.
-        path_lookup=false
-        ;;
+    # An empty PATH would itself mean the cwd, so only search a non-empty list.
+    node_bin=""
+    if [ -n "$abs_path" ]; then
+      node_bin="$(PATH="$abs_path"; command -v node 2>/dev/null)"
+    fi
+    case "$node_bin" in
+      /*) exec "$node_bin" "$@" ;;
     esac
+    # No node on an absolute entry: never fall back to the relative ones.
+    path_lookup=false
     ;;
 esac
 if [ "$path_lookup" = true ] && command -v node >/dev/null 2>&1; then
@@ -99,7 +110,7 @@ for cand in "${NVM_DIR:-${HOME:-}/.nvm}"/versions/node/*/bin/node; do
 done
 
 if [ "$fail_closed" = true ]; then
-  echo "session-orchestrator: Node is missing from the hook PATH; the tool call is blocked. Fix: install Node.js 24+, expose it on the harness PATH, or set SO_NODE_BIN=/abs/path/to/node." >&2
+  echo "session-orchestrator: Node is missing from the hook PATH; the tool call is blocked. Fix: install Node.js 24+, expose it on the harness PATH as an absolute directory (relative PATH entries are never searched), or set SO_NODE_BIN=/abs/path/to/node." >&2
   exit 2
 fi
 
@@ -118,7 +129,8 @@ if [ -n "$expired" ]; then
   : > "$marker" 2>/dev/null || true
   {
     echo "session-orchestrator: 'node' not found on the hook PATH — plugin hooks are skipped."
-    echo "  Fix: install Node.js 24+, expose it on the harness PATH, or set SO_NODE_BIN=/abs/path/to/node."
+    echo "  Fix: install Node.js 24+, expose it on the harness PATH as an absolute directory"
+    echo "  (relative PATH entries are never searched), or set SO_NODE_BIN=/abs/path/to/node."
     echo "  (Hook shells do not source ~/.zshrc — Homebrew/nvm/volta installs can be invisible here."
     echo "   Rate-limited to once per 6h. See docs/USER-GUIDE.md § Node is missing from the hook PATH.)"
   } >&2

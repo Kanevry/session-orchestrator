@@ -514,11 +514,12 @@ const RESULT_COMPLETION_FORMS = Object.freeze([
  * - the record's `agentId` is T(U). A text `agentId:` line counts only when
  *   the text alone reads as an ACK/completion form — then a differing id
  *   re-opens the agent on a resume, never closes it. In a result the record
- *   had to upgrade, the line is ignored. Ceiling (#2063): an unframed report
- *   that itself contains `<usage>`/`total_tokens` and a column-zero
- *   `agentId:` line still yields such an id (false DENY without TTL, never a
- *   false ALLOW); the real hand-back frame indents every report line (438 of
- *   438 in the m5 run, 2026-11-12).
+ *   had to upgrade, the line is ignored. Beside the record, a text id counts
+ *   only as the structural trailer outside a hand-back frame (#2063,
+ *   {@link recordTrailerAgentIdIn}). Ceiling: an unframed report that itself
+ *   ENDS in an `agentId:` line plus a `<usage>` block is indistinguishable
+ *   from a differing harness trailer and still yields such an id (false DENY
+ *   without TTL, never a false ALLOW; 0 measured, 2026-11-21).
  */
 const RECORD_COMPLETED_STATUS = 'completed';
 const RECORD_AGENT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -1131,8 +1132,9 @@ function notificationHead(text) {
  * Classify an Agent dispatch's OWN `tool_result` (#1480 B2): `done` only on
  * positive evidence (`is_error`, or one of {@link RESULT_COMPLETION_FORMS}),
  * `ack` for the launch acknowledgement (a text PREFIX, see
- * {@link ASYNC_LAUNCH_ACK}), `unknown` for everything else. The ACK is tested
- * before the forms, so no ACK wording can ever read as a completion.
+ * {@link ASYNC_LAUNCH_ACK}), `unknown` for everything else. The ACK and the
+ * fork start receipt ({@link FORK_START_RECEIPT}, #2061) are tested before the
+ * forms, so no launch receipt can ever read as a completion.
  *
  * @param {{is_error?: unknown}} block
  * @param {string} text — {@link resultTextOf}(block)
@@ -1142,6 +1144,11 @@ function dispatchResultForm(block, text) {
   if (block?.is_error === true) return 'done';
   const lead = text.trimStart();
   if (lead.startsWith(ASYNC_LAUNCH_ACK)) return 'ack';
+  // A fork start is a launch too (#2061): tested before the forms, so a
+  // `<usage>`/`total_tokens` further in can never read it as finished. It stays
+  // "unknown" (TTL-bounded), not 'ack': no census shows its completion carrier
+  // (0 fork results in 4,004 Agent dispatches, 598 transcripts, 2026-11-21).
+  if (lead.startsWith(FORK_START_RECEIPT)) return 'unknown';
   for (const form of RESULT_COMPLETION_FORMS) {
     if (form.at === 'start' ? lead.startsWith(form.text) : text.includes(form.text)) return 'done';
   }
@@ -1165,6 +1172,47 @@ function lastAgentIdIn(block) {
   let last = '';
   for (const m of text.matchAll(AGENT_ID_LINE_RE)) last = m[1];
   return last;
+}
+
+/**
+ * The frame Claude Code 2.1.322 puts around a trailer-less report (#2049), at
+ * the start of a line — the real form puts a `<tools-used-before-summary>`
+ * line ahead of it, so it is not the text prefix.
+ */
+const HAND_BACK_FRAME_RE = /(?:^|\n)\[Subagent hand-back\]/;
+
+/**
+ * The harness trailer in its structural form: a column-zero `agentId:` line,
+ * then only blank lines and ONE `<usage>…</usage>` block up to the text end.
+ */
+// The lookahead ends the id at the first non-id character: without it, `[^\n]*` re-split
+// every prefix of a long id run, quadratic (120,000 chars took 16.7 s against a 5-s hook budget).
+const STRUCTURAL_TRAILER_RE = /(?:^|\n)agentId:[ \t]*([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])[^\n]*\n(?:[ \t]*\n)*<usage>[^<]*<\/usage>\s*$/;
+
+/**
+ * The trailer id of a result that ALSO carries the record-level completion
+ * (#2063), or `''`. Such a result already names T(U) on the record, so a text
+ * id only adds a resume address — and one taken from the agent's report kept a
+ * finished agent running without TTL. It counts only in the structural trailer
+ * form ({@link STRUCTURAL_TRAILER_RE}) and never inside a
+ * {@link HAND_BACK_FRAME_RE} text, whose report a column-zero line can forge.
+ * Census 2026-11-21 (598 transcripts, 8 of 273 local project dirs): 11 of 11
+ * record completions end in the structural trailer and its id equals the
+ * record's in 11 of 11. Remaining ceiling: an unframed report ending in its
+ * own `agentId:` line and `<usage>` block still counts. Text-only results keep
+ * {@link lastAgentIdIn}: 0 of them in this sample, so a stricter form there is
+ * unmeasured and could lose T(U) (a false ALLOW).
+ *
+ * @param {{content?: unknown}} block
+ * @returns {string}
+ */
+export function recordTrailerAgentIdIn(block) {
+  const c = block?.content;
+  const text = typeof c === 'string'
+    ? c
+    : Array.isArray(c) ? c.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('\n') : '';
+  if (HAND_BACK_FRAME_RE.test(text)) return '';
+  return text.match(STRUCTURAL_TRAILER_RE)?.[1] ?? '';
 }
 
 /**
@@ -1206,7 +1254,8 @@ function pushTo(map, key, value) {
  * with `to === T(U)` whose result is not a no-effect (a send without a result
  * yet counts — the safe direction). U is FINISHED when a completion lies AFTER
  * its last activation, by transcript line position: a terminal carrier with
- * tool-use id U, with the id of an activating SendMessage, or with task id T(U);
+ * tool-use id U, with the id of an activating SendMessage, or with task id T(U)
+ * under the id of a send to an alternate id (#2062 — never a foreign tool-use id);
  * when the dispatch itself is the last activation, also U's own positive
  * result. Measured 2026-09-30: a resumed agent completes under the
  * SendMessage's id and the same task id, never again under U (455 cases); a
@@ -1246,7 +1295,6 @@ function buildLivenessIndex(raw) {
   const sendIds = new Set();
   const sendNoEffect = new Set();    // SendMessage ids whose result reached nobody
   const headsByUse = new Map();      // carrier tool-use id → [{pos, taskId, terminal}]
-  const terminalByTask = new Map();  // carrier task id → [pos] of terminal heads
 
   const lines = raw.split('\n');
   for (let pos = 0; pos < lines.length; pos++) {
@@ -1265,7 +1313,6 @@ function buildLivenessIndex(raw) {
       const head = notificationHead(notificationCarrierText(rec));
       if (head !== null) {
         pushTo(headsByUse, head.toolUseId, { pos, taskId: head.taskId, terminal: head.terminal });
-        if (head.terminal && head.taskId !== '') pushTo(terminalByTask, head.taskId, pos);
       }
     }
 
@@ -1304,8 +1351,10 @@ function buildLivenessIndex(raw) {
           // where the text alone reads as an ACK/completion: in a result the
           // record had to upgrade, an `agentId:` line comes from the agent's
           // report, and as a resume address it kept the agent running without
-          // TTL (Opus re-review of !412, MED). Remaining ceiling: #2063.
-          const textId = textForm === 'ack' || (textForm === 'done' && block.is_error !== true) ? lastAgentIdIn(block) : '';
+          // TTL (Opus re-review of !412, MED). Beside a record completion only
+          // the structural trailer counts (#2063, {@link recordTrailerAgentIdIn}).
+          const textId = textForm === 'ack' || (textForm === 'done' && block.is_error !== true)
+            ? (completion !== null ? recordTrailerAgentIdIn(block) : lastAgentIdIn(block)) : '';
           const agentId = completion !== null ? completion.agentId : textId;
           own.push({ pos, form, agentId, textId });
         } else if (sendIds.has(block.tool_use_id)
@@ -1332,8 +1381,9 @@ function buildLivenessIndex(raw) {
     // rounds 2 and 4) and the task id the text-only reading picks
     // (`baseTaskId`: first trailer id, else the FIRST notification head, as
     // before #2049 — Codex round 5). No id from a result the record upgraded
-    // (Opus re-review, MED; an unframed report with its own `<usage>` remains,
-    // #2063) and never a later notification head: a broader set kept agents
+    // (Opus re-review, MED; beside a record only the structural trailer — a
+    // report ending in its own trailer-shaped lines remains, #2063)
+    // and never a later notification head: a broader set kept agents
     // running without TTL where the text-only reading falls to the TTL.
     // Ceiling (BV-004): an agent resumed ONLY through an alternate id reads
     // running until the session ends — a false DENY, never a false ALLOW.
@@ -1345,18 +1395,31 @@ function buildLivenessIndex(raw) {
       ?? '';
     const altIds = new Set([...own.flatMap((r) => [r.agentId, r.textId]), baseTaskId]
       .filter((id) => id !== '' && id !== taskId));
+    const altSends = [];
     for (const resumeId of [taskId, ...altIds]) {
       if (resumeId === '') continue;
       const closes = resumeId === taskId;
       for (const send of sendsByTo.get(resumeId) ?? []) {
         if (sendNoEffect.has(send.id)) continue;
         if (closes) closers.push(send.id);
+        else altSends.push(send.id);
         if (send.pos > lastPos) { lastPos = send.pos; lastIsSend = true; }
       }
     }
 
+    // A terminal head with task id T(U) closes only under one of U's OWN
+    // activation ids (#2062): U, a send to T(U), or — task id matching — a send
+    // to an alternate id. Before, any tool-use id did, so a late notification
+    // of another run closed an open resume. Census 2026-11-21 (598 transcripts,
+    // 8 of 273 local project dirs): 2,019 sends to a dispatch's task id with a
+    // terminal head after them, first head under the send's id 1,634, under U
+    // 318, under another send to the same task 67, foreign 0; dispatches closed
+    // ONLY by the task id 0. Not covered: an EARLY close under another own id
+    // (6 of 385 sends whose first close was not under their own id saw their
+    // own close later) — follow-up.
     const closedAfter = closers.some((id) => (headsByUse.get(id) ?? []).some((h) => h.terminal && h.pos > lastPos))
-      || (taskId !== '' && (terminalByTask.get(taskId) ?? []).some((p) => p > lastPos))
+      || (taskId !== '' && altSends.some((id) => (headsByUse.get(id) ?? [])
+        .some((h) => h.terminal && h.taskId === taskId && h.pos > lastPos)))
       || (!lastIsSend && own.some((r) => r.form === 'done' && r.pos > lastPos));
 
     let state;

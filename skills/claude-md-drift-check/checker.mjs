@@ -23,23 +23,19 @@
  * claims numerically is skipped gracefully — no claim is ever invented.
  *
  * Reuses `_parseVaultIntegration` from scripts/lib/config/ for Check 7;
- * reuses `parseGlobsFrontmatter` from scripts/lib/rule-loader.mjs for Check 9's
- * glob extraction (mirrors the same picomatch-with-inline-fallback resolution
- * rule-loader.mjs uses) and its line-1-only frontmatter rule (#1449: a block
- * with anything before its opening `---` is not frontmatter, exactly as Claude
- * Code reads it); otherwise pure Node stdlib.
+ * reuses the rule loader's frontmatter parser and matcher for Check 9,
+ * including the line-1-only frontmatter rule (#1449); otherwise pure Node stdlib.
  */
 
 import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, posix, sep } from 'node:path';
-import { createRequire } from 'node:module';
 import { resolveInstructionFile } from '../../scripts/lib/common.mjs';
 import { commandOnPath, execFileSync } from '../../scripts/lib/native-command.mjs';
 import { _parseVaultIntegration } from '../../scripts/lib/config/vault-integration.mjs';
 import { _parseDriftCheck } from '../../scripts/lib/config/drift-check.mjs';
 import { isSessionConfigHeading } from '../../scripts/lib/config/section-extractor.mjs';
 import { extractSessionConfigBlock, extractTopLevelKeys } from '../../scripts/lib/config/template-keys.mjs';
-import { FRONTMATTER_NOT_AT_TOP, isRuleExpired, parseGlobsFrontmatter } from '../../scripts/lib/rule-loader.mjs';
+import { FRONTMATTER_NOT_AT_TOP, isRuleExpired, parseGlobsFrontmatter, matchGlob } from '../../scripts/lib/rule-loader.mjs';
 import { resolveRepoSpec } from '../../scripts/lib/vcs-repo-spec.mjs';
 import { userInvocableSkills } from '../../scripts/lib/user-invocable-skills.mjs';
 import { loadOwnerConfig } from '../../scripts/lib/owner-yaml.mjs';
@@ -596,55 +592,9 @@ function lookupIssueState(iid, repo, cache, vaultDir) {
 // not drift; do not "fix" it by moving probe 6's marker next to probe 5's.
 // ───────────────────────────────────────────────────────────────────────────
 
-let _picomatchRuleScoping = null;
-function getPicomatchForRuleScoping() {
-  if (_picomatchRuleScoping !== null) return _picomatchRuleScoping;
-  try {
-    const require = createRequire(import.meta.url);
-    _picomatchRuleScoping = require('picomatch');
-  } catch {
-    _picomatchRuleScoping = false;
-  }
-  return _picomatchRuleScoping;
-}
-
-/** Minimal glob-to-RegExp fallback (mirrors scripts/lib/rule-loader.mjs),
- * used only when picomatch is unavailable in node_modules. */
-function globToRegExpFallback(pattern) {
-  const p = pattern.replace(/\\/g, '/');
-  let re = '';
-  let i = 0;
-  while (i < p.length) {
-    const c = p[i];
-    if (c === '*' && p[i + 1] === '*') {
-      re += '.*';
-      i += 2;
-      if (p[i] === '/') i++;
-    } else if (c === '*') {
-      re += '[^/]*';
-      i++;
-    } else if (c === '?') {
-      re += '[^/]';
-      i++;
-    } else if (c === '.') {
-      re += '\\.';
-      i++;
-    } else {
-      re += c.replace(/[$()+[\]^{|}]/g, '\\$&');
-      i++;
-    }
-  }
-  return new RegExp(`^${re}$`);
-}
-
 /** Returns true when `pattern` matches at least one entry in `trackedFiles`. */
 function globMatchesAny(pattern, trackedFiles) {
-  const pm = getPicomatchForRuleScoping();
-  if (pm) {
-    return trackedFiles.some((f) => pm.isMatch(f, pattern, { dot: true }));
-  }
-  const re = globToRegExpFallback(pattern);
-  return trackedFiles.some((f) => re.test(f));
+  return trackedFiles.some((f) => matchGlob(f, pattern));
 }
 
 /**

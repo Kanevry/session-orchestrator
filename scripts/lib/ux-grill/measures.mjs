@@ -101,9 +101,8 @@ export const INTERACTIVE_TARGET_SELECTOR = [
 ].join(', ');
 
 /**
- * Ceiling on entries returned by {@link TARGET_SIZE_EVAL}. A page with more
- * undersized targets than this has a systemic layout problem, not 200 separate
- * ones, and every entry becomes a fingerprinted finding + an issue candidate.
+ * Ceiling on non-exempt undersized targets returned by {@link TARGET_SIZE_EVAL}.
+ * Each becomes a fingerprinted finding and an issue candidate.
  * Revisit if a real route legitimately exceeds it — the eval reports
  * `truncated: true` so the condition is observable rather than silent.
  * @type {number}
@@ -196,8 +195,12 @@ export function classifyTargetSize({ width, height } = {}) {
  * Page-side target-size measurement.
  *
  * Returns `{ targets: Array<{selector, tag, width, height, class, verdict}>,
- * scanned: number, truncated: boolean }`, where `targets` holds ONLY the
- * non-compliant ones (verdict `'floor'` or `'target'`) and `scanned` is the size
+ * scanned: number, truncated: boolean, exempt_budget_exhausted: boolean }`.
+ * The budget flag indicates that some undersized targets skipped exemption checks.
+ * Undersized targets include boolean
+ * `exempt.inline` and `exempt.hit_area` flags. A verified hit area can still
+ * have a `target` verdict when only the 24 px minimum is met.
+ * Ordinary compliant targets are omitted. `scanned` is the size
  * of the population actually inspected — `collect.mjs` needs the denominator.
  * When `truncated` is `true` the scan stopped at the cap, so `scanned` is a
  * partial denominator and must be reported as such.
@@ -209,6 +212,9 @@ export function classifyTargetSize({ width, height } = {}) {
  *  - `aria-hidden="true"` or `inert` on the element or any ancestor
  *  - the custom-select pattern (PRD § 3 AC): a `select`/`input` that is ≤ 1 × 1
  *    px, sits off-screen, or is covered by another element at its centre point.
+ *
+ * An associated label within 8 CSS px can enlarge a checkbox or radio target
+ * when hit testing finds a contiguous square that activates that control.
  *
  * The covered/off-screen/1×1 trio is scoped to `select`/`input` on purpose: it
  * is the native-control-behind-a-custom-trigger idiom, and applying a
@@ -231,8 +237,14 @@ export const TARGET_SIZE_EVAL = `(() => {
   const FLOOR = 24;            // must equal TARGET_SIZE_FLOOR_PX
   const TARGET = 44;           // must equal TARGET_SIZE_TARGET_PX
   const MAX_ENTRIES = 200;     // must equal TARGET_SIZE_MAX_ENTRIES
+  // BV-004: after 1000 undersized targets, skip further exemption checks and
+  // retain their findings. Revisit if skipped checks produce false positives on real routes.
+  const MAX_CANDIDATES = 1000;
   const MAX_DEPTH = 5;         // must equal SELECTOR_MAX_DEPTH
   const MAX_SELECTOR = 160;    // must equal SELECTOR_MAX_LENGTH
+  // BV-004: consider labels within 8 CSS px. Revisit if a verified control
+  // depends on a more distant associated label.
+  const MAX_LABEL_GAP = 8;
   const SELECTOR = ${JSON.stringify(INTERACTIVE_TARGET_SELECTOR)};
 
   const classify = (w, h) => {
@@ -286,12 +298,154 @@ export const TARGET_SIZE_EVAL = `(() => {
     return !(hit === el || el.contains(hit));
   };
 
-  const els = Array.from(document.querySelectorAll(SELECTOR));
+  const inlineDisplay = (display) => display === 'inline' || display === 'contents';
+
+  const isInlineLink = (el, rect) => {
+    if (getComputedStyle(el).display !== 'inline' ||
+        el.closest('nav, menu, [role~=navigation], [role~=menu], [role~=menubar], [role~=tablist]')) return false;
+    let block = el.parentElement;
+    while (block && inlineDisplay(getComputedStyle(block).display)) block = block.parentElement;
+    if (!block?.matches('p, li, td, dd')) return false;
+    const lineHeight = parseFloat(getComputedStyle(block).lineHeight);
+    if (Number.isFinite(lineHeight) && rect.height > lineHeight) return false;
+
+    const range = document.createRange();
+    const besideLink = (box) => {
+      const midY = box.top + box.height / 2;
+      return box.width > 0 && box.height > 0 && midY >= rect.top && midY < rect.bottom &&
+        (Number.isFinite(lineHeight) || rect.height <= box.height) &&
+        (box.right <= rect.left || box.left >= rect.right);
+    };
+    const hasProse = (parent) => Array.from(parent.childNodes).some((node) => {
+      if (node.nodeType === 3) {
+        // Range each word: punctuation on the link's line cannot borrow a
+        // letter from another line of the same wrapped text node.
+        for (const word of node.textContent.matchAll(/\\p{L}+/gu)) {
+          range.setStart(node, word.index);
+          range.setEnd(node, word.index + word[0].length);
+          if (Array.from(range.getClientRects()).some(besideLink)) return true;
+        }
+        return false;
+      }
+      if (node.nodeType !== 1 || node === el || node.matches(SELECTOR)) return false;
+      const style = getComputedStyle(node);
+      return inlineDisplay(style.display) && !hiddenByAncestor(node) && hasProse(node);
+    });
+    return hasProse(block);
+  };
+
+  // Stop at an intervening interactive descendant: activating it need not
+  // activate the enclosing label or button.
+  const hitOwner = (x, y, owners) => {
+    for (let hit = document.elementFromPoint(x, y); hit; hit = hit.parentElement) {
+      if (owners.includes(hit)) return true;
+      if (hit.matches?.(SELECTOR)) return false;
+    }
+    return false;
+  };
+
+  const visibleBounds = (boxes) => ({
+    left: Math.max(0, Math.min(...boxes.map(b => b.left))),
+    top: Math.max(0, Math.min(...boxes.map(b => b.top))),
+    right: Math.min(innerWidth, Math.max(...boxes.map(b => b.right))),
+    bottom: Math.min(innerHeight, Math.max(...boxes.map(b => b.bottom))),
+  });
+
+  const reachableSquare = (boxes, owners, { left, top, right, bottom }, limit) => {
+    // Each cell stores the largest solid square ending there. Stop once
+    // the requested threshold is met. One hit per CSS pixel can miss subpixel
+    // occlusion. Revisit the pitch if a browser fixture demonstrates that case.
+    const row = new Uint8Array(Math.max(0, Math.floor(right - left)) + 1);
+    let best = 0;
+    for (let y = top; y + 1 <= bottom; y++) {
+      let diagonal = 0;
+      for (let i = 1; i < row.length; i++) {
+        const x = left + i - 1;
+        const above = row[i];
+        const inside = boxes.some(b => x >= b.left && x + 1 <= b.right && y >= b.top && y + 1 <= b.bottom);
+        row[i] = inside && hitOwner(x + 0.5, y + 0.5, owners) ? 1 + Math.min(diagonal, above, row[i - 1]) : 0;
+        diagonal = above;
+        best = Math.max(best, row[i]);
+        if (best === limit) return best;
+      }
+    }
+    return best;
+  };
+
+  const labeledSize = (el, rect) => {
+    if (Math.min(rect.width, rect.height) >= TARGET) return rect;
+    const boxes = [rect];
+    const owners = [el];
+    for (const label of el.labels) {
+      const box = label.getBoundingClientRect();
+      const gapX = Math.max(0, rect.left - box.right, box.left - rect.right);
+      const gapY = Math.max(0, rect.top - box.bottom, box.top - rect.bottom);
+      if (!box.width || !box.height || Math.hypot(gapX, gapY) > MAX_LABEL_GAP ||
+          hiddenByAncestor(label) || getComputedStyle(label).pointerEvents === 'none') continue;
+      boxes.push(box);
+      owners.push(label);
+    }
+    if (boxes.length === 1) return rect;
+    const best = reachableSquare(boxes, owners, visibleBounds(boxes), TARGET);
+    return best > Math.min(rect.width, rect.height) ? { width: best, height: best } : rect;
+  };
+
+  // Resolve a positioned pseudo's border box relative to the host padding box.
+  // Unknown offsets/sizes (including transforms) cannot justify an exemption;
+  // revisit if a verified hit area needs a different containing block.
+  const px = (value) => value?.endsWith('px') ? parseFloat(value) : NaN;
+  const pseudoAxis = (start, end, before, after, extent) => {
+    if (!Number.isFinite(extent)) extent = end - start - before - after;
+    const origin = Number.isFinite(before) ? start + before : end - after - extent;
+    return [origin, origin + extent];
+  };
+  /**
+   * A reachable 24 px square near the target centre sets exempt.hit_area.
+   * The 44 px check searches the full visible union of host and pseudo boxes.
+   * If only the 24 px check passes, target-size-target remains a finding.
+   */
+  const pseudoSquareSize = (el, rect) => {
+    const host = getComputedStyle(el);
+    if (!['relative', 'absolute', 'fixed', 'sticky'].includes(host.position)) return 0;
+    const boxes = [rect];
+    for (const name of ['::before', '::after']) {
+      const ps = getComputedStyle(el, name);
+      if (!ps.content || ps.content === 'none' || ps.content === 'normal' ||
+          ps.position !== 'absolute' || ps.display === 'none' || ps.visibility === 'hidden' ||
+          ps.pointerEvents === 'none' || ps.transform !== 'none') continue;
+      const extra = (a, b, c, d) => ps.boxSizing === 'border-box' ? 0 :
+        px(ps[a]) + px(ps[b]) + px(ps[c]) + px(ps[d]);
+      const [left, right] = pseudoAxis(rect.left + px(host.borderLeftWidth), rect.right - px(host.borderRightWidth),
+        px(ps.left) + px(ps.marginLeft), px(ps.right) + px(ps.marginRight),
+        px(ps.width) + extra('paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth'));
+      const [top, bottom] = pseudoAxis(rect.top + px(host.borderTopWidth), rect.bottom - px(host.borderBottomWidth),
+        px(ps.top) + px(ps.marginTop), px(ps.bottom) + px(ps.marginBottom),
+        px(ps.height) + extra('paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'));
+      if (right > left && bottom > top) boxes.push({ left, top, right, bottom });
+    }
+    if (boxes.length === 1) return 0;
+    const bounds = visibleBounds(boxes);
+    const extent = Math.min(bounds.right - bounds.left, bounds.bottom - bounds.top);
+    if (extent < FLOOR) return 0;
+    // Test the 24 px square nearest the target's centre. A remote patch beyond
+    // an overlay cannot rescue a split square around the intended click point.
+    const left = Math.max(bounds.left, Math.min(rect.left + (rect.width - FLOOR) / 2, bounds.right - FLOOR));
+    const top = Math.max(bounds.top, Math.min(rect.top + (rect.height - FLOOR) / 2, bounds.bottom - FLOOR));
+    const square = { left, top, right: left + FLOOR, bottom: top + FLOOR };
+    if (reachableSquare(boxes, [el], square, FLOOR) < FLOOR) return 0;
+    if (extent >= TARGET && reachableSquare(boxes, [el], bounds, TARGET) === TARGET) return TARGET;
+    return FLOOR;
+  };
+
+  const els = document.querySelectorAll(SELECTOR);
   const targets = [];
+  let nonExempt = 0;
+  let candidates = 0;
   let scanned = 0;
   let truncated = false;
 
-  for (const el of els) {
+  for (let index = 0; index < els.length; index++) {
+    const el = els[index];
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) continue;
     if (hiddenByAncestor(el)) continue;
@@ -308,22 +462,36 @@ export const TARGET_SIZE_EVAL = `(() => {
     // Classify on the RAW float and round only for reporting: rounding first
     // promotes a 23.6 x 23.6 px box to 24 x 24 and reclassifies a 'floor'
     // violation as 'target' (or as compliant at 43.6).
-    const verdict = classify(rect.width, rect.height);
-    const width = Math.round(rect.width);
-    const height = Math.round(rect.height);
+    const size = tag === 'input' && (el.type === 'checkbox' || el.type === 'radio') && el.labels?.length
+      ? labeledSize(el, rect)
+      : rect;
+    let verdict = classify(size.width, size.height);
+    const width = Math.round(size.width);
+    const height = Math.round(size.height);
     if (verdict === null) continue;
-    if (targets.length >= MAX_ENTRIES) { truncated = true; break; }
+    candidates++;
+    const checkExemptions = candidates <= MAX_CANDIDATES;
+    const inline = checkExemptions && tag === 'a' && isInlineLink(el, rect);
+    const pseudoSize = checkExemptions && !inline && verdict === 'floor' ? pseudoSquareSize(el, rect) : 0;
+    const hitArea = pseudoSize >= FLOOR;
+    if (inline) verdict = null;
+    else if (hitArea) verdict = classify(pseudoSize, pseudoSize);
+    else {
+      if (nonExempt >= MAX_ENTRIES) { truncated = true; break; }
+      nonExempt++;
+    }
     targets.push({
       selector: cssPath(el),
       tag: tag,
       width: width,
       height: height,
       class: typeof el.className === 'string' ? el.className : '',
-      verdict: verdict,
+      verdict,
+      exempt: { inline, hit_area: hitArea },
     });
   }
 
-  return { targets: targets, scanned: scanned, truncated: truncated };
+  return { targets, scanned, truncated, exempt_budget_exhausted: candidates > MAX_CANDIDATES };
 })()`;
 
 /**

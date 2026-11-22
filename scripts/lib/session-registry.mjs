@@ -44,14 +44,18 @@
 
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { hostname } from 'node:os';
 import { promises as fs } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { digestSha256 } from './crypto-digest-utils.mjs';
 
-import { appendFileSync, chmodSync, mkdirSync, realpathSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 
 import { utcTimestamp, appendJsonl } from './common.mjs';
 import { renameWithRetry } from './io.mjs';
 import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
+import { withFileLock } from './file-lock.mjs';
+import { hostnamesMatch, lockHostCandidate } from './host-identity.mjs';
 import { FUTURE_HEARTBEAT_TOLERANCE_MS } from './session-lock.mjs';
 
 // ---------------------------------------------------------------------------
@@ -331,16 +335,91 @@ export async function registerSelf(opts) {
     session_root: sessionRoot,
     work_root: workRoot,
   };
-  await _writeJsonAtomic(entryPath(sessionId), entry);
+  const file = entryPath(sessionId);
+  const writeEntry = () => _writeJsonAtomic(file, entry);
+  let result = await withRegistryEntryLock(file, writeEntry, { create: true });
+  // CEILING (BV-004): three attempts, with 300 ms of lock budgets plus 160 ms
+  // of backoff. Revisit if sweep.log shows repeated lock-related register-failed events.
+  for (const backoffMs of [40, 120]) {
+    if (result.ok || (result.reason !== 'timeout' && result.reason !== 'retired')) break;
+    await delay(backoffMs);
+    result = await withRegistryEntryLock(file, writeEntry, { create: true });
+  }
+  if (!result.ok) throw registryEntryLockError(result, 'registerSelf: entry lock: ');
   return entry;
 }
 
 /** Roles `heartbeat(id, { role })` accepts besides `null` (#1462). */
 export const REGISTRY_ROLES = Object.freeze(['navigator']);
 
+const REGISTRY_ENTRY_LOCK_STALE_MS = 30_000;
+const RETIRED_ENTRY_LOCK = Symbol('retired registry entry lock');
+
+function staleRegistryEntryLock(file, now, { missing = false } = {}) {
+  try {
+    const stat = lstatSync(file);
+    if (!stat.isFile() || now - stat.mtimeMs <= REGISTRY_ENTRY_LOCK_STALE_MS) return false;
+    const lock = JSON.parse(readFileSync(file, 'utf8'));
+    return hostnamesMatch(lockHostCandidate(lock), hostname());
+  } catch (err) {
+    return missing && err.code === 'ENOENT';
+  }
+}
+
+function registryEntryLockPath(file) {
+  const base = `${file}.lock`;
+  const now = Date.now();
+  for (let generation = 0; ; generation += 1) {
+    const lock = generation === 0 ? base : `${base}.${generation}`;
+    const retired = `${lock}.retired`;
+    if (existsSync(retired)) continue;
+    if (!staleRegistryEntryLock(`${lock}.acquire`, now) || !staleRegistryEntryLock(lock, now, { missing: true })) return lock;
+
+    // The shared helper cannot reclaim its acquisition guard. Retire the lock
+    // path atomically so contenders agree on the successor without unlinking a
+    // guard that may now belong to a different acquirer.
+    try { mkdirSync(retired, { mode: 0o700 }); } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
+  }
+}
+
+async function withRegistryEntryLock(file, mutate, { create = false, read } = {}) {
+  // withFileLock creates its parent with the default mode. Registration must
+  // create it privately first. Existing-entry operations leave it absent.
+  if (create) {
+    await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  } else if (!lstatSync(file, { throwIfNoEntry: false })) {
+    return { ok: true, value: null };
+  }
+
+  // An orphaned write temp belongs to the same lock as its published entry.
+  const lock = registryEntryLockPath(file.replace(ORPHANED_TMP_RE, '.json'));
+  const result = await withFileLock(lock, async () => {
+    if (!create && !lstatSync(file, { throwIfNoEntry: false })) return null;
+    const current = read ? await read(file) : undefined;
+    if (existsSync(`${lock}.retired`)) return RETIRED_ENTRY_LOCK;
+    return mutate(current);
+  }, {
+    timeoutMs: 100,
+    pollMs: 10,
+    staleCheck: 'mtime',
+    staleMs: REGISTRY_ENTRY_LOCK_STALE_MS,
+    holder: crypto.randomUUID(),
+    warn: () => {},
+  });
+  return result.ok && result.value === RETIRED_ENTRY_LOCK ? { ok: false, reason: 'retired' } : result;
+}
+
+function registryEntryLockError(result, prefix = '') {
+  const error = new Error(prefix + (result.error ?? result.reason));
+  if (result.reason === 'fs-error' && result.code !== undefined) error.code = result.code;
+  return error;
+}
+
 /**
  * Refresh last_heartbeat on the existing entry (and optionally status /
- * current_wave / role). No-op if the entry is missing.
+ * current_wave / role). No-op if the entry is missing or its lock cannot be acquired.
  *
  * `patch.role`: `undefined` keeps the stored role, `null` clears it, a member
  * of `REGISTRY_ROLES` sets it. Anything else throws before the file is touched.
@@ -349,7 +428,8 @@ export const REGISTRY_ROLES = Object.freeze(['navigator']);
  *
  * @param {string} sessionId
  * @param {{ status?: string, currentWave?: number, role?: string|null, workRoot?: string }} [patch]
- * @returns {Promise<object|null>} the updated entry, or null if none exists.
+ * @returns {Promise<object|null|{skipped: 'lock'}>} the updated entry, null for
+ *   a missing or invalid entry, or `{ skipped: 'lock' }` when the lock is unavailable.
  * @throws {TypeError} when `patch.role` is neither undefined, null, nor a REGISTRY_ROLES
  *   member, or `patch.workRoot` is neither undefined nor an absolute path.
  */
@@ -359,18 +439,25 @@ export async function heartbeat(sessionId, patch = {}) {
   }
   const workRoot = patch.workRoot === undefined ? undefined : _optionalRoot(patch.workRoot, 'heartbeat: workRoot');
   const file = entryPath(sessionId);
-  const existing = await _readJsonSafe(file);
-  if (!_validEntry(existing)) return null;
-  const updated = {
-    ...existing,
-    last_heartbeat: utcTimestamp(),
-    ...(patch.status !== undefined ? { status: patch.status } : {}),
-    ...(patch.currentWave !== undefined ? { current_wave: patch.currentWave } : {}),
-    ...(patch.role !== undefined ? { role: patch.role } : {}),
-    ...(workRoot !== undefined && workRoot !== null ? { work_root: workRoot } : {}),
-  };
-  await _writeJsonAtomic(file, updated);
-  return updated;
+  const result = await withRegistryEntryLock(file, async (existing) => {
+    if (!_validEntry(existing)) return null;
+    const updated = {
+      ...existing,
+      last_heartbeat: utcTimestamp(),
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      ...(patch.currentWave !== undefined ? { current_wave: patch.currentWave } : {}),
+      ...(patch.role !== undefined ? { role: patch.role } : {}),
+      ...(workRoot !== undefined && workRoot !== null ? { work_root: workRoot } : {}),
+    };
+    await _writeJsonAtomic(file, updated);
+    return updated;
+  }, { read: _readJsonSafe });
+  if (result.ok) return result.value;
+
+  logSweepEvent({
+    event: 'heartbeat-lock-skipped', session_id: sessionId, error: result.reason,
+  });
+  return { skipped: 'lock' };
 }
 
 /**
@@ -541,59 +628,70 @@ export async function sweepZombies({ thresholdMin = 60, now = Date.now() } = {})
     const orphanedTmp = ORPHANED_TMP_RE.test(name);
     if (!name.endsWith('.json') && !orphanedTmp) continue;
     const full = path.join(dir, name);
-    const parsed = await _readJsonSafe(full);
-    const valid = _validEntry(parsed) && !orphanedTmp;
-    let age;
-    if (valid && !_isFutureStamp(parsed.last_heartbeat, now)) {
-      age = _ageMinutes(parsed.last_heartbeat, now);
-    } else {
-      // Malformed files can be fresh semantic-session claim files, and an
-      // orphaned tmp file can be an IN-FLIGHT write of a live process. Both are
-      // aged by mtime so neither a concurrent SessionStart claim nor a running
-      // _writeJsonAtomic is swept out from under its writer.
-      // #1505.1: a future-stamped heartbeat measures no age either — `now - t`
-      // was negative, never over the threshold, so it was never swept. The
-      // mtime is when it was last written: a live heartbeat() keeps it young.
-      try {
-        const info = await fs.stat(full);
-        age = (now - info.mtimeMs) / 60_000;
-      } catch {
-        age = Infinity;
-      }
-    }
-    if (age > thresholdMin) {
-      try {
+    const candidate = await readSweepCandidate(full, orphanedTmp, now);
+    if (!(candidate.age > thresholdMin)) continue;
+    try {
+      const result = await withRegistryEntryLock(full, async (current) => {
+        if (!(current.age > thresholdMin)) return null;
         await fs.unlink(full);
-        removed.push(name);
-        try {
-          await appendJsonl(sweepLogPath(), {
-            timestamp: new Date(now).toISOString(),
-            session_id: parsed?.session_id ?? null,
-            // lead report 2026-11-10: preserve the registration's hardware class for detection.
-            host_class: parsed?.host_class ?? null,
-            file: name,
-            age_minutes: Number.isFinite(age) ? Math.round(age) : null,
-            reason: orphanedTmp ? 'orphaned-tmp' : valid ? 'stale-heartbeat' : 'malformed-entry',
-          }, { mode: 0o600 }); // #1632
-          logged += 1;
-        } catch { /* log best-effort */ }
-      } catch { /* file might have been removed by another sweep */ }
-    }
+        return current;
+      }, { read: (file) => readSweepCandidate(file, orphanedTmp, now) });
+      if (!result.ok) {
+        logSweepEvent({ event: 'sweep-lock-skipped', session_id: candidate.parsed?.session_id, error: result.reason });
+        continue;
+      }
+      if (!result.value) continue;
+      const { parsed, valid, age } = result.value;
+      removed.push(name);
+      await appendJsonl(sweepLogPath(), {
+        timestamp: new Date(now).toISOString(),
+        session_id: parsed?.session_id ?? null,
+        // lead report 2026-11-10: preserve the registration's hardware class for detection.
+        host_class: parsed?.host_class ?? null,
+        file: name,
+        age_minutes: Number.isFinite(age) ? Math.round(age) : null,
+        reason: orphanedTmp ? 'orphaned-tmp' : valid ? 'stale-heartbeat' : 'malformed-entry',
+      }, { mode: 0o600 }); // #1632
+      logged += 1;
+    } catch { /* removal and logging are best effort */ }
   }
   return { removed, logged };
+}
+
+async function readSweepCandidate(file, orphanedTmp, now) {
+  const parsed = await _readJsonSafe(file);
+  const valid = _validEntry(parsed) && !orphanedTmp;
+  if (valid && !_isFutureStamp(parsed.last_heartbeat, now)) {
+    return { parsed, valid, age: _ageMinutes(parsed.last_heartbeat, now) };
+  }
+
+  // The mtime preserves fresh semantic-session claims and in-flight writes.
+  // It also ages future-stamped heartbeats whose timestamps are unusable (#1505.1).
+  let age = Infinity;
+  try {
+    const info = await fs.stat(file);
+    age = (now - info.mtimeMs) / 60_000;
+  } catch { /* unlink will handle missing or inaccessible files */ }
+  return { parsed, valid, age };
 }
 
 /**
  * Remove this session's heartbeat file. Idempotent — missing file is not an
  * error (clean-stop after a crashed-sweep scenario).
  *
- * @returns {Promise<boolean>} true if a file was removed
+ * @returns {Promise<boolean>} true if a file was removed, false if absent or lock held
  */
 export async function deregisterSelf(sessionId) {
-  _assertSessionId(sessionId);
+  const file = entryPath(sessionId);
   try {
-    await fs.unlink(entryPath(sessionId));
-    return true;
+    const result = await withRegistryEntryLock(file, async () => {
+      await fs.unlink(file);
+      return true;
+    });
+    if (result.ok) return result.value === true;
+    if (result.reason === 'fs-error') throw registryEntryLockError(result);
+    logSweepEvent({ event: 'deregister-lock-skipped', session_id: sessionId, error: result.reason });
+    return false;
   } catch (err) {
     if (err && err.code === 'ENOENT') return false;
     throw err;

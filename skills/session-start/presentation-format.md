@@ -29,6 +29,9 @@
 - [approach] ([session_id], [date]) — why: [why_failed]
 — END HISTORICAL REFERENCE —
 
+## Vault Pointers (candidates)
+> Render ONLY when session-start Phase 6.6.1 printed a block (`vault-integration.briefing-search: true`). Paste the block verbatim; omit the slot when it printed nothing. Candidates, not findings: read a note only when it fits the agreed task.
+
 ## Recommended Focus
 Based on priority, synergies, and session type, I recommend:
 

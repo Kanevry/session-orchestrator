@@ -5,7 +5,7 @@ argument-hint: "[--session <id>] [--no-write] [--verify <run-id>]"
 tags: [eval, measurement, quality, meta, standard]
 model: sonnet
 model-preference: sonnet
-model-preference-codex: gpt-5.4-mini
+model-preference-codex: gpt-6.2-astra
 model-preference-cursor: claude-sonnet-4-6
 args-schema:
   - flag: --session

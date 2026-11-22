@@ -36,7 +36,7 @@ import { eventsFilePath, sessionAttribution } from './events.mjs';
 import { readLock } from './session-lock.mjs';
 import { readProcessLocalSessionIds } from './session-identity/own-session.mjs';
 import { spawnSync } from './native-command.mjs';
-import { findPlaywrightConfigs, renderablePaths } from './ui-touch.mjs';
+import { findPlaywrightConfigs, hasControlChar, renderablePaths } from './ui-touch.mjs';
 
 export const REVIEW_EVENT = 'orchestrator.design_review.recorded';
 
@@ -166,24 +166,85 @@ export function resolveSinceTime(repoRoot, sinceTime) {
   return { sinceTime: null, source: 'unknown' };
 }
 
+// Bound each argv well below process limits, including Windows command-line quoting.
+const HASH_ARG_BUDGET = 8 * 1024;
+
 /**
  * Cover keys of the given UI files in their CURRENT content:
  * `sha256(path \0 blob)[0:16]`, blob from `git hash-object`.
  *
- * @returns {string[]|null} `null` when git cannot hash them.
+ * @returns {string[]|null} `null` when git cannot hash them or a path has control characters.
  */
 export function coverKeys(repoRoot, paths) {
-  if (paths.length === 0) return [];
-  const r = spawnSync('git', ['hash-object', '--stdin-paths'], {
-    cwd: repoRoot,
-    input: `${paths.join('\n')}\n`,
-    encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  if (r.status !== 0) return null;
-  const blobs = String(r.stdout).trim().split('\n');
-  if (blobs.length !== paths.length) return null;
-  return paths.map((p, i) => createHash('sha256').update(`${p}\0${blobs[i]}`).digest('hex').slice(0, 16));
+  if (paths.some(hasControlChar)) return null;
+  const keys = [];
+  for (let start = 0; start < paths.length;) {
+    let end = start;
+    let bytes = 0;
+    while (end < paths.length) {
+      const argBytes = Buffer.byteLength(paths[end]) + 16; // terminator and argv overhead
+      if (end > start && bytes + argBytes > HASH_ARG_BUDGET) break;
+      bytes += argBytes;
+      end++;
+    }
+    const batch = paths.slice(start, end);
+    const r = spawnSync('git', ['hash-object', '--', ...batch], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (r.status !== 0) return null;
+    const blobs = String(r.stdout).trim().split('\n');
+    if (blobs.length !== batch.length) return null;
+    for (const [i, path] of batch.entries()) {
+      keys.push(createHash('sha256').update(`${path}\0${blobs[i]}`).digest('hex').slice(0, 16));
+    }
+    start = end;
+  }
+  return keys;
+}
+
+/**
+ * Measure current coverage even when some UI paths cannot be hashed.
+ *
+ * @returns {{ hashed: string[], keys: string[], unhashable: string[] }|null}
+ *   Each key belongs to the path at the same index in `hashed`. A Git or repo
+ *   failure that is independent of the input paths returns `null`.
+ */
+export function coverKeysByPath(repoRoot, paths) {
+  const hashed = [];
+  const keys = [];
+  const cannotHash = (path) => path.endsWith('/') || hasControlChar(path);
+  const unhashable = paths.filter(cannotHash);
+  const hashable = paths.filter((path) => !cannotHash(path));
+  for (let start = 0; start < hashable.length;) {
+    let end = start;
+    let bytes = 0;
+    while (end < hashable.length) {
+      bytes += Buffer.byteLength(hashable[end]) + 16;
+      if (end > start && bytes > HASH_ARG_BUDGET) break;
+      end++;
+    }
+    const batch = hashable.slice(start, end);
+    const batchKeys = coverKeys(repoRoot, batch);
+    if (batchKeys !== null) {
+      hashed.push(...batch);
+      keys.push(...batchKeys);
+    } else {
+      // Verify that Git can still hash without opening any of the input paths.
+      if (spawnSync('git', ['hash-object', '--stdin'], { cwd: repoRoot, stdio: 'ignore' }).status !== 0) return null;
+      for (const path of batch) {
+        const pathKeys = coverKeys(repoRoot, [path]);
+        if (pathKeys === null) unhashable.push(path);
+        else {
+          hashed.push(path);
+          keys.push(pathKeys[0]);
+        }
+      }
+    }
+    start = end;
+  }
+  return { hashed, keys, unhashable };
 }
 
 /** `design-review.jsonl` beside the events ledger (one per repo, like the ledger). */

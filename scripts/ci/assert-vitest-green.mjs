@@ -33,6 +33,7 @@
 //
 // USAGE:
 //   node scripts/ci/assert-vitest-green.mjs <result.json> [--min-tests=N] [--log=<path>]
+//                                            [--exit-code-file=<path>] [--time-limit=<seconds>]
 //   Exit 0 → suite is verifiably green. Exit 1 → fail (with a [ci] reason line).
 //
 // The caller MUST `rm -f` the result file before the vitest run so a stale
@@ -49,10 +50,40 @@
 //   additive: absent `--log` (or an unreadable/uninformative log) falls back to
 //   the existing bare message and the exit-code contract is unchanged.
 
+//
+// NAMED TIMEOUTS (--exit-code-file, #2098):
+//   The CI step writes the exit status of `timeout <N>s …` into a file
+//   (`{ timeout 900s npm …; echo $? > <file>; } 2>&1 | tee …`). GNU timeout
+//   exits 124 when its limit fired. With that file the verifier names a run the
+//   limit cut off as a TIMEOUT instead of only "cannot read result file", so the
+//   trace says why the result is missing. A complete green result still passes
+//   when the limit fired afterwards (the post-completion exit-hang case above):
+//   the limit only explains a failure, it never creates or hides one. A missing
+//   or unparseable exit-code file changes nothing.
+
 import { readFileSync } from 'node:fs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 
 const DEFAULT_MIN_TESTS = 5000;
+
+/** Exit status GNU `timeout` returns when its limit fired (without --preserve-status). */
+export const TIMEOUT_EXIT_CODE = 124;
+
+/**
+ * Read the exit status a CI step wrote with `echo $? > <path>`. Fail-soft: a
+ * missing, unreadable or non-numeric file yields null (no timeout claim).
+ * @param {string} path
+ * @returns {number | null}
+ */
+export function readExitCodeFile(path) {
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf8').trim();
+  } catch {
+    return null;
+  }
+  return /^\d+$/.test(raw) ? Number(raw) : null;
+}
 
 /**
  * Verify a parsed vitest JSON result is a complete, all-passing run.
@@ -225,20 +256,26 @@ function parseArgs(argv) {
   const positional = [];
   let minTests = DEFAULT_MIN_TESTS;
   let logPath = null;
+  let exitCodeFile = null;
+  let timeLimit = null;
   for (const arg of argv) {
     const m = /^--min-tests=(\d+)$/.exec(arg);
     const l = /^--log=(.+)$/.exec(arg);
+    const e = /^--exit-code-file=(.+)$/.exec(arg);
+    const t = /^--time-limit=(\d+)$/.exec(arg);
     if (m) minTests = Number(m[1]);
     else if (l) logPath = l[1];
+    else if (e) exitCodeFile = e[1];
+    else if (t) timeLimit = Number(t[1]);
     else positional.push(arg);
   }
-  return { path: positional[0], minTests, logPath };
+  return { path: positional[0], minTests, logPath, exitCodeFile, timeLimit };
 }
 
 // CLI entry — only when run directly, not when imported by tests.
 const isMain =isMainModule(import.meta.url);
 if (isMain) {
-  const { path, minTests, logPath } = parseArgs(process.argv.slice(2));
+  const { path, minTests, logPath, exitCodeFile, timeLimit } = parseArgs(process.argv.slice(2));
   if (!path) {
     console.error('[ci] assert-vitest-green: missing <result.json> argument — failing closed');
     process.exit(1);
@@ -249,9 +286,23 @@ if (isMain) {
     `[ci] vitest result: success=${s.success} passed=${s.numPassedTests} failed=${s.numFailedTests} ` +
       `failedSuites=${s.numFailedTestSuites} total=${s.numTotalTests} (floor=${minTests})`,
   );
+  const timedOut = exitCodeFile !== null && readExitCodeFile(exitCodeFile) === TIMEOUT_EXIT_CODE;
+  const limitText = timeLimit !== null ? ` of ${timeLimit}s` : '';
   if (ok) {
+    if (timedOut) {
+      console.log(
+        `[ci] note: the inner time limit${limitText} fired AFTER vitest wrote this complete result ` +
+          `(post-completion exit-hang) — the result stands`,
+      );
+    }
     console.log(`[ci] ✓ suite verifiably green — ${reason}`);
     process.exit(0);
+  }
+  if (timedOut) {
+    console.error(
+      `[ci] ✗ TIMEOUT: vitest was cut off by the inner time limit${limitText} ` +
+        `(timeout exit ${TIMEOUT_EXIT_CODE}) before it finished — a time overrun, not a test result.`,
+    );
   }
   console.error(`[ci] ✗ FAIL-CLOSED: ${reason}`);
   // Self-diagnosing hint: the result JSON could not be READ (the hang case

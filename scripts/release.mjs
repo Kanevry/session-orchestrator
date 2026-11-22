@@ -3925,7 +3925,13 @@ export function ensureGithubRelease(repoRoot, target, deps = {}) {
     let argv;
     let retainNotes = false;
     try {
-      writeFileSync(notesFile, `${changelogExcerpt(repoRoot, target)}\n`);
+      const packageUrl = `https://www.npmjs.com/package/session-orchestrator/v/${target}`;
+      writeFileSync(notesFile, [
+        changelogExcerpt(repoRoot, target),
+        '',
+        `[npm package and provenance (when available)](${packageUrl})`,
+        '',
+      ].join('\n'));
       argv = ['release', 'create', tag, ...repoFlag, '--verify-tag', '--title', tag, '--notes-file', notesFile];
       const created = runImpl('gh', argv, { cwd: repoRoot });
       if (created.status !== 0) {

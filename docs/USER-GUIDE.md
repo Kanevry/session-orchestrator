@@ -55,7 +55,7 @@ Claude Code also has a `claude plugin` shell CLI (`claude plugin --help` lists s
 After installation, starting Claude Code will display:
 
 ```
-🎯 Session Orchestrator v3.x — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]
+🎯 Session Orchestrator vX.Y.Z — /session [housekeeping|feature|deep] | /plan [new|feature|retro] | /discovery [scope] | /evolve [analyze|review|list]
 ```
 
 #### Codex
@@ -96,7 +96,7 @@ enforcement: warn
 vcs: github
 ```
 
-If you skip this step, the plugin uses sensible defaults: `feature` type (a fixed 3-wave shape — see [`docs/session-config-reference.md`](session-config-reference.md#session-shapes) § Session Shapes for the full per-type wave/agent-cap table), 6 agents per wave, and auto-detected VCS. See [`docs/session-config-template.md`](session-config-template.md) for the full field walkthrough.
+If you skip this step, the plugin defaults to 6 agents per wave and auto-detects VCS. A bare `/session` defaults to `deep` (a fixed 5-wave shape — see [`docs/session-config-reference.md`](session-config-reference.md#session-shapes) § Session Shapes for the full per-type wave/agent-cap table). See [`docs/session-config-template.md`](session-config-template.md) for the full field walkthrough.
 
 ### Run your first session
 
@@ -113,7 +113,7 @@ The orchestrator researches your project state autonomously, presents findings w
 | Errors stop at the next check | Each wave runs your tests and typecheck; lint and the full suite run before the commit. `/debug` looks for the root cause before a fix. |
 | Agents keep to their files | Overlapping file lists are rejected before dispatch. A guard has 14 blocking and 4 warning rules for destructive commands (hard reset, `rm -rf`, force-push, `DROP TABLE`, …), see [`.orchestrator/policy/blocked-commands.json`](../.orchestrator/policy/blocked-commands.json). |
 | Pick up where you stopped | A crash or a second session in the same folder does not cost you the work: `STATE.md` and a heartbeat lock keep the thread. |
-| Audit and test on demand | `/test` drives web and macOS flows, `/ux-grill` audits a running web app, `/repo-audit` and `/harness-audit` score a repository, `/test-audit` removes tests that catch nothing. |
+| Audit and test on demand | `/test` drives web and macOS flows, `/ux-grill` audits a running web app, `/repo-audit` and `/harness-audit` score a repository, `/test-audit` removes tests that catch nothing, `/public-audit` measures a site's public technical discoverability from a manifest you provide (redirects, metadata, sitemaps, robots; no login, no ranking claims). |
 | Longer runs | `/autopilot` chains sessions and stops on any of 10 kill-switches; `/dispatcher` and `/portfolio` work across repositories. |
 
 Every skill, command, agent and hook: [components.md](components.md). What changed lately: [CHANGELOG.md](../CHANGELOG.md).
@@ -260,7 +260,7 @@ This section introduces the core commands of the session lifecycle — the ones 
 
 ### `/session [type]`
 
-Starts a new development session. Accepts one argument: `housekeeping`, `feature`, or `deep`. If omitted, the type is read from your Session Config or defaults to `feature`.
+Starts a new development session. Accepts one argument: `housekeeping`, `feature`, or `deep`. With no argument, `/session` defaults to `deep`. In a repo with no measured session history, an interactive `/session` asks for the task and mode first and recommends `feature`.
 
 ```
 /session feature
@@ -481,7 +481,7 @@ Add a `## Session Config` section to your project's Session Config host file to 
 
 If you add no Session Config at all, the orchestrator uses these defaults:
 
-- Session type: `feature`
+- Session type: `/session` defaults to `deep` independently of Session Config.
 - Agents per wave: `6`
 - Waves: `5`
 - VCS: auto-detected from git remote
@@ -1062,7 +1062,7 @@ Enforcement levels (configured via `enforcement`):
 
 ### Prerequisites
 
-The enforcement hooks (`hooks/enforce-scope.mjs`, `hooks/enforce-commands.mjs`) do not call `requireJq()` — they run without `jq`. `jq` is required by `scripts/validate-plugin.mjs` and by the wave-scope shell snippets in `skills/wave-executor/` (e.g. deriving `blockedCommands` and reading Session Config). Install `jq` when you run those tools or snippets:
+The enforcement hooks (`hooks/enforce-scope.mjs`, `hooks/enforce-commands.mjs`) run without `jq`. `jq` is required by `scripts/validate-plugin.mjs` and by shell snippets in `skills/wave-executor/` that call it, such as snippets that extract Session Config fields. Install `jq` when you run those tools or snippets:
 
 - **macOS**: `brew install jq`
 - **Ubuntu/Debian**: `sudo apt-get install jq`
@@ -1405,6 +1405,10 @@ This usually means the CLI tool is not authenticated or is pointing at the wrong
 - For GitLab with a custom host, ensure `gitlab-host` is set in Session Config or that your `.env` / `.env.local` contains the correct `GITLAB_HOST`
 - Check that `git remote get-url origin` returns the expected URL
 
+### The disk of the session host fills up every day
+
+With one worktree per task and many parallel sessions, leftovers regrow faster than they are removed. A bigger disk does not fix that. See [`docs/recipes/disk-pressure-parallel-agents.md`](recipes/disk-pressure-parallel-agents.md) for how to measure it, where to fix the removal path, and how an attached SSD can carry the worktrees.
+
 ### Plugin not loading
 
 For Codex, start with the public state view:
@@ -1439,7 +1443,8 @@ and also checks Windows locations under `ProgramFiles`/`PROGRAMFILES` (`nodejs`)
 If Node is missing, PreToolUse guards for Bash, PowerShell, Edit, Write, and
 MultiEdit block the tool call and report the fix every time; other hooks are
 skipped with **one** warning per 6 hours.
-Install Node.js 24+, expose it on the harness PATH, or set `SO_NODE_BIN`.
+Install Node.js 24+, expose it on the harness PATH as an absolute directory
+(relative PATH entries are never searched), or set `SO_NODE_BIN`.
 
 Three limits apply:
 

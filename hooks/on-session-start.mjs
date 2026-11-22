@@ -42,7 +42,7 @@ import { resolveSessionStartRoot } from './_lib/hook-root.mjs';
 
 import { emitEvent, eventsFilePath } from '../scripts/lib/events.mjs';
 import { readNavigatorLease, fleetIntegrationEnabled } from '../scripts/lib/fleet-protocol.mjs';
-import { maybeRotate } from '../scripts/lib/events-rotation.mjs';
+import { abandonedRotateLock, maybeRotate } from '../scripts/lib/events-rotation.mjs';
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
 import { getPlatform, resolveProjectDir, resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import {
@@ -1507,7 +1507,12 @@ async function main() {
       // #1920: the synchronous probes cannot be stopped once started — start
       // them only when their budget plus a margin still fits.
       if (!overBudget('probes', PROBE_BUDGET_MS + PROBE_MARGIN_MS)) {
-        const probeRun = await runSessionStartProbes({ repoRoot: projectRoot });
+        // #2196: the repeat gate records a line as reported only when it is
+        // shown — banner on (`bannerData`) and an operator present.
+        const probeRun = await runSessionStartProbes({
+          repoRoot: projectRoot,
+          display: Boolean(bannerData) && isInteractiveSession(process.env),
+        });
         if (bannerData) {
           for (const line of probeRun.bannerLines) pushBanner(line);
         }
@@ -1566,6 +1571,21 @@ async function main() {
     if (pluginUpdate && bannerData) pushBanner(pluginUpdate.message);
   } catch { /* hook must remain non-blocking */ }
   markPhase('update_check');
+
+  // #2082 — Check the lock age even below the rotation threshold. Budget
+  // admission covers path resolution and lock stats with a 100 ms estimate.
+  try {
+    if (hostBannerEnabled && !overBudget('rotate-lock-age', 100)) {
+      const logPath = eventsFilePath();
+      if (abandonedRotateLock(logPath)) {
+        const name = path.basename(logPath);
+        pushBanner(
+          `⚠ events-rotation: rotate lock ${name}.lock.rotate or its .acquire guard is over an hour old and may be orphaned, ` +
+            `which can block rotation. Before deleting both, check that no session is rotating ${name}.`,
+        );
+      }
+    }
+  } catch { /* hook must remain non-blocking */ }
 
   // #1920 — one line naming what the deadline skipped, gated like every other
   // section (the measurement in the event is not).
@@ -1695,7 +1715,8 @@ async function main() {
   maybeQueueConsentNudge();
 
   // Single flush — see the bannerLines docstring for why this must stay the
-  // only stdout write in the hook.
+  // only stdout write in the hook. Flush before config reads and rotation so
+  // the harness can receive the banner even if rotation exceeds its timeout.
   flushBanner();
 
   // #1229 — refresh the session-lock heartbeat at the END of this hook's run.

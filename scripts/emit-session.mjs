@@ -27,11 +27,13 @@
  *   {"action":"appended","path":"<file>","session_id":"<id>","schema_version":2}
  */
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { explainEventsLedgerRoot, resolveEventsLedgerRoot } from './lib/platform.mjs';
 import { appendJsonl } from './lib/common.mjs';
 import { resolveLedgerPath } from './lib/ledger-path.mjs';
+import { redactSpans } from './lib/redact-spans.mjs';
 import {
   MEMORY_CLEANUP_EVENT,
   deriveMemoryCleanupSignal,
@@ -41,6 +43,10 @@ import { parseStateMd, readOutcome, readSessionProfile } from './lib/state-md.mj
 import { resolveStateMdWriteTarget, warnForeignStateMd } from './lib/state-md/frontmatter-mutators.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 import { readSessionWorkTrees } from './lib/session-work-trees.mjs';
+import { measureDelegatedBreadth } from './lib/session-breadth.mjs';
+import { measurePeakContext } from './lib/context-threshold.mjs';
+import { isNativeUuid } from './lib/fleet-protocol.mjs';
+import { encodeProjectDir } from './lib/skill-evidence-window.mjs';
 import { rollupSessionTokens } from './lib/session-token-rollup.mjs';
 import { COST_BASIS, PRICING_TABLE_DATE } from './lib/telemetry/pricing.mjs';
 import { serializeSessionLineChecked } from './lib/session-schema/serializer.mjs';
@@ -68,6 +74,25 @@ import { execFileSync } from './lib/native-command.mjs';
  */
 function siblingEventsFile(sessionsFile) {
   return join(resolveEventsLedgerRoot(dirname(sessionsFile)), 'events.jsonl');
+}
+
+// The coordinator may close in a different worktree from the one where it started.
+function findCoordinatorTranscript(sessionId) {
+  const projects = join(homedir(), '.claude', 'projects');
+  const name = sessionId + '.jsonl';
+  const preferred = new Set([process.cwd(), process.env.CLAUDE_PROJECT_DIR].filter(Boolean).map(encodeProjectDir));
+  for (const dir of preferred) {
+    const candidate = join(projects, dir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  try {
+    for (const dir of readdirSync(projects, { withFileTypes: true })) {
+      if (!dir.isDirectory() || preferred.has(dir.name)) continue;
+      const candidate = join(projects, dir.name, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  } catch { /* Transcript directory unavailable. */ }
+  return null;
 }
 
 export { serializeSessionLineChecked };
@@ -442,6 +467,22 @@ function readStdin() {
   } catch (err) {
     process.stderr.write(`emit-session: failed to read stdin: ${err.message}\n`);
     process.exit(2);
+  }
+}
+
+const EMAIL_PATTERNS = [
+  /(?<![\p{L}\p{M}\p{N}._%+'-])[\p{L}\p{M}\p{N}._%+'-]+@(?:[\p{L}\p{M}\p{N}-]+\.)+\p{L}[\p{L}\p{M}\p{N}-]*/gu,
+];
+
+function redactSessionNotes(entry) {
+  if (typeof entry.notes === 'string') {
+    entry.notes = redactSpans(entry.notes, EMAIL_PATTERNS);
+  }
+  if (typeof entry.express_path?.notes === 'string') {
+    entry.express_path = {
+      ...entry.express_path,
+      notes: redactSpans(entry.express_path.notes, EMAIL_PATTERNS),
+    };
   }
 }
 
@@ -832,6 +873,38 @@ async function main() {
     }
   }
 
+  // Both enrichments use the hook's ledger in the launch or working tree.
+  // An explicit --file uses its sibling (including isolated imports/tests).
+  const subagentPaths = args.fileDefaulted && ownUuid !== null
+    ? [...new Set([
+      resolveLedgerPath('.orchestrator/metrics/subagents.jsonl', process.cwd()),
+      resolveLedgerPath('.orchestrator/metrics/subagents.jsonl', resolveEventsLedgerRoot(process.cwd())),
+    ])]
+    : [join(dirname(args.file), 'subagents.jsonl')];
+
+  if (!hasOwn('breadth')) {
+    // On replay, the cwd marker can carry the same label as another raw session.
+    const measurementId = repaired.raw_session_id === ownUuid ? ownUuid : null;
+    const subagents = measureDelegatedBreadth({
+      subagentPaths,
+      eventsFile: siblingEventsFile(args.file),
+      sessionId: measurementId,
+      startedAt: repaired.started_at,
+      completedAt: repaired.completed_at,
+    });
+    const transcript = isNativeUuid(measurementId) ? findCoordinatorTranscript(measurementId) : null;
+    let peakContextK = null;
+    if (transcript) {
+      const scan = measurePeakContext(transcript);
+      if (scan.tokens !== null) peakContextK = scan.tokens / 1000;
+      if (scan.invalidLines > 0) {
+        process.stderr.write(`emit-session: WARN skipped ${scan.invalidLines} invalid transcript line(s)\n`);
+      }
+      if (scan.reason) process.stderr.write(`emit-session: WARN coordinator peak context: ${scan.reason}\n`);
+    }
+    repaired = { ...repaired, breadth: { ...subagents, coordinator_peak_context_k: peakContextK } };
+  }
+
   // Token rollup (#1436) — mechanical, replacing the session-metrics-write.md
   // prose step that had no production caller. Joins the sibling subagents.jsonl
   // on the own raw UUID and fills ONLY keys the entry does not carry; an
@@ -847,19 +920,7 @@ async function main() {
   if (ownUuid !== null && !hasOwn('total_tokens')) {
     let rollup = null;
     try {
-      // A defaulted --file reads the subagents ledger where the hook writer
-      // (hooks/subagent-telemetry.mjs) puts it: resolved from the cwd first, then
-      // from the ledger root — the hook resolves from the LAUNCH dir, which is
-      // the main checkout when the session entered this worktree later and the
-      // repo versions the ledger. First copy with a record of this session wins,
-      // so nothing is counted twice. An explicit --file keeps its sibling.
-      const candidates = args.fileDefaulted
-        ? [...new Set([
-          resolveLedgerPath('.orchestrator/metrics/subagents.jsonl', process.cwd()),
-          resolveLedgerPath('.orchestrator/metrics/subagents.jsonl', resolveEventsLedgerRoot(process.cwd())),
-        ])]
-        : [join(dirname(args.file), 'subagents.jsonl')];
-      for (const subagentsPath of candidates) {
+      for (const subagentsPath of subagentPaths) {
         rollup = rollupSessionTokens({ parentSessionId: ownUuid, subagentsPath });
         if (rollup.matched_records > 0) break;
       }
@@ -959,6 +1020,9 @@ async function main() {
     throw err;
   }
 
+  // Mask free text at the write boundary so historical reads keep their original values.
+  redactSessionNotes(validated);
+
   // Pre-write round-trip self-validation (#662): prove the line this writer is
   // about to append parses back AND re-validates BEFORE it reaches disk. The
   // append path (appendJsonl) does the same JSON.stringify, so a record that
@@ -967,7 +1031,7 @@ async function main() {
   // sessions.jsonl and only surface on the NEXT session's read. Treated as a
   // validation failure (exit 1); file is left untouched.
   try {
-    serializeSessionLineChecked(repaired);
+    serializeSessionLineChecked(validated);
   } catch (err) {
     if (err instanceof ValidationError) {
       process.stderr.write(

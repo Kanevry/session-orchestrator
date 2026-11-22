@@ -4,7 +4,7 @@ user-invocable: false
 tags: [autoresearch, convergence, loop-control, wave-executor]
 model: haiku
 model-preference: sonnet
-model-preference-codex: gpt-5.4-mini
+model-preference-codex: gpt-6.2-sol
 model-preference-cursor: claude-sonnet-4-6
 description: >
   Monitor iterative improvement loops for convergence. Three signals — shrinking diff,

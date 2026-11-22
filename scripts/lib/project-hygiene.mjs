@@ -126,6 +126,9 @@ export function checkReleaseHygiene(repoRoot, driftCommits = DEFAULT_RELEASE_DRI
   return {
     check: 'release-hygiene',
     fixable: false,
+    // `amount` (#2196): the magnitude the session-start repeat gate compares
+    // against the last REPORTED value — a doubling is news, +1 commit is not.
+    amount: since,
     message: `${since} commits on HEAD since the nearest reachable tag ${described}${staleHead}`,
   };
 }
@@ -249,6 +252,7 @@ export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB, ho
     findings.push({
       check: 'ignored-ballast',
       fixable: true,
+      amount: totalMb,
       message: `${totalMb} MB of ignored files in the working tree (largest: ${top}) — invisible to git status`,
     });
   }
@@ -257,6 +261,7 @@ export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB, ho
     findings.push({
       check: 'untracked-unignored',
       fixable: false,
+      amount: untrackedUnignored,
       message: `${untrackedUnignored} file(s) are neither tracked nor ignored (excluding the plugin's own .orchestrator/ runtime output) — either commit them or add them to .gitignore, since nothing currently decides`,
     });
   }
@@ -554,6 +559,7 @@ export function checkStaleArtifacts(repoRoot, ageDays = DEFAULT_ARTIFACT_AGE_DAY
     fixable: true,
     agedFiles: aged,
     agedBytes,
+    amount: aged,
     message: `${aged} untracked file(s) under .orchestrator/ older than ${ageDays}d${agedBytes > 0 ? ` (${formatBytes(agedBytes)} total)` : ''} — candidates for pruning (idempotency markers + ledgers excluded)`,
   };
 }

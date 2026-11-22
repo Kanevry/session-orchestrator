@@ -154,9 +154,10 @@ function parseBody(raw) {
  * @param {'pid'|'heartbeat'|'mtime'|'none'} staleCheck
  * @param {number|undefined} staleMs — TTL for heartbeat/mtime checks.
  * @param {string|undefined} lockPath — needed for mtime stat.
+ * @param {number} [minStaleAgeMs=0] — optional PID takeover mtime floor.
  * @returns {{ stale: boolean, reason: string }}
  */
-function isExistingStale(existing, staleCheck, staleMs, lockPath) {
+function isExistingStale(existing, staleCheck, staleMs, lockPath, minStaleAgeMs = 0) {
   // #1072: compare on the normalised/alias-aware identity, never on a raw
   // `os.hostname()` string. A raw comparison reports `cross-host` for THIS
   // machine's own lock whenever the hostname has flipped spelling since it was
@@ -173,6 +174,21 @@ function isExistingStale(existing, staleCheck, staleMs, lockPath) {
   if (staleCheck === 'none') return { stale: false, reason: 'live' };
 
   if (staleCheck === 'pid') {
+    if (minStaleAgeMs > 0) {
+      // Opt-in crash-recovery floor: test the CURRENT generation while the
+      // caller owns .acquire, never an earlier observation before that guard.
+      if (!Number.isSafeInteger(existing.pid) || existing.pid <= 0 || existing.pid > 0x7fffffff) {
+        return { stale: false, reason: 'live' };
+      }
+      try {
+        const st = fs.lstatSync(lockPath);
+        if (!st.isFile() || !(Date.now() - st.mtimeMs >= minStaleAgeMs)) {
+          return { stale: false, reason: 'live' };
+        }
+      } catch {
+        return { stale: false, reason: 'live' };
+      }
+    }
     const pidIsNumber = typeof existing.pid === 'number';
     const dead = pidIsNumber && !isPidAliveOnHost(existing.pid);
     return dead
@@ -217,7 +233,8 @@ function isExistingStale(existing, staleCheck, staleMs, lockPath) {
  * @param {string} lockPath
  * @param {object} body
  * @param {{ indent?: number|null, tmpPrefix: string }} fmt
- * @returns {{ ok: true } | { ok: false, reason: 'exists' } | { ok: false, reason: 'fs-error', error: string }}
+ * @returns {{ ok: true } | { ok: false, reason: 'exists' }
+ *   | { ok: false, reason: 'fs-error', error: string, code?: string }}
  */
 function createExclusive(lockPath, body, fmt) {
   const dir = path.dirname(lockPath);
@@ -231,7 +248,7 @@ function createExclusive(lockPath, body, fmt) {
     if (tmpFile) {
       try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
     }
-    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err), code: err?.code };
   }
 
   try {
@@ -239,7 +256,7 @@ function createExclusive(lockPath, body, fmt) {
     return { ok: true };
   } catch (err) {
     if (err.code === 'EEXIST') return { ok: false, reason: 'exists' };
-    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err), code: err?.code };
   } finally {
     try { fs.unlinkSync(tmpFile); } catch { /* best-effort */ }
   }
@@ -269,7 +286,7 @@ function serializeBody(body, indent) {
  *
  * @param {string} lockPath
  * @param {string} tmpPrefix — tmp-file prefix; `.acquire` is appended.
- * @returns {{ ok: true } | { ok: false, reason: 'exists' } | { ok: false, reason: 'fs-error', error: string }}
+ * @returns {ReturnType<typeof createExclusive>}
  */
 function createAcquireGuard(lockPath, tmpPrefix) {
   return createExclusive(`${lockPath}.acquire`, {
@@ -324,6 +341,10 @@ function createAcquireGuard(lockPath, tmpPrefix) {
  * @param {object} [opts]
  * @param {'pid'|'heartbeat'|'mtime'|'none'} [opts.staleCheck='pid']
  * @param {number} [opts.staleMs]            — TTL for heartbeat/mtime staleCheck.
+ * @param {number} [opts.minStaleAgeMs=0]    — optional mtime floor for PID
+ *        takeover, checked under .acquire. Positive values also keep malformed
+ *        bodies and invalid PIDs held; same-host dead PID is still required.
+ *        Does not reclaim .acquire itself. Default preserves legacy behavior.
  * @param {object} [opts.meta]               — extra fields merged into the body.
  * @param {string} [opts.holder]             — holder label (added to body when set).
  * @param {boolean} [opts.signalVanished=false]
@@ -335,7 +356,7 @@ function createAcquireGuard(lockPath, tmpPrefix) {
  *        existing body (null when the body was unparseable). The reason token is
  *        'unparseable body' | 'dead pid <n>' | 'heartbeat age ...' | 'mtime age ...'.
  * @returns {{ acquired: true, body: object }
- *   | { acquired: false, reason: 'held'|'vanished'|'fs-error', existing?: object|null, error?: string }}
+ *   | { acquired: false, reason: 'held'|'vanished'|'fs-error', existing?: object|null, error?: string, code?: string }}
  */
 export function tryAcquireFileLock(lockPath, opts = {}) {
   const guardPath = `${lockPath}.acquire`;
@@ -343,7 +364,7 @@ export function tryAcquireFileLock(lockPath, opts = {}) {
   if (!guard.ok) {
     return guard.reason === 'exists'
       ? { acquired: false, reason: 'held', existing: null }
-      : { acquired: false, reason: 'fs-error', error: guard.error };
+      : { acquired: false, reason: 'fs-error', error: guard.error, code: guard.code };
   }
 
   try {
@@ -355,7 +376,10 @@ export function tryAcquireFileLock(lockPath, opts = {}) {
   }
 }
 
-/** Caller must hold the acquisition guard throughout this synchronous pass. */
+/**
+ * Caller must hold the acquisition guard throughout this synchronous pass.
+ * @returns {ReturnType<typeof tryAcquireFileLock>}
+ */
 function tryAcquireGuardedFileLock(lockPath, opts) {
   const {
     staleCheck = 'pid',
@@ -368,6 +392,8 @@ function tryAcquireGuardedFileLock(lockPath, opts) {
     warn = (msg) => console.warn(msg),
     warnMessage = (reason, lp) => `⚠ file-lock: overriding stale lock (${reason}) at ${lp}`,
   } = opts;
+  const minStaleAgeMs = Number.isFinite(opts.minStaleAgeMs) && opts.minStaleAgeMs > 0
+    ? opts.minStaleAgeMs : 0;
 
   // The stale-override path writes via writeJsonAtomicSync. The original copies
   // diverged on override formatting: agent-status / state-lock / staging-fence
@@ -397,11 +423,11 @@ function tryAcquireGuardedFileLock(lockPath, opts) {
   try {
     created = createExclusive(lockPath, body, fmt);
   } catch (err) {
-    return { acquired: false, reason: 'fs-error', error: err?.message ?? String(err) };
+    return { acquired: false, reason: 'fs-error', error: err?.message ?? String(err), code: err?.code };
   }
   if (created.ok) return { acquired: true, body };
   if (created.reason === 'fs-error') {
-    return { acquired: false, reason: 'fs-error', error: created.error };
+    return { acquired: false, reason: 'fs-error', error: created.error, code: created.code };
   }
 
   // reason === 'exists' — inspect the holder.
@@ -416,25 +442,26 @@ function tryAcquireGuardedFileLock(lockPath, opts) {
         ? { acquired: false, reason: 'vanished' }
         : { acquired: false, reason: 'held', existing: null };
     }
-    return { acquired: false, reason: 'fs-error', error: err?.message ?? String(err) };
+    return { acquired: false, reason: 'fs-error', error: err?.message ?? String(err), code: err?.code };
   }
 
   const existing = parseBody(raw);
 
   // Unparseable contents → treat as stale and override (only safe move).
   if (existing === null) {
+    if (minStaleAgeMs > 0) return { acquired: false, reason: 'held', existing: null };
     warn(warnMessage('unparseable body', lockPath, null));
     const replaced = writeJsonAtomicSync(lockPath, body, { tmpPrefix, indent: overrideIndent });
     if (replaced.ok) return { acquired: true, body };
-    return { acquired: false, reason: 'fs-error', error: replaced.error };
+    return { acquired: false, reason: 'fs-error', error: replaced.error, code: replaced.code ?? undefined };
   }
 
-  const { stale, reason } = isExistingStale(existing, staleCheck, staleMs, lockPath);
+  const { stale, reason } = isExistingStale(existing, staleCheck, staleMs, lockPath, minStaleAgeMs);
   if (stale) {
     warn(warnMessage(reason, lockPath, existing));
     const replaced = writeJsonAtomicSync(lockPath, body, { tmpPrefix, indent: overrideIndent });
     if (replaced.ok) return { acquired: true, body };
-    return { acquired: false, reason: 'fs-error', error: replaced.error };
+    return { acquired: false, reason: 'fs-error', error: replaced.error, code: replaced.code ?? undefined };
   }
 
   // Live holder OR cross-host → caller polls.
@@ -474,7 +501,7 @@ function tryAcquireGuardedFileLock(lockPath, opts) {
  *        errors on the ownerGuard:false path. Receives the raw
  *        `err.code ?? err.message` token; the call-site formats the message.
  * @returns {{ ok: true }
- *   | { ok: false, reason: 'not-found'|'not-owner'|'busy'|'fs-error', error?: string }}
+ *   | { ok: false, reason: 'not-found'|'not-owner'|'busy'|'fs-error', error?: string, code?: string }}
  */
 export function releaseFileLock(lockPath, opts = {}) {
   const { holder, ownerGuard = true, warn, guardTimeoutMs } = opts;
@@ -489,7 +516,7 @@ export function releaseFileLock(lockPath, opts = {}) {
     } catch (err) {
       if (err.code === 'ENOENT') return { ok: true };
       if (typeof warn === 'function') warn(err.code ?? err.message);
-      return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+      return { ok: false, reason: 'fs-error', error: err?.message ?? String(err), code: err?.code };
     }
   }
 
@@ -510,7 +537,7 @@ export function releaseFileLock(lockPath, opts = {}) {
   for (;;) {
     const guard = createAcquireGuard(lockPath, '.file.lock');
     if (guard.ok) break;
-    if (guard.reason === 'fs-error') return { ok: false, reason: 'fs-error', error: guard.error };
+    if (guard.reason === 'fs-error') return { ok: false, reason: 'fs-error', error: guard.error, code: guard.code };
     // Never steal the guard (same rule as acquisition): wait, then give up.
     if (Date.now() >= deadline) return { ok: false, reason: 'busy' };
     sleepSync(RELEASE_GUARD_POLL_MS);
@@ -538,14 +565,17 @@ const DEFAULT_RELEASE_GUARD_MS = 1000;
 /** Poll cadence while a release waits for the `.acquire` guard. */
 const RELEASE_GUARD_POLL_MS = 5;
 
-/** Caller must hold the acquisition guard throughout this synchronous pass. */
+/**
+ * Caller must hold the acquisition guard throughout this synchronous pass.
+ * @returns {ReturnType<typeof releaseFileLock>}
+ */
 function releaseGuardedFileLock(lockPath, holder) {
   let raw;
   try {
     raw = fs.readFileSync(lockPath, 'utf8');
   } catch (err) {
     if (err.code === 'ENOENT') return { ok: false, reason: 'not-found' };
-    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err), code: err?.code };
   }
 
   const lock = parseBody(raw);
@@ -568,7 +598,7 @@ function releaseGuardedFileLock(lockPath, holder) {
     return { ok: true };
   } catch (err) {
     if (err.code === 'ENOENT') return { ok: false, reason: 'not-found' };
-    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err), code: err?.code };
   }
 }
 
@@ -622,7 +652,7 @@ function delay(ms) {
  *        swallowed so it can mask neither `value` nor an error thrown by `fn`.
  * @param {...*} [opts.acquireOpts]  — remaining keys forwarded to tryAcquireFileLock.
  * @returns {Promise<{ ok: true, value: T }
- *   | { ok: false, reason: 'timeout'|'fs-error', error?: string, existing?: object|null }>}
+ *   | { ok: false, reason: 'timeout'|'fs-error', error?: string, code?: string, existing?: object|null }>}
  * @template T
  */
 export async function withFileLock(lockPath, fn, opts = {}) {
@@ -648,7 +678,7 @@ export async function withFileLock(lockPath, fn, opts = {}) {
       break;
     }
     if (attempt.reason === 'fs-error') {
-      return { ok: false, reason: 'fs-error', error: attempt.error };
+      return { ok: false, reason: 'fs-error', error: attempt.error, code: attempt.code };
     }
     if (Date.now() >= deadline) {
       return { ok: false, reason: 'timeout', existing: attempt.existing ?? null };

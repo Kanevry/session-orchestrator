@@ -1,0 +1,56 @@
+[
+  {
+    "userAgent": "Googlebot",
+    "kind": "search",
+    "source": "https://developers.google.com/search/docs/crawling-indexing/overview-google-crawlers",
+    "date": "2026-11-17",
+    "verification": "not-verified",
+    "operator": "Google",
+    "purpose": "Search discovery"
+  },
+  {
+    "userAgent": "bingbot",
+    "kind": "search",
+    "source": "https://www.bing.com/webmasters/help/which-crawlers-does-bing-use-8c184ec0",
+    "date": "2026-11-17",
+    "verification": "not-verified",
+    "operator": "Microsoft",
+    "purpose": "Search discovery"
+  },
+  {
+    "userAgent": "GPTBot",
+    "kind": "ai",
+    "source": "https://platform.openai.com/docs/bots",
+    "date": "2026-11-17",
+    "verification": "not-verified",
+    "operator": "OpenAI",
+    "purpose": "AI model data crawling"
+  },
+  {
+    "userAgent": "OAI-SearchBot",
+    "kind": "ai-search",
+    "source": "https://platform.openai.com/docs/bots",
+    "date": "2026-11-17",
+    "verification": "not-verified",
+    "operator": "OpenAI",
+    "purpose": "AI search discovery"
+  },
+  {
+    "userAgent": "ClaudeBot",
+    "kind": "ai",
+    "source": "https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler",
+    "date": "2026-11-17",
+    "verification": "not-verified",
+    "operator": "Anthropic",
+    "purpose": "AI model data crawling"
+  },
+  {
+    "userAgent": "PerplexityBot",
+    "kind": "ai-search",
+    "source": "https://docs.perplexity.ai/guides/bots",
+    "date": "2026-11-17",
+    "verification": "not-verified",
+    "operator": "Perplexity",
+    "purpose": "AI search discovery"
+  }
+]

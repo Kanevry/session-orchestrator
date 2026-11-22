@@ -77,8 +77,8 @@ Cursor / Pi on native Windows. WSL counts as Linux.
 | **Claude Code plugin support** | Required for the Claude Code route; **no minimum version is declared** in `package.json` or `.claude-plugin/plugin.json`. | Use `/plugin` installation and the Claude Code hooks. <!-- sources: package.json:25-27; .claude-plugin/plugin.json:1-19; hooks/hooks.json:6-18 --> |
 | **POSIX sh** | Required for shell-wrapped hooks; Claude Code on Windows uses `sh` from Git for Windows. | Launch the configured hook wrappers, including scope and destructive-command guards. <!-- sources: hooks/hooks.json:14,49,69; hooks/run-node.sh:1-29 --> |
 | **npm** | Required for clone-based dependency setup and manual dependency repair; expose it on the harness PATH. | Install missing packages, run npm scripts or update a local clone. <!-- sources: package.json:64-78; scripts/self-update.mjs:200,299; .mcp.json:8 --> |
-| **Runtime Node packages** | Required, installed from `package.json`: `@babel/parser`, `ajv`, `js-yaml`, `mdast-util-to-string`, `picomatch`, `remark`, `remark-parse`, `unified`, `yaml`, `zod`, `zx`. | Load scripts importing these parsers, validators and utilities. No separate global installation is needed. <!-- source: package.json:80-92 --> |
-| **Development Node packages** | Contributor requirement: `@commitlint/cli`, `@commitlint/config-conventional`, `@eslint/js`, `@vitest/coverage-v8`, `eslint`, `husky`, `lint-staged`, `prettier`, `vitest`. | Run the corresponding lint, test, coverage, formatting and git-hook tooling from the checkout. Runtime-only installs can omit them. <!-- sources: package.json:64-78,93-103 --> |
+| **Runtime Node packages** | Required, installed from `package.json`: `@babel/parser`, `ajv`, `js-yaml`, `mdast-util-to-string`, `remark`, `remark-parse`, `unified`, `yaml`, `zod`, `zx`. | Load scripts importing these parsers, validators and utilities. No separate global installation is needed. <!-- source: package.json:82-93 --> |
+| **Development Node packages** | Contributor requirement: `@commitlint/cli`, `@commitlint/config-conventional`, `@eslint/js`, `@vitest/coverage-v8`, `eslint`, `husky`, `lint-staged`, `prettier`, `vite`, `vitest`. | Run the corresponding lint, test, coverage, formatting and git-hook tooling from the checkout. Runtime-only installs can omit them. <!-- sources: package.json:64-78,94-105 --> |
 | **pnpm** | Optional, for consumer projects whose quality commands use it; this plugin checkout is npm-canonical. | Run those consumer quality commands. It is not required to install this plugin. <!-- sources: scripts/check-package-manager.mjs:140-158,193-235; .claude/rules/development.md:36-37 --> |
 | **tsgo** | Optional, for a consumer project's TypeScript gate. Not declared as a dependency here. | Run a consumer gate configured to use `tsgo`; this repo's typecheck uses `node --check` instead, plus `tsc --noEmit` over the so-hud hook logic (`mods/so-hud/tsconfig.check.json`). That step uses the `typescript` package npm installs as a transitive dev peer; without it (no `npm ci`) `npm run typecheck` fails rather than skipping. <!-- sources: package.json:73,80-103; scripts/typecheck.mjs:10,30,48-74; package-lock.json:4305-4311 --> |
 
@@ -145,6 +145,10 @@ and npm must be installed together or npm must be on an absolute PATH.
 | **Codex CLI** | `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/codex-install.mjs` |
 | **Cursor IDE** | `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/cursor-install.mjs /path/to/your/project` |
 | **Pi** | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`, then `pi install npm:session-orchestrator` ; dev fallback: `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/pi-install.mjs /path/to/your/project --settings-only` |
+
+Open the run for your version and look for **Verify public npm install** to see the clean Node.js 24 install and Bash guard result. [Public check runs](https://github.com/Kanevry/session-orchestrator/actions/workflows/publish.yml)
+
+Select your version on npm to view its source commit and build workflow under Provenance when available. [npm package](https://www.npmjs.com/package/session-orchestrator)
 
 ### Headless Claude Code (`claude -p`): two commands need the namespaced form
 
@@ -219,6 +223,10 @@ than one:
 ```bash
 node <installPath>/scripts/runtime-readiness.mjs [--root <dir> | --codex | --claude] [--repair] [--json]
 ```
+
+From 5.21.0 on, the npm package also exposes the same check as a command, with
+the same options and exit codes: `npx session-orchestrator doctor`, or
+`session-orchestrator doctor` after a global install.
 
 Session start also runs a `runtime-readiness` banner probe (22 probes now). It
 warns at every start when the install the harness loaded lacks runtime
@@ -313,7 +321,7 @@ All four share the same skills, commands and scripts; only the hooks differ,
 because each coding tool fires different events. Codex edits files through
 `apply_patch`, which the scope guard does not read
 ([why](codex-setup.md#which-pretooluse-guards-run-on-codex--the-reason-corrected)).
-On Codex the agents use `gpt-6.1-sol`; change the `model` line in
+On Codex the agents use `gpt-6.2-sol`; change the `model` line in
 `.codex-plugin/agents/*.toml` if you have no access to it. Event-coverage
 limits: [Cursor](cursor-setup.md), [Pi](pi-setup.md).
 

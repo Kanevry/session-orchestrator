@@ -31,9 +31,9 @@
 import { dirname } from 'node:path';
 
 import { learningKeyOf } from '../learnings/kebab.mjs';
-import { deriveExpiresAt, LEARNING_TYPE_REGISTRY } from '../learnings/schema.mjs';
+import { LEARNING_TYPE_REGISTRY } from '../learnings/schema.mjs';
+import { DAY_MS, resolveRuleExpiryMs } from './expiry.mjs';
 
-const DAY_MS = 86400 * 1000;
 const DESCRIPTION_MAX = 120;
 
 // The "born-dead expiry" floor (issue #741.1a). A rule whose NATURAL expiry
@@ -141,21 +141,10 @@ const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
 // .claude/rules/proven-pattern-nul-byte-corruption...).
 const CONTROL_CHARS_TEST_RE = new RegExp(CONTROL_CHARS_RE.source);
 
-// Glob metacharacters (issue #900-follow-up, Q3-MED; extended #1089). A
-// top-level (dirname==='.') file_paths entry is emitted AS THE GLOB ITSELF
-// below — so a stray '**', '[ab]', or a path containing a picomatch group
-// (parens) must never reach the renderer verbatim, or it would either produce
-// an effectively always-on rule glob OR — the #1089 defect — a glob that
-// LOOKS scoped but can never match anything at all: `(` / `)` are not
-// filtered here even though a directory segment like `app/(marketing)/page`
-// (a Next.js route group) contains them, so `app/(marketing)/**` is emitted
-// and picomatch's own group syntax then reads `(marketing)` as a capture
-// group rather than a literal path segment — `picomatch.isMatch('app/
-// (marketing)/page.tsx', 'app/(marketing)/**')` is `false`. A rule minted from
-// such an entry loads, looks scoped, and never fires on the very path it was
-// derived from. `!`, `@`, `+` are ALSO picomatch extglob prefixes, but only
-// when immediately followed by `(` (`!(...)`, `@(...)`, `+(...)`) — bare `!`
-// (e.g. a filename) is not itself unsafe and is left alone.
+// A rule generated from a file path must match that literal path (#900, #1089).
+// The rule matcher interprets a path segment like `(marketing)` as a group,
+// so a generated `app/(marketing)/**` would miss the original Next.js route.
+// The prefixes !, @ and + introduce extglobs when followed by an opening parenthesis.
 const GLOB_METACHAR_RE = /[*?[\]{}()]|[!@+](?=\()/;
 
 /**
@@ -350,9 +339,11 @@ function buildDescription(learning) {
  * Compute the `expiresAt` YYYY-MM-DD date string for the emitted rule.
  *
  * When `ruleExpiryDays` is a finite number, expiry = `created_at` + N days.
- * Otherwise delegate to {@link deriveExpiresAt} (per-type TTL, default 60d).
+ * Otherwise use the per-type TTL (default 60d).
  * When `created_at` is missing/unparseable, fall back to the injectable `now`
  * (epoch ms or Date) so the result stays deterministic under test.
+ * In the per-type branch a valid persisted `expires_at` may extend the derived
+ * expiry, never shorten it; an explicit `ruleExpiryDays` stays a flat window.
  *
  * The result is then FLOORED at `now + minRuleDays` (default
  * {@link MIN_RULE_DAYS_DEFAULT}) so an older learning whose natural expiry has
@@ -368,30 +359,13 @@ function buildDescription(learning) {
  * @returns {string} YYYY-MM-DD
  */
 function computeExpiresAt(learning, ruleExpiryDays, now, minRuleDays) {
-  const toYmd = (iso) => String(iso).slice(0, 10);
-  const nowMs = () =>
+  const nowMs =
     now instanceof Date ? now.getTime() : typeof now === 'number' ? now : Date.now();
-
-  let derivedMs;
-  if (typeof ruleExpiryDays === 'number' && Number.isFinite(ruleExpiryDays)) {
-    let baseMs = Date.parse(learning.created_at);
-    if (!Number.isFinite(baseMs)) baseMs = nowMs();
-    derivedMs = baseMs + ruleExpiryDays * DAY_MS;
-  } else {
-    // No explicit override → per-type TTL. deriveExpiresAt falls back to
-    // `Date.now()` internally when created_at is missing; to keep the injectable
-    // `now` honoured for tests, substitute its ISO form as created_at in that case.
-    let createdAt = learning.created_at;
-    if (typeof createdAt !== 'string' || !Number.isFinite(Date.parse(createdAt))) {
-      createdAt = new Date(nowMs()).toISOString();
-    }
-    derivedMs = Date.parse(deriveExpiresAt(createdAt, learning.type));
-  }
-
+  const derivedMs = resolveRuleExpiryMs(learning, ruleExpiryDays, nowMs);
   const days =
     Number.isFinite(minRuleDays) && minRuleDays > 0 ? minRuleDays : MIN_RULE_DAYS_DEFAULT;
-  const floorMs = nowMs() + days * DAY_MS;
-  return toYmd(new Date(Math.max(derivedMs, floorMs)).toISOString());
+  const floorMs = nowMs + days * DAY_MS;
+  return new Date(Math.max(derivedMs, floorMs)).toISOString().slice(0, 10);
 }
 
 /**

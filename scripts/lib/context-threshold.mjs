@@ -3,14 +3,17 @@
  * transcript and decide the one-time threshold hints (#1960).
  *
  * Context = `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`
- * of the LAST valid assistant line of the session's MAIN chain. Sidechain lines
+ * of the final `message` iteration in the LAST valid assistant line of the
+ * session's MAIN chain (or its usage header when iterations is absent).
+ * Only already-written usage counts; an ongoing turn becomes visible at a later measurement.
+ * Sidechain lines
  * (`isSidechain: true`, subagent turns written into the parent transcript by
  * older harness builds) are never counted; neither is a zero-token line (the
  * harness writes `<synthetic>` error turns with all-zero usage, which would
  * read as an empty context).
  *
- * Cost: the hook runs on every PostToolUse, so the transcript is only ever
- * TAIL-read — `TAIL_STEPS` bytes from the end, widening only while no valid
+ * Cost: the threshold hook runs on every PostToolUse, so the transcript is only ever
+ * TAIL-read by measureContext — `TAIL_STEPS` bytes from the end, widening only while no valid
  * line was found (a single huge tool_result line can push the last assistant
  * line out of a small window). The whole file is never read past
  * `TAIL_STEPS.at(-1)` bytes; beyond that the context is "nicht messbar".
@@ -27,6 +30,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 
 import { writeJsonAtomicSync } from './io.mjs';
 
@@ -48,8 +52,16 @@ export function contextTokensOf(rec) {
   const r = /** @type {Record<string, any>} */ (rec);
   if (r.type !== 'assistant') return null;
   if (r.isSidechain === true) return null;
-  const usage = r.message?.usage;
+  let usage = r.message?.usage;
   if (!usage || typeof usage !== 'object') return null;
+  // An empty iterations array carries no per-call split: the header is the context.
+  if ('iterations' in usage && !(Array.isArray(usage.iterations) && usage.iterations.length === 0)) {
+    if (!Array.isArray(usage.iterations)) return null;
+    // The header sums multiple message prompts in Advisor turns; it is not
+    // the current context. Advisor calls themselves must never be selected.
+    usage = usage.iterations.findLast((iteration) => iteration?.type === 'message');
+    if (!usage) return null;
+  }
   let sum = 0;
   let any = false;
   for (const key of ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']) {
@@ -128,6 +140,68 @@ export function measureContext(transcriptPath, { steps = TAIL_STEPS } = {}) {
     return { status: 'unmeasurable', reason: `read failed: ${err?.code ?? 'unknown'}`, bytesRead };
   } finally {
     try { fs.closeSync(fd); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Scan a snapshot of the whole transcript once during close-out. A timed-out
+ * or incomplete scan cannot report a peak because a later line may exceed it.
+ *
+ * @param {unknown} transcriptPath
+ * @returns {{ tokens: number|null, invalidLines: number, reason?: string }}
+ */
+export function measurePeakContext(transcriptPath) {
+  let invalidLines = 0;
+  const failure = (reason) => ({ tokens: null, invalidLines, reason });
+  if (typeof transcriptPath !== 'string' || !transcriptPath) return failure('no transcript_path');
+
+  const deadline = globalThis.performance.now() + 2000;
+  const timeoutReason = 'peak scan exceeded 2000 ms';
+  let peak = null;
+  function consume(line) {
+    try {
+      const tokens = contextTokensOf(JSON.parse(line));
+      if (tokens !== null && (peak === null || tokens > peak)) peak = tokens;
+    } catch {
+      invalidLines++;
+    }
+  }
+
+  let fd;
+  try {
+    fd = fs.openSync(transcriptPath, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return failure('not a regular file');
+
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    const decoder = new StringDecoder('utf8');
+    let pending = '';
+    let remaining = stat.size;
+    while (remaining > 0) {
+      if (globalThis.performance.now() >= deadline) return failure(timeoutReason);
+      const n = fs.readSync(fd, buffer, 0, Math.min(remaining, buffer.length), null);
+      if (!n) return failure('transcript truncated during peak scan');
+      remaining -= n;
+      const chunk = decoder.write(buffer.subarray(0, n));
+      let start = 0;
+      for (let end = chunk.indexOf('\n'); end !== -1; end = chunk.indexOf('\n', start)) {
+        if (globalThis.performance.now() >= deadline) return failure(timeoutReason);
+        consume(pending + chunk.slice(start, end));
+        pending = '';
+        start = end + 1;
+      }
+      pending += chunk.slice(start);
+    }
+    pending += decoder.end();
+    if (pending) consume(pending);
+    if (globalThis.performance.now() >= deadline) return failure(timeoutReason);
+    return peak === null ? failure('no main-chain usage line') : { tokens: peak, invalidLines };
+  } catch (err) {
+    return failure(`peak scan failed: ${err?.code ?? 'unknown'}`);
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
   }
 }
 

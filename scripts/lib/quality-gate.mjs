@@ -63,6 +63,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 import { emitEvent, sessionAttribution } from './events.mjs';
@@ -948,7 +949,7 @@ export function admitRerunSkipped(value) {
  *   (`spawnInGroup` only starts its kill ladder on timeout or overflow, and
  *   both force a non-zero exit code).
  */
-async function emitGateEvent(repoRoot, ok, attempts, gate, counts, killRun = null) {
+async function emitGateEvent(repoRoot, ok, attempts, gate, counts, killRun = null, startedMs = null) {
   try {
     const waveNumber = resolveWaveNumber(repoRoot);
     await emitEvent(
@@ -957,6 +958,10 @@ async function emitGateEvent(repoRoot, ok, attempts, gate, counts, killRun = nul
         variant: 'auto-fix-loop',
         exit_code: ok ? 0 : 1,
         attempts,
+        // Wall time of the whole loop (every attempt plus fixer dispatches) on a
+        // monotonic clock; this library only ever runs the commands on its own host (#2197).
+        ...(startedMs !== null ? { duration_ms: Math.max(0, Math.round(performance.now() - startedMs)) } : {}),
+        host: 'local',
         ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
         ...(gate ? { gate } : {}),
         ...(counts ? { counts } : {}),
@@ -1006,6 +1011,7 @@ async function emitGateEvent(repoRoot, ok, attempts, gate, counts, killRun = nul
  * Never throws. Always returns a structured result.
  */
 export async function runQualityGateWithRetry(opts) {
+  const startedMs = performance.now();
   const safeOpts = (typeof opts === 'object' && opts !== null) ? opts : {};
   const maxRetries = coerceMaxRetries(safeOpts.maxRetries);
   const dispatchFixer = typeof safeOpts.dispatchFixer === 'function'
@@ -1106,7 +1112,7 @@ export async function runQualityGateWithRetry(opts) {
     if (gateFailure === null) {
       // All gates passed this attempt.
       writeLastGreenSha(repoRoot);
-      await emitGateEvent(repoRoot, true, attempt, null, testCounts);
+      await emitGateEvent(repoRoot, true, attempt, null, testCounts, null, startedMs);
       return { ok: true, attempts: attempt };
     }
 
@@ -1171,7 +1177,7 @@ export async function runQualityGateWithRetry(opts) {
     `❌ quality-gate exhausted retries (${attempt}), writing diagnostics to ${bundlePath ?? '<unwritable>'}\n`,
   );
 
-  await emitGateEvent(repoRoot, false, attempt, lastFailure?.gate ?? null, testCounts, lastFailure);
+  await emitGateEvent(repoRoot, false, attempt, lastFailure?.gate ?? null, testCounts, lastFailure, startedMs);
 
   const out = {
     ok: false,

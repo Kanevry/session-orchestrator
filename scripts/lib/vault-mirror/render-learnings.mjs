@@ -202,7 +202,7 @@ ${expiresLine}${sourceRepoLine}${recordLine}_generator: ${GENERATOR_MARKER}
 - **Type:** ${type}
 - **Confidence:** ${confidence}
 - **Source session:** ${sourceSessionBodyLink}
-
+${opts.ruleLink ? `${opts.ruleLink}\n` : ''}
 ## Insight
 
 ${insight}
@@ -257,7 +257,7 @@ ${sourceRepoLine}${recordLine}_generator: ${GENERATOR_MARKER}
 - **Type:** ${type}
 - **Confidence:** ${confidence}
 - **Scope:** ${scope}
-
+${opts.ruleLink ? `${opts.ruleLink}\n` : ''}
 ## Insight
 
 ${text}

@@ -4,7 +4,7 @@ user-invocable: false
 tags: [orchestration, planning, waves, agents]
 model: inherit
 model-preference: opus
-model-preference-codex: gpt-5.4
+model-preference-codex: gpt-6.2-astra
 model-preference-cursor: claude-opus-4-6
 description: >
   Creates a structured wave execution plan with role-based assignment after user alignment.
@@ -368,6 +368,10 @@ For each role's wave, distribute its classified tasks across the allocated agent
 > **Template Reference:** See `wave-template.md` in this skill directory for the agent specification format, isolation settings, and count tables.
 
 For each wave, define agents using the template format in `wave-template.md`. The per-wave ceiling is that wave's `agentCap` from the shape (§ Role-to-Wave Mapping) — it already carries the `agents-per-wave` Session Config ceiling.
+
+**Plan breadth advisories (#2164).** Include each applicable line when presenting the plan in Step 6. Continue the normal approval flow.
+- For each wave containing implementation work, use the Step 1 dependency map and the Step 3.5 grouping (file proximity, merges, contract lock) to count the largest set of agent groups in that wave that can run concurrently — count groups, not individual tasks, so a split Step 3.5 forbids is never suggested. If the planned agent count is below the smaller of that count and `agentCap`, emit: `Advisory: Wave <N> plans <planned> agents. Up to <count capped by agentCap> agents could run independent implementation tasks in parallel (agentCap: <cap>).`
+- If the session type is `deep` and the agreed issue list contains fewer than 4 issues, emit: `Advisory: The deep session starts with <N> issues in scope (guideline: at least 4).`
 
 If project intelligence (learnings) suggests different sizing based on historical data, prefer the historical recommendation over the formula.
 

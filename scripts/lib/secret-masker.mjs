@@ -171,8 +171,8 @@ const NEVER_MASK_KEYS = new Set([
  *    the SEC-008 detector and unmasked in the vault. The bare `DSN` follows the
  *    same rule as every other suffix: each suffix has its bare form.
  *  - a key ending `_URL` / `_URI` qualifies ONLY when its VALUE carries a
- *    password in the userinfo or in a query parameter (`CREDENTIAL_URL_RE`,
- *    `QUERY_PASSWORD_URL_RE` below). This is the one
+ *    password in the userinfo, a query parameter or a semicolon property
+ *    (`CREDENTIAL_URL_RE` and `QUERY_PASSWORD_URL_RE` below). This is the one
  *    value-dependent branch of filter 2: the key name alone cannot tell
  *    `DATABASE_URL=postgres://u:p@h/db` from `API_BASE_URL=https://h/v1`, and
  *    masking the second shreds every log line that names the endpoint.
@@ -217,14 +217,15 @@ const URL_SCHEME_SRC = String.raw`^(?:jdbc:)?[A-Za-z][A-Za-z0-9+.-]*:\/\/`;
 const CREDENTIAL_URL_RE = new RegExp(String.raw`${URL_SCHEME_SRC}[^\s/@:]*:[^\s/@]+@`);
 
 /**
- * A URL whose QUERY carries a non-empty password parameter (`password=`,
- * `pwd=`, `pass=`, any case): `https://h/db?user=u&password=…`. The parameter
- * must open the query or follow an `&`, so `?nopass=x` does not match, and its
- * value must be non-empty. Linear: the path run stops at the first `?`, and the
- * one backtracking run tries a constant-length keyword at each `&`.
+ * A password in a query parameter or a semicolon-delimited property, as in
+ * JDBC SQL Server URLs. Each branch starts at its first delimiter, then checks
+ * a constant-length password key at subsequent delimiters. Fragments are ignored.
  */
+const PASSWORD_PARAM_SRC = '(?:password|passwd|pwd|pass)';
 const QUERY_PASSWORD_URL_RE = new RegExp(
-  String.raw`${URL_SCHEME_SRC}[^\s?#]*\?(?:[^\s#]*&)?(?:password|pwd|pass)=[^\s&#]`,
+  `${URL_SCHEME_SRC}(?:` +
+    String.raw`[^\s?#]*\?(?:[^\s#]*&)?${PASSWORD_PARAM_SRC}=[^\s&#]|` +
+    String.raw`[^\s#;]*;(?:[^\s#]*;)?${PASSWORD_PARAM_SRC}=[^\s&#;])`,
   'i',
 );
 

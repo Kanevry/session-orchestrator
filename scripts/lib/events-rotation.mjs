@@ -121,6 +121,21 @@ function hasAbandonedRotateLock(files, nowMs) {
 }
 
 /**
+ * Check the rotate lock and its guard by age, independently of the log.
+ * @param {string} logPath
+ * @param {number} nowMs
+ * @returns {boolean|null}
+ */
+export function abandonedRotateLock(logPath, nowMs = Date.now()) {
+  try {
+    const lockPath = `${logPath}.lock.rotate`;
+    return hasAbandonedRotateLock([lockPath, `${lockPath}.acquire`], nowMs);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * `2026-04-12T06:33:01.123Z` → `20260412T063301Z` — filename-safe, and
  * lexicographically ordered, which is what lets the pruner sort archives
  * chronologically by name alone.
@@ -268,7 +283,9 @@ function pruneArchives(dir, maxBackups, keepPath) {
  * Instead the case is made visible. When rotation is due, the lock is held, and
  * the lock file or its guard is older than {@link ROTATE_LOCK_STALE_MS} (1 hour,
  * later of mtime and ctime, against `now`), the result carries
- * `staleLock: true` and one line naming the lock path goes to stderr. A fresh
+ * `staleLock: true` and one line naming the lock path goes to stderr. Independently
+ * of rotation, the SessionStart banner (`hooks/on-session-start.mjs`) warns once
+ * either file is over an hour old, while its optional-step budget remains (#2082). A fresh
  * concurrent rotator stays silent. Recovery is manual: delete the named lock
  * file and its `.acquire` sibling while no session is starting.
  *
@@ -344,7 +361,7 @@ export function maybeRotate({ logPath, maxSizeMb, maxBackups, enabled, now } = {
     // 'held' (live holder, cross-host holder, or a leftover `.acquire` guard —
     // the primitive answers `existing: null` for that one) or 'vanished'.
     // Report an old one, remove nothing — see § Abandoned locks.
-    const staleLock = hasAbandonedRotateLock([lockPath, `${lockPath}.acquire`], now ?? Date.now());
+    const staleLock = abandonedRotateLock(logPath, now ?? Date.now());
     if (staleLock) {
       process.stderr.write(
         `events-rotation: rotate lock ${lockPath} is older than one hour and still held; ` +

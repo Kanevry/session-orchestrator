@@ -96,9 +96,9 @@ No Session Orchestrator Pi subagent dispatcher exists in v1. Execute wave tasks 
 
 | Claude Code | Codex CLI | Cursor IDE | Pi | Use Case |
 |------------|-----------|------------|----|----------|
-| opus | gpt-5.4 | claude-opus-4-6 | active Pi model | Complex reasoning, architecture, session coordination |
-| sonnet | gpt-5.4-mini | claude-sonnet-4-6 | active Pi model | Implementation, review, routine tasks |
-| haiku | gpt-5.4-mini | claude-sonnet-4-6 | active Pi model | Simple lookups, fast checks |
+| opus | `gpt-6.2-astra` | claude-opus-4-6 | active Pi model | Planning, review, discovery, eval, test-runner |
+| sonnet | `gpt-6.2-sol` | claude-sonnet-4-6 | active Pi model | Implementation, session coordination, routine tasks |
+| haiku | `gpt-6.2-sol` | claude-sonnet-4-6 | active Pi model | Simple lookups, fast checks |
 
 Skills use `model-preference` (Claude), `model-preference-codex` (Codex), `model-preference-cursor` (Cursor), and active-model fallback on Pi in YAML frontmatter.
 

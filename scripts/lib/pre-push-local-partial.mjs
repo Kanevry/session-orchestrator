@@ -47,6 +47,7 @@ import { existsSync, readdirSync, readFileSync, openSync, readSync, closeSync, m
   realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, isAbsolute, sep } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { isMainModule } from './is-main-module.mjs';
 import { spawnSync } from './native-command.mjs';
 
@@ -202,17 +203,20 @@ export function readSelectedTests(reportFile, tree) {
   }
 }
 
-async function emit(ledgerRoot, passed, fields) {
+async function emit(ledgerRoot, passed, fields, startedMs) {
+  // Monotonic run time from the start of main() to the verdict (#2197).
+  const durationMs = Math.max(0, Math.round(performance.now() - startedMs));
   try {
     const { emitEvent, sessionAttribution } = await import('./events.mjs');
     await emitEvent(`orchestrator.quality_gate.${passed ? 'passed' : 'failed'}`, {
-      variant: 'local-partial', exit_code: passed ? 0 : 1, host: 'local', host_source: 'fallback',
+      variant: 'local-partial', exit_code: passed ? 0 : 1, host: 'local', host_source: 'fallback', duration_ms: durationMs,
       ...fields, ...sessionAttribution(ledgerRoot),
     }, { repoRoot: ledgerRoot });
   } catch { /* telemetry cannot change the blocking verdict */ }
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  const startedMs = performance.now();
   const [tree, sha, repoRoot] = argv;
   if (!tree || !sha || !repoRoot) return 10;
   const base = resolveBase(repoRoot, sha);
@@ -244,7 +248,7 @@ export async function main(argv = process.argv.slice(2)) {
   const fields = { pushed_sha: sha, base_sha: base, changed_count: changed.length,
     branch: git(repoRoot, ['symbolic-ref', '-q', '--short', 'HEAD']) || null };
   if (changed.length === 0) {
-    await emit(repoRoot, true, fields);
+    await emit(repoRoot, true, fields, startedMs);
     return 0;
   }
   let census;
@@ -284,7 +288,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const passed = syntaxFailed.length === 0 && lint && test;
   const failedChecks = [syntaxFailed.length && 'typecheck', !lint && 'lint', !test && 'test'].filter(Boolean);
-  await emit(repoRoot, passed, { ...fields, ...(failedChecks.length ? { failed_checks: failedChecks } : {}) });
+  await emit(repoRoot, passed, { ...fields, ...(failedChecks.length ? { failed_checks: failedChecks } : {}) }, startedMs);
   log(`local partial gate ${passed ? 'passed' : 'FAILED — Push blocked'}.`);
   return passed ? 0 : 1;
 }

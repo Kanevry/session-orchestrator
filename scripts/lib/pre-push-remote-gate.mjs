@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { readConfigFile } from './config/io.mjs';
 import { _parseRemoteHosts } from './config/remote-hosts.mjs';
 import { isMainModule } from './is-main-module.mjs';
@@ -105,6 +106,63 @@ export function gateReady(doctor) {
   return token === null ? doctor.status === 0 : token === 'yes';
 }
 
+/** A finite number, never `null`: `null < 10` is true in JS, and a missing measurement is not zero. */
+const finite = (value) => typeof value === 'number' && Number.isFinite(value);
+
+/**
+ * Gate capacity of one host from `offload status -H <alias> --json` (#2173):
+ * `{ free: true }` when its `gate` class has a free slot and `last_5` is below
+ * the host's own `batch_last_max`; `{ free: false }` when measured and not
+ * free; `{ measured: false }` when the probe failed, timed out, printed no JSON,
+ * or reported a `grund` / non-numeric value (an unreachable host prints nulls).
+ * Ceiling (BV-004): `batch_last_max` is offload's batch admission threshold, the
+ * only per-host load limit `status` reports; offload itself admits a gate by
+ * cpu_idle, not by load. REVISIT TRIGGER: offload reports a gate load limit.
+ *
+ * @param {string} alias
+ * @returns {{ measured: false } | { measured: true, free: boolean, load: number, max: number, slots: number }}
+ */
+function probeGateLoad(alias) {
+  const status = spawnSync('offload', ['status', '-H', alias, '--json'],
+    { encoding: 'utf8', timeout: 20_000, maxBuffer: 1024 * 1024 });
+  if (status.error || status.status !== 0) return { measured: false };
+  let parsed;
+  try { parsed = JSON.parse(status.stdout); } catch { return { measured: false }; }
+  const gate = parsed?.klassen?.gate;
+  const load = parsed?.last_5;
+  const max = parsed?.batch_last_max;
+  if (!finite(load) || !finite(max) || !finite(gate?.frei) || (gate?.grund ?? null) !== null || (parsed?.last_grund ?? null) !== null) {
+    return { measured: false };
+  }
+  return { measured: true, free: gate.frei > 0 && load < max, load, max, slots: gate.frei };
+}
+
+/**
+ * Order the configured gate hosts by load (#2173): the first host, in config
+ * order, with a free gate slot and load below its threshold moves to the front;
+ * the rest keep their order as fall-through routes. When no host qualifies, or
+ * none could be measured, the order stays as configured (today's behaviour) and
+ * one stderr line says so. Never blocks a push: an unmeasurable probe only
+ * skips that host for the front slot.
+ *
+ * @param {Array<{ alias: string }>} hosts
+ * @param {(message: string) => void} logFn
+ * @returns {Array<{ alias: string }>}
+ */
+function orderHostsByLoad(hosts, logFn) {
+  const seen = [];
+  for (let i = 0; i < hosts.length; i++) {
+    const result = probeGateLoad(hosts[i].alias);
+    if (result.measured && result.free) {
+      logFn(`gate host ${hosts[i].alias} chosen by load (last_5 ${result.load} < ${result.max}, ${result.slots} free gate slots).`);
+      return [hosts[i], ...hosts.slice(0, i), ...hosts.slice(i + 1)];
+    }
+    seen.push(result.measured ? `${hosts[i].alias} busy (last_5 ${result.load}/${result.max}, ${result.slots} free gate slots)` : `${hosts[i].alias} unmeasured`);
+  }
+  if (hosts.length > 0) logFn(`no gate host has a free gate slot below its load threshold (${seen.join('; ')}) — keeping the configured order.`);
+  return hosts;
+}
+
 /**
  * Did the remote gate re-run its timeout-only failures clean (#1673)? Checked
  * here on the report's own fields, not on `rerun.status` alone: zero failures,
@@ -199,6 +257,8 @@ export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, 
       logFn('remote configuration unavailable — using local gate (host_source: fallback).');
       return done(10);
     }
+    // SO_GATE_HOSTS above stays exact; only the configured order is load-aware (#2173).
+    hosts = orderHostsByLoad(hosts, logFn);
   }
   for (const { alias } of hosts) {
     logFn(`checking remote readiness (${alias}).`);
@@ -216,13 +276,19 @@ export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, 
       continue;
     }
     const nonce = randomUUID();
+    const startedMs = performance.now();
     logFn(`running full quality gate remotely on ${alias} (host_source: ${hostSource}) against pushed SHA ${sha}.`);
     // No --link-modules: offload snapshots a linked node_modules symlink into its commit (.gitignore's
     // `node_modules/` matches directories only), and the `git checkout <sha>` in remoteCommand then
     // deletes it, so vitest/eslint exit 127 and the gate reports them as "fail" (push blocked).
     const run = spawnSync('offload', ['run', '-H', alias, tree, '--job', `${jobPrefix}-${nonce}`,
       '--klasse', 'gate', '--rm', '--timeout', '1800', '--', 'node', '-e', remoteCommand(sha, nonce)],
-    { encoding: 'utf8', timeout: 1_860_000, maxBuffer: 64 * 1024 * 1024 });
+    // RO_ADMISSION_WAIT=0 (#2186): offload >= 1.8.0 would otherwise wait up to 600 s for a gate
+    // slot per busy host inside this 1860-s budget; refusing at once (exit 10) lets the loop try the
+    // next route. Older offload ignores the variable and refuses at once anyway.
+    { encoding: 'utf8', timeout: 1_860_000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, RO_ADMISSION_WAIT: '0' } });
+    // Wall time of the remote run including transport, on a monotonic clock (#2197).
+    const durationMs = Math.max(0, Math.round(performance.now() - startedMs));
     stdout.write(run.stdout ?? '');
     stderr.write(run.stderr ?? '');
     const receipts = (run.stdout ?? '').split(/\r?\n/).filter((line) => line.startsWith('SO_PRE_PUSH_RESULT='));
@@ -256,7 +322,7 @@ export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, 
       const rerunSkipped = hasRerun ? null : admitRerunSkipped(report?.test?.rerun_skipped);
       const waveNumber = resolveWaveNumber(ledgerRoot);
       await emitEvent(`orchestrator.quality_gate.${passed ? 'passed' : 'failed'}`, {
-        variant: 'full-gate', exit_code: passed ? 0 : 1, remote_host: alias, host: alias, host_source: hostSource,
+        variant: 'full-gate', exit_code: passed ? 0 : 1, remote_host: alias, host: alias, host_source: hostSource, duration_ms: durationMs,
         pushed_sha: sha, ...sessionAttribution(ledgerRoot),
         ...joinGateKillFields({ outer: {}, gateStdout: JSON.stringify(report) }),
         ...(counts ? { counts } : {}),
@@ -268,6 +334,11 @@ export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, 
     } catch { /* telemetry cannot change the blocking verdict */ }
     if (passed && recordReceipt) await recordRemoteReceipt({ tree, sha, ledgerRoot, node: receipt.node, report, alias });
     logFn(`remote quality gate ${passed ? 'passed' : 'FAILED — Push blocked'} (${alias}).`);
+    // A deadline hit under load is no test failure: name the host override, not only the bypass (#2173).
+    if (!passed && (report?.error === 'gate-timeout' || report?.test?.rerun_skipped === 'gate-timeout' ||
+      [report?.test, report?.typecheck, report?.lint].some((check) => check?.timed_out === true))) {
+      logFn(`a check hit its deadline on ${alias} — retry on a less loaded host: SO_GATE_HOSTS=<alias> git push (offload status -H <alias> --json shows last_5 and free gate slots).`);
+    }
     return { code: passed ? 0 : 1, passed, alias, report: report ?? null, hostSource };
   }
   if (hostSource === 'override') {

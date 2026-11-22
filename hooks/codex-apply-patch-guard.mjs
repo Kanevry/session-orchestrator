@@ -93,7 +93,7 @@
  * ## Override
  *
  *   SO_DISABLED_HOOKS=codex-apply-patch-guard   (whole adapter)
- *   SO_DISABLED_HOOKS=<guard name>               (one guard; honoured by the child)
+ *   SO_DISABLED_HOOKS=<guard name>               (one guard; honoured before spawning)
  *   SO_HOOK_PROFILE=minimal|off
  */
 
@@ -102,6 +102,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+import { HOOK_STDIN_MAX_BYTES } from '../scripts/lib/hook-stdin-limit.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { spawnSync } from '../scripts/lib/native-command.mjs';
 
@@ -110,12 +111,15 @@ const HOOK_NAME = 'codex-apply-patch-guard';
 
 /** Guards run per touched file, in this order. Resolved next to this file, never via cwd. */
 const HOOKS_DIR = path.dirname(fileURLToPath(import.meta.url));
-export const EDIT_GUARDS = Object.freeze([
-  'enforce-scope.mjs',
-  'config-protection.mjs',
-  'pre-edit-sessions-ledger-guard.mjs',
-  'pre-tool-state-md-path-guard.mjs',
+// Each registered child applies shouldRunHook to its file stem before stdin.
+// Config protection has its own reader and needs the entire file for its comparison.
+const EDIT_GUARD_STDIN_LIMITS = new Map([
+  ['enforce-scope.mjs', HOOK_STDIN_MAX_BYTES],
+  ['config-protection.mjs', null],
+  ['pre-edit-sessions-ledger-guard.mjs', HOOK_STDIN_MAX_BYTES],
+  ['pre-tool-state-md-path-guard.mjs', HOOK_STDIN_MAX_BYTES],
 ]);
+export const EDIT_GUARDS = Object.freeze([...EDIT_GUARD_STDIN_LIMITS.keys()]);
 
 /**
  * Shared wall-clock budget for all guard children, counted from THIS process's
@@ -356,7 +360,7 @@ function readTarget(cwd, rel) {
  * punctuation folded), while config-protection skips an Edit whose
  * `old_string` is not a verbatim substring of the file, so per-hunk Edits let a
  * loosening through. The adapter instead computes the file Codex would write
- * (`applyHunksToText`, same match passes) and hands all four guards that
+ * (`applyHunksToText`, same match passes) and hands each enabled guard that
  * content: a Write is compared against the full current file, so lenient
  * matching cannot hide a change. One shape for all four guards is the simpler
  * choice; the path-only guards read just `file_path`. A hunk whose context
@@ -396,11 +400,21 @@ export function toToolCalls(file, cwd, applyHunksToText) {
  * @returns {{ verdict: 'allow', warning?: string } | { verdict: 'deny', envelope?: object, reason: string }}
  */
 export function runGuard(guard, payload, cwd, deadline) {
+  const budget = `time budget of ${BUDGET_MS} ms since hook start exhausted`;
+  if (Date.now() >= deadline) return { verdict: 'deny', reason: `${budget} before ${guard}${SPLIT_HINT}` };
+  const limit = EDIT_GUARD_STDIN_LIMITS.get(guard);
+  // A disabled child exits without reading. Check that deliberate skip here,
+  // where it is still possible to distinguish it from a broken stdin pipe.
+  if (limit !== undefined && !shouldRunHook(path.basename(guard, '.mjs'), true, cwd)) return { verdict: 'allow' };
+  const input = JSON.stringify(payload);
+  if (typeof limit === 'number' && Buffer.byteLength(input, 'utf8') > limit) {
+    return { verdict: 'deny', reason: `${guard} cannot read payload: stdin limit of ${limit} bytes exceeded` };
+  }
   const remaining = deadline - Date.now();
-  if (remaining <= 0) return { verdict: 'deny', reason: `time budget of ${BUDGET_MS} ms since hook start exhausted before ${guard}${SPLIT_HINT}` };
+  if (remaining <= 0) return { verdict: 'deny', reason: `${budget} before ${guard}${SPLIT_HINT}` };
   const result = spawnSync(process.execPath, [path.join(HOOKS_DIR, guard)], {
     cwd,
-    input: JSON.stringify(payload),
+    input,
     encoding: 'utf8',
     env: process.env,
     timeout: remaining,
@@ -408,7 +422,10 @@ export function runGuard(guard, payload, cwd, deadline) {
   });
   if (result.error) {
     const code = result.error.code ?? result.error.message;
-    return { verdict: 'deny', reason: `${guard} could not run: ${code}${code === 'ETIMEDOUT' ? SPLIT_HINT : ''}` };
+    if (code === 'ETIMEDOUT' || (code === 'EPIPE' && result.signal && Date.now() >= deadline)) {
+      return { verdict: 'deny', reason: `${budget} while running ${guard}${SPLIT_HINT}` };
+    }
+    return { verdict: 'deny', reason: `${guard} could not run: ${code}` };
   }
   if (result.status !== 0) return { verdict: 'deny', reason: `${guard} exited ${result.status ?? result.signal}` };
   let warning;

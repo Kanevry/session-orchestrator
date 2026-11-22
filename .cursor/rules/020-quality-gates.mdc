@@ -44,6 +44,7 @@ Four quality gate variants for different session phases. Commands are read from 
 
 - Report failures but do NOT block wave progression
 - If issues found, add fix tasks to the next wave automatically
+- Only with `verification-auto-fix.enabled: true`: a fixer is dispatched and the gate reruns up to `max-retries`; the wave aborts if it is still red
 
 ## Variant 3: Full Gate
 

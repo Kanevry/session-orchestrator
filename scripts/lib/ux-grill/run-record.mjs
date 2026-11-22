@@ -129,6 +129,7 @@ export function appendRunRecord(repoRoot, record) {
     skipped: Array.isArray(record.skipped) ? record.skipped : [],
     countsBySeverity: record.counts_by_severity,
     provisionalCount: record.provisional_count,
+    targetSizeExempt: record.target_size_exempt,
   });
 
   const ledger = runRecordPath(repoRoot);

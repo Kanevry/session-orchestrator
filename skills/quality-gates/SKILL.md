@@ -4,7 +4,7 @@ user-invocable: false
 tags: [reference, quality, typecheck, test, lint]
 model: haiku
 model-preference: sonnet
-model-preference-codex: gpt-5.4-mini
+model-preference-codex: gpt-6.2-sol
 model-preference-cursor: claude-sonnet-4-6
 description: >
   Use this skill when referencing canonical quality check commands for typecheck, test, and lint.
@@ -85,8 +85,7 @@ Commands:
 1. Run `{test-command}` on changed files only (e.g., `pnpm test -- <changed-test-files>`).
 2. Run `{typecheck-command}`.
 
-Behavior: Report failures. If issues are found, add fix tasks to the next wave automatically.
-Do not block wave progression — let the next wave address regressions.
+Behavior: The Incremental runner reports check failures in its JSON and exits 0 (`scripts/run-quality-gate.mjs`, reporting variants). The wave-executor turns failures into fix tasks for the next wave and does not block wave progression (`skills/wave-executor/references/wave-loop-review.md` § 3 Adapt Plan). A wave that touched shared code is auto-promoted to the Full Gate (exit 2 when red; its failures follow the same Adapt Plan step), and the Full Gate after the Quality wave must pass (Variant 3). With `verification-auto-fix.enabled: true`, a failed inter-wave gate dispatches a fixer and reruns within `max-retries` (default 2), and the wave aborts if it is still red (#2189).
 
 Metrics output (for consuming skills to capture):
 ```json

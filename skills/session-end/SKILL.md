@@ -4,7 +4,7 @@ user-invocable: false
 tags: [orchestration, verification, commits, issues]
 model: inherit
 model-preference: sonnet
-model-preference-codex: gpt-5.4-mini
+model-preference-codex: gpt-6.2-sol
 model-preference-cursor: claude-sonnet-4-6
 description: >
   Use this skill when performing a full session close-out: verifies all planned work against the agreed plan, creates issues
@@ -71,7 +71,7 @@ try {
 
 ## Phase 2: Quality Gate
 
-> Always runs and is BLOCKING — do NOT commit broken code. Runs every check in `verification-checklist.md`, then Phase 2.0a Echo-Stub Detection (GH #42 — a `stubbed: {}` entry from `gate-full.mjs` is a FAILED gate, never a pass), 2.1 Vault Validation, 2.2 CLAUDE.md (or AGENTS.md) Drift Check and 2.3 Vault Staleness Check — each gated by its own Session Config key. Full procedure incl. the per-mode routing matrices: [`references/phase-2-quality-gate.md`](references/phase-2-quality-gate.md).
+> Always runs and is BLOCKING — do NOT commit broken code. Runs every check in `verification-checklist.md`, then Phase 2.0a Echo-Stub Detection (GH #42 — a non-empty `stubbed` map from `gate-full.mjs` blocks `/close` under `enforcement: strict`, warns under `warn`, and only logs to stderr under `off`), 2.1 Vault Validation, 2.2 CLAUDE.md (or AGENTS.md) Drift Check and 2.3 Vault Staleness Check — each gated by its own Session Config key. Full procedure incl. the per-mode routing matrices: [`references/phase-2-quality-gate.md`](references/phase-2-quality-gate.md).
 
 ## Phase 2.4: Security-Delta (#1769)
 
@@ -97,7 +97,8 @@ If no phases remain after filtering, skip to Phase 3.
 For each kept phase:
 
 - `mode === 'off'` ⇒ skip silently (do not run the command).
-- Otherwise run `command` via Bash. Capture the **exit code** and the **last ~10 lines of stdout** (these become the report summary — do NOT inline the full output).
+- Otherwise run `command` via Bash with two environment variables prefixed to the invocation, single-quoted and never interpolated into `command` (#2121): `SO_SESSION_START_REF='<STATE.md session-start-ref>'` — only when it is a full 40- or 64-hex SHA, else empty — and `SO_SESSION_ID='<STATE.md session label>'` (the semantic label, not the raw ledger id). `command` itself cannot reference them (`$` is rejected at parse time); the repo's script reads them. Phase 2.5 runs BEFORE the Phase-4 commit, so a script that needs "what did this session change" compares the ref against the WORKING TREE plus untracked files (`git diff --name-only "$SO_SESSION_START_REF"` and `git ls-files --others --exclude-standard`), and treats an empty ref as "not measurable", never as "nothing changed". Capture the **exit code** and the **last ~10 lines of stdout** (these become the report summary — do NOT inline the full output).
+- After each run (not for `mode: off`) record it: `node "$PLUGIN_ROOT/scripts/emit-event.mjs" --type orchestrator.custom_phase.completed --payload '{"name":"<name>","mode":"<mode>","exit_code":<code>}'`.
 - If `review` is set, read that file after the command as the review step and note its path in the report.
 
 #### Step 3 — Route by `mode`
@@ -213,6 +214,8 @@ When a navigator fleet runs this session (an active lease, `scripts/lib/fleet-pr
 ```bash
 git push origin HEAD
 ```
+
+On this route, if `origin` cannot be resolved, the push fails and the Phase 4.2 commit does not reach `origin`; whether it still leaves through a configured mirror is decided in Phase 4.4.
 
 ### 4.4 GitHub Mirror (if configured in Session Config)
 
@@ -386,6 +389,8 @@ Do not wait for a pipeline or release train inside session-end. If the session h
 > Always runs. Closes resolved issues via the single `node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --close [--vcs gitlab|github] [-R <spec>] <id>...` CLI call (strips `status:*` labels, closes, then re-reads each id; a `closed: false` in its per-id JSON output is a finding, not done — #308), updates partially-done issues, and in Step 3 FILES the Phase 1.65 gate's carry-list — the deferred `createSpiralCarryoverIssue` call for SPIRAL/FAILED items and the `markOpenQuestionAnsweredOnDisk` write live here, not in Phase 1.65 (atomicity). Step 3b folds non-exempt over-cap creations AND filed `priority::low` findings (#1947) into one `[Backlog-Sammel]` collector (`planBacklogCollector`), Step 3b.3 prints the session's issue balance (`scripts/issue-balance.mjs`); discovery findings from Phase 1.5 are filed at the end. Full procedure: [`references/phase-5-issue-cleanup.md`](references/phase-5-issue-cleanup.md).
 
 ## Phase 6: Final Report
+
+> **First, end your own background tasks (#2120).** Before the report, stop every background shell, monitor, background agent and cron this session started (`TaskStop` / `CronDelete`) and name them in the report (an open shell, monitor or agent makes `nav sitzung schliessen` refuse with rc 4). A pipeline watcher still needed must already be listed in the train manifest written with the waiting answer before `/close` (Phase 4.5); stop it anyway and name it. If it is not listed, name it under **Nicht geprüft** — never write a manifest here. Lead sessions with rotation keep their rotation crons.
 
 Present to the user the **Session Summary**: Completed / Abnahme offen (open `[Abnahme]` issues from Phase 1.1b — never counted as Completed, #1678) / Carried Over / Dropped at Handover Gate (#769) / New Issues Created incl. the issue-balance line (Phase 5 Step 3b.3, #1947) / **Entscheidungen für dich** + **Nicht geprüft** (mandatory, ≤ 5 points each, `keine` allowed, never omitted) + Ergebnis gegen Erwartung (#1950) / Unresolved Review Findings (MED-LOW, #617) / Metrics — including the Docs Health line rendered from the Phase 2.3 result and the Custom Phases line from Phase 2.5 — / Next Session Recommendations. Full template plus the Test-delta and Documentation-Coverage anchors: [`references/session-summary-template.md`](references/session-summary-template.md).
 

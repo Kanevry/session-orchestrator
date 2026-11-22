@@ -36,8 +36,26 @@ async function privateDir(dir, { noFollow, uid }) {
 // Ceiling for every path below a checked directory: Node has no openat(), so a process that can rename entries in
 // ~/.config/session-orchestrator could swap hud/ between the check and the file open. That is the user's own config
 // directory today; revisit if a shared or world-writable parent is ever supported.
-export async function beaconIO(action, id, input, { home = os.homedir(), pid = process.ppid, noFollow = constants.O_NOFOLLOW, uid = process.getuid?.() } = {}) {
-  if (action === 'identity') return { pid };
+// GH#105: on win32 a rename over (or an unlink of) a beacon another process holds open — a peer's mod reading it —
+// fails with EPERM/EBUSY (EACCES for the same lock) for as long as that handle lives. Retried 10+20+30+40 = 100 ms;
+// POSIX never retries, so a real permission error there still fails at once. Ceiling: a handle held longer still loses
+// this write as an error (the next 15-second refresh writes again); revisit if GH#105 reports persist. A copy of
+// `_renameWithRetry` in scripts/lib/io.mjs (#1858): this hook runs from the mod's own root, which ships without scripts/.
+const BUSY_DELAYS_MS = [10, 20, 30, 40];
+const BUSY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+export async function retryBusy(op, { platform = process.platform, delays = BUSY_DELAYS_MS } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await op(); } catch (e) {
+      const delay = delays[attempt];
+      if (platform !== 'win32' || delay === undefined || !BUSY_CODES.has(e?.code)) throw e;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+// `identity` also reports the home this helper and `so-hud.mjs --register-root` use (os.homedir(): USERPROFILE on
+// Windows, HOME elsewhere), so the mod reads beacons and the registered root where they were written (GH#104).
+export async function beaconIO(action, id, input, { home = os.homedir(), pid = process.ppid, noFollow = constants.O_NOFOLLOW, uid = process.getuid?.(), platform = process.platform } = {}) {
+  if (action === 'identity') return { pid, home };
   if (action === 'alive') {
     const alive = [];
     for (const p of input ?? []) {
@@ -75,7 +93,7 @@ export async function beaconIO(action, id, input, { home = os.homedir(), pid = p
   if (action === 'remove') {
     // Never unlink through a planted link: check both directories, but create nothing.
     try { for (const d of [hud, dir]) ownDir(await fs.lstat(d), uid); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
-    await fs.unlink(target).catch(e => { if (e.code !== 'ENOENT') throw e; });
+    await retryBusy(() => fs.unlink(target), { platform }).catch(e => { if (e.code !== 'ENOENT') throw e; });
     return null;
   }
   if (action !== 'write' || input?.session_id !== id) throw new Error('invalid action');
@@ -87,7 +105,7 @@ export async function beaconIO(action, id, input, { home = os.homedir(), pid = p
   const temp = `${target}.${process.pid}.tmp`;
   try {
     await fs.writeFile(temp, body, { mode: 0o600, flag: 'wx' });
-    await fs.rename(temp, target);
+    await retryBusy(() => fs.rename(temp, target), { platform });
   } finally { await fs.unlink(temp).catch(() => {}); }
   return null;
 }

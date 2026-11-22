@@ -1,5 +1,4 @@
 *.sh        text eol=lf
-*.ps1       text eol=crlf
 *.md        text eol=lf
 *.json      text eol=lf
 *.yaml      text eol=lf
@@ -13,7 +12,9 @@ tests/fixtures/bin/node-script-launcher text eol=lf
 tests/fixtures/claude       text eol=lf
 tests/fixtures/glab         text eol=lf
 tests/fixtures/tmux/tmux    text eol=lf
-*           text=auto
+# eol=lf on every line-ending rule: the Claude plugin directory scanner refuses a
+# plugin whose .gitattributes carries any other line-ending rule, text=auto included.
+*           text=auto eol=lf
 
 # Test fixtures intentionally preserve their line endings
 tests/fixtures/config-crlf.md -text

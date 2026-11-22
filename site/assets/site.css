@@ -799,5 +799,7 @@ html:not(.js) .home .pane + .pane { margin-top: 26px; padding-top: 20px; border-
   .home .foot { margin-top: 80px; }
 }
 @media (max-width: 400px) { .home .pane code.i { white-space: normal; overflow-wrap: anywhere; } }
+/* Keep a flag whole when the command wraps at 320 px: break at spaces, never at "--no-|interview" (#2087). */
+.home .pane code.i .nw { white-space: nowrap; }
 @media (max-width: 359px) { .top-install { display: none; } }
 @media print { .thread-svg, .top-install, .home .tool-list { display: none; } .home .pane[hidden] { display: block; } }

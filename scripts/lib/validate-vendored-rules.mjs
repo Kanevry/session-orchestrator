@@ -31,13 +31,9 @@
  *     (e.g. `WalkAITalkieTests`) — a strong signal the glob leaked from one
  *     specific product repo rather than being written generically.
  *
- * Stdlib-only ESM, with the same picomatch-with-fallback resolution pattern
- * as `rule-loader.mjs` (duplicated here rather than imported because those
- * helpers are module-private there — the *approach* is reused, not
- * reinvented). The globs-derived probes use the already-exported
- * `parseGlobsFrontmatter` from `rule-loader.mjs` directly; only
- * `globs-paths-mismatch` reads the two keys itself (`readScopeKeys`), because
- * the loader merges them and cannot say which key carried which list.
+ * Stdlib-only ESM. The glob probes use the same parser and matcher as
+ * `rule-loader.mjs`. The `globs-paths-mismatch` probe reads the two keys
+ * separately via `readScopeKeys` to compare their declarations.
  *
  * ## Scope: the `rules/` fleet library, never a repo's own `.claude/rules/`
  *
@@ -63,8 +59,7 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
-import { parseGlobsFrontmatter, FRONTMATTER_NOT_AT_TOP } from './rule-loader.mjs';
+import { parseGlobsFrontmatter, FRONTMATTER_NOT_AT_TOP, matchGlob } from './rule-loader.mjs';
 import { isMainModule } from './is-main-module.mjs';
 import { execFileSync } from './native-command.mjs';
 
@@ -74,68 +69,6 @@ import { execFileSync } from './native-command.mjs';
 // the constant back would create a module-load cycle between the two files.
 // Keep both copies textually identical if either changes.
 const PLUGIN_HEADER_PREFIX = '<!-- source: session-orchestrator plugin';
-
-// ---------------------------------------------------------------------------
-// Picomatch integration (mirrors rule-loader.mjs's resolution pattern — those
-// helpers are module-private there, so the same approach is duplicated here
-// rather than invented anew).
-// ---------------------------------------------------------------------------
-
-let _picomatch = null;
-
-function getPicomatch() {
-  if (_picomatch !== null) return _picomatch;
-  try {
-    const require = createRequire(import.meta.url);
-    _picomatch = require('picomatch');
-  } catch {
-    _picomatch = false;
-  }
-  return _picomatch;
-}
-
-/**
- * Minimal glob-to-RegExp fallback used only when picomatch is absent.
- * @param {string} pattern
- * @returns {RegExp}
- */
-function globToRegExp(pattern) {
-  const p = pattern.replace(/\\/g, '/');
-  let re = '';
-  let i = 0;
-  while (i < p.length) {
-    const c = p[i];
-    if (c === '*' && p[i + 1] === '*') {
-      re += '.*';
-      i += 2;
-      if (p[i] === '/') i++;
-    } else if (c === '*') {
-      re += '[^/]*';
-      i++;
-    } else if (c === '?') {
-      re += '[^/]';
-      i++;
-    } else if (c === '.') {
-      re += '\\.';
-      i++;
-    } else {
-      re += c.replace(/[$()+[\]^{|}]/g, '\\$&');
-      i++;
-    }
-  }
-  return new RegExp(`^${re}$`);
-}
-
-/**
- * @param {string} filePath - path relative to repo root, forward-slash separated
- * @param {string} globPattern
- * @returns {boolean}
- */
-function matchGlob(filePath, globPattern) {
-  const pm = getPicomatch();
-  if (pm) return pm.isMatch(filePath, globPattern, { dot: true });
-  return globToRegExp(globPattern).test(filePath);
-}
 
 // ---------------------------------------------------------------------------
 // Frontmatter helpers

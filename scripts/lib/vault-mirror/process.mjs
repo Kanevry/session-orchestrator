@@ -10,6 +10,8 @@ import { basename, join, resolve, sep } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { createSecretValueMasker } from '../secret-masker.mjs';
+import { learningKeyOf } from '../learnings/kebab.mjs';
+import { readRuleLinks } from '../reconcile/rule-links.mjs';
 import { subjectToSlug, legacySubjectToSlug, isValidSlug, uuidPrefix8, recordKeySuffix8, toDate, parseFrontmatter, slugifyIdSafe, noteIdFor, noteIdMatches, withNoteId } from './utils.mjs';
 import { isRealSession } from '../session-schema/filters.mjs';
 import { resolveRepoNamespace } from './namespace.mjs';
@@ -323,6 +325,20 @@ function learningContentMatches(existingContent, renderedContent) {
     fieldMatches(existing.insight, rendered.insight) &&
     fieldMatches(existing.source_session, rendered.source_session)
   );
+}
+
+/** Change only the generated link when the rest of the note is already current. */
+function updateLearningRuleLink(content, path, ruleLink, dryRun) {
+  const insight = content.search(/^## Insight\r?$/m);
+  if (insight < 0) return false;
+  const header = content.slice(0, insight);
+  const withoutLink = header.replace(/^- \*\*Kompiliert zu:\*\* `\.claude\/rules\/[a-z0-9-]+\.md`(?: [^\r\n]*)?\r?\n/gm, '');
+  const next = ruleLink
+    ? withoutLink.replace(/(\r?\n){2}$/, (_match, nl) => `${nl}${ruleLink}${nl}${nl}`)
+    : withoutLink;
+  if (next === header) return false;
+  if (!dryRun) writeFileSync(path, next + content.slice(insight), 'utf8');
+  return true;
 }
 
 /**
@@ -1000,6 +1016,38 @@ function positiveLearningOwner(fm, name, repoNs, recordKey) {
 }
 
 
+/** Resolve a proven existing note, or the canonical path for a new mirror. */
+export function resolveLearningNotePath(rawEntry, { vaultDir, repoRoot, vaultName }) {
+  const entry = maskEntrySecrets(normalizeLearningEntry(rawEntry));
+  const recordKey = learningSourceRecord(entry);
+  if (recordKey === null) return null;
+  const schema = detectLearningSchema(entry);
+  const repoNs = canonicalNamespace(vaultDir, resolveRepoNamespace({ repoRoot, vaultName }));
+  const flatDir = join(resolve(vaultDir), '40-learnings');
+  const namespacedDir = join(flatDir, repoNs);
+  const owned = [];
+  let occupied = false;
+  const names = learningSlugVariants(entry, schema);
+  for (const dir of [namespacedDir, flatDir]) {
+    for (const name of names) {
+      if (!isValidSlug(name)) continue;
+      const path = join(dir, `${name}.md`);
+      if (!existsSync(path)) continue;
+      occupied = true;
+      try {
+        const fm = parseFrontmatter(readFileSync(path, 'utf8'));
+        if (fm?.type === 'learning' && fm.status !== 'archived' &&
+            positiveLearningOwner(fm, name, repoNs, recordKey)) owned.push(path);
+      } catch {
+        // Ignore unreadable candidates; the path is still occupied.
+      }
+    }
+  }
+  if (owned.length === 1) return toVaultRelative(owned[0], vaultDir);
+  const canonical = join(namespacedDir, `${learningSlug(entry, schema)}.md`);
+  return occupied ? null : toVaultRelative(canonical, vaultDir);
+}
+
 export async function processLearning(rawEntry, _lineNum, ctx) {
   const {
     vaultDir,
@@ -1101,6 +1149,13 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   // so two records sharing a subject keep two stable notes instead of
   // overwriting each other on every run.
   const writer = { recordKey: learningSourceRecord(entry) };
+  if (ctx.repoRoot) {
+    const learningKey = learningKeyOf(normalizeLearningEntry(rawEntry));
+    const ruleLinks = ctx.learningRuleLinks ??= readRuleLinks(ctx.repoRoot);
+    const matches = ruleLinks.get(learningKey) ?? [];
+    generatorOpts.ruleLink = (matches.find(({ id }) => id === rawEntry.id) ??
+      matches.find(({ id }) => id === undefined))?.line;
+  }
 
   /**
    * #1513: the two reasons a NEW learning note is not created. Consulted only
@@ -1389,10 +1444,12 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
             // masker before trusting the five-field match — see maskerWouldChange.
             const stillLeaks = maskerWouldChange(disambigContent);
             if (!stillLeaks) {
+              const linkChanged = ctx.repoRoot &&
+                updateLearningRuleLink(disambigContent, targetPath, generatorOpts.ruleLink, dryRun);
               // #1503: the main note's in-place heal must stay visible even when
               // this record's own disambiguated note is unchanged.
               return emitEntryAction(_lineNum, ctx, {
-                action: 'skipped-noop',
+                action: linkChanged ? 'updated' : 'skipped-noop',
                 path: targetPath,
                 id: disambigSlug,
                 ...healMeta(false, healedForeignLeak),
@@ -1452,6 +1509,14 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     // main note, which the next run's content diff completes.
     if (stale !== null && !dryRun) writeFileSync(stale.path, stale.next, 'utf8');
     if (mainUnchanged) {
+      if (ctx.repoRoot && updateLearningRuleLink(existingContent, targetPath, generatorOpts.ruleLink, dryRun)) {
+        return emitEntryAction(_lineNum, ctx, {
+          action: 'updated',
+          path: targetPath,
+          id: slug,
+          ...(stale !== null ? { meta: { superseded_id: basename(stale.path, '.md') } } : {}),
+        });
+      }
       if (stale !== null) {
         return emitEntryAction(_lineNum, ctx, {
           action: 'updated',

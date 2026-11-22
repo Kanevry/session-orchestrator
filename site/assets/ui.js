@@ -201,6 +201,14 @@
       });
     });
 
+    // A diagram wider than a narrow screen opens centred on its middle box (the
+    // lead on /lead, #2087). At 320 px that box is 280 px wide in a 238 px view,
+    // so about 21 px stay cut off on each side; scrolling stays free (#1983).
+    document.querySelectorAll('.lead-diagram-scroll').forEach((box) => {
+      const spare = box.scrollWidth - box.clientWidth;
+      if (spare > 0) box.scrollLeft = spare / 2;
+    });
+
     document.querySelectorAll('details.nav-menu').forEach((menu) => {
       menu.addEventListener('click', (ev) => {
         if (ev.target.closest('a')) menu.open = false;

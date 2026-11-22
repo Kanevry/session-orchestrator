@@ -76,13 +76,6 @@ export const HOST_ENV_KEYS = Object.freeze([
  * merged with defaults, so a real owner.yaml without a `paths:` section yields
  * `ownerConfig.paths === undefined`. Callers must read defensively.
  *
- * HEALTH PASSTHROUGH (#1251): the owner loader reports HOW its result came about
- * (`source`, `reason`, `droppedSections`). Discarding those forced callers that
- * need them — CP11 in check-owner-leakage.mjs is the live one — to load owner.yaml
- * a SECOND time just to see the health of the load this function already did. They
- * are passed through verbatim. On a throwing loader all three health fields stay
- * `undefined`, exactly like `ownerConfig`.
- *
  * SEC-008 (SO#1784): one `JSON.stringify(loadHostPaths())` once printed seven
  * secrets, because `env` WAS the live `process.env` and `ownerConfig` is the full
  * owner.yaml. Two gates now apply:
@@ -92,9 +85,7 @@ export const HOST_ENV_KEYS = Object.freeze([
  *   - the context has non-enumerable `toJSON` and `util.inspect.custom` members
  *     that render only owner.yaml section names and env key names. Being
  *     non-enumerable, they leave `toEqual`, `Object.keys` and spread unaffected;
- *     `ownerConfig` stays complete for its readers. `droppedSections` passes
- *     through: its messages carry no secret, but some quote a rejected enum value
- *     (`got: "…"` in owner-yaml.mjs).
+ *     `ownerConfig` stays complete for its readers.
  * Because `toJSON` redacts, a context must never cross a process boundary by
  * plain `JSON.stringify` — project `env` / `ownerConfig` explicitly, as
  * baseline-archetypes.mjs resolveBaselineLocation() does.
@@ -110,20 +101,13 @@ export const HOST_ENV_KEYS = Object.freeze([
  * a new reader of the context env needs a key outside HOST_ENV_KEYS — the drift
  * test in tests/lib/config/host-paths.test.mjs covers only the known reader modules.
  *
- * @param {{ env?: Record<string, string|undefined>, ownerLoader?: () => { config: object, source?: string, reason?: string, droppedSections?: Array<{section: string, errors: string[]}> } }} [opts]
- * @returns {{ ownerConfig: object|undefined, env: Record<string, string>, source: string|undefined, reason: string|undefined, droppedSections: Array<{section: string, errors: string[]}>|undefined }}
+ * @param {{ env?: Record<string, string|undefined>, ownerLoader?: () => { config: object } }} [opts]
+ * @returns {{ ownerConfig: object|undefined, env: Record<string, string> }}
  */
 export function loadHostPaths({ env = process.env, ownerLoader = loadOwnerConfig } = {}) {
   let ownerConfig;
-  let source;
-  let reason;
-  let droppedSections;
   try {
-    const loaded = ownerLoader();
-    ownerConfig = loaded?.config;
-    source = loaded?.source;
-    reason = loaded?.reason;
-    droppedSections = loaded?.droppedSections;
+    ownerConfig = ownerLoader()?.config;
   } catch {
     ownerConfig = undefined;
   }
@@ -133,16 +117,13 @@ export function loadHostPaths({ env = process.env, ownerLoader = loadOwnerConfig
     const v = env?.[k];
     if (v !== undefined) hostEnv[k] = v;
   }
-  const ctx = { ownerConfig, env: hostEnv, source, reason, droppedSections };
+  const ctx = { ownerConfig, env: hostEnv };
   const redacted = () => ({
     ownerConfig:
       ownerConfig !== null && typeof ownerConfig === 'object'
         ? { sections: Object.keys(ownerConfig) }
         : ownerConfig,
     env: { keys: Object.keys(hostEnv) },
-    source,
-    reason,
-    droppedSections,
   });
   // Symbol.for(), not node:util: no new import edge (CP11 vendored copy, hook import set).
   Object.defineProperties(ctx, {

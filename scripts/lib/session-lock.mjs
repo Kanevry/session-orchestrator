@@ -43,8 +43,8 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { classifyMode } from './exclusivity-matrix.mjs';
-import { isLockShape } from './session-lock-shape.mjs';
-import { isPidAliveOnHost } from './file-lock.mjs';
+import { isLockShape, isValidLockTtlHours } from './session-lock-shape.mjs';
+import { isPidAliveOnHost, tryAcquireFileLock, releaseFileLock } from './file-lock.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
 import { hostnamesMatch, lockHostCandidate, recordHostAlias, stableHostname } from './host-identity.mjs';
 import { isSafeSessionId } from './fleet-protocol.mjs';
@@ -88,6 +88,79 @@ export const DEFAULT_TTL_HOURS = 4;
 export const LOCK_PATH = '.orchestrator/session.lock';
 
 /**
+ * Serialize every primary-lock mutation (#2073) using the existing file-lock
+ * primitive. A same-host dead-PID `.write` mutex is recovered only after its
+ * mtime is at least two seconds old, checked under file-lock's `.acquire`.
+ * Live, foreign and malformed mutexes stay busy. Heartbeat/enrichment take one
+ * attempt; acquire, force and release retry for at most 100ms in 5ms steps.
+ *
+ * BV-004: `.write.acquire` is NEVER stolen, even after a crash: the lower
+ * primitive's never-steal boundary remains. That residue requires quiescing
+ * ALL writers before explicitly removing the exact abandoned sibling. A
+ * recycled PID conservatively keeps a dead writer's mutex busy. Revisit on a
+ * persistent `busy` after a crash or cleanup failure on a supported filesystem.
+ * Mixed-version writers which ignore this protocol are not serialized; all
+ * processes sharing a checkout must be upgraded together.
+ * `lock-reaper.mjs` remains an unguarded legacy deleter, already called by
+ * on-session-start and lock-reconcile. Its exclusion is NOT an enforced
+ * operational restriction: it can still race a heartbeat or any writer.
+ * Revisit its archive/unlink migration before claiming checkout-wide safety,
+ * or upon any concurrent reaper activity (separate approved scope required).
+ *
+ * @template T
+ * @param {string|undefined} repoRoot
+ * @param {() => T} mutate synchronous critical section; never calls this helper again
+ * @param {number} [retryMs=0] bounded contention budget; heartbeat never waits
+ * @returns {T|{ok: false, reason: string, error?: string}}
+ */
+function mutatePrimaryLock(repoRoot, mutate, retryMs = 0) {
+  const guardPath = `${lockPathFor(repoRoot)}.write`;
+  try {
+    const deadline = Date.now() + retryMs;
+    // An attempt count also bounds reentrant contention when the wall clock
+    // is frozen or stepped backwards. No callback runs until we own .write.
+    const attempts = Math.ceil(retryMs / PRIMARY_WRITE_POLL_MS) + 1;
+    for (let attempt = 0; ; attempt += 1) {
+      const guard = tryAcquireFileLock(guardPath, {
+        staleCheck: 'pid',
+        minStaleAgeMs: PRIMARY_WRITE_MIN_AGE_MS,
+        tmpPrefix: '.session.lock.write.tmp',
+      });
+      if (guard.acquired) break;
+      if (guard.reason === 'fs-error') return { ok: false, reason: 'fs-error', error: guard.error };
+      const remaining = deadline - Date.now();
+      if (remaining <= 0 || attempt + 1 >= attempts) return { ok: false, reason: 'busy' };
+      sleepPrimaryWrite(Math.min(PRIMARY_WRITE_POLL_MS, remaining));
+    }
+    try {
+      return mutate();
+    } finally {
+      // A conforming contender cannot replace this mutex while our PID is
+      // alive (a paused process is alive too; a killed one cannot later run
+      // this finally). Avoid taking .acquire again: even brief contention on
+      // cleanup could otherwise strand our LIVE .write in a long-lived caller.
+      releaseFileLock(guardPath, { ownerGuard: false });
+    }
+  } catch (err) {
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+}
+
+const PRIMARY_WRITE_MIN_AGE_MS = 2000;
+const PRIMARY_WRITE_RETRY_MS = 100;
+const PRIMARY_WRITE_POLL_MS = 5;
+
+/** Same synchronous, CPU-cheap polling cadence as the underlying primitive. */
+function sleepPrimaryWrite(ms) {
+  const end = Date.now() + ms;
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    while (Date.now() < end) { /* fallback for runtimes without Atomics.wait */ }
+  }
+}
+
+/**
  * How far in the future a `last_heartbeat` may lie and still count as live
  * (#1494). Every heartbeat is stamped by `Date.now()` on the writing host, so
  * on one host it is never ahead of the clock unless that clock was stepped
@@ -106,16 +179,21 @@ export const FUTURE_HEARTBEAT_TOLERANCE_MS = 5 * 60 * 1000;
 /**
  * The lock manager's own transient files beside `session.lock` (#1505.3): the
  * `writeLockAtomic()` tmp (6 random bytes), the `createSessionLockExclusive()`
- * tmp and the `reclaimIfNotLive()` tombstone (8 random bytes each). A process
- * SIGKILLed between creating one and its cleanup leaves it behind for good.
+ * tmp and the `reclaimIfNotLive()` tombstone (8 random bytes each). The primary
+ * mutex is `session.lock.write` (no leading dot); its legacy dot-prefixed
+ * spelling is recognized too. File-lock's exact tmpPrefix-generated siblings
+ * are `.session.lock.write.tmp.create.tmp.<16hex>`,
+ * `.session.lock.write.tmp.acquire.create.tmp.<16hex>` and, on takeover,
+ * `.session.lock.write.tmp.<12hex>`. `.write.acquire` is recognized but kept.
  * Anchored and exact so `session.lock` itself — or any foreign file — can
  * never match.
  */
-const LOCK_LEFTOVER_RE = /^\.session\.lock\.(?:tmp\.[0-9a-f]{12}|create\.tmp\.[0-9a-f]{16}|reclaim\.[0-9a-f]{16})$/;
+const LOCK_LEFTOVER_RE = /^(?:\.session\.lock\.(?:tmp\.[0-9a-f]{12}|create\.tmp\.[0-9a-f]{16}|reclaim\.[0-9a-f]{16}|write\.tmp\.(?:[0-9a-f]{12}|(?:acquire\.)?create\.tmp\.[0-9a-f]{16}))|\.?session\.lock\.write(?:\.acquire)?)$/;
 
 /**
- * Minimum age before {@link sweepLockLeftovers} removes a leftover. Every one
- * of them lives inside ONE synchronous call (write → rename/link → unlink),
+ * Minimum age for the legacy primary tmp/reclaim family in
+ * {@link sweepLockLeftovers}; the .write family has its own two-second,
+ * dead-PID rule. Each lives inside ONE synchronous call (write → rename/link → unlink),
  * milliseconds long. Ceiling (BV-004): the age is taken from the later of
  * mtime and ctime, because a tombstone is a RENAMED lock whose mtime is the
  * old lock's last write; rename updates ctime (measured 2026-10-03 on APFS;
@@ -150,12 +228,11 @@ export const RELEASE_MARKER_RELDIR = '.orchestrator/runtime/lock-released';
 // NOT the discovery-path liveness check — since Epic #583 the discovery
 // decision tree uses heartbeat-age via {@link isLockLive} instead, because the
 // `pid` recorded on a session.lock is the *ephemeral hook subprocess* PID.
-// NOTHING IN THIS MODULE CALLS IT any more: `acquire()` stopped consulting the
-// pid in #744/#1137 and `checkStale()` in #1151 — the re-export is a
-// compatibility surface for external importers only. The remaining production
-// callers are file-lock.mjs's own stale-override path and lock-reaper.mjs,
-// where the recorded PID IS the process being asked about. See file-lock.mjs
-// for the full @forensic + PID-recycle trade-off note.
+// Primary-session liveness never consults it: `acquire()` stopped doing so in
+// #744/#1137 and `checkStale()` in #1151. The leftover sweep does use it for
+// the short-lived .write mutex/tmp bodies, whose PID IS the actual writer.
+// File-lock's stale-override path and lock-reaper.mjs also use it; see
+// file-lock.mjs for the full @forensic + PID-recycle trade-off note.
 
 /**
  * Resolve the absolute path to the lock file.
@@ -279,6 +356,20 @@ function buildLock({ sessionId, mode, ttlHours, semanticSessionId }) {
     session_id: sessionId,
     started_at: startedAt,
     last_heartbeat: startedAt,
+    ...lockMetadata(mode, ttlHours, semanticSessionId),
+    pid: process.pid,
+    // `host` stays the RAW hostname — it is an on-the-wire event field
+    // (orchestrator.session.lock.acquired) and feeds the privacy-hash contract.
+    // `host_id` is the additive normalised twin every comparison reads (#1072).
+    host: os.hostname(),
+    host_id: stableHostname(),
+  };
+  if (lock.semantic_session_id === undefined) delete lock.semantic_session_id;
+  return lock;
+}
+
+function lockMetadata(mode, ttlHours, semanticSessionId) {
+  return {
     // mode and ttl_hours are coerced here because acquire()/forceAcquire() take
     // them from hand-written callers (dispatcher claimRepo, the phase-1.2 prose)
     // unchecked: `mode: undefined` vanished from the JSON and `ttlHours: null`
@@ -287,18 +378,14 @@ function buildLock({ sessionId, mode, ttlHours, semanticSessionId }) {
     // while its heartbeat is fresh. 'unknown' classifies like any unknown mode
     // (parallel-ok, see the acquire() wrapper).
     mode: typeof mode === 'string' && mode.trim().length > 0 ? mode : 'unknown',
-    pid: process.pid,
-    // `host` stays the RAW hostname — it is an on-the-wire event field
-    // (orchestrator.session.lock.acquired) and feeds the privacy-hash contract.
-    // `host_id` is the additive normalised twin every comparison reads (#1072).
-    host: os.hostname(),
-    host_id: stableHostname(),
-    ttl_hours: Number.isFinite(ttlHours) && ttlHours > 0 ? ttlHours : DEFAULT_TTL_HOURS,
+    ttl_hours: isValidLockTtlHours(ttlHours) ? ttlHours : DEFAULT_TTL_HOURS,
+    semantic_session_id: typeof semanticSessionId === 'string' && semanticSessionId.length > 0
+      ? semanticSessionId : undefined,
   };
-  if (typeof semanticSessionId === 'string' && semanticSessionId.length > 0) {
-    lock.semantic_session_id = semanticSessionId;
-  }
-  return lock;
+}
+
+function refreshTombstoneLock(lock, mode, ttlHours, semanticSessionId) {
+  return { ...lock, ...lockMetadata(mode, ttlHours, semanticSessionId), last_heartbeat: nowIso() };
 }
 
 /**
@@ -338,6 +425,7 @@ export function isLockLive(lock, nowMs = Date.now()) {
   if (Number.isNaN(heartbeatMs)) return false;
   if (heartbeatMs > nowMs + FUTURE_HEARTBEAT_TOLERANCE_MS) return false;
   const ttlHours = typeof lock.ttl_hours === 'number' ? lock.ttl_hours : DEFAULT_TTL_HOURS;
+  if (!isValidLockTtlHours(ttlHours)) return false;
   const ttlMs = ttlHours * 3600 * 1000;
   return (nowMs - heartbeatMs) < ttlMs;
 }
@@ -371,9 +459,8 @@ function writeLockAtomic(lockFile, lock) {
  * Used by the no-existing-lock branch of {@link acquire} and by the
  * single-winner reclaim (`forceAcquire({ onlyIfNotLive: true })` →
  * `reclaimIfNotLive()`), which moves the old lock aside first and then needs
- * exactly this create-or-fail, and by `updateHeartbeat()`'s revival of an own
- * NOT-live lock (#2073), which moves it aside the same way. The unconditional
- * overwrite paths (a plain `forceAcquire`, `updateHeartbeat()` on a LIVE lock)
+ * exactly this create-or-fail. All these operations hold the primary mutation
+ * mutex (#2073). The overwrite paths (a plain `forceAcquire`, `updateHeartbeat()`)
  * keep using `writeLockAtomic` because they MUST replace an existing lock, not
  * fail on it.
  *
@@ -525,11 +612,14 @@ export function readLockDetailed(opts = {}) {
  *
  * Returns one of:
  *   { ok: true, lock, exclusivityClass?, ownerProof }
- *       — lock created. `ownerProof` reports the owner-proof rewrite that
+ *       — lock created or restored from the caller's live reclaim tombstone.
+ *         `ownerProof` reports the owner-proof rewrite that
  *         follows every successful lock write (#1541, see withOwnerProof()):
  *         `{ ok: true }` or `{ ok: false, reason }` — never thrown.
  *   { ok: false, reason: 'active', existingLock, ageHours, exclusivityClass? }
- *       — local lock held: its last_heartbeat is within ttl_hours. `ageHours`
+ *       — local lock held: its last_heartbeat is within ttl_hours. A readable
+ *         live reclaim tombstone can supply `existingLock` if the primary is
+ *         absent, corrupt or expired (#2141, #2145). `ageHours`
  *         is the age from `started_at` (null when unparseable). `existingLock`
  *         is null, `ageHours` null, only when a lost create race found the
  *         winner's lock already gone.
@@ -544,8 +634,8 @@ export function readLockDetailed(opts = {}) {
  *         stale lock rendered as "confirmed dead" in the recovery AUQ.
  *   { ok: false, reason: 'corrupt', existingLock: null, exclusivityClass? }
  *       — a lock file is present but fails parseLock() (invalid JSON, or not
- *         the six-field lock shape). It can never be a live lock — every
- *         writer writes atomically — so the SessionStart bootstrap reclaims it
+ *         the six-field lock shape), with no live reclaim tombstone.
+ *         The SessionStart bootstrap reclaims it
  *         with one stderr WARN. Before 2026-10-02 this case answered 'active'
  *         with `existingLock: null` on every attempt and wedged the repo.
  *   { ok: false, reason: 'unreadable', existingLock: null, error, exclusivityClass? }
@@ -561,6 +651,9 @@ export function readLockDetailed(opts = {}) {
  *         call never reached classification.
  *   { ok: false, reason: 'fs-error', error, exclusivityClass? }
  *       — filesystem failure
+ *   { ok: false, reason: 'busy' }
+ *       — session.lock.write or its .acquire guard stayed held for the bounded
+ *         retry budget; no primary owner/liveness conclusion can be drawn
  *   { ok: false, reason: 'active-incompatible-exclusive', allActiveSessions, blockingSession, exclusivityClass }
  *       — caller blocked by an active exclusive-class session (P1.2 #570)
  *   { ok: false, reason: 'active-compatible-parallel', allActiveSessions, exclusivityClass }
@@ -575,7 +668,13 @@ export function readLockDetailed(opts = {}) {
  * The caller (session-start) decides whether to invoke forceAcquire() after
  * obtaining user consent.
  */
-export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, activeSessions, semanticSessionId, quiet = false } = {}) {
+export function acquire(opts = {}) {
+  if (!hasUsableSessionId(opts.sessionId)) return { ok: false, reason: 'missing-session-id' };
+  return mutatePrimaryLock(opts.repoRoot, () => acquireGuarded(opts), PRIMARY_WRITE_RETRY_MS);
+}
+
+/** Caller holds the primary mutation mutex; also used by reclaim's fallback. */
+function acquireGuarded({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, activeSessions, semanticSessionId, quiet = false } = {}) {
   // -------------------------------------------------------------------------
   // Ownerless-lock guard. Measured 2026-09-11 in a tmp repoRoot:
   //   acquire({sessionId: undefined}) -> {ok:true}, lockfile written with NO
@@ -739,12 +838,11 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
     // the re-read was null again, and every attempt answered
     // `active` / `existingLock: null` — which the bootstrap cannot reclaim, so
     // one damaged file blocked every new session in the repo for good.
-    // Such a file can never be a live lock: all four production writers
-    // (createSessionLockExclusive, writeLockAtomic via forceAcquire and
-    // updateHeartbeat, the bootstrap's writeJsonAtomicSync) write a full
-    // buildLock() body via tmp+link / tmp+rename, so no reader ever sees a
-    // partial write. Reported, not cleared — the caller decides (see the
-    // decision-deferred note in the module header).
+    // Primary writers normally publish a complete body via tmp+link or
+    // tmp+rename. The #2141 exclusive write fallback can leave a partial
+    // primary, with the live body still in the tombstone. Check that before
+    // reporting a reclaimable 'corrupt' result. The caller decides what to
+    // do with a corrupt primary (see the decision-deferred module header).
     // Ceiling (BV-004): a future writer emitting a body that fails
     // isLockShape() would be classified corrupt too. Revisit if the lock
     // schema ever changes a required field's type or name.
@@ -761,12 +859,21 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
 
     const existing = readLockDetailed({ repoRoot });
 
-    if (existing.status === 'ok') {
-      // A lock is present — classify it.
-      return classifyExisting(existing.lock);
-    }
-    if (existing.status === 'corrupt') return corrupt();
+    if (existing.status === 'ok' && isLockLive(existing.lock)) return classifyExisting(existing.lock);
     if (existing.status === 'unreadable') return unreadable(existing.error);
+    const tombstone = readLiveReclaimTombstone(lockFile);
+    if (tombstone !== null) {
+      if (tombstone.lock.session_id !== sessionId) {
+        return classifyExisting(tombstone.lock);
+      }
+      const lock = refreshTombstoneLock(tombstone.lock, mode, ttlHours, semanticSessionId);
+      const restored = restoreOwnedReclaimTombstone(tombstone, lock, lockFile, repoRoot, existing);
+      if (restored.ok) return withOwnerProof({ ...restored, exclusivityClass: callerClass }, repoRoot);
+      if (restored.reason === 'active') return classifyExisting(restored.existingLock);
+      return { ...restored, exclusivityClass: callerClass };
+    }
+    if (existing.status === 'ok') return classifyExisting(existing.lock);
+    if (existing.status === 'corrupt') return corrupt();
     // 'absent' → create below.
 
     // No existing lock — create one with a TOCTOU-safe create-or-fail (#590).
@@ -807,6 +914,11 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
  *                                                     ownerProof as on acquire(), #1541)
  *   { ok: false, reason: 'missing-session-id' }     — no usable `sessionId` given; NOTHING was written
  *   { ok: false, reason: 'fs-error', ... }          — filesystem failure
+ *   { ok: false, reason: 'busy' }                   — mutation mutex held; retry later
+ *
+ * Optional expectedLock binds an automatic live refresh to the observed
+ * session_id + pid/host/started_at generation; mismatch returns active without
+ * writing. Omit it only for an explicitly authorized unconditional force-take.
  *
  * The `missing-session-id` guard is not cosmetic. `buildLock` assigns
  * `session_id: sessionId` verbatim, and `JSON.stringify` DROPS an `undefined`
@@ -831,7 +943,7 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
  * SessionStart bootstrap passes it for its `stale-heartbeat` / `corrupt`
  * reclaims; the operator-approved force-take of a LIVE lock (Phase 1.2) omits it.
  *
- * @param {{ sessionId: string, mode: string, ttlHours?: number, repoRoot?: string, semanticSessionId?: string, onlyIfNotLive?: boolean }} args
+ * @param {{ sessionId: string, mode: string, ttlHours?: number, repoRoot?: string, semanticSessionId?: string, onlyIfNotLive?: boolean, expectedLock?: object }} args
  */
 /**
  * Rewrite `.orchestrator/runtime/lock-owner-proof.json` for a lock this module
@@ -852,13 +964,11 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
  * Never throws and never turns `ok: true` into a failure: the lock IS held, and
  * a missing proof only degrades `/close` to the session_id-only release.
  *
- * Ceiling (BV-004): two plain forceAcquire() calls racing on one path are
- * last-writer-wins for the lock AND the proof, and the two writes can
- * interleave (A lock, B lock, B proof, A proof). The proof then names A while B
- * holds the lock — the same state as before #1541, and safe: release() still
- * gates on the raw session_id first, so the mismatched proof can only refuse a
- * release, never grant one. Revisit if `release-proof-mismatch` shows up after
- * a force-take.
+ * The primary mutation mutex encloses lock AND proof writes, including
+ * bootstrap enrichment, so conforming force-takes cannot interleave proofs.
+ * BV-004: legacy writers which ignore the mutex may still leave a stale proof;
+ * a mismatched proof refuses release, never grants it. Revisit when migrating
+ * legacy writers or after a release-proof-mismatch following reaper activity.
  *
  * Known limit: the proof is one file per repo and identifies the process that
  * last wrote the lock, never the conversation. Twins sharing one raw
@@ -892,7 +1002,13 @@ function hasUsableSessionId(sessionId) {
   return typeof sessionId === 'string' && sessionId.trim().length > 0;
 }
 
-export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, semanticSessionId, onlyIfNotLive = false } = {}) {
+export function forceAcquire(opts = {}) {
+  if (!hasUsableSessionId(opts.sessionId)) return { ok: false, reason: 'missing-session-id' };
+  return mutatePrimaryLock(opts.repoRoot, () => forceAcquireGuarded(opts), PRIMARY_WRITE_RETRY_MS);
+}
+
+/** Caller holds the primary mutation mutex. */
+function forceAcquireGuarded({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, semanticSessionId, onlyIfNotLive = false, expectedLock } = {}) {
   if (!hasUsableSessionId(sessionId)) {
     return { ok: false, reason: 'missing-session-id' };
   }
@@ -900,14 +1016,31 @@ export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, re
     return reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSessionId });
   }
   try {
-    const replacedLock = readLock({ repoRoot });
-    const lock = buildLock({ sessionId, mode, ttlHours, semanticSessionId });
     const lockFile = lockPathFor(repoRoot);
-
-    const writeResult = writeLockAtomic(lockFile, lock);
+    const primary = readLockDetailed({ repoRoot });
+    const canRestore = primary.status === 'absent' || primary.status === 'corrupt';
+    const tombstone = expectedLock !== undefined && canRestore
+      ? readLiveReclaimTombstone(lockFile)
+      : null;
+    const replacedLock = primary.lock ?? tombstone?.lock ?? null;
+    // Bootstrap's live same-session/predecessor decision was made before an
+    // await. Require that exact owner generation under the mutex; explicit
+    // operator force-takes omit expectedLock and stay unconditional.
+    if (expectedLock !== undefined && (
+      !isSameLockGeneration(expectedLock, replacedLock) ||
+      (tombstone !== null && replacedLock.session_id !== sessionId)
+    )) {
+      return { ok: false, reason: 'active', existingLock: replacedLock };
+    }
+    const lock = tombstone === null
+      ? buildLock({ sessionId, mode, ttlHours, semanticSessionId })
+      : refreshTombstoneLock(tombstone.lock, mode, ttlHours, semanticSessionId);
+    const writeResult = tombstone === null
+      ? writeLockAtomic(lockFile, lock)
+      : restoreOwnedReclaimTombstone(tombstone, lock, lockFile, repoRoot, primary);
     if (!writeResult.ok) return writeResult;
 
-    const result = { ok: true, lock };
+    const result = { ok: true, lock: writeResult.lock ?? lock };
     if (replacedLock !== null) result.replacedLock = replacedLock;
     return withOwnerProof(result, repoRoot);
   } catch (err) {
@@ -918,12 +1051,118 @@ export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, re
 /**
  * Unique tombstone name beside the lock — matches {@link LOCK_LEFTOVER_RE}, so a
  * tombstone a killed process leaves behind is swept by `sweepLockLeftovers()`.
- * Shared by `reclaimIfNotLive()` and `updateHeartbeat()`'s revival path.
+ * Used by stale reclaim and repair of a corrupt primary.
  * @param {string} lockFile
  * @returns {string}
  */
 function tombstonePathFor(lockFile) {
   return path.join(path.dirname(lockFile), `.session.lock.reclaim.${crypto.randomBytes(8).toString('hex')}`);
+}
+
+/**
+ * Find a live owner whose primary may have been lost during reclaim (#2141).
+ * For mutation decisions, call under the primary mutation mutex. Use the same
+ * exact names and regular-file rule as sweepLockLeftovers(), without its age floor.
+ */
+function readLiveReclaimTombstone(lockFile) {
+  return liveReclaimTombstones(lockFile).next().value ?? null;
+}
+
+function* liveReclaimTombstones(lockFile) {
+  const dir = path.dirname(lockFile);
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.startsWith('.session.lock.reclaim.') ||
+        !LOCK_LEFTOVER_RE.test(entry.name)) continue;
+    const file = path.join(dir, entry.name);
+    let raw;
+    try { raw = fs.readFileSync(file, 'utf8'); } catch { continue; }
+    const lock = parseLock(raw);
+    if (isLockLive(lock)) yield { file, lock };
+  }
+}
+
+/** Publish a restored primary under .write. Readers can see a partial body during wx. */
+function writeReclaimPrimaryExclusive(lockFile, raw) {
+  try {
+    fs.writeFileSync(lockFile, raw, { flag: 'wx' });
+    return { ok: true };
+  } catch (err) {
+    if (err.code === 'EEXIST') return { ok: false, reason: 'exists' };
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+}
+
+function isSameLockGeneration(expected, actual) {
+  return actual?.session_id === expected?.session_id &&
+    isLockOwnedByProof(actual, buildLockOwnerProof(expected));
+}
+
+/**
+ * Move the observed corrupt or expired primary aside under .write before
+ * create-or-fail. Recheck the displaced file: a legacy writer may have
+ * replaced or revived it. Link it back only if the primary path is empty.
+ */
+function retirePrimaryForRestore(lockFile, observed) {
+  const displaced = tombstonePathFor(lockFile);
+  try {
+    if (!fs.lstatSync(lockFile).isFile()) {
+      return { ok: false, reason: 'fs-error', error: 'Session lock is not a regular file' };
+    }
+    // direct-rename:ok move to a unique tombstone before revalidation, never a write
+    fs.renameSync(lockFile, displaced);
+  } catch (err) {
+    if (err.code === 'ENOENT') return { ok: true };
+    throw err;
+  }
+  const raw = fs.lstatSync(displaced).isFile() ? fs.readFileSync(displaced, 'utf8') : null;
+  const moved = observed.status === 'ok' && raw !== null ? parseLock(raw) : null;
+  const canRetire = observed.status === 'corrupt'
+    ? raw === observed.raw
+    : isSameLockGeneration(observed.lock, moved) && !isLockLive(moved);
+  if (canRetire) {
+    try { fs.unlinkSync(displaced); } catch { /* safe for the leftover sweep */ }
+    return { ok: true };
+  }
+  try {
+    fs.linkSync(displaced, lockFile);
+    // Keep the displaced file for the sweep or the restored owner's release.
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+  }
+  return { ok: false, reason: 'exists' };
+}
+
+/** The caller has checked ownership under .write and supplied the refreshed lock. */
+function restoreOwnedReclaimTombstone(tombstone, lock, lockFile, repoRoot, observed) {
+  const ready = observed.status === 'absent' ? { ok: true } : retirePrimaryForRestore(lockFile, observed);
+  const written = ready.ok
+    ? writeReclaimPrimaryExclusive(lockFile, JSON.stringify(lock, null, 2) + '\n')
+    : ready;
+  if (written.reason === 'fs-error') return written;
+
+  const primary = readLock({ repoRoot });
+  if (primary === null) {
+    return { ok: false, reason: 'fs-error', error: 'Could not verify restored session lock' };
+  }
+  if (!written.ok || !isSameLockGeneration(lock, primary)) {
+    return { ok: false, reason: 'active', existingLock: primary };
+  }
+  try {
+    // A name from readdir of the lock directory, never caller input.
+    const tombFile = tombstone.file;
+    if (fs.lstatSync(tombFile).isFile() &&
+        isSameLockGeneration(tombstone.lock, parseLock(fs.readFileSync(tombFile, 'utf8')))) {
+      fs.unlinkSync(tombFile);
+    }
+  } catch { /* the owner can clean it on release */ }
+  return { ok: true, lock: primary };
 }
 
 /**
@@ -949,35 +1188,20 @@ function restoreUnjudgeableTombstone(tomb, lockFile) {
  * Single-winner takeover of a stale or corrupt lock — `forceAcquire({
  * onlyIfNotLive: true })` (#1494).
  *
- * The plain force is last-writer-wins: two SessionStarts that both saw the same
- * stale lock both forced it, both got `ok: true`, and the later rename won while
- * the loser kept running as if it held the lock. Here the lock is first renamed
- * to a unique tombstone. A rename moves exactly one directory entry, so only one
- * caller can hold the moved file; it is judged only then, from the tombstone:
- *   - not live (stale, heartbeat-less, unparseable) → replaced via the same
- *     create-or-fail link as a fresh acquire();
- *   - live → a racer finished its takeover between our acquire() read and our
- *     rename, and what we moved is ITS lock: linked back, never replaced.
- * Every losing path — the rename finds nothing (ENOENT: a racer moved it
- * first), the create finds a lock (EEXIST), the moved lock was live — ends in
- * ONE fresh `acquire()`, which reads whatever sits at the path now and answers
- * as on a first look (normally `active` with the winner's lock).
+ * Under the primary mutation mutex, liveness is checked BEFORE any move.
+ * A stale or corrupt regular lock is moved to a unique tombstone and judged
+ * there, then replaced create-or-fail. Missing, unreadable or LIVE primaries
+ * are classified by acquireGuarded() without moving them. Fallbacks stay in
+ * the same critical section instead of recursively acquiring the mutex.
  *
- * Ceilings (BV-004), both reachable with TWO SessionStarts:
- * (1) A racer's fresh lock that we move and link back is absent for that
- * window, and any reader in it sees no lock. The reader most likely to land
- * there is the winner's own bootstrap re-reading the lock it just acquired, so
- * `hooks/_lib/lock-bootstrap.mjs` re-reads on ENOENT (5 × 10 ms) instead of
- * giving up the enrichment; a third reader just sees "absent" briefly.
- * (2) A lock that turned LIVE after both starts read it stale — its own owner
- * heartbeated in between — is moved by one start while the other's rename
- * finds nothing and its fresh `acquire()` creates a lock in the empty path. The
- * link-back then fails with EEXIST and the owner's lock is dropped; the owner
- * learns it at its next heartbeat (updateHeartbeat() returns false on the
- * session mismatch). Not a regression: the plain force overwrote that live lock
- * unconditionally. Revisit if a `reclaimed` event pair within one second shows
- * up in events.jsonl again, or a session's heartbeat starts failing right after
- * another start reclaimed its lock.
+ * BV-004: read-only observers can briefly see an absent stale/corrupt primary
+ * between its move and create; conforming writers cannot enter that window.
+ * A killed reclaimer leaves an abandoned mutex and the old stale tombstone;
+ * .write can be recovered after its writer dies and the two-second floor;
+ * .write.acquire requires quiescing writers as documented by mutatePrimaryLock.
+ * Legacy writers/reaper ignore the mutex and can still interfere with the
+ * move/link-back fallback. Revisit on mixed-version starts or reaper activity;
+ * neither is claimed safe by #2073's migrated protocol.
  *
  * @param {{ sessionId: string, mode: string, ttlHours: number, repoRoot?: string, semanticSessionId?: string }} args
  * @returns {object} forceAcquire()'s `{ ok: true, lock, replacedLock? }` or
@@ -985,13 +1209,21 @@ function restoreUnjudgeableTombstone(tomb, lockFile) {
  */
 function reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSessionId }) {
   const lockFile = lockPathFor(repoRoot);
-  const reacquire = () => acquire({ sessionId, mode, ttlHours, repoRoot, semanticSessionId, quiet: true });
+  const reacquire = () => acquireGuarded({ sessionId, mode, ttlHours, repoRoot, semanticSessionId, quiet: true });
+  // Check liveness under the mutex before any move: a heartbeat may have
+  // revived this lock since bootstrap's earlier stale decision. A conforming
+  // reclaimer must never put a fresh LIVE primary into a tombstone. A corrupt
+  // primary can be the partial result of a failed #2141 restore.
+  const current = readLockDetailed({ repoRoot });
+  if (current.status === 'absent' || current.status === 'unreadable' ||
+      (current.status === 'ok' && isLockLive(current.lock)) ||
+      readLiveReclaimTombstone(lockFile) !== null) return reacquire();
   const tomb = tombstonePathFor(lockFile);
 
   try {
-    // Kept raw (#1865): a tombstone MOVE of the live lock, not a tmp+rename write;
+    // Kept raw (#1865): a tombstone MOVE of a stale/corrupt lock, not a tmp+rename write;
     // ENOENT means "lost the race" and must not be retried or masked.
-    // direct-rename:ok tombstone move of the live lock, not a tmp+rename write
+    // direct-rename:ok tombstone move of a stale/corrupt lock, not a tmp+rename write
     fs.renameSync(lockFile, tomb);
   } catch (err) {
     if (err && err.code === 'ENOENT') return reacquire();
@@ -1002,7 +1234,7 @@ function reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSession
   try {
     let raw;
     try {
-      raw = fs.readFileSync(tomb, 'utf8');
+      raw = fs.readFileSync(tomb);
     } catch {
       // Unjudgeable — something unreadable replaced the stale file after
       // acquire() read it. Not ours to drop: put it back.
@@ -1010,10 +1242,33 @@ function reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSession
       return reacquire();
     }
 
-    const moved = parseLock(raw);
+    const moved = parseLock(raw.toString('utf8'));
     if (moved !== null && isLockLive(moved)) {
-      try { fs.linkSync(tomb, lockFile); } catch { /* ceiling (2) above */ }
-      return reacquire();
+      keepTomb = true;
+      let deferredRestore = false;
+      try {
+        fs.linkSync(tomb, lockFile);
+      } catch (err) {
+        // EEXIST can outlive the successor that caused it. Try wx if the
+        // primary cannot be read as a lock, just as after other relink errors.
+        if (err.code !== 'EEXIST' || readLock({ repoRoot }) === null) {
+          const restored = writeReclaimPrimaryExclusive(lockFile, raw);
+          if (restored.reason === 'fs-error') return restored;
+        } else {
+          deferredRestore = true;
+        }
+      }
+      let result = reacquire();
+      let primary = readLock({ repoRoot });
+      // A successor seen after EEXIST can still disappear during classification.
+      if (deferredRestore && primary === null) {
+        const restored = writeReclaimPrimaryExclusive(lockFile, raw);
+        if (restored.reason === 'fs-error') return restored;
+        result = reacquire();
+        primary = readLock({ repoRoot });
+      }
+      keepTomb = !(isSameLockGeneration(moved, primary) || isLockLive(primary));
+      return result;
     }
 
     const lock = buildLock({ sessionId, mode, ttlHours, semanticSessionId });
@@ -1043,6 +1298,12 @@ function reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSession
  * when it is still a hard link to the primary lock's inode (killed between
  * link-back and unlink), `session.lock` keeps its content.
  *
+ * The `.write` mutex and its exact tmp siblings instead require a readable
+ * same-host dead-PID body and mtime >=2s; age alone never suffices. Mutex
+ * recovery goes through file-lock's .acquire, with the age rechecked there,
+ * so a young successor and the currently held mutation guard are kept.
+ * `.write.acquire` itself is NEVER removed, whatever its owner or age.
+ *
  * Never throws; a file that vanished or cannot be removed is skipped.
  *
  * @param {{ repoRoot?: string, nowMs?: number }} [opts]
@@ -1064,6 +1325,34 @@ export function sweepLockLeftovers({ repoRoot, nowMs = Date.now() } = {}) {
     try {
       const st = fs.lstatSync(full);
       if (!st.isFile()) continue;
+      if (/^\.?session\.lock\.write\.acquire$/.test(name)) continue;
+      const writeMutex = /^\.?session\.lock\.write$/.test(name);
+      if (writeMutex || name.startsWith('.session.lock.write.tmp.')) {
+        if (!(nowMs - st.mtimeMs >= PRIMARY_WRITE_MIN_AGE_MS)) continue;
+        let body;
+        try { body = JSON.parse(fs.readFileSync(full, 'utf8')); } catch { continue; }
+        if (!body || !Number.isSafeInteger(body.pid) || body.pid <= 0 || body.pid > 0x7fffffff ||
+            !hostnamesMatch(lockHostCandidate(body), os.hostname()) || isPidAliveOnHost(body.pid)) continue;
+        if (writeMutex) {
+          const recovered = tryAcquireFileLock(full, {
+            staleCheck: 'pid', minStaleAgeMs: PRIMARY_WRITE_MIN_AGE_MS,
+            tmpPrefix: '.session.lock.write.tmp',
+          });
+          if (!recovered.acquired) continue;
+          // The recovered body now names this live PID, so a conforming
+          // writer cannot replace it before this immediate cleanup.
+          if (!releaseFileLock(full, { ownerGuard: false }).ok) continue;
+        } else {
+          // Tmp names are unique and immutable once written. Check identity
+          // again so an observed replacement is never unlinked by the sweep.
+          const current = fs.lstatSync(full);
+          if (!current.isFile() || current.ino !== st.ino || current.dev !== st.dev ||
+              current.mtimeMs !== st.mtimeMs) continue;
+          fs.unlinkSync(full);
+        }
+        removed.push(name);
+        continue;
+      }
       // A future mtime/ctime (clock stepped back) yields a negative age: kept.
       if (!(nowMs - Math.max(st.mtimeMs, st.ctimeMs) > LOCK_LEFTOVER_MIN_AGE_MS)) continue;
       if (name.startsWith('.session.lock.reclaim.')) {
@@ -1182,11 +1471,11 @@ export function isLockOwnedByProof(lock, proof) {
  * is a separate change).
  *
  * Callers: `acquire()` / `forceAcquire()` on every `ok: true` lock write
- * (#1541, via withOwnerProof()), and `bootstrapLock()`
- * (hooks/_lib/lock-bootstrap.mjs) again immediately after its enriched-lock
- * write. In every case the `lock` argument is byte-identical to the on-disk
- * lock, so the proof it yields will verify via `isLockOwnedByProof()` against
- * any later re-read of that same lock.
+ * (#1541, via withOwnerProof()), `updateHeartbeat()` after a tombstone
+ * restore, and `bootstrapLock()` (hooks/_lib/lock-bootstrap.mjs) again
+ * immediately after its enriched-lock write. In every case the `lock`
+ * argument describes the on-disk lock, so the proof it yields will verify
+ * via `isLockOwnedByProof()` against any later re-read of that same lock.
  *
  * Envelope shape (schema_version 1):
  *   {
@@ -1384,242 +1673,176 @@ export function clearReleaseMarker({ repoRoot, sessionId } = {}) {
 }
 
 /**
- * Release the lock IFF it belongs to the given session_id.
- * Silent no-op when the lock belongs to a different session or does not exist.
- * Never throws.
+ * Release the primary and live reclaim tombstones owned by the caller.
+ * When a proof is supplied, only that generation (raw ID, PID, host and start
+ * time) is eligible. An omitted or null proof retains raw-ID-only ownership.
  *
- * Post-delete verify (#744 Fix 3, refined): after unlinking, re-reads the
- * lock path to confirm the delete was durable. The retry is **ownership-
- * scoped** — only OUR OWN lock reappearing (same `session_id`) warrants a
- * bounded retry unlink, which covers a transient unlink/stat race where our
- * just-deleted file is briefly still observable. A FOREIGN lock (a
- * different `session_id`) present at the re-read means a sibling session
- * legitimately `acquire()`d the path in the race window between our unlink
- * and this re-read — OUR lock is already gone (the delete succeeded), so
- * this is treated as verified and the foreign lock is left untouched. This
- * is load-bearing for PSA-005: a releaser must never unlink a lock it does
- * not own, even indirectly via a "still present, so retry-unlink" heuristic
- * that does not check who the present lock belongs to.
- *
- * `verified` is computed as "our lock is no longer present" — a foreign
- * lock present is fine (ours is gone); only our own lock still being
- * observable after the bounded retry sets `verified: false`.
- *
- * Optional proof-gated ownership (#906-class fix, additive): pass `proof`
- * (see `buildLockOwnerProof()` / `isLockOwnedByProof()`) to require a SECOND
- * identity factor beyond `session_id` before deleting — this is what makes
- * a same-day semantic-id collision safe to release against. When `proof` is
- * ABSENT (omitted, `undefined`, or `null`), behaviour is BYTE-IDENTICAL to
- * before this change: only the `session_id` match gates the delete.
- *
- * `null` is treated as absent DELIBERATELY (#989): the two producers of a
- * proof — `loadOwnerProof()` and `buildLockOwnerProof()` — both return `null`
- * to mean "cannot prove ownership". Gating on `proof !== undefined` forced
- * every call site to spread-guard (`...(proof ? { proof } : {})`) or brick
- * release with a permanent `proof-mismatch`; treating both absent spellings
- * alike moves that contract inside the API where it belongs. A caller that
- * wants fail-closed-on-unprovable must branch itself before calling.
+ * Tombstones are removed before the primary under .write, so a failed cleanup
+ * can be retried while the owner still holds its primary. Post-delete
+ * verification retries the primary unlink at most once, only for the same
+ * generation, and checks for any remaining eligible live tombstones.
  *
  * @param {{ sessionId: string, repoRoot?: string, proof?: { pid: number, host: string, startedAt: string }|null }} args
- * @returns {{ ok: true, deleted: boolean, reason?: string, verified?: boolean }}
+ * @returns {{ ok: true, deleted: boolean, reason?: string, verified?: boolean }
+ *   | { ok: false, reason: 'busy' }
+ *   | { ok: false, reason: 'fs-error', error: string }}
  */
-export function release({ sessionId, repoRoot, proof } = {}) {
-  const lockFile = lockPathFor(repoRoot);
+export function release(opts = {}) {
+  // A read-only rejection avoids taking .write when there is nothing to release.
   try {
-    const existing = readLock({ repoRoot });
-
-    if (existing === null) {
-      return { ok: true, deleted: false, reason: 'no-lock' };
+    const observed = readReleaseTargets(opts);
+    if (!observed.primary && observed.tombstones.length === 0) {
+      return { ok: true, deleted: false, reason: observed.reason };
     }
-
-    if (existing.session_id !== sessionId) {
-      return { ok: true, deleted: false, reason: 'session-mismatch' };
-    }
-
-    // Proof-gated release (additive, #906-class fix): when the caller supplies
-    // a proof, the session_id match above is NOT sufficient by itself —
-    // session_id collisions are the documented root cause behind this check.
-    // Absent-proof handling (#989): an absent proof — omitted, `undefined`, or
-    // the `null` that loadOwnerProof()/buildLockOwnerProof() return for
-    // "cannot prove" — leaves this branch dead code and preserves the exact
-    // pre-existing session_id-only behaviour. No call-site spread-guard needed.
-    // Spelled out rather than as `proof != null` because the repo's `eqeqeq`
-    // lint rule admits no null-loose exception.
-    const proofSupplied = proof !== undefined && proof !== null;
-    if (proofSupplied && !isLockOwnedByProof(existing, proof)) {
-      return { ok: true, deleted: false, reason: 'proof-mismatch' };
-    }
-
-    fs.unlinkSync(lockFile);
-
-    // Post-delete verify: only retry when OUR OWN lock is still observable.
-    // A foreign lock here belongs to a sibling that re-acquired in the race
-    // window — never touch it (PSA-005).
-    let after = readLock({ repoRoot });
-    if (after !== null && after.session_id === sessionId) {
-      try {
-        fs.unlinkSync(lockFile);
-      } catch {
-        // best-effort retry — fall through to the final re-check regardless.
-      }
-      after = readLock({ repoRoot });
-    }
-
-    const verified = after === null || after.session_id !== sessionId;
-    return { ok: true, deleted: true, verified };
+    return mutatePrimaryLock(opts.repoRoot, () => releaseGuarded(opts), PRIMARY_WRITE_RETRY_MS);
   } catch (err) {
     return { ok: false, reason: 'fs-error', error: err.message };
   }
 }
 
+function matchesReleaseOwner(lock, sessionId, proof) {
+  return lock !== null && lock.session_id === sessionId &&
+    (proof === undefined || proof === null || isLockOwnedByProof(lock, proof));
+}
+
+function readReleaseTargets({ sessionId, repoRoot, proof }) {
+  const lock = readLock({ repoRoot });
+  const primary = matchesReleaseOwner(lock, sessionId, proof) ? lock : null;
+  const tombstones = [];
+  let ownIdPresent = lock?.session_id === sessionId;
+  for (const tombstone of liveReclaimTombstones(lockPathFor(repoRoot))) {
+    if (tombstone.lock.session_id !== sessionId) continue;
+    ownIdPresent = true;
+    if (matchesReleaseOwner(tombstone.lock, sessionId, proof)) tombstones.push(tombstone.file);
+  }
+  const reason = ownIdPresent ? 'proof-mismatch' : (lock === null ? 'no-lock' : 'session-mismatch');
+  return { primary, tombstones, reason };
+}
+
+/** Caller holds the primary mutation mutex. */
+function releaseGuarded({ sessionId, repoRoot, proof }) {
+  const lockFile = lockPathFor(repoRoot);
+  const { primary, tombstones, reason } = readReleaseTargets({ sessionId, repoRoot, proof });
+  if (primary === null && tombstones.length === 0) return { ok: true, deleted: false, reason };
+
+  let deleted = false;
+  for (const file of tombstones) {
+    try {
+      fs.unlinkSync(file);
+      deleted = true;
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+  }
+  // If tombstone cleanup took place, double-check the primary again before
+  // unlinking it. Legacy writers do not hold our .write mutex.
+  const deletePrimary = primary !== null &&
+    (tombstones.length === 0 || isSameLockGeneration(primary, readLock({ repoRoot })));
+  if (deletePrimary) {
+    fs.unlinkSync(lockFile);
+    deleted = true;
+  }
+  let after = readLock({ repoRoot });
+  if (deletePrimary && isSameLockGeneration(primary, after)) {
+    try { fs.unlinkSync(lockFile); } catch { /* verify after the bounded retry */ }
+    after = readLock({ repoRoot });
+  }
+
+  const verified = !matchesReleaseOwner(after, sessionId, proof) &&
+    !liveReclaimTombstones(lockFile).some(({ lock }) => matchesReleaseOwner(lock, sessionId, proof));
+  return { ok: true, deleted, verified };
+}
+
 /**
- * Refresh the `last_heartbeat` field on an existing lock, atomically.
+ * Refresh the owner's heartbeat under the shared primary mutation mutex.
+ * Primary refresh and revival use tmp+rename after their owner check inside
+ * the mutex. A live owned reclaim tombstone can restore a missing, corrupt
+ * or expired primary. Returns false on contention, lack of a recoverable
+ * owner record, or I/O failure. Never throws.
  *
- * Schema v2 (Epic #583, W2-I3): the lock's liveness is determined by
- * `(now - last_heartbeat) < ttl_hours`. Callers MUST invoke this on a known
- * cadence (session-start, inter-wave, session-end) to keep the lock alive
- * across long sessions.
+ * #2073's former gaps among protocol participants:
+ * (a) force-take cannot interleave with a heartbeat's read/write;
+ * (b) revival never moves a lock out of the primary path;
+ * (c) a killed reviver leaves the old primary intact (atomic tmp+rename);
+ * (d) expiry crossing the TTL boundary cannot enable a concurrent takeover;
+ * (e) hard-link errors return fs-error without changing the primary: this is
+ * an I/O boundary, not a closed concurrency claim on no-hardlink filesystems.
+ * On filesystems without hard links every mutation fails with fs-error.
+ * A crash can leave .write.acquire behind: see mutatePrimaryLock's recovery
+ * boundary. Legacy/mixed-version writers and automatically invoked
+ * lock-reaper remain outside this guarantee; concurrent reaper execution is
+ * not blocked. Revisit that migration before claiming checkout-wide safety.
  *
- * Same-session guard: refuses to update someone else's lock. Returns `false`
- * when the lock is absent, malformed, or held by a different session_id.
- * Returns `true` on a successful atomic update.
- *
- * Two write paths, chosen by the liveness of the lock as read:
- *   - LIVE own lock (the normal case, every tool batch): tmp + rename via
- *     writeLockAtomic. A `forceAcquire({ onlyIfNotLive: true })` reclaim never
- *     replaces a lock it reads as live, so it cannot race this write except at
- *     the TTL boundary, where our read still sees the lock live and a
- *     reclaimer's later read does not (gap (d)).
- *   - NOT-live own lock (#1229 revival, rare): exactly the window in which a
- *     reclaim may take the lock over between our read and our write (#2073 —
- *     the old unconditional write overwrote the reclaimer's lock and answered
- *     `true`). So the lock is re-read immediately before the move and the
- *     revival goes on only while it is still ours and still not live; otherwise
- *     `false` without any write. Then it is renamed to a unique tombstone, the
- *     same single-winner move `reclaimIfNotLive()` uses, and judged from there:
- *     still ours → recreated create-or-fail with the fresh heartbeat; anything
- *     else → linked back and `false`. A rename that finds nothing (ENOENT) or a
- *     create that finds a lock (EEXIST) → `false`. The tombstone is removed on
- *     every path except two: an unreadable one, which is put back like the
- *     reclaim does, and the no-hard-links case of gap (e).
- *
- * Remaining gaps (BV-004), none closed by this function:
- *   (a) LIVE path: a plain `forceAcquire` (operator force-take of a live lock)
- *       between our read and our rename is still overwritten — last writer
- *       wins. Closing that needs one guard shared by every lock writer, i.e. a
- *       new protocol.
- *   (b) Revival path: the lock path is briefly empty. A third `acquire()` in
- *       that window creates its lock and wins, and we learn it as `false`
- *       (EEXIST on our create). If a reclaimer took our expired lock between
- *       our re-read and our tombstone move, what we moved is the reclaimer's
- *       fresh LIVE lock: a third `acquire()` in the empty window takes the lock
- *       from the reclaimer (our link-back then fails with EEXIST), and a
- *       `release()` by the reclaimer in that window answers `no-lock` while its
- *       lock is linked back afterwards and lies there as a live ghost. The
- *       re-read narrows this from "any time after our first read" to two
- *       consecutive system calls; it does not close it.
- *   (c) A process killed between the tombstone rename and the create leaves
- *       the lock path empty and a tombstone that `sweepLockLeftovers()`
- *       removes. What is lost is normally our own, already expired lock; in
- *       the interleaving of (b) it is the reclaimer's fresh LIVE lock.
- *   (d) LIVE path at the TTL boundary: our read sees the lock live, a reclaim
- *       milliseconds later reads it expired and takes it over, and our
- *       writeLockAtomic then overwrites the reclaimer's lock and answers `true`.
- *   (e) Revival path where hard links fail for a reason other than EEXIST (e.g.
- *       EPERM): the create and the link-back both fail. The moved lock — ours,
- *       or a racer's in the interleaving of (b) — stays at the tombstone name
- *       until `sweepLockLeftovers()` removes it after its minimum age, and the
- *       lock path stays empty: on such a filesystem an expired lock is not
- *       revived, where the pre-#2073 heartbeat rewrote it. It is deliberately
- *       not renamed back, because that could replace a lock written meanwhile.
- * Revisit if a heartbeat returns `true` while events.jsonl shows another session
- * holding the lock, or a force-take is followed by the old owner's heartbeat.
- *
- * Never throws.
+ * Stale-guard path: a surviving `.write.acquire` (see mutatePrimaryLock, B6)
+ * makes every heartbeat return false. All callers discard the result, so
+ * `last_heartbeat` freezes silently while the owner lives; once the TTL
+ * passes, lock-reaper.mjs (unguarded) can archive the live owner's lock.
+ * No double ownership arises: every later acquire reports `busy`. #2127
+ * covers the warning/event on this path and the reaper guard.
  *
  * @param {{ repoRoot?: string, sessionId: string }} opts
  * @returns {boolean}
  */
 export function updateHeartbeat({ repoRoot, sessionId } = {}) {
-  if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
-  const existing = readLock({ repoRoot });
-  if (existing === null) return false;
-  if (existing.session_id !== sessionId) return false;
+  if (!hasUsableSessionId(sessionId)) return false;
   const lockFile = lockPathFor(repoRoot);
-  if (!isLockLive(existing)) return reviveOwnLock(lockFile, sessionId, repoRoot);
-  const updated = { ...existing, last_heartbeat: nowIso() };
-  const writeResult = writeLockAtomic(lockFile, updated);
-  return writeResult.ok === true;
+  const readTarget = () => {
+    const primary = readLockDetailed({ repoRoot });
+    if (primary.status === 'unreadable') return null;
+    const tombstone = isLockLive(primary.lock) ? null : readLiveReclaimTombstone(lockFile);
+    const lock = tombstone?.lock ?? primary.lock;
+    return lock?.session_id === sessionId ? { lock, primary, tombstone } : null;
+  };
+  try {
+    // Avoid creating a guard or directory when no owned record is recoverable.
+    const observed = readTarget();
+    if (observed === null) return false;
+    return mutatePrimaryLock(repoRoot, () => {
+      const current = readTarget();
+      if (current === null) return false;
+      if ((observed.tombstone || current.tombstone) && !isSameLockGeneration(observed.lock, current.lock)) {
+        return false;
+      }
+      const lock = { ...current.lock, last_heartbeat: nowIso() };
+      if (current.tombstone === null) return writeLockAtomic(lockFile, lock).ok;
+      const restored = restoreOwnedReclaimTombstone(current.tombstone, lock, lockFile, repoRoot, current.primary);
+      if (restored.ok) writeOwnerProof({ repoRoot, lock: restored.lock });
+      return restored.ok;
+    }) === true;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Revival path of {@link updateHeartbeat} (#2073): tombstone move, judge the
- * moved lock, recreate create-or-fail. See updateHeartbeat() for the gaps.
- * @param {string} lockFile
- * @param {string} sessionId
- * @param {string|undefined} repoRoot  For the re-read right before the move.
- * @returns {boolean}
+ * Enrich the owner's primary lock and persist its proof in the same mutation
+ * pass (#2073). The bootstrap must not carry an earlier read across an await
+ * and then overwrite a successor. No callback is exposed to callers, so this
+ * helper cannot recursively acquire the mutex or run asynchronous work in it.
+ *
+ * @param {{ repoRoot?: string, sessionId: string, semanticSessionId?: string, claudePid?: number }} opts
+ * @returns {object} success carries the actual written lock and proof result
  */
-function reviveOwnLock(lockFile, sessionId, repoRoot) {
-  // Re-read right before the move: a reclaim that finished since the caller's
-  // read left a LIVE foreign lock here, which must not leave the path (gap (b)).
-  const current = readLock({ repoRoot });
-  if (current === null || current.session_id !== sessionId || isLockLive(current)) return false;
-
-  const tomb = tombstonePathFor(lockFile);
-  try {
-    // direct-rename:ok tombstone move of the lock, not a tmp+rename write (#2073)
-    fs.renameSync(lockFile, tomb);
-  } catch {
-    // ENOENT: someone moved or removed the lock first. Anything else: no write.
-    return false;
-  }
-
-  let keepTomb = false;
-  try {
-    let raw;
-    try {
-      raw = fs.readFileSync(tomb, 'utf8');
-    } catch {
-      keepTomb = restoreUnjudgeableTombstone(tomb, lockFile);
-      return false;
-    }
-
-    const moved = parseLock(raw);
-    if (moved === null || moved.session_id !== sessionId) {
-      // A racer's lock (e.g. a reclaim that finished after our read): restore it.
-      try {
-        fs.linkSync(tomb, lockFile);
-      } catch (err) {
-        // EEXIST: the path is taken, that lock wins and this copy is obsolete.
-        // Anything else (e.g. no hard links): keep the racer's only copy at the
-        // tombstone name rather than unlink it.
-        if (err?.code !== 'EEXIST') keepTomb = true;
-      }
-      return false;
-    }
-
-    const created = createSessionLockExclusive(lockFile, { ...moved, last_heartbeat: nowIso() });
-    if (created.ok) return true;
-    if (created.reason !== 'exists') {
-      // Our create failed without anyone else taking the path: put our own
-      // (expired) lock back rather than drop it.
-      try {
-        fs.linkSync(tomb, lockFile);
-      } catch {
-        // No hard links here (e.g. EPERM): keep the tombstone for
-        // sweepLockLeftovers() instead of unlinking our only copy. It is NOT
-        // renamed back: a rename onto a path checked empty a moment ago can
-        // replace a lock a `forceAcquire` wrote in between (gap (e)).
-        keepTomb = true;
-      }
-    }
-    return false;
-  } finally {
-    if (!keepTomb) {
-      try { fs.unlinkSync(tomb); } catch { /* best-effort */ }
-    }
-  }
+export function enrichOwnedSessionLock({ repoRoot, sessionId, semanticSessionId, claudePid } = {}) {
+  if (!hasUsableSessionId(sessionId)) return { ok: false, reason: 'missing-session-id' };
+  return mutatePrimaryLock(repoRoot, () => {
+    const baseLock = readLock({ repoRoot });
+    if (baseLock === null) return { ok: false, reason: 'no-lock' };
+    if (baseLock.session_id !== sessionId) return { ok: false, reason: 'session-mismatch' };
+    const lock = {
+      ...baseLock,
+      // Keep a concurrent prior heartbeat; enrichment must never age it back
+      // to started_at after the session has already refreshed its lease.
+      last_heartbeat: baseLock.last_heartbeat ?? baseLock.started_at,
+      semantic_session_id: typeof semanticSessionId === 'string' && semanticSessionId.length > 0
+        ? semanticSessionId : baseLock.session_id,
+      ...(typeof claudePid === 'number' ? { claude_pid: claudePid } : {}),
+    };
+    const written = writeLockAtomic(lockPathFor(repoRoot), lock);
+    if (!written.ok) return written;
+    const proof = writeOwnerProof({ repoRoot, lock });
+    return { ok: true, lock, ownerProof: proof };
+  });
 }
 
 /**

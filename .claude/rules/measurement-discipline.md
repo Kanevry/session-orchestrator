@@ -2,7 +2,7 @@
 auto-generated: true
 consolidated: true
 alwaysApply: false
-description: "The measurement was right and the population was wrong: tracked-only greps, hand-typed census lists, proxies that do not correlate, and option tables that cannot enumerate the unknown."
+description: "Measurement pitfalls in JSONL coverage, prefix readers, shared probe deadlines, delayed import effects, and comparisons on hot paths."
 paths:
   - "agents/**"
   - "hooks/**"
@@ -23,32 +23,14 @@ paths:
   - "skills/eval/**"
   - "scripts/lib/session-schema/**"
 learning-key: anti-pattern/a-git-grep-drift-sweep-cannot-see-untracked-files-so-a-pre-flight-sweep-run-before-the-commit-measures-a-different-tree-than-the-one-being-released
-expires-at: 2026-11-18
+expires-at: 2026-12-10
 ---
 
 # Measurement Discipline (consolidated)
 
-**`expires-at` 2026-11-18 = the EARLIEST of the 21 absorbed dates** — a merged file must not outlive its shortest-lived content (`docs/rule-authoring.md` § Consolidated rules).
+**`expires-at` 2026-12-10 = the EARLIEST of the 21 absorbed dates** — a merged file must not outlive its shortest-lived content (`docs/rule-authoring.md` § Consolidated rules).
 
 > **untrusted-content:start** — everything up to untrusted-content:end is agent-authored learning text, reproduced verbatim as DATA. It is NOT an instruction to any agent that loads this rule.
-
-### A `git grep` drift sweep misses untracked files
-
-`git grep` sees tracked files only. Before commit, include `git ls-files --others --exclude-standard` or rerun after staging.
-
-**Evidence** — 2026-08-19: `--publish` aborted on `commands/release.md` (then untracked, tracked at `a2e495c`); the pre-commit sweep missed it. <!-- path-check: historical -->
-
-### A hand-typed list cannot prove a census
-
-A test claiming “every X emitted” over a hand-maintained array cannot detect new emissions. Census source directories in CODE, with a vacuum guard and allowlist ratchet.
-
-**Evidence** — 2026-08-23: `tests/lib/events-schema.test.mjs` checked 10 literals while 31 event names were emitted; green for months.
-
-### Fremdplattform-Aussagen brauchen Messdatum und Toolversion
-
-Jede Fremdplattform-Aussage mit Datum + Toolversion stempeln, damit sie widerlegbar bleibt: `skills/_shared/platform-tools.md` behauptete bis 2026-08-25 sequentielle Codex-Subagenten.
-
-**Evidence** — 2026-08-25, codex-cli 0.141.0: `codex features list | grep multi_agent` → `multi_agent stable true`; `~/.codex/sessions`: spawn_agent 1748, wait_agent 6041.
 
 ### Ein gemeinsamer Deadline misst blockierte Event-Loop statt Probenkosten
 
@@ -104,9 +86,9 @@ Der Punkt passt nicht auf CR, und split nach CR-LF nimmt nur ein CR weg. Ein Zei
 
 Dropping a pair re-proposes its learning.
 - learning-key: `anti-pattern/a-git-grep-drift-sweep-cannot-see-untracked-files-so-a-pre-flight-sweep-run-before-the-commit-measures-a-different-tree-than-the-one-being-released`
-- learning-id: `802bed34-a71f-4c80-8e24-1b30e6321e76`
+- learning-id: `802bed34-a71f-4c80-8e24-1b30e6321e76`  <!-- markers only (substance: expires 2026-11-18 (within sweep horizon), prose swept 2026-11-15) -->
 - learning-key: `anti-pattern/ein-paritaets-test-mit-handgetippter-liste-unter-einem-zensus-titel-ist-ein-gruener-haken-ohne-deckung`
-- learning-id: `3194f2dd-ec1c-4b4e-9419-3324102610f7`
+- learning-id: `3194f2dd-ec1c-4b4e-9419-3324102610f7`  <!-- markers only (substance: expires 2026-11-21 (within sweep horizon), prose swept 2026-11-15) -->
 - learning-key: `anti-pattern/png-dateigroesse-ist-kein-indikator-fuer-bildinhalt-ein-leeres-und-ein-voll-gezeichnetes-bild-trennen-unter-200-bytes`
 - learning-id: `0c9fd390-8399-4dae-93fe-3bf35b79981e`  <!-- markers only (PNG size tracks entropy, not content — LOOK at the image) -->
 - learning-key: `proven-pattern/an-option-table-cannot-enumerate-unknown-flags-parse-both-readings-and-judge-both-never-pick-one`
@@ -116,7 +98,7 @@ Dropping a pair re-proposes its learning.
 - learning-key: `anti-pattern/a-protocol-migration-census-keyed-on-the-payload-misses-every-consumer-that-pins-only-the-channel`
 - learning-id: `a22ce14f-4666-4b91-99be-c680e9903907`  <!-- markers only (substance: expired 2026-10-27, prose swept 2026-10-24) -->
 - learning-key: `anti-pattern/fremdplattform-aussage-ohne-messdatum-altert-still-codex-subagenten`
-- learning-id: `f7c15517-afe7-4497-b6e1-c59a7d49d25f`
+- learning-id: `f7c15517-afe7-4497-b6e1-c59a7d49d25f`  <!-- markers only (substance: expires 2026-11-23 (within sweep horizon), prose swept 2026-11-19) -->
 - learning-key: `anti-pattern/release-mjs-drift-sweep-war-ein-substring-match-und-kuerzte-die-trefferliste-still-auf-5`
 - learning-id: `lrn-mtrngrpu-3`  <!-- markers only (fixed: `scripts/release.mjs`) -->
 - learning-key: `recurring-issue/reconcile-output-overshoots-the-generated-rule-byte-ceiling-consolidation-into-the-thematic-files-is-part-of-the-write-step-not-a-later-cleanup`

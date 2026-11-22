@@ -26,6 +26,7 @@ import { emitEvent, sessionAttribution } from './lib/events.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { spawnSync } from './lib/native-command.mjs';
 import { readConfigFile } from './lib/config/io.mjs';
+import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 import { readLock } from './lib/session-lock.mjs';
 import { _parseDesignReview, resolveDesignReviewSettings } from './lib/config/design-review.mjs';
 import { DECISION_ID, readOwnerDesignReviewBlock, sessionKind } from './lib/design-review-host.mjs';
@@ -40,7 +41,7 @@ import {
   appendRecord,
   checkEvidence,
   countRounds,
-  coverKeys,
+  coverKeysByPath,
   evaluateCloseGate,
   findDesignInputs,
   normalizeSurface,
@@ -140,6 +141,21 @@ function ownLockStart(repoRoot) {
   }
 }
 
+const OVERRIDE_BINDING_REQUIRED = 'Owner override requires a process-local session ID or, when both invocations have no ID, the same explicit --since-time on record and check.';
+
+function matchesOwnerOverride(record, sessionIds, window) {
+  if (record.auto === true || !Array.isArray(record.approver_ids)) return false;
+  if (sessionIds.length > 0) return sessionIds.some((id) => record.approver_ids.includes(id));
+  // BV-004 ceiling: without native session IDs, an override binds only to the
+  // same explicit --since-time value. Two sessions that pass the same value
+  // (e.g. copied from a shared STATE.md) share the override.
+  // Revisit when every supported platform provides a native session ID or when
+  // someone reports that an override from another session applied this way.
+  return record.approver_ids.length === 0 && record.window_source === 'explicit' &&
+    window.source === 'explicit' && record.window_since === window.sinceTime &&
+    Date.parse(record.timestamp) >= Date.parse(window.sinceTime);
+}
+
 /** Validated window and change set shared by every subcommand. */
 function sessionContext(repoRoot, values, config) {
   if (values.since !== undefined && !SAFE_REF.test(values.since)) {
@@ -157,25 +173,32 @@ function sessionContext(repoRoot, values, config) {
   }
   const window = resolveSinceTime(repoRoot, sinceTimeArg);
   const changeSet = resolveSessionChangeSet({ repoRoot, sinceRef, sinceTime: window.sinceTime });
-  const ui = changeSet.ok ? classifyUiPaths(changeSet.files, config) : { touched: false, paths: [] };
+  // An unjudgeable configured glob fails closed and warns even when the change set is unmeasured (#2138).
+  const ui = changeSet.ok ? classifyUiPaths(changeSet.files, { ...config, repoRoot }) : { touched: false, paths: [], warnings: classifyUiPaths([], config).warnings };
+  notes.push(...ui.warnings);
   if (changeSet.ok) notes.push(...(changeSet.notes ?? []));
   const key = readWorkTreeKey(repoRoot);
   const ledger = readRecords(repoRoot);
   if (ledger.torn > 0) notes.push(`${ledger.torn} unreadable line(s) in ${recordsFilePath(repoRoot)} skipped`);
-  const reviews = selectOwnReviews(ledger.records, { ownIds: readOwnIds(repoRoot), sinceTime: window.sinceTime, tree: key.tree });
-  return { window, changeSet, ui, key, ledger, reviews, notes, inRepo: changeSet.ok || !['not-a-git-repo', 'git-unavailable'].includes(changeSet.reason) };
+  const ownIds = readOwnIds(repoRoot);
+  const sessionIds = readProcessLocalSessionIds();
+  const selected = new Set(selectOwnReviews(ledger.records, { ownIds, sinceTime: window.sinceTime, tree: key.tree }));
+  const reviews = ledger.records.filter((record) => record?.status === 'owner-override'
+    ? record.tree === key.tree && matchesOwnerOverride(record, sessionIds, window)
+    : selected.has(record));
+  return { window, changeSet, ui, key, ledger, reviews, sessionIds, notes, inRepo: changeSet.ok || !['not-a-git-repo', 'git-unavailable'].includes(changeSet.reason) };
 }
 
-async function writeRecord(repoRoot, ctx, fields) {
+async function writeRecord(repoRoot, ctx, fields, coverage = coverKeysByPath(repoRoot, ctx.ui.paths)) {
   if (!ctx.inRepo) return { ok: false, error: 'not a git repository: nothing recorded', record: null };
-  const keys = ctx.ui.paths.length > 0 ? coverKeys(repoRoot, ctx.ui.paths) : [];
   const res = appendRecord(repoRoot, {
     ...fields,
     tree: ctx.key.tree,
     branch: ctx.key.branch,
     head: ctx.key.head,
     window_since: ctx.window.sinceTime,
-    covers: fields.status === 'unmeasured' || fields.status === 'would-refuse' ? [] : (keys ?? []),
+    covers: fields.status === 'unmeasured' || fields.status === 'would-refuse' ? [] : (coverage?.keys ?? []),
+    unhashable: coverage?.unhashable ?? [],
     ui_files: ctx.ui.paths.length,
     ...sessionAttribution(repoRoot),
   });
@@ -191,7 +214,7 @@ async function writeRecord(repoRoot, ctx, fields) {
       /* the record is the source of truth; the event is telemetry */
     }
   }
-  return { ...res, unhashed: keys === null };
+  return { ...res, unhashed: coverage === null };
 }
 
 function describeChangeSet(ctx) {
@@ -203,7 +226,7 @@ function describeChangeSet(ctx) {
 function runDetect(repoRoot, values, config) {
   const wave = readFileList(values);
   const ctx = sessionContext(repoRoot, values, config);
-  const ui = wave ? classifyUiPaths(wave, config) : ctx.ui;
+  const ui = wave ? classifyUiPaths(wave, { ...config, repoRoot }) : ctx.ui;
   const target = probeRenderedTarget(repoRoot, ui.paths);
   const inputs = findDesignInputs(repoRoot);
   const designer = resolveDesignerCommand({ configured: config.designer, repoRoot });
@@ -224,7 +247,7 @@ function runDetect(repoRoot, values, config) {
     rounds: countRounds(ctx.reviews, { windowKnown: ctx.window.sinceTime !== null }),
     max_rounds: MAX_REVIEW_ROUNDS,
     window_source: ctx.window.source,
-    notes: [...config.notes, ...ctx.notes],
+    notes: [...new Set([...config.notes, ...ctx.notes, ...ui.warnings])],
   };
   const human = !config.enabled
     ? `design-review: off (${config.enabled_source})`
@@ -312,7 +335,11 @@ async function runRecord(repoRoot, values, config) {
     if (kind !== 'interactive' && !decision) {
       throw new InputError(`owner-override refused in a ${kind} session (steering: ${steering ?? 'unknown'}): nobody can give the owner's words here; pass --decision <owner-queue id>`);
     }
-    Object.assign(fields, { session_kind: kind, steering, actor: decision ? `owner-queue:${decision}` : 'owner-via-agent' });
+    if (ctx.sessionIds.length === 0 && ctx.window.source !== 'explicit') throw new InputError(OVERRIDE_BINDING_REQUIRED);
+    Object.assign(fields, {
+      session_kind: kind, steering, actor: decision ? `owner-queue:${decision}` : 'owner-via-agent',
+      approver_ids: ctx.sessionIds, window_source: ctx.window.source,
+    });
   }
 
   const res = await writeRecord(repoRoot, ctx, fields);
@@ -325,12 +352,16 @@ async function runRecord(repoRoot, values, config) {
   const notes = [...ctx.notes];
   if (!ctx.changeSet.ok) notes.push(`WARNING change set unmeasured (${ctx.changeSet.reason}): the record covers no file`);
   if (res.unhashed) notes.push('WARNING UI files could not be hashed: the record covers no file');
+  const unhashable = res.record.unhashable;
+  if (unhashable.length > 0) {
+    notes.push(`WARNING unmeasured UI paths: ${shown(unhashable.map((path) => JSON.stringify(path)))}`);
+  }
   if (fields.round === null) notes.push('session window unknown: rounds not counted');
   if (fields.judged === false) notes.push(`verdict ${fields.verdict} judged nothing: reported as "not judged" at close`);
   if (fields.override_like) notes.push('this repo can render the change: a manual not-reviewable is reported at close like an override');
   out(
     values,
-    { recorded: true, id: res.record.id, ...fields, covers: res.record.covers.length, limit_reached: limit, limit_action: limitAction, notes },
+    { recorded: true, id: res.record.id, ...fields, covers: res.record.covers.length, unhashable, limit_reached: limit, limit_action: limitAction, notes },
     [`design-review: recorded ${status} for ${surface}, covering ${res.record.covers.length} UI file(s)` +
       (fields.round ? ` (round ${fields.round} of ${MAX_REVIEW_ROUNDS})` : '') +
       (limitAction === 'owner-decision' ? ' — round limit reached: open findings go to the owner as a decision' : '') +
@@ -350,19 +381,30 @@ async function runCheck(repoRoot, values, config) {
     return 0;
   }
   const ctx = sessionContext(repoRoot, values, config);
-  const keys = ctx.ui.paths.length > 0 ? coverKeys(repoRoot, ctx.ui.paths) : [];
+  const coverage = coverKeysByPath(repoRoot, ctx.ui.paths);
+  const unhashable = coverage?.unhashable ?? [];
+  const overridden = new Set(ctx.reviews.filter((r) => r.status === 'owner-override')
+    .flatMap((r) => Array.isArray(r.unhashable) ? r.unhashable : []));
+  const pending = unhashable.filter((path) => !overridden.has(path));
   const target = probeRenderedTarget(repoRoot, ctx.ui.paths);
-  const gate = evaluateCloseGate({
+  const measured = evaluateCloseGate({
     enabled: true,
     changeSet: ctx.changeSet,
-    uiPaths: ctx.ui.paths,
-    keys,
+    uiPaths: coverage?.hashed ?? ctx.ui.paths,
+    keys: coverage?.keys ?? null,
     reviews: ctx.reviews,
     renderable: target.renderable,
     reviewableReason: notRenderableReason(target),
     ledgerReadable: ctx.ledger.readable,
     ledgerWritable: recordsWritable(repoRoot),
   });
+  const uncoveredMeasured = measured.verdict === 'refuse' ? measured.uncovered : [];
+  let gate = measured;
+  if (pending.length > 0) {
+    gate = { verdict: 'refuse', reason: 'unhashable-path', uncovered: [...uncoveredMeasured, ...pending] };
+  } else if (unhashable.length > 0 && measured.verdict === 'pass') {
+    gate = { ...measured, reason: 'owner-override' };
+  }
   const warnOnly = gate.verdict === 'refuse' && config.close_gate !== 'refuse';
   const verdict = warnOnly ? 'would-refuse' : gate.verdict;
 
@@ -375,7 +417,7 @@ async function runCheck(repoRoot, values, config) {
       const extra = verdict === 'would-refuse'
         ? { uncovered: gate.uncovered.slice(0, 50), uncovered_count: gate.uncovered.length, uncovered_sig: sig, change_set: describeChangeSet(ctx) }
         : {};
-      const res = await writeRecord(repoRoot, ctx, { status: verdict, surface: 'all', reason: gate.reason, auto: true, ...extra });
+      const res = await writeRecord(repoRoot, ctx, { status: verdict, surface: 'all', reason: gate.reason, auto: true, ...extra }, coverage);
       recorded = res.ok ? { status: verdict, id: res.record.id } : { error: res.error };
     }
   }
@@ -390,11 +432,18 @@ async function runCheck(repoRoot, values, config) {
   const coveringBy = [...new Set(ctx.reviews.filter((r) => REVIEW_STATUSES.includes(r.status) && (r.covers ?? []).length > 0)
     .map((r) => (r.status === 'reviewed' ? `reviewed by ${r.reviewer ?? '?'}${r.judged === false ? ', not judged' : ''}` : r.status)))];
   const recordedText = recorded?.id ? (recorded.existing ? 'already recorded' : 'recorded automatically') : `NOT recorded (${recorded?.error})`;
-  const refuseWhy = `this session changed ${gate.uncovered.length} UI file(s) that the repo can render and no design review covers ` +
-    `(${shown(gate.uncovered)}; configs: ${target.configs.join(', ')})`;
+  const refuseWhy = gate.reason === 'unhashable-path'
+    ? `unmeasured UI paths require owner approval (${shown(pending.map((path) => JSON.stringify(path)))})` +
+      (uncoveredMeasured.length > 0 ? `, and renderable UI paths still need review (${shown(uncoveredMeasured.map((path) => JSON.stringify(path)))})` : '')
+    : `this session changed ${gate.uncovered.length} UI file(s) that the repo can render and no design review covers ` +
+      `(${shown(gate.uncovered)}; configs: ${target.configs.join(', ')})`;
+  const remedy = gate.reason === 'unhashable-path' ? '' : 'Run the design review (wave-loop-review.md step 5b). ';
+  let passMessage = `Design review: covered (${coveringBy.join('; ')}).`;
+  if (gate.reason === 'no-ui-touch') passMessage = 'Design review: not needed, no UI files changed.';
+  if (gate.reason === 'owner-override') passMessage = 'Design review: owner approved the unmeasured UI paths.';
   const message = {
-    pass: gate.reason === 'no-ui-touch' ? 'Design review: not needed, no UI files changed.' : `Design review: covered (${coveringBy.join('; ')}).`,
-    refuse: `Close refused: ${refuseWhy}. Run the design review (wave-loop-review.md step 5b). ` +
+    pass: passMessage,
+    refuse: `Close refused: ${refuseWhy}. ${remedy}` +
       `Owner override only with the owner's own words: design-review.mjs record --status owner-override --reason "<words>". ${ESCAPE}`,
     'would-refuse': `WARNING Design review: would refuse (close gate in warn mode, #1452): ${refuseWhy}. ` +
       `Close continues; ${recordedText} for the lead's classification.`,
@@ -402,6 +451,11 @@ async function runCheck(repoRoot, values, config) {
     unmeasured: `WARNING Design review: unmeasured — ${gate.reason}. ${recordedText}.`,
   }[verdict];
   const lines = [`${message} [change set: ${describeChangeSet(ctx)}]`];
+  const notes = [...config.notes, ...ctx.notes];
+  if (gate.verdict === 'refuse' && ctx.sessionIds.length === 0 && ctx.window.source !== 'explicit') {
+    notes.push(`WARNING ${OVERRIDE_BINDING_REQUIRED}`);
+  }
+  if (unhashable.length > 0) notes.push(`WARNING unmeasured UI paths: ${shown(unhashable.map((path) => JSON.stringify(path)))}`);
   for (const o of overrides) lines.push(`Owner override on record: "${o.reason}" (${o.actor}, ${o.session_kind} session, ${o.at})`);
   for (const m of manualNotReviewable) {
     lines.push(`Marked not reviewable by hand: "${m.reason}" (${m.at})${m.override_like ? ' — although the repo can render it: treat like an override' : ''}`);
@@ -410,13 +464,14 @@ async function runCheck(repoRoot, values, config) {
   if (ctx.changeSet.ok && ctx.changeSet.preexisting.length > 0) {
     lines.push(`Not counted (changed before the session started): ${shown(ctx.changeSet.preexisting)}`);
   }
-  for (const n of [...config.notes, ...ctx.notes]) lines.push(`note: ${n}`);
+  for (const n of notes) lines.push(`note: ${n}`);
   out(values, {
     ...gate,
     verdict,
     close_gate: config.close_gate,
     close_gate_source: config.close_gate_source,
     paths: ctx.ui.paths,
+    unhashable,
     change_set: describeChangeSet(ctx),
     preexisting: ctx.changeSet.ok ? ctx.changeSet.preexisting : [],
     renderable: target.renderable,
@@ -427,7 +482,7 @@ async function runCheck(repoRoot, values, config) {
     recorded,
     window_source: ctx.window.source,
     enabled_source: config.enabled_source,
-    notes: [...config.notes, ...ctx.notes],
+    notes,
   }, lines.join('\n'));
   return verdict === 'refuse' ? 3 : 0;
 }

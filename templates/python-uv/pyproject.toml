@@ -6,7 +6,8 @@ requires-python = ">=3.12"
 dependencies = []
 
 [project.scripts]
-{{PROJECT_NAME}} = "{{PROJECT_NAME}}.main:main"
+# Quoted key: a bare {{…}} key is not valid TOML, and the file has to parse before substitution.
+"{{PROJECT_NAME}}" = "{{PROJECT_NAME}}.main:main"
 
 [build-system]
 requires = ["hatchling"]

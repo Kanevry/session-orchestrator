@@ -6,7 +6,7 @@ argument-hint: "[--fast|--standard|--deep] [--no-interview] [--upgrade <tier>]"
 tags: [bootstrap, setup, scaffold, init]
 model: sonnet
 model-preference: sonnet
-model-preference-codex: gpt-5.4-mini
+model-preference-codex: gpt-6.2-sol
 model-preference-cursor: claude-sonnet-4-6
 description: >
   Use this skill when scaffolding the minimum repository structure required by session-orchestrator.

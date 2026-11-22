@@ -81,6 +81,7 @@
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 import { die, warn } from './lib/common.mjs';
@@ -818,6 +819,9 @@ async function main() {
   }
   // The navigator `zeit` is the run start (ceiling C5).
   const startedAt = Date.now();
+  // Monotonic twin of `startedAt` for the event's `duration_ms` (#2197): a wall-clock
+  // step during a 10-minute gate must not bend the measured run time.
+  const startedMono = performance.now();
 
   const result = reusedFrom !== null ? {
     pid: 0,
@@ -986,6 +990,9 @@ async function main() {
       {
         variant,
         exit_code: exitCode,
+        // A reuse ran no gate here: no run time and no host of its own; the
+        // origin stays in `reused_from` (#2197). Absent means "not measured", never 0.
+        ...(reusedFrom ? {} : { duration_ms: Math.max(0, Math.round(performance.now() - startedMono)), host: 'local' }),
         ...killFields,
         ...(checkFailed !== null ? { check_failed: checkFailed } : {}),
         ...(counts ? { counts } : {}),

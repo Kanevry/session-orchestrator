@@ -59,8 +59,8 @@ Options:
   --apply           Perform the rewrites/deletes and emit the ledger event
   --json            Emit a single machine-parseable JSON summary line
   --grace-days N    Days past expiry before an entry is swept (default: ${DEFAULT_GRACE_DAYS})
-  --horizon-days N  Also sweep entries expiring within N days of now, i.e.
-                    before the next sweep (integer, default: ${DEFAULT_HORIZON_DAYS})
+  --horizon-days N  Also sweep entries expiring within N days of now (integer, default: ${DEFAULT_HORIZON_DAYS})
+                    The maintenance loop uses --horizon-days 7.
   --now ISO         Injected clock (testing / what-if planning)
   --repo-root PATH  Repo root (default: process.cwd())
   --learnings PATH  Learnings store, repo-relative (default: the metrics store)

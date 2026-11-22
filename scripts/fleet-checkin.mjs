@@ -7,7 +7,9 @@
  * action of a session.
  *
  * Usage:
- *   echo '<check-in JSON>' | node scripts/fleet-checkin.mjs
+ *   echo '<check-in JSON>' | node scripts/fleet-checkin.mjs [--repo-root <path>]
+ * An explicit absolute `--repo-root` selects the project for events and the
+ * working copy for Claude transcript lookup.
  *
  * Reads one JSON object from stdin, stamps `zeit` (always overwritten), validates
  * it with `validateCheckin()`, and writes it atomically (tmp file + rename in
@@ -47,7 +49,7 @@
  * Exit codes:
  *   0 — check-in written (an event failure only WARNs; `event: false` on stdout)
  *   1 — write error
- *   2 — invalid input (no write/event), or the semantic session ID refused
+ *   2 — invalid arguments or input (no write/event), or the semantic session ID refused
  *       (occupied by another repo, or changed during the check) with no UUID
  *       fallback written (no write; only the `checkin_rejected` event)
  */
@@ -56,6 +58,7 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parseArgs } from 'node:util';
 import { kontextK, measureContext } from './lib/context-threshold.mjs';
 import { emitEvent } from './lib/events.mjs';
 import {
@@ -75,6 +78,7 @@ import { readProcessLocalSessionIds } from './lib/session-identity/own-session.m
 import { encodeProjectDir } from './lib/skill-evidence-window.mjs';
 
 const PREFIX = 'fleet-checkin:';
+const USAGE = `${PREFIX} usage: fleet-checkin.mjs [--repo-root <absolute path>]\n`;
 
 /** @returns {Promise<string>} */
 async function readStdin() {
@@ -173,6 +177,29 @@ export async function writeCheckinFile(target, record, { open = openNoFollow, on
 
 /** @returns {Promise<number>} exit code */
 async function main() {
+  let explicitRoot;
+  try {
+    explicitRoot = parseArgs({ options: { 'repo-root': { type: 'string' } } }).values['repo-root'];
+  } catch {
+    process.stderr.write(USAGE);
+    return 2;
+  }
+  if (explicitRoot === '') {
+    process.stderr.write(`${PREFIX} --repo-root must not be empty\n`);
+    return 2;
+  }
+  if (explicitRoot !== undefined && !path.isAbsolute(explicitRoot)) {
+    process.stderr.write(USAGE);
+    return 2;
+  }
+  if (explicitRoot !== undefined) {
+    const root = await fs.stat(explicitRoot).catch(() => null);
+    if (!root?.isDirectory()) {
+      process.stderr.write(`${PREFIX} --repo-root must be an existing directory\n`);
+      return 2;
+    }
+  }
+
   let input;
   try {
     input = JSON.parse(await readStdin());
@@ -206,10 +233,13 @@ async function main() {
       && nativeId === process.env.CLAUDE_CODE_SESSION_ID?.trim()
       && !['codex', 'cursor', 'pi'].includes(process.env.SO_PLATFORM?.trim());
     // BV-004 ceiling: Claude's standard transcript layout only; revisit if the
-    // harness relocates it. Use cwd (including worktrees), never a peer's lock
-    // or newest transcript as a fallback when this session cannot be measured.
+    // harness relocates it. Use the explicit worktree or cwd, never a peer's
+    // lock or newest transcript as a fallback when this session cannot be measured.
+    const transcriptRoot = ownClaudeSession && explicitRoot !== undefined
+      ? await fs.realpath(explicitRoot).catch(() => path.resolve(explicitRoot))
+      : process.cwd();
     const transcript = ownClaudeSession
-      ? path.join(os.homedir(), '.claude', 'projects', encodeProjectDir(process.cwd()), `${nativeId}.jsonl`)
+      ? path.join(os.homedir(), '.claude', 'projects', encodeProjectDir(transcriptRoot), `${nativeId}.jsonl`)
       : undefined;
     record.kontext_k = kontextK(measureContext(transcript));
   }
@@ -234,7 +264,7 @@ async function main() {
     return 0;
   }
 
-  const repoRoot = (process.env.CLAUDE_PROJECT_DIR || '').trim() || process.cwd();
+  const repoRoot = explicitRoot ?? ((process.env.CLAUDE_PROJECT_DIR || '').trim() || process.cwd());
   /** @param {string} reason @param {'uuid'|'none'} fallback */
   const emitRejected = async (reason, fallback) => {
     try {

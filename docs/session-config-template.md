@@ -240,9 +240,10 @@ vault-integration:
   gitlab-groups:                       # optional — for /plan retro vault-backfill sub-mode
     - infrastructure
     - clients
+  briefing-search: false               # optional (#2169) — session-start vault pointers (candidates) via vault-search
 ```
 
-Read by: `scripts/vault-mirror.mjs`, `scripts/vault-backfill.mjs`, `skills/session-end/session-metrics-write.md`, `skills/evolve/SKILL.md`, `skills/plan/mode-retro.md`.
+Read by: `scripts/vault-mirror.mjs`, `scripts/vault-backfill.mjs`, `scripts/print-vault-pointers.mjs` (`briefing-search`), `skills/session-end/session-metrics-write.md`, `skills/evolve/SKILL.md`, `skills/plan/mode-retro.md`.
 
 > **Host-local override (#653).** `vault-dir` (and `plan-baseline-path`) resolve host-locally with precedence: env-var (`SO_VAULT_DIR` / `SO_BASELINE_PATH`) > `owner.yaml` `paths:` section (`vault-dir` / `baseline-path`) > the committed default shown above. This keeps maintainer-specific absolute paths out of version control. Resolver: `scripts/lib/config/host-paths.mjs`.
 
@@ -337,7 +338,7 @@ Read by: `scripts/lib/config/handover-gate.mjs`, `skills/session-end/SKILL.md` P
 
 ## Context Threshold
 
-`PostToolUse` hook that reads the session's own context size from its transcript (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens` of the last main-chain assistant line) and injects one hint at `prepare-k` („Übergabe-Datei vorbereiten, keine neue Welle mehr beginnen“) and one at `handover-k` („am nächsten MR-Schnitt übergeben“). Values in thousands of tokens. Warn-only; an unmeasurable context stays silent and is reported as „nicht messbar“ (issue #1960).
+`PostToolUse` hook that reads the session's own context size from its transcript (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens` of the last main-chain assistant line; with `usage.iterations` the last iteration of type `message`, never an `advisor_message`, #2112) and injects one hint at `prepare-k` („Übergabe-Datei vorbereiten, keine neue Welle mehr beginnen“) and one at `handover-k` („am nächsten MR-Schnitt übergeben“). Values in thousands of tokens. Warn-only; an unmeasurable context stays silent and is reported as „nicht messbar“ (issue #1960).
 
 ```yaml
 context-threshold:
@@ -400,11 +401,11 @@ Read by: `hooks/pre-bash-templates-first.mjs`, `.orchestrator/policy/templates-p
 
 ## Verification Auto-Fix Loop
 
-Opt-in retry loop that dispatches a `code-implementer` fixer-agent after an inter-wave Quality-Gate failure, supplying failure output + `corrective_context` + changed file paths. Bounded by `max-retries` (default 2). When disabled (default), the wave-executor aborts on first gate failure — preserving today's behaviour. PRD gsd Pattern 4 / issue #521.
+Opt-in retry loop that dispatches a `code-implementer` fixer-agent after an inter-wave Quality-Gate failure, supplying failure output + `corrective_context` + changed file paths. Bounded by `max-retries` (default 2). When disabled (default), an Incremental gate failure becomes fix tasks for the next wave; the Full Gate after the Quality wave must pass (#2189). PRD gsd Pattern 4 / issue #521.
 
 ```yaml
 verification-auto-fix:
-  enabled: false                       # opt-in; default false preserves current abort-on-fail behaviour
+  enabled: false                       # opt-in; default false keeps fix-tasks-next-wave for Incremental failures
   max-retries: 2                       # integer ≥ 0 — bounded fixer-agent retries before hard abort
 ```
 
@@ -503,7 +504,7 @@ Field semantics:
 - **`enabled`** — master toggle. `false` (default) means session-end Phase 3.6.8 is a no-op.
 - **`mode`** — `warn` surfaces proposals as an advisory AUQ at session-end; `off` silences all output. No `strict` mode — rules are never auto-applied in v1.
 - **`targets`** — list of write locations for approved rules. `repo-local` writes to `.claude/rules/` in the current repo.
-- **`rule-expiry-days`** — `null` (default) lets the reconcile engine use per-type TTL (fragile-pattern=30d, anti-pattern=90d, etc.). Set a positive integer to override all types with a flat expiry window.
+- **`rule-expiry-days`** — `null` (default) lets the reconcile engine use per-type TTL (fragile-pattern=30d, anti-pattern=90d, etc.). A positive integer N uses the learning's `created_at` plus N days as the eligibility cutoff and as the basis for the generated rule's `expires-at`, subject to the `min-rule-days` floor on the emitted date.
 - **`confidence-floor`** — learnings below this confidence level are not eligible for rule proposals. Default 0.5 matches `memory.proposals.confidence-floor`.
 - **`min-rule-days`** — floor window (days) applied to a proposed rule's `expires-at` so a near-dead or already-elapsed natural expiry never produces a born-dead rule. Positive integer; malformed or ≤0 falls back to 7 (issue #741.1).
 - **`min-insight-chars`** — opt-in minimum insight length gating the eligibility placeholder-insight check; rejects a learning whose trimmed insight is shorter than N characters before rule conversion. Integer ≥ 0; `0` disables the check (issue #741.2).
@@ -833,6 +834,7 @@ vault-integration:
   mode: warn
   vault-name:                          # optional (#660) — per-project vault namespace override; null/absent → deriveRepo()
   gitlab-groups: []
+  briefing-search: false               # optional (#2169) — session-start vault pointers
 
 # Product-vault registration — written by /bootstrap (skills/bootstrap/_shared-template.md);
 # its presence is the marker hasVaultConfig() reads so bootstrap does not ask again

@@ -54,6 +54,7 @@ import { promisify } from 'node:util';
 import { emitEvent, eventsFilePath } from './events.mjs';
 import { ARCHIVE_DIR_NAME, ARCHIVE_NAME_RE } from './events-schema.mjs';
 import { execFile } from './native-command.mjs';
+import { atomicWriteText } from './io.mjs';
 
 /**
  * Resolve a sibling module to an absolute `file:` URL.
@@ -809,6 +810,8 @@ export const PROBES = [
     fn: 'checkPeerCardsStaleness',
     network: false,
     args: ({ repoRoot }) => ({ repoRoot }),
+    // #2196: the stale card's NAME is the fact; its age grows daily.
+    repeatFacts: (r) => (r?.stale ?? []).map((c) => ({ key: c.target })),
   },
   {
     id: 'loop-readiness',
@@ -844,6 +847,12 @@ export const PROBES = [
     fn: 'checkMaintenanceDue',
     network: false,
     args: ({ repoRoot, config }) => ({ repoRoot, config }),
+    // #2196: which signals are due — never the dates in their detail.
+    repeatFacts: (r) => [
+      ...(r?.due ?? []).map((id) => ({ key: id })),
+      ...(r?.undeterminable ?? []).map((id) => ({ key: `undeterminable:${id}` })),
+      ...(r?.deadIndexLinks > 0 ? [{ key: 'dead-index-links', amount: r.deadIndexLinks }] : []),
+    ],
   },
   {
     id: 'sessions-staleness',
@@ -927,6 +936,10 @@ export const PROBES = [
       repoRoot,
       ...(Number.isFinite(budgetMs) ? { deadline: Date.now() + budgetMs } : {}),
     }),
+    // #2196: the finding's `check` plus its magnitude (commits, MB, files).
+    // Ceiling: several findings of one `check` (ci-audit-job) share one key,
+    // and the banner shows the first three findings, not the new one first.
+    repeatFacts: (r) => (r?.findings ?? []).map((f) => ({ key: f.check, amount: f.amount })),
   },
   {
     id: 'mirror-issues',
@@ -1203,6 +1216,101 @@ async function loadConfig(repoRoot) {
 }
 
 // ---------------------------------------------------------------------------
+// Repeat gate (#2196)
+// ---------------------------------------------------------------------------
+
+/**
+ * A finding unchanged since its last REPORT is repeated at most once per this
+ * many days. Measured 2026-11-21 over the live ledger (86 probe runs since
+ * 2026-11-11): `project-hygiene` warned 84/86, `maintenance-due` 86/86,
+ * `peer-cards-staleness` 86/86 — each describing a standing state, the same
+ * line every session (HR-101). The gate re-aims those probes at CHANGE; it does
+ * not raise any threshold and does not touch `alert`.
+ */
+export const REPEAT_INTERVAL_DAYS = 7;
+
+/** A fact's magnitude at least this multiple of its last REPORTED value is news. */
+export const REPEAT_GROWTH_FACTOR = 2;
+
+const REPEAT_STATE_FILE = 'probe-repeat.json';
+
+/**
+ * Where "already reported" lives: `.orchestrator/tmp/probe-repeat.json` beside
+ * the events ledger's `.orchestrator/` — so a linked worktree shares its main
+ * checkout's state (#1514) and a fresh worktree does not re-report everything.
+ * `.orchestrator/tmp/` is gitignored here (`git check-ignore --no-index`).
+ *
+ * @param {string} repoRoot
+ * @returns {string}
+ */
+export function repeatStatePath(repoRoot) {
+  return path.join(path.dirname(path.dirname(eventsFilePath(repoRoot))), 'tmp', REPEAT_STATE_FILE);
+}
+
+/** Missing or corrupt state reads as empty — every finding is then reported (fail-open to visibility). */
+function readRepeatState(file) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Best-effort atomic write via the shared writer; a failure only means the next run reports again. */
+async function writeRepeatState(file, state) {
+  try {
+    await atomicWriteText(file, JSON.stringify(state));
+  } catch { /* never block session start */ }
+}
+
+/**
+ * Decide whether a warn finding is news.
+ *
+ * `facts` are stable identities (a card name, a signal id, a hygiene `check`),
+ * optionally with a numeric `amount` — never message text, which carries
+ * counters that drift every day ("60d" → "61d"). Report when: no valid prior
+ * state, the last report is `REPEAT_INTERVAL_DAYS` old (or in the future), a
+ * key is new, or an amount reached `REPEAT_GROWTH_FACTOR` × its last REPORTED
+ * value. The baseline moves only on a report, so slow growth still surfaces.
+ * Keys that vanished are dropped while suppressed, so a finding that clears
+ * and comes back is reported as new. A finding without any usable fact is
+ * always reported.
+ *
+ * @param {object|undefined} prev — `{ reportedAt: number, facts: {[key]: number|null} }`
+ * @param {Array<{key: string, amount?: number}>} facts
+ * @param {number} nowMs
+ * @returns {{ report: boolean, next: { reportedAt: number, facts: Record<string, number|null> } }}
+ */
+export function judgeRepeat(prev, facts, nowMs) {
+  /** @type {Record<string, number|null>} */
+  const current = {};
+  for (const f of facts) {
+    if (!f || typeof f.key !== 'string') continue;
+    const amt = Number.isFinite(f.amount) ? f.amount : null;
+    const had = current[f.key];
+    current[f.key] = had === undefined ? amt : (amt === null ? had : Math.max(had ?? amt, amt));
+  }
+  const fresh = { report: true, next: { reportedAt: nowMs, facts: current } };
+  // No usable fact (an extractor reading a renamed field yields `[]` or
+  // `{key: undefined}`s) means the gate cannot tell old from new: report,
+  // every time — fail-open to visibility, never a silent week.
+  if (Object.keys(current).length === 0) return fresh;
+  const prevFacts = prev?.facts;
+  if (!prev || !Number.isFinite(prev.reportedAt) || !prevFacts || typeof prevFacts !== 'object') return fresh;
+  const age = nowMs - prev.reportedAt;
+  if (!(age >= 0 && age < REPEAT_INTERVAL_DAYS * 86_400_000)) return fresh;
+  for (const [key, amt] of Object.entries(current)) {
+    if (!Object.hasOwn(prevFacts, key)) return fresh;
+    const base = prevFacts[key];
+    if (amt !== null && Number.isFinite(base) && base > 0 && amt >= base * REPEAT_GROWTH_FACTOR) return fresh;
+  }
+  const kept = {};
+  for (const key of Object.keys(current)) kept[key] = prevFacts[key] ?? current[key];
+  return { report: false, next: { reportedAt: prev.reportedAt, facts: kept } };
+}
+
+// ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
@@ -1221,6 +1329,12 @@ async function loadConfig(repoRoot) {
  * @param {object} [opts.env=process.env] — environment passed to env-reading
  *   probes and consulted for `SO_PROBES_INCLUDE_NETWORK`.
  * @param {number} [opts.timeoutMs=PROBE_BUDGET_MS] — wall-clock budget.
+ * @param {boolean} [opts.display=false] — whether the caller WILL show
+ *   `bannerLines` to an operator (#2196). Only then does the repeat gate record
+ *   a line as reported; otherwise it judges (outcome and `suppressed` stay
+ *   honest) but writes no state, and a line it would have shown is recorded
+ *   `repeat: 'not-displayed'`. Default false: a caller that forgets the flag
+ *   reports every time instead of using up the weekly report.
  * @param {object} [deps] — test seams.
  * @param {Array<object>} [deps.probes=PROBES] — probe registry override.
  * @param {(type: string, payload: object, opts: object) => Promise<void>} [deps.emit=emitEvent]
@@ -1234,7 +1348,9 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
     timeoutMs = PROBE_BUDGET_MS,
   } = opts;
   const probes = Array.isArray(deps.probes) ? deps.probes : PROBES;
+  const clock = typeof deps.now === 'function' ? deps.now : Date.now;
   const emit = typeof deps.emit === 'function' ? deps.emit : emitEvent;
+  const display = opts.display === true;
 
   // No repoRoot means every repo-scoped probe would measure the wrong tree and
   // the event would land in whatever `SO_PROJECT_DIR` happens to resolve to.
@@ -1271,6 +1387,11 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
 
   /** @type {Map<string, object>} */
   const byId = new Map();
+
+  // #2196 repeat gate: read once, written once after the family ran.
+  const repeatFile = repeatStatePath(repoRoot);
+  const repeatState = probes.some((p) => typeof p.repeatFacts === 'function') ? readRepeatState(repeatFile) : {};
+  let repeatDirty = false;
 
   await Promise.all(
     probes.map(async (probe) => {
@@ -1408,6 +1529,39 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
         record('error', { reason: stage, workMs });
         return;
       }
+      // #2196: a repeat-gated probe's unchanged warn finding keeps its
+      // `ran-warn` outcome (the finding exists) but loses its banner line; the
+      // line stays in `results` as `suppressedLine`, and `repeat` reaches the
+      // ledger so the BANNER's firing rate is measurable (HR-105). Never `alert`.
+      // The state moves only when the caller displays the banner: a headless
+      // or banner-off run must not use up the weekly report (`not-displayed`).
+      let repeat;
+      let suppressedLine;
+      if (typeof probe.repeatFacts === 'function') {
+        if (severity === 'warn' && line) {
+          let verdict;
+          try {
+            verdict = judgeRepeat(repeatState[probe.id], probe.repeatFacts(result) ?? [], clock());
+          } catch {
+            verdict = null; // a throwing fact extractor reports — never hides
+          }
+          if (verdict && !verdict.report) {
+            repeat = 'suppressed';
+            suppressedLine = line;
+            line = null;
+          } else {
+            repeat = display ? 'reported' : 'not-displayed';
+          }
+          if (display) {
+            if (verdict) repeatState[probe.id] = verdict.next;
+            else delete repeatState[probe.id];
+            repeatDirty = true;
+          }
+        } else if (display && severity === 'ok' && Object.hasOwn(repeatState, probe.id)) {
+          delete repeatState[probe.id]; // cleared: its return is news again
+          repeatDirty = true;
+        }
+      }
       const measure = probeMeasure(probe, result);
       record(severity === 'ok' ? 'ran-clean' : severity === 'warn' ? 'ran-warn' : 'ran-alert', {
         severity,
@@ -1416,11 +1570,14 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
         ...(followUpFailure && followUpStage ? { followUpStage } : {}),
         ...(measure ? { measure } : {}),
         ...(line ? { line } : {}),
+        ...(repeat ? { repeat } : {}),
+        ...(suppressedLine ? { suppressedLine } : {}),
       });
     }),
   );
 
   meter.stop();
+  if (repeatDirty) await writeRepeatState(repeatFile, repeatState);
 
   // Registry order, never completion order — a run must be reproducible.
   const results = [];
@@ -1484,6 +1641,9 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
       // What the probe MEASURED, warn or not (#1489, HR-105): without it a
       // probe that never warns reads the same whether it is rare or dead.
       ...(r.measure ? { measure: r.measure } : {}),
+      // #2196: `reported` = line shown, `suppressed` = unchanged warn finding,
+      // line withheld, `not-displayed` = news, but the caller showed no banner.
+      ...(typeof r.repeat === 'string' ? { repeat: r.repeat } : {}),
     })),
   };
 

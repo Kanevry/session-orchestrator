@@ -114,10 +114,10 @@
  * defect its docblock named.
  *
  * Two populations, stated because they are not the same:
- *   - `newExpiresAt` (D) = the earliest `expires_at` over remaining resolvable
- *     pairs that are NOT expired as of `now`. Excluding the expired ones is
- *     what stops a rewritten file from being instantly expired again by a pair
- *     whose prose was just swept.
+ *   - `newExpiresAt` (D) for an expired-entries rewrite = the earliest
+ *     `expires_at` over resolvable pairs that have not passed the sweep cutoff,
+ *     including markers-only pairs. Excluding dates before the cutoff keeps
+ *     the prose just swept from immediately expiring the rewritten file.
  *   - `newAbsorbedCount` (N) = the number of pairs REMAINING IN THE FILE.
  *     Measured 2026-09-17: all 7 live sentences carry the TOTAL pair count
  *     (15/9/13/17/16/10/12), markers-only pairs included — an absorbed date
@@ -492,27 +492,35 @@ function dateOnly(iso) {
  * `unresolvedPairIds`), so a file whose ids all fail to resolve yields `null`
  * rather than a guess.
  *
- * One exclusion: a markers-only pair whose date lies before `cutoffMs` is
- * dropped. Its substance is already gone, so its elapsed date protects nothing
+ * A pair already marked markers-only is excluded before the later of
+ * `cutoffMs` and `nowMs`. Its prose is already gone, so its elapsed date protects nothing
  * — yet left in, it pins the raise target at or below a header that has already
  * passed, and `rule-loader.mjs` excludes the whole file forever (live
  * 2026-10-04: `guard-design.md` header 2026-10-04 pinned by markers-only
  * `d86c9b5f-…`, next absorbed date 2026-10-07). The pair itself stays in the
  * file and in `N` — it is still a dedupe marker. Expired SUBSTANTIVE pairs stay
- * in the population: raising past one would revive prose not yet swept.
+ * in the population before a rewrite: raising past one would revive prose
+ * not yet swept. For the rewritten header, substantive pairs are excluded
+ * before `cutoffMs`, since the rewrite removes their prose at that cutoff.
  *
  * @param {ReturnType<typeof parseConsolidatedRule>} parsed
  * @param {Map<string, string>} expiryById
- * @param {number} cutoffMs  expiry cutoff (now minus grace)
+ * @param {number} cutoffMs  expiry cutoff (now minus grace plus horizon)
+ * @param {number} nowMs  current time in epoch milliseconds
+ * @param {{afterSweep?: boolean}} [options]
  * @returns {string|null}
  */
-function earliestResolvableDate(parsed, expiryById, cutoffMs) {
-  const dates = parsed.pairs
-    .filter((p) => !p.markersOnly || !(Date.parse(expiryById.get(p.id) ?? '') < cutoffMs))
-    .map((p) => expiryById.get(p.id))
-    .filter((v) => typeof v === 'string' && Number.isFinite(Date.parse(v)))
-    .sort();
-  return dates.length > 0 ? dateOnly(dates[0]) : null;
+function earliestResolvableDate(parsed, expiryById, cutoffMs, nowMs, { afterSweep = false } = {}) {
+  let earliest = null;
+  for (const pair of parsed.pairs) {
+    const date = expiryById.get(pair.id);
+    const at = Date.parse(date ?? '');
+    if (!Number.isFinite(at)) continue;
+    const floor = pair.markersOnly ? Math.max(cutoffMs, nowMs) : cutoffMs;
+    if (at < floor && (pair.markersOnly || afterSweep)) continue;
+    if (earliest === null || date < earliest) earliest = date;
+  }
+  return earliest === null ? null : dateOnly(earliest);
 }
 
 /**
@@ -529,14 +537,15 @@ function earliestResolvableDate(parsed, expiryById, cutoffMs) {
  *
  * @param {ReturnType<typeof parseConsolidatedRule>} parsed
  * @param {Map<string, string>} expiryById
- * @param {number} cutoffMs  expiry cutoff (now minus grace)
+ * @param {number} cutoffMs  expiry cutoff (now minus grace plus horizon)
+ * @param {number} nowMs  current time in epoch milliseconds
  * @returns {string|null}
  */
-function headerRaiseTarget(parsed, expiryById, cutoffMs) {
+function headerRaiseTarget(parsed, expiryById, cutoffMs, nowMs) {
   if (!parsed.expiresAt || parsed.expiresAtLine < 0) return null;
   const headerMs = Date.parse(parsed.expiresAt);
   if (!Number.isFinite(headerMs)) return null;
-  const earliest = earliestResolvableDate(parsed, expiryById, cutoffMs);
+  const earliest = earliestResolvableDate(parsed, expiryById, cutoffMs, nowMs);
   if (earliest === null) return null;
   const earliestMs = Date.parse(earliest);
   if (!Number.isFinite(earliestMs) || earliestMs <= headerMs) return null;
@@ -553,22 +562,20 @@ function headerRaiseTarget(parsed, expiryById, cutoffMs) {
  * separately as `unresolvedPairIds`), so a file whose ids all fail to resolve
  * gets no advisory rather than a guessed one.
  *
- * Deliberately NOT the `newExpiresAt` population: that one excludes expired
- * pairs so a rewritten file is not instantly expired again. This is a
- * diagnostic about the file AS COMMITTED, so it excludes nothing — except an
- * already-expired markers-only pair, the same exclusion the raise target makes.
- * Without it, every file the raise (or an expired-entries rewrite) moved past
- * such a pair would carry a permanent advisory naming the elapsed date, i.e.
- * an instruction to lower the header back to where the loader drops the file.
+ * The advisory dates the file as it stands, with expired substantive pairs
+ * still included until their prose is swept. Like the raise target and the
+ * expired-entries rewrite, it skips expired markers-only pairs so their dates
+ * cannot pin the header at a point where the loader drops the file.
  *
  * @param {ReturnType<typeof parseConsolidatedRule>} parsed
  * @param {Map<string, string>} expiryById
- * @param {number} cutoffMs  expiry cutoff (now minus grace)
+ * @param {number} cutoffMs  expiry cutoff (now minus grace plus horizon)
+ * @param {number} nowMs  current time in epoch milliseconds
  * @returns {string|undefined} undefined when there is nothing to report
  */
-function headerAdvisory(parsed, expiryById, cutoffMs) {
+function headerAdvisory(parsed, expiryById, cutoffMs, nowMs) {
   if (!parsed.expiresAt) return undefined;
-  const earliest = earliestResolvableDate(parsed, expiryById, cutoffMs);
+  const earliest = earliestResolvableDate(parsed, expiryById, cutoffMs, nowMs);
   if (earliest === null || earliest === parsed.expiresAt) return undefined;
   return `header expires-at ${parsed.expiresAt} != earliest resolvable absorbed date ${earliest}`;
 }
@@ -787,8 +794,8 @@ export async function planRuleExpirySweep(opts = {}) {
     // most likely to carry a stale header, `test-hygiene.md` among them — could
     // never receive one. Measured 2026-09-17: the advisory reached 3 of 7 files
     // where 6 of 7 have the discrepancy.
-    const advisory = headerAdvisory(parsed, expiryById, cutoffMs);
-    const raiseTo = headerRaiseTarget(parsed, expiryById, cutoffMs);
+    const advisory = headerAdvisory(parsed, expiryById, cutoffMs, nowMs);
+    const raiseTo = headerRaiseTarget(parsed, expiryById, cutoffMs, nowMs);
 
     if (
       parsed.counterLine === -1 &&
@@ -934,20 +941,14 @@ export async function planRuleExpirySweep(opts = {}) {
       } else if (at < cutoffMs) {
         expired.push({ pair, entry, expiresAt: raw });
       } else {
-        kept.push({ pair, entry, expiresAt: raw });
+        kept.push(pair);
       }
     });
-
-    // D: earliest date over pairs that remain AND are not expired. Markers-only
-    // pairs are excluded here even though they count toward N — an already-swept
-    // pair's elapsed date would re-expire the file the moment it was rewritten.
-    const remainingDates = kept.map((k) => k.expiresAt).filter(Boolean).sort();
-    const earliest = remainingDates.length > 0 ? dateOnly(remainingDates[0]) : null;
 
     const base = {
       file: rule.file,
       expiredPairIds: expired.map((e) => e.pair.id),
-      keptPairIds: kept.map((k) => k.pair.id),
+      keptPairIds: kept.map((p) => p.id),
       unresolvedPairIds: unresolved.map((u) => u.pair.id),
       bytesBefore: Buffer.byteLength(content, 'utf8'),
       headings: parsed.entries.length,
@@ -977,6 +978,7 @@ export async function planRuleExpirySweep(opts = {}) {
       continue;
     }
 
+    const earliest = earliestResolvableDate(parsed, expiryById, cutoffMs, nowMs, { afterSweep: true });
     const nextContent = rewriteContent({ parsed, expired, earliest, nowMs });
     plans.push({
       ...base,

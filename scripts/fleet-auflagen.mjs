@@ -7,9 +7,10 @@
  * session-start Phase 7.6 after the check-in.
  *
  * Usage:
- *   node scripts/fleet-auflagen.mjs <session_id> [<session_id>...] [--render]
+ *   node scripts/fleet-auflagen.mjs <session_id> [<session_id>...] [--repo-root <path>] [--render]
  *
- * The own repo is `CLAUDE_PROJECT_DIR` (trimmed) or the working directory.
+ * The own repo is `--repo-root` (absolute), `CLAUDE_PROJECT_DIR` (trimmed),
+ * or the working directory, in that order.
  *
  * Candidate keys (#1839): the navigator may key a file by the native session
  * UUID instead of the semantic id. So the reader tries this process's native id
@@ -37,15 +38,18 @@
  *
  * Exit codes:
  *   0 — any of the three states (rejection is a result, not an error)
- *   2 — usage error (no positional session id)
+ *   2 — usage error; with --render, stdout contains only the Standard-Grenzsatz block
  */
 
+import { realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { parseArgs } from 'node:util';
 import { isNativeUuid, readAuflagen, renderAuflagenNotice, terminalSafeJson } from './lib/fleet-protocol.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 
 const PREFIX = 'fleet-auflagen:';
+const USAGE = `${PREFIX} usage: fleet-auflagen.mjs <session_id> [<session_id>...] [--repo-root <absolute path>] [--render]\n`;
 
 /** The navigator stamps `zeit` as `date -u +%FT%TZ`. */
 const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -53,20 +57,34 @@ const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 /** Clock skew tolerated before a `zeit` counts as future-dated. */
 const ZEIT_SKEW_MS = 5 * 60_000;
 
+function usageError(render) {
+  process.stderr.write(USAGE);
+  if (render) process.stdout.write(renderAuflagenNotice({ state: 'absent' }).join('\n') + '\n');
+  return 2;
+}
+
 /** @returns {Promise<number>} exit code */
 async function main() {
-  const args = process.argv.slice(2);
-  const render = args.includes('--render');
-  const positional = args.filter((a) => a !== '--render');
-  if (positional.length === 0) {
-    process.stderr.write(`${PREFIX} usage: fleet-auflagen.mjs <session_id> [<session_id>...] [--render]\n`);
-    return 2;
+  let parsed;
+  try {
+    parsed = parseArgs({
+      options: { render: { type: 'boolean' }, 'repo-root': { type: 'string' } },
+      allowPositionals: true,
+    });
+  } catch {
+    const args = process.argv.slice(2);
+    const end = args.indexOf('--');
+    return usageError((end === -1 ? args : args.slice(0, end)).includes('--render'));
+  }
+  const { values: { render, 'repo-root': explicitRoot }, positionals } = parsed;
+  if (positionals.length === 0 || (explicitRoot !== undefined && !path.isAbsolute(explicitRoot))) {
+    return usageError(render);
   }
   // Same platform confirmation as fleet-checkin (#1845): SO_PLATFORM=codex never
   // adopts an inherited CLAUDE_CODE_SESSION_ID; unset SO_PLATFORM keeps the single id.
   const [nativeId] = readProcessLocalSessionIds();
-  const keys = [...new Set([...(isNativeUuid(nativeId) ? [nativeId] : []), ...positional])];
-  const repoRoot = (process.env.CLAUDE_PROJECT_DIR || '').trim() || process.cwd();
+  const keys = [...new Set([...(isNativeUuid(nativeId) ? [nativeId] : []), ...positionals])];
+  const repoRoot = explicitRoot ?? ((process.env.CLAUDE_PROJECT_DIR || '').trim() || process.cwd());
   let result = { state: 'absent' };
   let rejected = null;
   let newest = -Infinity;
@@ -92,6 +110,14 @@ async function main() {
     }
   }
   if (result.state !== 'accepted' && rejected) result = rejected;
+  if (result.state === 'rejected' && ['repo-mismatch', 'repo-unresolved'].includes(result.reason)) {
+    const pluginRoot = path.dirname(import.meta.dirname);
+    const resolvedRoot = await realpath(repoRoot).catch(() => path.resolve(repoRoot));
+    const relative = path.relative(pluginRoot, resolvedRoot);
+    if (relative.split(path.sep, 1)[0] !== '..' && !path.isAbsolute(relative)) {
+      process.stderr.write(`${PREFIX} WARN: repo root is inside the plugin; pass the session project with --repo-root <absolute path>\n`);
+    }
+  }
   process.stdout.write((render ? terminalSafeJson(result) : JSON.stringify(result)) + '\n');
   if (render) {
     process.stdout.write(renderAuflagenNotice(result).join('\n') + '\n');

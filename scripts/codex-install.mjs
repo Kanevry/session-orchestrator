@@ -37,6 +37,7 @@ const LEGACY_PLUGIN_IDS = [
   `${PLUGIN_NAME}@local`,
 ];
 const CODEX_COMMAND_TIMEOUT_MS = 30_000;
+const CODEX_PLUGIN_LIST_TIMEOUT_MS = 120_000;
 const ERROR_CATEGORIES = Object.freeze({
   USER: 'user',
   SYSTEM: 'system',
@@ -80,6 +81,10 @@ Options:
   --version  Print the package/plugin base version
   -h, --help Show this help
 
+Environment:
+  SO_CODEX_COMMAND_TIMEOUT_MS  Override the per-command timeout in milliseconds
+                               (default: 120000 for plugin list, 30000 otherwise)
+
 Examples:
   node scripts/codex-install.mjs
   node scripts/codex-install.mjs --json
@@ -97,17 +102,42 @@ function formatCommand(args) {
   )).join(' ');
 }
 
-function runCodex(args) {
+function commandTimeout(args) {
+  const override = process.env.SO_CODEX_COMMAND_TIMEOUT_MS;
+  if (override === undefined) {
+    return args[0] === 'plugin' && args[1] === 'list'
+      ? CODEX_PLUGIN_LIST_TIMEOUT_MS
+      : CODEX_COMMAND_TIMEOUT_MS;
+  }
+  const timeout = Number(override);
+  if (!/^\d+$/.test(override) || !Number.isSafeInteger(timeout) || timeout <= 0) {
+    throw new InstallerError(
+      'SO_CODEX_COMMAND_TIMEOUT_MS must be a positive integer in milliseconds.',
+      ERROR_CATEGORIES.USER,
+    );
+  }
+  return timeout;
+}
+
+function runCodex(args, pendingSteps) {
   const command = formatCommand(args);
+  const timeout = commandTimeout(args);
   const result = spawnSync('codex', args, {
     encoding: 'utf8',
-    timeout: CODEX_COMMAND_TIMEOUT_MS,
+    timeout,
     // 'codex plugin list --available --json' exceeds the 1 MiB default once a
     // few marketplaces are registered (measured 2026-09-22: 2.19 MB → ENOBUFS).
     maxBuffer: 64 * 1024 * 1024,
   });
 
   if (result.error) {
+    if (result.error.code === 'ETIMEDOUT') {
+      const pending = pendingSteps ? ` Plugin add succeeded. ${pendingSteps}.` : '';
+      throw new InstallerError(
+        `Cannot run '${command}': ETIMEDOUT after ${timeout} ms.${pending} `
+        + 'Increase SO_CODEX_COMMAND_TIMEOUT_MS and rerun node scripts/codex-install.mjs.',
+      );
+    }
     throw new InstallerError(`Cannot run '${command}': ${result.error.message}`);
   }
   if (result.status !== 0) {
@@ -118,8 +148,8 @@ function runCodex(args) {
   return result.stdout;
 }
 
-function runCodexJson(args, label) {
-  const stdout = runCodex(args);
+function runCodexJson(args, label, pendingSteps) {
+  const stdout = runCodex(args, pendingSteps);
   try {
     const parsed = JSON.parse(stdout);
     if (!isRecord(parsed)) {
@@ -445,6 +475,7 @@ function install({ json }) {
   const firstPluginList = runCodexJson(
     ['plugin', 'list', '--available', '--json'],
     'Plugin list',
+    'Post-install check, legacy plugin cleanup, and final check are pending',
   );
   const firstEntries = assertTargetHealthy(firstPluginList, expectedVersion, 'Post-install check');
   progress(json, `Plugin: '${PLUGIN_ID}' is installed, enabled, and at ${expectedVersion}`);
@@ -454,6 +485,7 @@ function install({ json }) {
     const removeResult = runCodexJson(
       ['plugin', 'remove', legacyPluginId, '--json'],
       `Plugin remove (${legacyPluginId})`,
+      'Legacy plugin cleanup and final check are incomplete',
     );
     assertRemoveResult(removeResult, legacyPluginId);
     removedLegacyPlugins.push(legacyPluginId);
@@ -463,6 +495,7 @@ function install({ json }) {
   const finalPluginList = runCodexJson(
     ['plugin', 'list', '--available', '--json'],
     'Final plugin list',
+    'Final check is pending',
   );
   const finalEntries = assertTargetHealthy(finalPluginList, expectedVersion, 'Final check');
   const remainingLegacyPlugins = installedLegacyPluginIds(finalEntries);

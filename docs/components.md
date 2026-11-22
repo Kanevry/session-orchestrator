@@ -7,8 +7,8 @@ Detailed component inventory and architecture reference for Session Orchestrator
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK["Skills<br/>29 you type · 23 background"]
-    COORD -->|invokes| CMD[Commands<br/>31 slash-cmds]
+    COORD -->|reads| SK["Skills<br/>31 you type · 23 background"]
+    COORD -->|invokes| CMD[Commands<br/>33 slash-cmds]
     COORD -->|dispatches| AG[Agents<br/>14 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
@@ -18,7 +18,7 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (53: 30 you type, 23 in the background)
+## Skills (54: 31 you type, 23 in the background)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
 - **Authoring:** `mcp-builder`, `hook-development`, `frontmatter-guard`
@@ -27,16 +27,16 @@ flowchart LR
 - **Cross-session:** `evolve`, `convergence-monitoring`, `memory-cleanup`, `reconcile`, `sunset-review`, `eval`
 - **Vault & docs:** `vault-sync`, `vault-mirror`, `docs-orchestrator`
 - **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `remote-offload`, `spinout`, `npm-publish`
-- **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`, `ux-grill`, `test-audit`
+- **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`, `ux-grill`, `test-audit`, `public-audit` (measures the public technical discoverability of an explicitly configured site: redirects, metadata, JSON-LD, sitemaps, robots, crawler responses; no login, no browser, no ranking claims)
 - **Content review:** `persona-panel`
 - **Operator ergonomics:** `eli5` (plain-language restatement of the last answer)
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
 
-## Commands (32)
+## Commands (33)
 
-A slash command has exactly ONE definition. 30 are skills with `user-invocable: true` in `skills/<name>/SKILL.md` (the same file the model dispatches; `argument-hint` and `disable-model-invocation` live there too), and 2 are plain `commands/*.md` files without a same-named skill. Claude Code registers both shapes as `/session-orchestrator:<name>`, so a name that exists as both a command file and a user-invocable skill is listed twice in the `/` picker — `tests/commands/headless-bare-command-availability.test.mjs` forbids that twin. Claude Code lists a skill whose frontmatter has NO `user-invocable` key too, so every one of the 53 skills states the key explicitly: the other 23 say `false` and stay out of the picker (#1515).
+A slash command has exactly ONE definition. 31 are skills with `user-invocable: true` in `skills/<name>/SKILL.md` (the same file the model dispatches; `argument-hint` and `disable-model-invocation` live there too), and 2 are plain `commands/*.md` files without a same-named skill. Claude Code registers both shapes as `/session-orchestrator:<name>`, so a name that exists as both a command file and a user-invocable skill is listed twice in the `/` picker — `tests/commands/headless-bare-command-availability.test.mjs` forbids that twin. Claude Code lists a skill whose frontmatter has NO `user-invocable` key too, so every one of the 54 skills states the key explicitly: the other 23 say `false` and stay out of the picker (#1515).
 
-- **Skills (30):** `/architecture`, `/autopilot`, `/backlog`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/deepen`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/test-audit`, `/tmux-layout`, `/ux-grill`, `/write-executable-plan`.
+- **Skills (31):** `/architecture`, `/autopilot`, `/backlog`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/deepen`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/public-audit`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/test-audit`, `/tmux-layout`, `/ux-grill`, `/write-executable-plan`.
 - **Command files (2):** `/session` (its skill is `session-start`) and `/templates-ack` (an in-session hook bypass with no skill body).
 
 Under `claude -p`, `/session` and `/plan` are reserved terminal built-ins; use `/session-orchestrator:session` and `/session-orchestrator:plan` there.
@@ -82,7 +82,7 @@ Codex uses the curated seven-event project subset `SessionStart`, `PreToolUse`, 
 - **Checks run after each implementation wave, not only at the end.** A mistake caught after wave 2 costs one wave. The same mistake found at `/close` has already been copied into every wave after it. Findings below the configured confidence threshold are not shown to you.
 - **A crash does not lose the session.** `STATE.md` records which wave finished and what deviated from the plan. The next `/session` offers to continue from the last completed wave.
 - **Two sessions in one working copy is treated as a real risk.** Two people, or two of your own sessions, in the same checkout share one git index, one filesystem and one `STATE.md`, and neither can see the other's uncommitted work. A heartbeat session lock, per-agent file-scope manifests, and the rules in [`.claude/rules/parallel-sessions.md`](../.claude/rules/parallel-sessions.md) exist for exactly that case.
-- **Guards run where the harness supports them, and the [platform table](install.md#platform-support) says where they do not.** The destructive-command policy (13 rules block, 4 warn) runs as a real hook on Claude Code and Codex and as a bridge on Cursor and Pi; file-scope enforcement is a hook on Claude Code, a bridge on Cursor and Pi, and instructions only on Codex (see [Other surfaces](#other-surfaces)).
+- **Guards run where the harness supports them, and the [platform table](install.md#platform-support) says where they do not.** The destructive-command policy (14 rules block, 4 warn) runs as a real hook on Claude Code and Codex and as a bridge on Cursor and Pi; file-scope enforcement is a hook on Claude Code, a bridge on Cursor and Pi, and instructions only on Codex (see [Other surfaces](#other-surfaces)).
 - **What it learns is opt-in and readable.** Every session appends a record. After 5 or more sessions, `/evolve analyze` proposes patterns with a confidence score; you read them and delete the ones you disagree with. Nothing is applied without you.
 - **GitLab and GitHub, both fully.** It detects which one your remote points at and drives issues and merge or pull requests for either.
 - **No build step.** Skills, commands and agents are Markdown with YAML frontmatter; the code that dispatches, validates and records runs in `scripts/lib/*.mjs` and `hooks/*.mjs`. When a session does something you did not expect, you can open the file that decided it.

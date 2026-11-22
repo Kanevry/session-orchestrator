@@ -4,7 +4,7 @@ user-invocable: false
 tags: [reference, health, monitoring, ci, endpoints]
 model: haiku
 model-preference: sonnet
-model-preference-codex: gpt-5.4-mini
+model-preference-codex: gpt-6.2-sol
 model-preference-cursor: claude-sonnet-4-6
 description: >
   Monitor health across configured service endpoints, CI pipelines, and critical

@@ -400,7 +400,8 @@ function waveForRecord(root, attribution) {
  * The webhook body deliberately stays `{ event_type, source, payload }` with the
  * RAW payload — the wire format is a published contract with an external
  * consumer; `schema_version` describes the JSONL record, not the webhook
- * envelope, and is not added to it.
+ * envelope, and is not added to it. One exception: a caller may pass
+ * `opts.webhookPayload`, which replaces `payload` in the webhook body only.
  *
  * @param {string} type — event type (e.g. "orchestrator.session.started")
  * @param {object} [payload={}] — additional fields shallow-merged into the record
@@ -419,6 +420,10 @@ function waveForRecord(root, attribution) {
  *   no directory, no webhook): joining it would land relative to the working
  *   directory — the incident class where an unset env var produced
  *   `undefined/…/.orchestrator/metrics/events.jsonl` under the cwd.
+ * @param {object} [opts.webhookPayload] — payload for the webhook body INSTEAD of
+ *   `payload`; the JSONL record keeps the full `payload`. For fields that must
+ *   stay on this host (e.g. vault-relative paths, #2169) but whose count may
+ *   travel. Absent = the webhook carries the raw `payload`, as before.
  * @returns {Promise<void>}
  */
 export async function emitEvent(type, payload = {}, opts = {}) {
@@ -495,7 +500,7 @@ export async function emitEvent(type, payload = {}, opts = {}) {
     const body = JSON.stringify({
       event_type: type,
       source: 'session-orchestrator',
-      payload,
+      payload: 'webhookPayload' in opts ? opts.webhookPayload : payload,
     });
 
     void httpRequest(`${url}/api/webhooks/events`, {

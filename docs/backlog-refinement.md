@@ -59,18 +59,32 @@ The report therefore carries, per check, `fired` and `of`. A check with `fired /
 
 ## Label taxonomy is the repository's own
 
-The checker does not prescribe spellings. It compares labels through `normalizeLabel()`
-(`scripts/lib/label-scope.mjs`: `::` and `:` are the same key, lowercase) and detects which
-**families** a repository actually uses.
+For a matching local checkout, the CLI reads the committed rule with
+`git show origin/main:.claude/rules/gitlab-labels.md`. <!-- path-check: example -->
+Markdown includes the path and `origin/main` commit SHA. JSON includes them as
+`taxonomy.source.path` and `taxonomy.source.sha`.
 
-- A family is a label prefix before the first `:` — `priority`, `status`, `type`, `area`, `appetite`.
-  `prio` counts as `priority`.
-- Bare labels `bug`, `feature`, `enhancement`, `chore`, `docs`, `documentation`, `refactor`, `epic`,
-  `discovery`, `carryover` count as members of `type`.
-- A family is **in use** when at least 10 % of open issues, and at least 5, carry one of its labels.
-- A check on a family that is not in use reports `state: "not-measured"`,
-  `reason: "family-not-used"`. **It never reports `fired: 0`**: zero findings on a repository that
-  keeps priorities under another name is not a clean result.
+- Declarations come from the first Markdown table whose first header cell is `Achse`, with
+  optional bold formatting and case-insensitive matching. Each row names an axis in the first
+  column and lists labels in backticks in the second.
+- A family is the prefix before `:` or `::`. For example, `area:*` and `area::*` both declare
+  the `area` family. A bare label is declared on its axis and has no prefix family.
+  The checker normalizes prefixes to lowercase and treats `prio` as `priority`.
+- The checker and the Lead maintenance helper read the same rule on `origin/main` and use its
+  `Typ` row. The checker also accepts `Type` and reads backticked labels in cells with surrounding
+  text. The Lead helper accepts only `Typ` and reports cells with surrounding text as ambiguous,
+  as measured on 2026-11-19 using the fleet's only rule file. When the rule is unavailable, the
+  checker uses the existing type heuristic and the Lead helper reports the axis as not measurable.
+- One `Typ` or `Type` row with exact label names makes the axis measurable. The checker compares
+  those names case-sensitively and also recognizes `type::…` and `type:…`. If the rule file is
+  present but the type row is missing, empty or ambiguous, the check reports `state: "not-measured"`
+  and `reason: "Typ-Achse nicht messbar"` without a count or individual findings.
+- With no declared taxonomy, families use the existing heuristic. At least 10 % of open issues,
+  and at least 5, must carry a label in the family. The type family uses this threshold when the
+  file or ref is unavailable. A GitLab project path uses the current checkout only when host and
+  project match. The checker skips searching for other checkouts.
+- A check on another family that is out of use reports `state: "not-measured"` and
+  `reason: "family-not-used"` without a count.
 
 ## The checks
 
@@ -81,7 +95,7 @@ Every check is advisory. `severity` is `warn` (act on it) or `info` (look at it)
 | id | Fires when | Severity |
 |---|---|---|
 | `label.priority-missing` | no label of the `priority` family | warn |
-| `label.type-missing` | no label of the `type` family | warn |
+| `label.type-missing` | the type check is measurable and the issue lacks a type label. A declared type label or a `type:`/`type::` label qualifies under the rule. The heuristic counts labels in the type family, including recognized bare labels such as `bug`. | warn |
 | `label.status-missing` | no label of the `status` family and the issue is older than 7 days | warn |
 | `label.status-multiple` | more than one label of the `status` family | warn |
 | `label.duplicate-spelling` | the issue carries the **minority** spelling of a label that the repository has under two spellings of the same family and value (`bug` where most issues say `type:bug`). The prevailing spelling is the one more issues carry, open and closed-in-window together. Flagging both sides fired on 102 of 196 issues here; the minority side fires on 9. | info |
@@ -90,7 +104,7 @@ Every check is advisory. `severity` is `warn` (act on it) or `info` (look at it)
 
 | id | Fires when | Severity |
 |---|---|---|
-| `ready.no-acceptance` | no acceptance phrase (`acceptance`, `akzeptanz`, `done when`, `fertig wenn`, `definition of done`, `DoD`, `abnahme`) and no task-list checkbox anywhere in the description | warn |
+| `ready.no-acceptance` | no acceptance phrase (`acceptance`, `akzeptanz`, `done when`, `fertig wenn`, `fertig, wenn`, `definition of done`, `DoD`, `abnahme`) and no task-list checkbox anywhere in the description | warn |
 | `ready.no-pointer` | no path-like token (a whitespace-delimited token that contains `/` and ends in a file extension, or a known source directory followed by `/`) and no URL | warn |
 | `ready.no-verification` | no command in a code span or fence (`node `, `npm `, `pnpm `, `npx `, `pytest`, `cargo `, `go test`, `make `, `glab `, `gh `, `rg `, `curl `) and no test file named (`.test.` / `.spec.`) | info |
 | `ready.open-question` | the description contains `TBD`, `TODO`, `to be decided`, `zu klären` or `offene frage` | info |
@@ -110,20 +124,29 @@ label); a description longer than 6000 characters; an `appetite` label of `2w` o
 A **dependency phrase** is `blocked by`, `blockiert durch`, `depends on`, `hängt ab von`,
 `wartet auf`, `waits for` or `requires`, followed within 40 characters by a local reference `#N`.
 A reference written as `name#N` or `group/name#N` is cross-project and is never resolved locally.
-References inside fenced code blocks are not references. A number above the newest fetched issue is
-not a local issue (a pipeline, a queue entry) and is ignored. "Not open" means: not in the open list.
+References inside fenced code blocks are not references. The local-reference upper bound is the
+maximum of the loaded issue iids and the iid returned by a separate newest-issue request across all
+states (`order_by=created_at&sort=desc&per_page=1`, without a state filter). A number above that bound
+is treated as another tracker reference (a pipeline, a queue entry) and ignored. Callers that omit
+the newest iid retain the loaded-only bound. "Not open" means: not in the open list.
 
 | id | Fires when | Severity |
 |---|---|---|
 | `link.dependency-closed` | a dependency phrase points at a local issue that is not open | warn |
 | `status.blocked-refs-closed` | `status:blocked`, the description has at least one local reference, and none of them is open | info |
-| `status.review-mr-merged` | `status:review` and a related merge request is merged | warn |
-| `status.review-no-mr` | `status:review` and no related merge request | info |
+| `status.review-mr-merged` | `status:review` and a merged MR appears in `closed_by`, or a merged related MR has a title that identifies the issue | warn |
+| `status.review-no-mr` | `status:review`, no related merge request, and no merged closing MR | info |
 
 `status.review-*` read `issues/:iid/related_merge_requests` (the list field `merge_requests_count`
-was measured wrong on this instance). At most `--max-mr-lookups` issues are looked up (default 50);
-if more are in review, both checks report `not-measured`, reason `lookup-cap`. A review issue whose
-single lookup failed neither fires nor counts as clean: both rows then carry `unmeasured: N`.
+was measured wrong on this instance). For the merged check the checker also reads
+`issues/:iid/closed_by`, the list of MRs configured to close the issue. It uses MR `state` and
+`iid` from both lists. For a related MR, `title` must match the issue title after folding case
+and whitespace or contain its local `#iid`. If both records have a `project_id`, title evidence
+requires matching projects. At most `--max-mr-lookups` review issues are looked up (default 50),
+with up to two requests per issue. Above the cap both checks report `not-measured`, reason
+`lookup-cap`. A failed related lookup adds to both rows' `unmeasured` count. If only `closed_by`
+fails, the no-MR check uses the related list, and the merged row counts the issue as unmeasured
+when title evidence cannot settle it.
 
 ### Epics
 
@@ -162,7 +185,7 @@ Reported as metrics only, never as findings: closed issues with every checkbox s
 
 ```json
 {
-  "iid": 42, "title": "…", "description": "…", "labels": ["priority::high", "status:ready"],
+  "iid": 42, "project_id": 123, "title": "…", "description": "…", "labels": ["priority::high", "status:ready"],
   "state": "opened", "created_at": "ISO", "updated_at": "ISO", "closed_at": null,
   "web_url": "https://…", "milestone": null,
   "tasks": { "count": 5, "completed": 2 }, "merge_requests_count": 0
@@ -175,11 +198,11 @@ Reported as metrics only, never as findings: closed issues with every checkbox s
 
 | Module | Export | Contract |
 |---|---|---|
-| `scripts/lib/backlog-refine/fetch.mjs` | `resolveTarget({ repo, host, cwd, gitRun })` | `{ ok: true, vcs: 'gitlab', host, projectPath, cwd }` or `{ ok: false, reason }`. `repo` absent → the checkout at `cwd`; a path to a directory → that checkout; otherwise `group/name` on `host` (default: the host of the checkout at `cwd`). Uses `scripts/lib/vcs-repo-spec.mjs`. |
-| | `fetchBacklog({ target, closedDays, now, run, timeoutMs })` | `{ ok: true, open, closed }` (normalized issues; `closed` filtered to `closed_at` inside the window) or `{ ok: false, reason }`. Follows pagination to the end; never returns a truncated list as complete. |
-| | `fetchRelatedMrs({ target, iids, run, timeoutMs })` | `Map<iid, { state: 'measured', mrs: [{ iid, state }] } \| { state: 'not-measured', reason }>` |
+| `scripts/lib/backlog-refine/fetch.mjs` | `resolveTarget({ repo, host, cwd, gitRun })` | `{ ok: true, vcs: 'gitlab', host, projectPath, cwd, checkoutRoot? }` or `{ ok: false, reason }`. `repo` absent → the checkout at `cwd`; a path to a directory → that checkout; otherwise `group/name` on `host` (default: the host of the checkout at `cwd`). `checkoutRoot` is present when the target matches that checkout. Uses `scripts/lib/vcs-repo-spec.mjs`. |
+| | `fetchBacklog({ target, closedDays, now, run, timeoutMs })` | `{ ok: true, open, closed, newestIid, paginationUnmeasured }` (normalized issues; `closed` filtered to `closed_at` inside the window) or `{ ok: false, reason }`. Follows pagination to the end; compares unique iids with each list's first-page `X-Total` before local filtering. `newestIid` is 0 for an empty project; `paginationUnmeasured` lists `open`/`closed` when their first-page count is unavailable. These metadata fields are optional for injected callers. |
+| | `fetchRelatedMrs({ target, iids, run, timeoutMs })` | `Map<iid, { state: 'measured', mrs: [{ iid, state, title, project_id }], closedBy: [{ iid, state, title, project_id }] \| null } \| { state: 'not-measured', reason }>`. `closedBy: null` marks a failed closing-MR lookup. |
 | `scripts/lib/backlog-refine/criteria.mjs` | `selectMrLookups({ open, max })` | `{ iids, capped }` — the `status:review` issues to look up |
-| | `evaluateBacklog({ open, closed, relatedMrs, mrLookupCapped, now, closedDays })` | `{ population, taxonomy, checks, findings, metrics, epics }`. Pure, no I/O. |
+| | `evaluateBacklog({ open, closed, relatedMrs, mrLookupCapped, now, closedDays, newestIid, taxonomyMarkdown })` | `{ population, taxonomy, checks, findings, metrics, epics }`. Pure, no I/O. Optional `newestIid` extends the local-reference bound. The CLI passes the committed rule as `taxonomyMarkdown`, or `null` if the source is unavailable. A `null` or omitted value uses the legacy type heuristic. |
 | `scripts/lib/backlog-refine/report.mjs` | `buildReport({ target, evaluation, measuredAt, closedDays })` | the report object below |
 | | `renderMarkdown(report)` | string |
 
@@ -192,6 +215,9 @@ Reported as metrics only, never as findings: closed issues with every checkbox s
   "measured_at": "ISO", "window": { "closed_days": 30 },
   "population": { "open": 196, "closed_in_window": 395 },
   "taxonomy": {
+    "source": { "path": ".claude/rules/gitlab-labels.md", "sha": "<origin/main commit SHA>" },
+    "axes": [{ "name": "Priorität", "labels": ["priority::high"] }, { "name": "Typ", "labels": ["type:epic"] }],
+    "type_labels": ["type:epic"],
     "families": { "priority": { "used": true, "issues": 193, "labels": ["priority::high"] } },
     "duplicate_spellings": [{ "family": "type", "value": "epic", "labels": ["epic", "type:epic"] }]
   },
@@ -224,8 +250,13 @@ Default output is Markdown on stdout; `--json` prints the report object; with `-
 goes to the file only. Diagnostics go to stderr.
 Exit 0: report produced (with or without findings). Exit 1: usage error (unknown flag, bad number,
 `--json` together with `--markdown`, a target that is not a GitLab checkout or project). Exit 2: the
-tracker could not be read (`glab` missing, not authenticated, API error, timeout) or `--out` could
-not be written — never a partial report.
+tracker could not be read (`glab` missing, not authenticated, API error, timeout, including failure
+of the newest-issue request or an invalid iid in its nonempty response), or `--out` could not
+be written. If the number of unique issues fetched
+differs from a list's first-page `X-Total`, the checker exits 2, reports both counts on stderr,
+and produces no report. If a first-page `X-Total` is unavailable, the run succeeds and emits exactly one stderr
+line naming the affected lists whose pagination completeness was not measured; report JSON has no
+additional field for this condition.
 When the target is the checkout at the current directory, the run emits
 `orchestrator.backlog.refine_completed` (`open`, `findings_warn`, `findings_info`); `--no-event`
 suppresses it. Runs against another repository emit nothing.
@@ -277,18 +308,24 @@ because references also exist where nobody created the link.
   `--closed-days` for an epic review.
 - **A title-prefix cluster can be a template family** (one follow-up check per merge request, all
   under the same prefix). The finding is `info`; the skill's judgment pass decides.
-- **The taxonomy is inferred from the issues.** Where a repository documents its label taxonomy in a
-  file, or a fleet-level label check reads such a file, the two can disagree on an edge (a family
-  used by fewer than 10 % of issues). Revisit: read the documented taxonomy when one exists.
-- **"Newest fetched issue" is the upper bound for a local reference.** When the project's newest
-  issue was closed before the window, a dependency on it is ignored. Raise `--closed-days`, or
-  revisit by reading the newest iid with one extra request.
+- **Taxonomy uses the local `origin/main` ref.** The checker leaves the ref at its current local
+  value. An unmatched project slug uses the issue-frequency heuristic for all families, including
+  type.
+- **The newest-issue request orders by `created_at`, not iid.** Its iid and all loaded iids set the
+  reference bound, including when the newest issue was closed before the window. Imported issues
+  can make the latest creation timestamp differ from the maximum iid; references above the bound
+  may still be missed. Revisit with a guaranteed maximum-iid lookup if the API supports it.
 - **Pages are read by offset.** An issue closed while the list is being read can shift the
-  following pages by one and drop an issue from the read. Duplicates are removed; a gap is not
-  detected. Revisit: compare the count with the `X-Total` header.
-- **`status.review-mr-merged` reads related merge requests,** which include merge requests that
-  only mention the issue. Where issues are closed after a post-merge check, the check fires on most
-  review issues and is rendered as one line.
+  following pages by one and drop an issue from the read. A count above or below the first-page
+  `X-Total` after deduplication fails with exit 2. A concurrent change can therefore cause
+  an exit 2 even when the current list is complete. Rerun after activity settles. Simultaneous
+  closing and creation can mask a dropped issue by balancing the count. Missing `X-Total` leaves
+  completeness unmeasured, with a stderr diagnostic. This count check is not a snapshot guarantee.
+  Revisit stable cursor or snapshot pagination if a count-balanced omission is reported or false
+  incomplete results repeat after tracker activity settles.
+- **`status.review-mr-merged` uses closing-MR or title evidence.** A merged MR with a different
+  title and only a description or comment reference may be missed if it does not appear in
+  `closed_by`. Title matches are heuristic. Each MR endpoint is read up to its first 100 entries.
 - **`created_at` is the only age.** A "started" timestamp needs label events (one API call per
   issue); revisit when work-item age against a service level is wanted.
 - **Size signals are heuristics** with vendor-opinion evidence, not measured limits.

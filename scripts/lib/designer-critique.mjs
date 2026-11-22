@@ -168,7 +168,8 @@ export function rejectsRoleFlag(code, stdout) {
       continue;
     }
     const error = parsed?.error;
-    if (error?.code === 'INVALID_ARGUMENTS' && /Flag: --role\b/.test(String(error.message ?? ''))) return true;
+    // Only a string message counts: String() on a foreign object can throw (#2065 point 3).
+    if (error?.code === 'INVALID_ARGUMENTS' && typeof error.message === 'string' && /Flag: --role\b/.test(error.message)) return true;
   }
   return false;
 }
@@ -232,10 +233,14 @@ async function critiqueOnce({ command, image, viewport, context, value, role, ti
         done({ error: `designer did not run: ${err.message}` });
         return;
       }
+      // One group kill per attempt: a second signal after the group died could hit
+      // a reused process-group ID (#2065 point 6).
+      let killed = false;
+      const cleanup = () => { if (!killed) { killed = true; killGroup(child); } };
       // designer prints its error JSON on stdout; keep only the head of it
       child.stdout.on('data', (d) => { if (stdout.length < 4096) stdout += d; });
       const timer = setTimeout(() => {
-        killGroup(child);
+        cleanup();
         done({ error: `designer timed out after ${timeoutMs} ms` });
       }, timeoutMs);
       child.stderr.on('data', (d) => { stderr += d; });
@@ -243,7 +248,7 @@ async function critiqueOnce({ command, image, viewport, context, value, role, ti
       child.on('close', (code) => {
         clearTimeout(timer);
         // a failed designer may leave children behind; clean up like the timeout path
-        if (code !== 0) killGroup(child);
+        if (code !== 0) cleanup();
         done({ code, stderr, stdout });
       });
     });

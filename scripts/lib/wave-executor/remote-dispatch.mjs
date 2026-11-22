@@ -24,7 +24,8 @@
  *      own step, after review — this module returns counts and paths only.
  *
  * The remote side enforces its own timeout; the wall-clock kill here is the
- * backstop for a channel that stops answering (`timeoutSec + 60`).
+ * backstop for a channel that stops answering (`timeoutSec` + offload's
+ * admission wait + 60 s, #2186).
  */
 
 import fs from 'node:fs';
@@ -57,6 +58,35 @@ export const OFFLOAD_BIN = 'offload';
  * locally while the remote reported success — raise this, never drop the kill. */
 export const LOCAL_TIMEOUT_GRACE_SEC = 60;
 
+/** Seconds offload >= 1.8.0 may wait for a free slot BEFORE the run starts
+ * (projects-baseline !438, `RO_ADMISSION_WAIT`, default 600). The wait counts
+ * against the local wall-clock kill, so the kill adds it to the remote budget
+ * (#2186). An older offload never waits and refuses at once (exit 10); the extra
+ * headroom then only delays the backstop for a channel that stopped answering. */
+export const OFFLOAD_ADMISSION_WAIT_SEC = 600;
+
+/** The admission wait offload will use: `RO_ADMISSION_WAIT` when it is a
+ * non-negative integer, else the offload default. A malformed value falls back
+ * to the default rather than to 0, so the kill never fires inside the wait. */
+export function admissionWaitSec(env = process.env) {
+  const raw = (env?.RO_ADMISSION_WAIT ?? '').trim();
+  return /^\d+$/.test(raw) ? Number(raw) : OFFLOAD_ADMISSION_WAIT_SEC;
+}
+
+/** offload's admission verdict lines on stderr (`offload: admission=<verdict> …`).
+ * Exit 10 is `admission-refused` only when the LAST verdict is `refused`: a
+ * waiting offload (>= 1.8.0) prints `refused` first and `granted` once a slot
+ * frees, then runs the command — an exit 10 after that came from the user
+ * command on the remote (projects-baseline docs/REMOTE-OFFLOAD.md § 5). */
+const ADMISSION_LINE_RE = /^offload: admission=([a-z-]+)/gm;
+
+/** @param {string} stderr @returns {boolean} the last admission verdict is `refused` */
+function admissionRefused(stderr) {
+  let last = null;
+  for (const m of String(stderr ?? '').matchAll(ADMISSION_LINE_RE)) last = m[1];
+  return last === 'refused';
+}
+
 /** Longest run-id / host accepted as an argv value and path segment. */
 export const MAX_ID_LEN = 64;
 
@@ -75,6 +105,7 @@ export const OFFLOAD_EXIT_REASONS = Object.freeze({
   6: 'empty-diff',
   7: 'rate-limited',
   8: 'write-lock-busy',
+  10: 'admission-refused',
 });
 
 /** Event name — the only ledger record a remote dispatch produces. A Bash-spawned
@@ -189,7 +220,8 @@ export function parsePatchFiles(patch) {
  * @param {string} task.prompt — written to the child's STDIN, never to argv.
  * @param {string} task.role — checked against the `never_foreign` lock FIRST.
  * @param {string} task.runId — becomes `--job`; a path segment, hence validated.
- * @param {number} [task.timeoutSec] — remote budget; the local kill adds 60 s.
+ * @param {number} [task.timeoutSec] — remote budget; the local kill adds the
+ *   admission wait and 60 s.
  * @param {string} [task.model] — `--model`; omitted from argv when absent.
  * @param {string} [task.patchPath] — must resolve under `os.tmpdir()` and
  *   outside `repoRoot`. Defaults to `<tmpdir>/offload-<runId>.patch`.
@@ -198,6 +230,9 @@ export function parsePatchFiles(patch) {
  * @param {Function} [deps.now] — clock seam.
  * @param {Function} [deps.emitFn] — event-emitter seam.
  * @param {number} [deps.killGraceMs] — SIGTERM→SIGKILL grace.
+ * @param {number} [deps.admissionWait] — seconds offload may wait for a slot
+ *   before the run starts; added to the local kill (#2186). Defaults to
+ *   {@link admissionWaitSec}.
  * @param {number} [deps.localGraceSec] — seconds added to the remote budget before
  *   the LOCAL wall-clock kill; a seam so the escalation is testable without a
  *   real 15-minute wait.
@@ -213,6 +248,7 @@ export async function dispatchRemote(
     emitFn = emitEvent,
     killGraceMs = DEFAULT_KILL_GRACE_MS,
     localGraceSec = LOCAL_TIMEOUT_GRACE_SEC,
+    admissionWait = admissionWaitSec(),
     repoRoot,
   } = {},
 ) {
@@ -349,7 +385,7 @@ export async function dispatchRemote(
     { stdio: ['pipe', 'pipe', 'pipe'] },
     {
       spawnFn: spawnWithStdin,
-      timeoutMs: (Number(timeoutSec) + Number(localGraceSec)) * 1000,
+      timeoutMs: (Number(timeoutSec) + Number(admissionWait) + Number(localGraceSec)) * 1000,
       killGraceMs,
     },
   );
@@ -376,6 +412,7 @@ export async function dispatchRemote(
   let reason;
   if (errorCode === 'ENOENT') reason = 'channel-unavailable';
   else if (timerFired) reason = 'timeout';
+  else if (exitCode === 10 && !admissionRefused(stderr)) reason = 'remote-command-failed';
   else if (exitCode !== 0) reason = OFFLOAD_EXIT_REASONS[exitCode] || 'remote-command-failed';
   else if (patchBytes === 0) reason = 'empty-diff';
   const ok = reason === undefined;

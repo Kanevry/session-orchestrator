@@ -65,88 +65,9 @@
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
-import { createRequire } from 'node:module';
+import { matchGlob } from './glob-match.mjs';
 
-// ---------------------------------------------------------------------------
-// Picomatch integration (available in the project's node_modules).
-// We resolve it dynamically so the module stays loadable in environments where
-// picomatch is absent — the inline fallback glob-to-RegExp takes over then.
-// ---------------------------------------------------------------------------
-
-let _picomatch = null;
-
-function getPicomatch() {
-  if (_picomatch !== null) return _picomatch;
-  try {
-    const require = createRequire(import.meta.url);
-    _picomatch = require('picomatch');
-  } catch {
-    // picomatch not available — will use inline fallback
-    _picomatch = false;
-  }
-  return _picomatch;
-}
-
-/**
- * Minimal glob-to-RegExp fallback used only when picomatch is absent.
- * Handles `**`, `*`, and literal character matching.
- *
- * Drift contract (W4 B2): a semantically FROZEN twin of this function lives in
- * scripts/lib/command-blocker.mjs (`redirectGlobToRegExp`) — duplicated there
- * because that module is hook-hot-path pure and must not import this one.
- * Syntax extensions made here do NOT automatically apply there; mirror them
- * deliberately or document the divergence.
- *
- * @param {string} pattern
- * @returns {RegExp}
- */
-function globToRegExp(pattern) {
-  // Normalize Windows separators
-  const p = pattern.replace(/\\/g, '/');
-  let re = '';
-  let i = 0;
-  while (i < p.length) {
-    const c = p[i];
-    if (c === '*' && p[i + 1] === '*') {
-      // `**` — match zero or more path segments
-      re += '.*';
-      i += 2;
-      // Consume optional trailing separator
-      if (p[i] === '/') i++;
-    } else if (c === '*') {
-      // `*` — match any characters except separator
-      re += '[^/]*';
-      i++;
-    } else if (c === '?') {
-      re += '[^/]';
-      i++;
-    } else if (c === '.') {
-      re += '\\.';
-      i++;
-    } else {
-      // Escape regex-special characters
-      re += c.replace(/[$()+[\]^{|}]/g, '\\$&');
-      i++;
-    }
-  }
-  return new RegExp(`^${re}$`);
-}
-
-/**
- * Returns true when `filePath` matches `globPattern` using picomatch (or the
- * inline fallback when picomatch is absent).
- *
- * @param {string} filePath - path relative to repo root, forward-slash separated
- * @param {string} globPattern
- * @returns {boolean}
- */
-function matchGlob(filePath, globPattern) {
-  const pm = getPicomatch();
-  if (pm) {
-    return pm.isMatch(filePath, globPattern, { dot: true });
-  }
-  return globToRegExp(globPattern).test(filePath);
-}
+export { matchGlob };
 
 // ---------------------------------------------------------------------------
 // Minimal YAML frontmatter parser (matches state-md.mjs style)

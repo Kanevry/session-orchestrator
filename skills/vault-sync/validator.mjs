@@ -93,6 +93,25 @@ import {
 // vaultNoteTypeSchema `peer-card` (#503), `board` (#738) and the optional `source-repo`
 // field (#725) were vendor-ahead until 2026-09-03; upstream-lifted in projects-baseline
 // cb9ec97 (session-orchestrator #531).
+//
+// lengthSafeString — vendored from projects-baseline
+// `packages/zod-schemas/src/length-guard.ts` (baseline 133ad5bf, #891, 2026-11-14),
+// which the canonical schema imports and sync-vault-schema.mjs does not copy.
+// zod 4 runs `.min/.max` on any value with a `length` property even after the
+// type check failed, so `safeParse` THREW on frontmatter like
+// `id: {length: {toString: 0}}` and the validator crashed with a stack trace
+// instead of reporting the note. The guard aborts the payload on a non-string
+// first; real strings behave as before. Only the string base is used here.
+const abortOnNonString = z.superRefine(
+  (_value, ctx) => {
+    ctx.aborted = true;
+  },
+  { when: (payload) => typeof payload.value !== 'string' },
+);
+/** `z.string()` whose later length checks never run on a non-string. */
+function lengthSafeString() {
+  return z.string().check(abortOnNonString);
+}
 // ── BEGIN GENERATED SCHEMA (sync-vault-schema.mjs) — do not edit between sentinels ──
 const slugRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -130,19 +149,17 @@ const vaultNoteStatusSchema = z.enum([
 
 const vaultFrontmatterSchema = z
   .object({
-    id: z
-      .string()
+    id: lengthSafeString()
       .regex(slugRegex, 'Ungueltige id (kebab-case slug format required)')
       .min(2)
       .max(128),
     type: vaultNoteTypeSchema,
     created: z.string().regex(isoDateRegex, 'Ungueltiges Datum (ISO 8601 required)'),
     updated: z.string().regex(isoDateRegex, 'Ungueltiges Datum (ISO 8601 required)'),
-    title: z.string().min(1).max(200).optional(),
+    title: lengthSafeString().min(1).max(200).optional(),
     tags: z
       .array(
-        z
-          .string()
+        lengthSafeString()
           .regex(tagPathRegex, 'Ungueltiger tag (kebab-case segments joined by / — e.g. meta/schema)')
           .min(1)
           .max(64),
@@ -155,7 +172,7 @@ const vaultFrontmatterSchema = z
       .optional(),
     source: z.string().optional(),
     sources: z.array(z.string()).optional(),
-    aliases: z.array(z.string().min(1).max(200)).optional(),
+    aliases: z.array(lengthSafeString().min(1).max(200)).optional(),
     'source-repo': z.string().optional(),
   })
   .passthrough();
