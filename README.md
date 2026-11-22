@@ -1,6 +1,6 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Kanevry/session-orchestrator/main/site/brand/a3-terminalmodule/mark-on-dark.svg">
-  <img src="https://raw.githubusercontent.com/Kanevry/session-orchestrator/main/site/brand/a3-terminalmodule/mark-on-light.svg" alt="Session Orchestrator logo: a person at a workbench with three terminal modules" width="64" align="left" hspace="12">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Kanevry/session-orchestrator/main/docs/img/mark-on-dark.svg">
+  <img src="https://raw.githubusercontent.com/Kanevry/session-orchestrator/main/docs/img/mark-on-light.svg" alt="Session Orchestrator logo: a person at a workbench with three terminal modules" width="64" align="left" hspace="12">
 </picture>
 
 # Session Orchestrator

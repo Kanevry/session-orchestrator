@@ -116,6 +116,7 @@ import { readTailWindow } from '../scripts/lib/tail-window.mjs';
 import { COST_BASIS } from '../scripts/lib/telemetry/pricing.mjs';
 import { setLifecycle } from '../scripts/lib/agent-status.mjs';
 import { rawPayloadSessionId, resolveOwnLockRoot } from './_lib/hook-root.mjs';
+import { ownWaveFields } from './_lib/own-wave.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -790,6 +791,10 @@ async function main() {
     schema_version: 2,
     ...(agentType !== null ? { agent_type: agentType } : {}),
     ...(parentSessionId !== null ? { parent_session_id: parentSessionId } : {}),
+    // #2218: the wave (and its role) of THIS session's own wave-scope manifest,
+    // on start AND stop rows; both keys omitted when unknown (never `wave: 0`).
+    // ownWaveFields() never throws.
+    ...ownWaveFields(input),
   };
 
   // #939 forensic breadcrumb: registration (hooks.json) sends exactly

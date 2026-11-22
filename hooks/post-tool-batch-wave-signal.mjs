@@ -74,7 +74,7 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import { getProjectDir, resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import { resolveOwnLockRoot } from './_lib/hook-root.mjs';
-import { emitEvent } from '../scripts/lib/events.mjs';
+import { emitEvent, sessionAttribution } from '../scripts/lib/events.mjs';
 import { findOwnScopeFile } from '../scripts/lib/scope-gate.mjs';
 import {
   classifyManifestSession,
@@ -367,6 +367,16 @@ async function main() {
   const sessionRoot = resolveSessionRoot(input?.cwd);
   const lockRoot = resolveOwnLockRoot(input, getProjectDir());
   const sessionFile = path.join(lockRoot, '.orchestrator', 'current-session.json');
+  // #2218 — `wave.completed` attribution is read from the lock at `lockRoot`,
+  // where THIS session's lock is, not at `getProjectDir()`, which `emitEvent()`'s
+  // own fill reads: after the lock moved into an entered worktree (#1605) the
+  // launch dir's lock is absent or a peer's, so the fill omitted both ids
+  // (measured: 3 of 6 `wave.completed` without `session_id`). Same proof as the
+  // fill — a process-local id must equal the lock's raw id — so `{}` (keys
+  // omitted, fill still tried) whenever that does not hold. Spread FIRST so an
+  // explicit payload key would still win. Computed lazily, once.
+  let waveAttribution = null;
+  const ownAttribution = () => (waveAttribution ??= sessionAttribution(lockRoot));
 
   const lastBatchResult = await atomicMutateJson(sessionFile, {}, (current) => ({
     ...current,
@@ -416,6 +426,7 @@ async function main() {
   if (waveSignal === 'wave-complete') {
     try {
       await emitEvent('orchestrator.wave.completed', {
+        ...ownAttribution(),
         ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
         ...(nextWaveRole !== null ? { next_wave_role: nextWaveRole } : {}),
         ...(batchId !== null ? { batch_id: batchId } : {}),
@@ -509,6 +520,7 @@ async function main() {
             // start sha is persisted below. Unmeasurable → both keys omitted.
             const filesChanged = countFilesChangedSince(sessionRoot, waveStartSha);
             await emitEvent('orchestrator.wave.completed', {
+              ...ownAttribution(),
               wave_number: lastWave,
               ...(filesChanged !== null
                 ? {

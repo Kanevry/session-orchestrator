@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The session film no longer ships with the plugin** (#2217). The two film files, 34 MB together, left the repository and the public mirror; a plugin installation from GitHub no longer downloads them. The site serves them from a Vercel Blob store through a same-origin rewrite, so `/guide` plays the film from the same paths as before and the browser contacts no other host. The curated snapshot shrinks from 57.4 MiB to 24.6 MiB.
+
+### Added
+
+- **`scripts/site-deploy.mjs` deploys the website with the Vercel CLI from a clean export of one commit** (#2219). The file set has its own source of truth, `site-deploy.json` (`site/` and `vercel.json` minus the design studies and campaign files); the export is checked file by file and may hold no env file. Modes: `plan` (default, deploys nothing), `preview`, `stage` (a production build without domains) and `promote`, the only step that moves the domains. This prepares taking the website out of the public plugin mirror; until that switch the site still deploys from the mirror.
+- **The README logo loads from `docs/img/`** (#2219), and a test checks that every image the README loads from the mirror by raw URL is a tracked, exported file.
+- **Subagent records name the wave they ran in, and `scripts/session-tree.mjs` prints the tree Session → Wave → Agent** (#2218). `subagents.jsonl` start and stop rows and `orchestrator.agent.stopped` carry `wave` and `wave_role` when the session's own wave-scope manifest names them; before, no subagent row and 19 of 558 stop events did. The reader takes a raw session id or a semantic label, lists agents without a known wave under `unassigned` instead of dropping them, and reports in `coverage` how many agents carried a wave. A source it could not measure prints as `n/a` with a warning on stderr, never as 0, and the set of resolved session ids does not depend on the order of ledger rows. Rows written before this change carry no wave. Exit codes: 1 input error, 2 unreadable ledger.
+- **`scripts/directory-preflight.mjs` reports what the Claude plugin directory scan objects to, before the export** (#2216). It measures the curated snapshot of a commit: file count against 512, text files over 256 KiB, binaries the validator does not inspect, an MCP server declared in `.mcp.json` and inline, line-ending rules without `eol=lf`, and a lockfile beside `package.json`. The mode is a ladder: `off`, `warn` (default, report only) and `strict` (exit 3 on a blocking finding). Holds never fail a run, because a reviewer decides them. The release skill names the step and the scan readback after each mirror push.
+
+### Fixed
+
+- **`orchestrator.wave.completed` and `wave_dispatch.scope_materialized` keep their session ids when the session lock lives in another checkout** (#2218). Both emitters looked for the lock in one directory only. The batch hook now reads the root that holds the session's own lock, and the materialize CLI falls back to the process's own lock within the same repository.
+
 ## [5.21.1] - 2026-11-22
 
 The MCP server is declared once per harness: the root `.mcp.json` that repeated the Claude Code declaration, and that the Claude plugin directory scan refused, is gone from the tree. The trusted release route now measures the public install check to its end.

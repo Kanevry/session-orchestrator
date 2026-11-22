@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-18T08:45:08.607Z",
-  "head": "14f25002d1fc7a1acdd964825843c6be6b787c6c",
+  "generated_at": "2026-11-22T08:52:15.555Z",
+  "head": "19ea25ccee52db4f1b6c33afd948d8513db33b76",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -64,6 +64,13 @@
       "file": "hooks/_lib/orchestrator-ignore.mjs",
       "reachable_from": [
         "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "hooks/_lib/own-wave.mjs",
+      "reachable_from": [
+        "on-stop.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -417,7 +424,8 @@
         "pre-bash-staging-fence.mjs",
         "pre-bash-templates-first.mjs",
         "pre-task-scope-disjoint.mjs",
-        "pre-tool-state-md-path-guard.mjs"
+        "pre-tool-state-md-path-guard.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -1606,7 +1614,8 @@
         "pre-agent-cap.mjs",
         "pre-bash-memory-propose-audit.mjs",
         "pre-task-scope-disjoint.mjs",
-        "pre-tool-state-md-path-guard.mjs"
+        "pre-tool-state-md-path-guard.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -1842,7 +1851,8 @@
         "pre-agent-cap.mjs",
         "pre-bash-memory-propose-audit.mjs",
         "pre-task-scope-disjoint.mjs",
-        "pre-tool-state-md-path-guard.mjs"
+        "pre-tool-state-md-path-guard.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {

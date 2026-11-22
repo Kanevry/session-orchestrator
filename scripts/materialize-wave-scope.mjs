@@ -592,6 +592,27 @@ async function emitScopeMaterialized({ stateDir, wave, records }) {
       if (Array.isArray(record.files) && record.files.length > 0) digests.add(scopeDigest(record.files));
     }
     const { emitEvent, sessionAttribution } = await import('./lib/events.mjs');
+    let attribution = sessionAttribution(repoRoot);
+    if (!attribution.session_id) {
+      // #2218 — the state dir's checkout need not hold this session's lock: a
+      // session that `cd`s into a linked worktree keeps its lock in the main
+      // checkout, and one whose lock moved into a worktree may materialize from
+      // elsewhere (measured: 27 of 48 records without `session_id`). Find the
+      // own lock the way `wave-scope-binding.mjs` does (#1980/#1981): only within
+      // the SAME repository, and still confirmed by `sessionAttribution()`'s
+      // process-local-id === lock-raw-id check — so a peer's lock yields `{}`.
+      const { readProcessLocalSessionIds } = await import('./lib/session-identity/own-session.mjs');
+      const [sessionId] = readProcessLocalSessionIds();
+      if (sessionId) {
+        const { resolveOwnLockRootFor } = await import('./lib/own-lock-root.mjs');
+        const { repositoryCommonDir } = await import('./lib/platform.mjs');
+        const lockRoot = resolveOwnLockRootFor({ sessionId, cwd: repoRoot }).root;
+        const repository = repositoryCommonDir(repoRoot);
+        if (repository && repository === repositoryCommonDir(lockRoot)) {
+          attribution = sessionAttribution(lockRoot);
+        }
+      }
+    }
     await emitEvent(
       SCOPE_MATERIALIZED_EVENT,
       {
@@ -599,7 +620,7 @@ async function emitScopeMaterialized({ stateDir, wave, records }) {
         agent_count: agentRecords.length,
         digest_count: digests.size,
         transport_observable: transportObservable(),
-        ...sessionAttribution(repoRoot),
+        ...attribution,
       },
       { repoRoot },
     );

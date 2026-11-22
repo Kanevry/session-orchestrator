@@ -5,6 +5,16 @@
   "installCommand": null,
   "cleanUrls": true,
   "trailingSlash": false,
+  "rewrites": [
+    {
+      "source": "/video/session-orchestrator-film.webm",
+      "destination": "https://ztjsh2e9kcu1rvl6.public.blob.vercel-storage.com/video/session-orchestrator-film.webm"
+    },
+    {
+      "source": "/video/session-orchestrator-film.mp4",
+      "destination": "https://ztjsh2e9kcu1rvl6.public.blob.vercel-storage.com/video/session-orchestrator-film.mp4"
+    }
+  ],
   "redirects": [
     {
       "source": "/(.*)",
@@ -14,6 +24,10 @@
     }
   ],
   "headers": [
+    {
+      "source": "/video/session-orchestrator-film(.*)",
+      "headers": [{ "key": "x-vercel-enable-rewrite-caching", "value": "0" }]
+    },
     {
       "source": "/(.*)",
       "headers": [

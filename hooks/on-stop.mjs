@@ -49,6 +49,7 @@ import { emitEvent } from '../scripts/lib/events.mjs';
 import { detectPlatform, getProjectDir, resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import { resolveOwnLockRoot } from './_lib/hook-root.mjs';
 import { findOwnScopeFile } from '../scripts/lib/scope-gate.mjs';
+import { ownWaveFields } from './_lib/own-wave.mjs';
 import {
   classifyManifestSession,
   readProcessLocalSessionIds,
@@ -770,8 +771,15 @@ async function handleSubagentStop(input, reaperTrigger = null) {
   // Object.assign onto a parsed payload: spread defines keys, so no `__proto__`
   // key can reach the prototype setter (CWE-1321, semgrep
   // prototype-pollution-object-assign).
+  // `wave` / `wave_role` (#2218) — the wave this agent ran in, from THIS
+  // session's own wave-scope manifest; both keys OMITTED when unknown (never
+  // `wave: 0`, HR-105). Set by the producer so the role travels with the wave;
+  // emitEvent's envelope fill only ever adds `wave` without a role.
+  let waveFields = {};
+  try { waveFields = ownWaveFields(input); } catch { /* telemetry never blocks the hook */ }
+
   try {
-    await emitEvent('orchestrator.agent.stopped', { ...payload, ...reaperTriggerField(reaperTrigger) });
+    await emitEvent('orchestrator.agent.stopped', { ...payload, ...waveFields, ...reaperTriggerField(reaperTrigger) });
   } catch { /* telemetry never blocks the hook (#1183) */ }
   return null;
 }
