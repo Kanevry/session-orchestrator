@@ -149,7 +149,7 @@
           "name": "Does it send data anywhere?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "The plugin runs locally without its own account. Optional usage telemetry is off until you consent. By default, session-start checks the npm registry for updates. Successful results are cached for 24 hours per repository; a failed request or cache write may cause another request at the next session. SO_DISABLE_UPDATE_CHECK=1 or DO_NOT_TRACK=1 disables the check. Your coding tool and configured services still use their own network connections. This website uses cookieless Vercel Web Analytics, described in its privacy policy."
+            "text": "The plugin runs locally without its own account. Optional usage telemetry is off until you consent. By default two background connections are active: the update check asks the public npm registry for the newest release (cached 24 hours per repository; a failed request or cache write may cause another request at the next session), and the security check (security-pulse) fetches the Node release index and the CISA KEV feed, sends the names and versions of your lockfile packages (private packages filtered out) to OSV and, for GitHub remotes, queries open private vulnerability reports through your gh login. SO_DISABLE_UPDATE_CHECK=1 switches off the update check and SO_SECURITY_PULSE_REFRESH=off the security check; DO_NOT_TRACK or CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC switches off both. Your coding tool and configured services still use their own network connections. This website uses cookieless Vercel Web Analytics, described in its privacy policy."
           }
         },
         {
@@ -157,7 +157,7 @@
           "name": "Does it work on Windows?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Windows is barely tested. macOS and Linux run the full tests in CI; Windows only a smoke test. The Node core uses portable paths, but the shell-based hooks and optional MCP server need WSL or Git Bash. Treat Windows support as best-effort."
+            "text": "macOS and Linux are checked before every release. Windows is best effort: it runs and a native smoke test exists in CI, but there is no native acceptance before each release; reported Windows bugs get fixed. The Node core uses portable paths, but the shell-based hooks and optional MCP server need WSL or Git Bash."
           }
         },
         {
@@ -460,7 +460,7 @@
       <details class="technical-detail" id="before">
         <summary><h3>Before you start: requirements and the instruction file</h3></summary>
         <div>
-          <p>Windows is barely tested. macOS and Linux run the full tests in CI; Windows only a smoke test. The shell hooks and the optional MCP server need WSL or Git Bash. Some optional workflows (the plugin validator, some wave-scope snippets, the MCP server) also need <code>jq</code>.</p>
+          <p>macOS and Linux are checked before every release. Windows is best effort: it runs and a native smoke test exists in CI, but there is no native acceptance before each release; reported Windows bugs get fixed. The shell hooks and the optional MCP server need WSL or Git Bash. Some optional workflows (the plugin validator, some wave-scope snippets, the MCP server) also need <code>jq</code>.</p>
           <p>Your settings live in the project&rsquo;s instruction file: <code>CLAUDE.md</code> on Claude Code and Cursor, <code>AGENTS.md</code> on Codex CLI and Pi. The contents are the same.</p>
           <p>Each tool keeps its own session state (<code>STATE.md</code> in <code>.claude/</code>, <code>.codex/</code>, <code>.cursor/</code> or <code>.pi/</code>). Session records and lessons in <code>.orchestrator/metrics/</code> are shared, and so are the issues. Switching tools keeps your history.</p>
         </div>
@@ -675,7 +675,7 @@ enforcement: warn</pre>
       <ul class="connect-facts">
         <li><b>In your repository:</b> plain text you can read and delete. <code>STATE.md</code> for the running session, rules under <code>.claude/rules/</code>.</li>
         <li><b>On GitLab or GitHub:</b> one issue for each thing that is left, so it cannot be forgotten.</li>
-        <li><b>Nowhere else:</b> no account and no server of its own. By default, besides your coding tool and your Git host, the plugin only asks npm for updates, and you can switch that off. Features you turn on yourself, such as usage data or remote hosts, make their own connections. Optional usage data stays off until you agree.</li>
+        <li><b>Nowhere else:</b> no account and no server of its own. By default, besides your coding tool and your Git host, the plugin makes two background connections: an update check against the npm registry and a security check (Node release index, CISA KEV feed, and the names and versions of your lockfile packages sent to OSV; for GitHub remotes also <code>gh</code>). You can switch both off. Features you turn on yourself, such as usage data or remote hosts, make their own connections. Optional usage data stays off until you agree.</li>
       </ul>
     </div>
   </section>
@@ -748,8 +748,8 @@ enforcement: warn</pre>
       <ul class="stack">
         <li>Independent and community-maintained. <b>Not affiliated with or endorsed by Anthropic, OpenAI, or Cursor.</b></li>
         <li>Shipped as-is, with no service level agreement and best-effort maintenance.</li>
-        <li>Local by default, without its own account. Optional telemetry is off; the npm update check can be disabled separately.</li>
-        <li>Windows is barely tested. macOS and Linux run the full tests in CI; Windows only a smoke test. Shell hooks and the optional MCP server need WSL or Git Bash.</li>
+        <li>Local by default, without its own account. Optional telemetry is off until you consent. Two background connections are on by default, the npm update check (<code>SO_DISABLE_UPDATE_CHECK=1</code>) and the security check (Node release index, CISA KEV, lockfile package names and versions to OSV; <code>SO_SECURITY_PULSE_REFRESH=off</code>); both can be switched off.</li>
+        <li>macOS and Linux are checked before every release. Windows is best effort: it runs and a native smoke test exists in CI, but there is no native acceptance before each release; reported Windows bugs get fixed. Shell hooks and the optional MCP server need WSL or Git Bash.</li>
         <li>Hook-level enforcement is not the same on every harness. The list below is the current state, not a roadmap. The configured quality checks run on all four tools.</li>
       </ul>
 
@@ -815,11 +815,11 @@ enforcement: warn</pre>
         </details>
         <details class="faq-item">
           <summary>Does it send data anywhere?</summary>
-          <p>The plugin runs locally without its own account. Optional usage telemetry is off until you consent. By default, session-start checks the npm registry for updates. Successful results are cached for 24 hours per repository; a failed request or cache write may cause another request at the next session. SO_DISABLE_UPDATE_CHECK=1 or DO_NOT_TRACK=1 disables the check. Your coding tool and configured services still use their own network connections. This website uses cookieless Vercel Web Analytics, described in its privacy policy.</p>
+          <p>The plugin runs locally without its own account. Optional usage telemetry is off until you consent. By default two background connections are active: the update check asks the public npm registry for the newest release (cached 24 hours per repository; a failed request or cache write may cause another request at the next session), and the security check (security-pulse) fetches the Node release index and the CISA KEV feed, sends the names and versions of your lockfile packages (private packages filtered out) to OSV and, for GitHub remotes, queries open private vulnerability reports through your gh login. SO_DISABLE_UPDATE_CHECK=1 switches off the update check and SO_SECURITY_PULSE_REFRESH=off the security check; DO_NOT_TRACK or CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC switches off both. Your coding tool and configured services still use their own network connections. This website uses cookieless Vercel Web Analytics, described in its privacy policy.</p>
         </details>
         <details class="faq-item">
           <summary>Does it work on Windows?</summary>
-          <p>Windows is barely tested. macOS and Linux run the full tests in CI; Windows only a smoke test. The Node core uses portable paths, but the shell-based hooks and optional MCP server need WSL or Git Bash. Treat Windows support as best-effort.</p>
+          <p>macOS and Linux are checked before every release. Windows is best effort: it runs and a native smoke test exists in CI, but there is no native acceptance before each release; reported Windows bugs get fixed. The Node core uses portable paths, but the shell-based hooks and optional MCP server need WSL or Git Bash.</p>
         </details>
         <details class="faq-item">
           <summary>What does it cost?</summary>

@@ -35,9 +35,11 @@
 
 import { promisify } from 'node:util';
 import { resolveRepoSpec as _resolveRepoSpec } from './vcs-repo-spec.mjs';
+import { hookProgram } from './program-lookup.mjs';
 import { execFile as _execFile } from './native-command.mjs';
 
-const execFileAsync = promisify(_execFile);
+const runFile = promisify(_execFile);
+const execFileAsync = (cmd, args, options) => runFile(hookProgram(cmd, options.cwd), args, options);
 
 /** Default timeout in ms for the `gh` invocation. Mirrors `ci-status-banner.mjs:20`. */
 export const DEFAULT_TIMEOUT_MS = 8000;

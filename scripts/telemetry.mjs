@@ -25,6 +25,7 @@ import { parseArgs } from 'node:util';
 
 import {
   resolveConsent,
+  telemetrySendBlockReason,
   readTelemetryState,
   grantConsent,
   denyConsent,
@@ -87,9 +88,15 @@ function currentPosture() {
 
 function runStatus(json) {
   const { record, consent, queue } = currentPosture();
+  // `send` is the consent posture (as before #2256). Whether THIS shell could
+  // send is reported separately: a plain terminal has no CLAUDE_CODE_ENTRYPOINT,
+  // so it would read as blocked while the hooks of an interactive Claude Code
+  // session — a different environment — still send (review note_361977).
+  const blocked = telemetrySendBlockReason(process.env);
   const out = {
     state: consent.state,
     send: consent.send,
+    blocked_in_this_shell: blocked,
     prompt: consent.prompt,
     consent: record.consent,
     anon_id_present: typeof record.anon_id === 'string' && record.anon_id.trim() !== '',
@@ -104,6 +111,7 @@ function runStatus(json) {
       [
         `state:          ${out.state}`,
         `send:           ${out.send}`,
+        ...(blocked ? [`this shell:     would not send (${blocked}); see docs/telemetry.md § Precedence`] : []),
         `consent:        ${out.consent ?? '(none)'}`,
         `anon_id:        ${out.anon_id_present ? 'present' : 'not yet minted'}`,
         `last_flush_at:  ${out.last_flush_at ?? '(never)'}`,

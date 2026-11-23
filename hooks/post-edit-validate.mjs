@@ -44,6 +44,7 @@ import {
 } from '../scripts/lib/session-identity/own-session.mjs';
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
 import { spawnSync } from '../scripts/lib/native-command.mjs';
+import { hookProgram } from '../scripts/lib/program-lookup.mjs';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -91,11 +92,11 @@ export async function resolveTypecheckCommand(projectRoot) {
   }
 
   // 2. tsgo
-  const tsgoParts = _tryWhich('tsgo');
+  const tsgoParts = _tryWhich('tsgo', projectRoot);
   if (tsgoParts) return 'tsgo --noEmit';
 
   // 3. tsc
-  const tscParts = _tryWhich('tsc');
+  const tscParts = _tryWhich('tsc', projectRoot);
   if (tscParts) return 'tsc --noEmit';
 
   // 4. Only an installed project compiler; npx may install the unrelated
@@ -111,14 +112,15 @@ export async function resolveTypecheckCommand(projectRoot) {
  * Returns the executable name if found, null otherwise. Never throws.
  *
  * @param {string} name
+ * @param {string} projectRoot
  * @returns {string|null}
  */
-function _tryWhich(name) {
+function _tryWhich(name, projectRoot) {
   const whichCmd = process.platform === 'win32' ? 'where.exe' : 'which';
   // Two lookups get at most 1s total; revisit together with the outer
   // 5s hook budget if a host needs slower executable discovery.
   try {
-    const result = spawnSync(whichCmd, [name], { encoding: 'utf8', timeout: 500 });
+    const result = spawnSync(hookProgram(whichCmd, projectRoot), [name], { encoding: 'utf8', timeout: 500 });
     if (result.status === 0 && result.stdout.trim()) return name;
   } catch {
     // ignore

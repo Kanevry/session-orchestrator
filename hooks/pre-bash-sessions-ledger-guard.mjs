@@ -325,6 +325,7 @@ import { pathToFileURL } from 'node:url';
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { spawnSync } from '../scripts/lib/native-command.mjs';
+import { hookProgram } from '../scripts/lib/program-lookup.mjs';
 
 // ---------------------------------------------------------------------------
 // #993 — late-bound repo dependencies
@@ -552,7 +553,7 @@ function measuredGitRoot(cwd) {
   if (Object.keys(process.env).some((name) =>
     /^(?:GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_CONFIG.*|GIT_CEILING_DIRECTORIES|GIT_DISCOVERY_ACROSS_FILESYSTEM|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES)$/.test(name))) return null;
   try {
-    const result = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
+    const result = spawnSync(hookProgram('git', cwd), ['-C', cwd, 'rev-parse', '--show-toplevel'], {
       encoding: 'utf8', timeout: 2000, maxBuffer: 64 * 1024,
     });
     if (result.error || result.status !== 0) return null;

@@ -78,7 +78,7 @@ node scripts/lib/validate/check-owner-leakage.mjs /absolute/extracted/package \
 
 Use an inventory describing the actual extracted tarball and scan that extraction, not just a list of filenames. Packed mode checks all listed regular files and rejects unsafe paths, symlinks and unreadable entries. Ordinary test/file exclusions and CP8/CP10 filename exceptions do not exempt packed contents. Violation output keeps checkpoint IDs, counts and safe file/line locations, omits offending content, and replaces private filename segments; it does not publish configured policy values. This detects the configured patterns, not every possible unknown secret.
 
-Confidential customer-name checking (CP11) remains separately configured through `SO_CONFIDENTIAL_NAMES_FILE` or `owner.yaml` `paths.confidential-names-file`. A configured unusable CP11 source fails closed; absence of that optional source does not disable the other rules.
+Confidential customer-name checking (CP11) remains separately configured through `SO_CONFIDENTIAL_NAMES_FILE` or `owner.yaml` `paths.confidential-names-file`. A configured unusable CP11 source fails closed; absence of that optional source does not disable the other rules. To generate that list from your GitLab projects, and for the checks that require it in `mirror: curated` repos, see [confidential-names-list.md](confidential-names-list.md).
 
 ## Migration and configured vault paths
 

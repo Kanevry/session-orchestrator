@@ -113,6 +113,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from '../../scripts/lib/native-command.mjs';
+import { hookProgram } from '../../scripts/lib/program-lookup.mjs';
 
 /** TTL for the session-id-less marker fallback, mirroring `run-node.sh` (6h). */
 const BANNER_TTL_MS = 6 * 60 * 60 * 1000;
@@ -164,9 +165,8 @@ const HEAD_FALLBACK_ALLOWLIST = new Set([
  * the invoking user). An allowlist omits every unlisted key — present and
  * future — so no future git config channel can ride in.
  *
- * Kept, and only these: `PATH` (execFileSync resolves the `git` binary through
- * it), `HOME` (git's own config-discovery root — the USER's `~/.gitconfig`, not
- * an attacker-set channel), and the locale/tmp/tz vars git honours for messages
+ * Kept, and only these: `PATH` (inherited by git), `HOME` (git's own
+ * config-discovery root), and the locale/tmp/tz vars git honours for messages
  * and temp files. `git show HEAD:<blob>` on a pipe needs nothing else: no pager
  * (not a tty), no default smudge/textconv filter, and aliases cannot shadow the
  * `show` builtin.
@@ -432,7 +432,7 @@ function readFromHead(repoRoot, relPath) {
   for (const key of GIT_ENV_ALLOWLIST) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
-  return execFileSync('git', ['-C', repoRoot, 'show', `HEAD:${relPath}`], {
+  return execFileSync(hookProgram('git', repoRoot), ['-C', repoRoot, 'show', `HEAD:${relPath}`], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
     maxBuffer: 8 * 1024 * 1024,

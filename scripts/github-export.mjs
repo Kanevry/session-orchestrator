@@ -113,7 +113,9 @@ if (result.stats) {
   );
 }
 for (const line of result.findings ?? []) console.error(line);
-for (const line of result.warnings ?? []) console.error(`github-export: WARN — ${line} (a real export would refuse)`);
+for (const line of result.warnings ?? []) {
+  console.error(line.startsWith('WARN') ? line : `github-export: WARN — ${line} (a real export would refuse)`);
+}
 
 switch (result.status) {
   case 'created':

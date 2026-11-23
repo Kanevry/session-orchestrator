@@ -31,6 +31,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { isLockShape } from '../session-lock-shape.mjs';
 import { creationMs, readWindowsProcessTable } from '../win-process-tree.mjs';
+import { hookProgram } from '../program-lookup.mjs';
 import { execFileSync } from '../native-command.mjs';
 
 /**
@@ -253,7 +254,7 @@ const PS_HOP_TIMEOUT_MS = 5000;
  * @returns {{ ppid: number, comm: string } | null}
  */
 function readProcessParent(pid, note, timeoutMs = PS_HOP_TIMEOUT_MS) {
-  const output = execFileSync('ps', ['-p', String(pid), '-o', 'ppid=,comm='], {
+  const output = execFileSync(hookProgram('ps'), ['-p', String(pid), '-o', 'ppid=,comm='], {
     encoding: 'utf8', timeout: timeoutMs, maxBuffer: 2048,
     stdio: ['ignore', 'pipe', 'pipe'],
   });

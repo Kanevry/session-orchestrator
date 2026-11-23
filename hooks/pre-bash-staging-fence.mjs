@@ -78,6 +78,7 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { stableHostname } from '../scripts/lib/host-identity.mjs';
 import { dotGitAncestor, launchDirFromEnv } from '../scripts/lib/platform.mjs';
 import { execFileSync } from '../scripts/lib/native-command.mjs';
+import { hookProgram } from '../scripts/lib/program-lookup.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -776,7 +777,7 @@ async function recordWorkTrees(input, command) {
     for (const dir of dirs) {
       let lines;
       try {
-        lines = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel', 'HEAD'], {
+        lines = execFileSync(hookProgram('git', dir), ['-C', dir, 'rev-parse', '--show-toplevel', 'HEAD'], {
           encoding: 'utf8',
           timeout: RECORDER_GIT_TIMEOUT_MS,
           stdio: ['ignore', 'pipe', 'ignore'],

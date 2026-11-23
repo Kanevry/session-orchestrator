@@ -5,6 +5,7 @@
 
 
 import { parseEtimeToSeconds } from '../resource-probe/parsers.mjs';
+import { hookProgram } from '../program-lookup.mjs';
 import { spawn } from '../native-command.mjs';
 
 /**
@@ -161,7 +162,7 @@ function runPsArgs(args, timeoutMs) {
       resolve(value);
     };
     try {
-      const child = spawn('ps', args, { stdio: ['ignore', 'pipe', 'ignore'] });
+      const child = spawn(hookProgram('ps'), args, { stdio: ['ignore', 'pipe', 'ignore'] });
       const chunks = [];
       child.stdout.on('data', (c) => chunks.push(c));
       child.on('error', () => finish(null));

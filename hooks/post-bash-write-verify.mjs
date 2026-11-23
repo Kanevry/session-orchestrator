@@ -182,6 +182,7 @@ import {
   classifyManifestSession,
 } from '../scripts/lib/session-identity/own-session.mjs';
 import { execFileSync } from '../scripts/lib/native-command.mjs';
+import { hookProgram } from '../scripts/lib/program-lookup.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -810,7 +811,7 @@ export function formatSnapshotMissingNotice({ sessionAge = null, scopeAge = null
 function readDirtyPaths(repoRoot) {
   try {
     const raw = execFileSync(
-      'git',
+      hookProgram('git', repoRoot),
       // `--untracked-files=all` is load-bearing, not a tuning knob: the default
       // `normal` COLLAPSES a wholly-untracked directory into a single `dir/`
       // record, which defeats every file-level ignore pattern below (a fresh
@@ -828,7 +829,7 @@ function readDirtyPaths(repoRoot) {
     // launched from a repo subdirectory.
     const prefix = existsSync(path.join(repoRoot, '.git'))
       ? ''
-      : execFileSync('git', ['rev-parse', '--show-prefix'], {
+      : execFileSync(hookProgram('git', repoRoot), ['rev-parse', '--show-prefix'], {
         cwd: repoRoot, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'],
       }).trim();
     return rebaseToSessionRoot(parsePorcelainZ(raw), prefix);

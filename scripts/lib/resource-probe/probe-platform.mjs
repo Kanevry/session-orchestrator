@@ -18,6 +18,7 @@ import {
   parseMemoryPressureOutput,
   parseVmStatAvailableGb,
 } from './parsers.mjs';
+import { hookProgram } from '../program-lookup.mjs';
 import { spawn } from '../native-command.mjs';
 
 // ---------------------------------------------------------------------------
@@ -125,7 +126,7 @@ function runPs(timeoutMs = 2000) {
       resolve(value);
     };
     try {
-      const cmd = SO_IS_WINDOWS ? 'tasklist' : 'ps';
+      const cmd = hookProgram(SO_IS_WINDOWS ? 'tasklist' : 'ps');
       const args = SO_IS_WINDOWS
         ? ['/FO', 'CSV', '/NH']
         : ['-A', '-o', 'comm'];
@@ -164,7 +165,7 @@ function runPsDetailed(timeoutMs = 2000) {
     };
     try {
       // -A: all processes; output: pid, comm (basename), etime, %cpu
-      const child = spawn('ps', ['-A', '-o', 'pid,comm,etime,%cpu'], { stdio: ['ignore', 'pipe', 'ignore'] });
+      const child = spawn(hookProgram('ps'), ['-A', '-o', 'pid,comm,etime,%cpu'], { stdio: ['ignore', 'pipe', 'ignore'] });
       const chunks = [];
       child.stdout.on('data', (c) => chunks.push(c));
       child.on('error', () => finish(null));
@@ -249,13 +250,13 @@ export async function swapUsedMb() {
   if (SO_IS_WINDOWS) return null;
 
   if (process.platform === 'darwin') {
-    const output = await runCommand('sysctl', ['vm.swapusage']);
+    const output = await runCommand(hookProgram('sysctl'), ['vm.swapusage']);
     return parseSwapUsageOutput(output);
   }
 
   if (process.platform === 'linux') {
     // Read /proc/meminfo and compute SwapTotal - SwapFree (values in kB)
-    const output = await runCommand('cat', ['/proc/meminfo']);
+    const output = await runCommand(hookProgram('cat'), ['/proc/meminfo']);
     if (output === null) return null;
     const totalMatch = /SwapTotal:\s*(\d+)\s*kB/i.exec(output);
     const freeMatch = /SwapFree:\s*(\d+)\s*kB/i.exec(output);
@@ -277,7 +278,7 @@ export async function swapUsedMb() {
 export async function memoryPressurePctFree(timeoutMs = 1500) {
   if (process.platform !== 'darwin') return null;
 
-  const output = await runCommand('memory_pressure', [], timeoutMs);
+  const output = await runCommand(hookProgram('memory_pressure'), [], timeoutMs);
   return parseMemoryPressureOutput(output);
 }
 
@@ -297,7 +298,7 @@ export async function memoryPressurePctFree(timeoutMs = 1500) {
 export async function ramAvailableGb(timeoutMs = 1500) {
   if (process.platform !== 'darwin') return null;
 
-  const output = await runCommand('vm_stat', [], timeoutMs);
+  const output = await runCommand(hookProgram('vm_stat'), [], timeoutMs);
   return parseVmStatAvailableGb(output);
 }
 

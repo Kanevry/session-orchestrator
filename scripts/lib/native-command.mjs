@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 // node:child_process then still imports cleanly, and every call reaches the
 // mocked function that is current when the call happens.
 import * as childProcess from 'node:child_process';
-import { isTrustedPathEntry, pathEntries, resolveExecutable, resolveGitBash } from './program-lookup.mjs';
+import { hookProgram, isTrustedPathEntry, pathEntries, resolveExecutable, resolveGitBash } from './program-lookup.mjs';
 
 export { resolveExecutable, resolveGitBash };
 
@@ -70,12 +70,14 @@ export function spawnNativeSync(cmd, args, options = {}) {
  * @returns {boolean}
  */
 export function commandOnPath(bin, { platform = process.platform, spawn = childProcess.spawnSync, env = process.env } = {}) {
-  let locator = 'which';
+  let locator;
   if (platform === 'win32') {
     const systemRoot = env.SystemRoot || env.windir || 'C:\\Windows';
     // Fail closed ("not found") rather than spawn a name the cwd could shadow.
     if (!path.win32.isAbsolute(systemRoot)) return false;
     locator = path.win32.join(systemRoot, 'System32', 'where.exe');
+  } else {
+    locator = hookProgram('which', process.cwd(), env);
   }
   return spawn(locator, [bin], {
     encoding: 'utf8', timeout: 10_000, shell: false,

@@ -68,6 +68,7 @@
 import { _coerceString } from './config/coercers.mjs';
 import { readConfigFile } from './config/io.mjs';
 import { _extractConfigSection, _parseKV } from './config/section-extractor.mjs';
+import { hookProgram } from './program-lookup.mjs';
 import { execFileSync } from './native-command.mjs';
 
 /**
@@ -205,7 +206,7 @@ export function redactUrlCredentials(text) {
  */
 function defaultGitRun(gitArgs) {
   try {
-    const stdout = execFileSync('git', gitArgs, {
+    const stdout = execFileSync(hookProgram('git', gitArgs[1]), gitArgs, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });

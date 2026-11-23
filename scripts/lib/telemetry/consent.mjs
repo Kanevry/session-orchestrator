@@ -287,6 +287,48 @@ export function isCiEnv(env = process.env) {
 }
 
 /**
+ * Is there an operator who could answer a consent prompt in this session (#1872)?
+ * CI and Claude Code SDK entrypoints run unattended. On 2026-11-22 with Claude
+ * Code 2.1.330, both SessionStart and SessionEnd saw `CLAUDE_CODE_ENTRYPOINT`
+ * set to `sdk-cli` under `claude -p` and `cli` in an interactive session.
+ *
+ * BV-004: This check governs the consent prompt and banner. Sending requires
+ * separate evidence from {@link telemetrySendBlockReason}.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {boolean}
+ */
+export function isInteractiveSession(env) {
+  if (isCiEnv(env)) return false;
+  const entrypoint = String(env?.CLAUDE_CODE_ENTRYPOINT ?? '').trim().toLowerCase();
+  return !entrypoint.startsWith('sdk');
+}
+
+/**
+ * May this harness send usage pings after consent? On 2026-11-22, Claude Code
+ * 2.1.330 SessionStart and SessionEnd hooks saw `cli` in interactive tmux and
+ * `sdk-cli` under `claude -p` after clearing the inherited entrypoint. A
+ * `codex exec` tool child launched from Claude Code inherited the entrypoint
+ * alongside CODEX_THREAD_ID, CODEX_SANDBOX and CODEX_CI.
+ *
+ * BV-004: Codex, Cursor and Pi do not send until an interactive marker has
+ * been measured for them (#2256). Revisit when such a marker is measured.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {'non-interactive'|'unverified-harness'|null}
+ */
+export function telemetrySendBlockReason(env) {
+  const entrypoint = String(env?.CLAUDE_CODE_ENTRYPOINT ?? '').trim().toLowerCase();
+  if (isCiEnv(env ?? {}) || entrypoint.startsWith('sdk')) return 'non-interactive';
+
+  const platform = String(env?.SO_PLATFORM ?? '').trim().toLowerCase();
+  const foreignMarkers = ['CODEX_PLUGIN_ROOT', 'CODEX_THREAD_ID', 'CURSOR_PLUGIN_ROOT', 'CURSOR_RULES_DIR', 'PI_PLUGIN_ROOT'];
+  if (['codex', 'cursor', 'pi'].includes(platform) ||
+      foreignMarkers.some((key) => String(env?.[key] ?? '').trim() !== '')) return 'unverified-harness';
+  return entrypoint ? null : 'unverified-harness';
+}
+
+/**
  * True when there is no interactive TTY to prompt on: any CI environment, or a
  * stdout that is not a TTY. Fail-closed toward headless — anything that is not a
  * confirmed interactive TTY counts as headless.

@@ -20,7 +20,8 @@
  *      #972 floor/overlay merge (scripts/lib/blocked-commands-policy.mjs):
  *      pluginRoot policy = floor, cwd/projectDir policy = overlay (add or
  *      escalate only). Overlay failures fail-to-floor; only "no usable policy
- *      anywhere" keeps the historical fail-open (exit 0 + warn).
+ *      anywhere" keeps the historical fail-open (exit 0 + warn), except for a
+ *      here-doc left open by its substitution, denied before G4 (#2249).
  *   G5 rule evaluation per rule in policy.rules
  *      severity:"block" → deny envelope on stdout via emitDeny, exit 0 (#906)
  *      severity:"warn"  → emit warning, exit 0 (allow)
@@ -74,7 +75,9 @@ import { pathToFileURL } from 'node:url';
 
 import { shouldRunHook, effectiveSeverity, resolveHookProfile } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
-import { execFileSync as nativeExecFileSync } from '../scripts/lib/native-command.mjs';
+import { promisify } from 'node:util';
+import { execFile, execFileSync as nativeExecFileSync } from '../scripts/lib/native-command.mjs';
+import { hookProgram } from '../scripts/lib/program-lookup.mjs';
 
 // #1826 — stdout ceiling for every git read in this hook. Node's default 1 MiB
 // made a CLEAN worktree with node_modules "not measurable": its
@@ -552,7 +555,7 @@ function caseGit(dir, args, { input } = {}) {
   const timeout = Math.min(CASE_CLASS_GIT_TIMEOUT_MS, Math.floor(hookTimeLeft()) - 500);
   if (timeout <= 0) return null;
   try {
-    const out = execFileSync('git', [
+    const out = execFileSync(hookProgram('git', dir), [
       '--literal-pathspecs', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', dir, ...args,
     ], {
       encoding: 'utf8',
@@ -735,11 +738,8 @@ const MKTEMP_CLEANUP_HINT =
  */
 async function isGitStashNonEmpty(projectDir) {
   try {
-    const { $: zx$ } = await import('../scripts/lib/zx.mjs');
-    zx$.verbose = false;
-    zx$.quiet = true;
     const cwd = projectDir || process.cwd();
-    const result = await zx$`git -C ${cwd} stash list`;
+    const result = await promisify(execFile)(hookProgram('git', cwd), ['-C', cwd, 'stash', 'list']);
     return result.stdout.trim().length > 0;
   } catch {
     // On git failure → conservative: warn
@@ -1721,7 +1721,7 @@ function hookedGitCall(segment, index, dir) {
  */
 function gitRead(dir, args, timeout = 3000) {
   try {
-    const out = execFileSync('git', ['-C', dir, ...args], {
+    const out = execFileSync(hookProgram('git', dir), ['-C', dir, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout,
@@ -2009,7 +2009,7 @@ function judgeWorktreeRemoval(target) {
   const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, maxBuffer: GIT_MAX_BUFFER };
   let top;
   try {
-    top = execFileSync('git', ['-C', target, 'rev-parse', '--show-toplevel'], opts).trim();
+    top = execFileSync(hookProgram('git', target), ['-C', target, 'rev-parse', '--show-toplevel'], opts).trim();
   } catch (err) {
     return { unmeasurable: `git rev-parse failed: ${failureCause(err)}` };
   }
@@ -2020,7 +2020,7 @@ function judgeWorktreeRemoval(target) {
   }
   let out;
   try {
-    out = execFileSync('git', ['-C', target, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=traditional'], opts);
+    out = execFileSync(hookProgram('git', target), ['-C', target, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=traditional'], opts);
   } catch (err) {
     return { unmeasurable: `git status failed: ${failureCause(err)}` };
   }
@@ -2056,7 +2056,7 @@ const realOrSelf = (p) => { try { return fs.realpathSync(p); } catch { return pa
 function findWorktreeLikeGit(dir, suffix, resolved) {
   let out;
   try {
-    out = execFileSync('git', ['-C', dir, 'worktree', 'list', '--porcelain'], {
+    out = execFileSync(hookProgram('git', dir), ['-C', dir, 'worktree', 'list', '--porcelain'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 3000,
@@ -2250,7 +2250,7 @@ function headRefKind(ref, dir, budget) {
     const left = budgetLeft(budget);
     if (left <= 0) { spent = true; return null; }
     try {
-      const out = execFileSync('git', ['-C', dir, ...args], {
+      const out = execFileSync(hookProgram('git', dir), ['-C', dir, ...args], {
         encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: left, maxBuffer: GIT_MAX_BUFFER,
       }).trim();
       return out.length > 0 ? out : null;
@@ -2294,7 +2294,7 @@ function mergeConflictKind(reset, dir, budget) {
     if (left <= 0) return { kind: 'spent' };
     try {
       return {
-        out: execFileSync('git', ['-C', dir, ...args], {
+        out: execFileSync(hookProgram('git', dir), ['-C', dir, ...args], {
           encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: left, maxBuffer: GIT_MAX_BUFFER,
         }),
       };
@@ -2463,7 +2463,7 @@ function measurePathReset(reset, budget) {
   const pathspec = reset.whole ? [] : ['--', ...reset.paths.map((t) => t.text)];
   let out;
   try {
-    out = execFileSync('git', ['-C', reset.dir, 'status', '--porcelain=v1', '-z', '--untracked-files=no', ...pathspec], {
+    out = execFileSync(hookProgram('git', reset.dir), ['-C', reset.dir, 'status', '--porcelain=v1', '-z', '--untracked-files=no', ...pathspec], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: left, maxBuffer: GIT_MAX_BUFFER,
     });
   } catch (err) {
@@ -2486,6 +2486,25 @@ function measurePathReset(reset, budget) {
 const PATH_RESET_SAFE_WAY =
   'The path carries uncommitted changes another session may be building, or the guard cannot measure it (PSA-003, #1834). ' +
   'Save what you need first, then restore one file explicitly with `git show HEAD:<path> > <path>` (denied for targets of rule redirect-truncate-protected: ask the operator there), or let the operator commit or stash the changes in their own terminal.';
+
+/**
+ * The deny reason when the line holds a brace word the guard does not read
+ * (#2246): it names no git command, so the path-reset advice above does not fit.
+ */
+const UNREAD_COMMAND_WAY =
+  'The line holds a brace word the guard cannot read (beside a substitution or parameter, or past the expansion cap), so it cannot rule out that the word builds a destructive git command (#1944, #1956). ' +
+  'Write the words out, or move the substitution or parameter into its own statement.';
+
+/**
+ * #2249: unreadForcedDiscard's verdict for a here-doc whose `$( … )` or
+ * backtick substitution closed before the body began (`x=$(cat <<E )`), and
+ * the deny reason for it.
+ */
+const OPEN_HEREDOC = 'here-doc left open by its command substitution';
+const OPEN_HEREDOC_LABEL = `unmeasurable command: ${OPEN_HEREDOC} — bash reads the lines after it as the body, zsh runs them as commands`;
+const OPEN_HEREDOC_WAY =
+  'A here-doc opened inside $( … ) or backticks is still open where the substitution closes, so bash reads the lines after it as the here-doc body and zsh runs them as commands; the guard cannot tell which shell runs the line (#2249). ' +
+  'End the here-doc before the closing parenthesis: put `)` on its own line after the terminator.';
 
 /**
  * The verdict of rule `git-checkout-discard` (#1834, ADR-0017 § Path reset):
@@ -2635,6 +2654,9 @@ function unreadForcedDiscard(command, unread = false, depth = 0) {
     // NAMED CEILING (BV-004): a harmless such word behind any other command
     // (`sudo cp conf{,.$USER}`) is denied too. REVISIT TRIGGER: a real command
     // denied by this reading.
+    // Re-read shell payloads can expose a here-doc that was quoted in the
+    // original command and therefore invisible to the whole-command check.
+    if (segment.some((t) => t.heredocOpen === true)) return OPEN_HEREDOC;
     const unreadBrace = blocker.unreadBraceWord(segment);
     if (unreadBrace !== undefined) return `unread brace word ${unreadBrace.text.slice(0, 40)}`;
     for (const data of pipedData(segment)) {
@@ -2789,15 +2811,21 @@ function pathResetVerdict(command, cwd, pattern) {
   // #1939: a forced discard the reader cannot reach (`xargs git rm -f`, `find
   // … -exec git checkout -f \;`, `git bisect run git switch -f main`) is
   // denied, bound to its own segment.
+  // #2246: an unread brace word holds no git call the guard saw; the verdict
+  // says so (`unreadCommand`: 'brace', or 'heredoc' for #2249) instead of
+  // naming a path reset.
+  let unreadCommand = false;
   if (deny === null && unmeasurable === null) {
     const unread = unreadForcedDiscard(command);
     if (unread !== null) {
-      unmeasurable = unread.startsWith('unread brace word') ? `${unread} — the words it builds can be any command, not measurable`
+      unreadCommand = unread === OPEN_HEREDOC ? 'heredoc' : unread.startsWith('unread brace word') ? 'brace' : false;
+      unmeasurable = unreadCommand === 'heredoc' ? OPEN_HEREDOC_LABEL
+        : unreadCommand ? `unmeasurable command: ${unread} — it can expand to any command, a destructive git command included`
         : unread === 'shell alias' ? 'git -c alias.<name>=!<command> — runs a shell command the guard does not read, not measurable'
           : `git ${unread} — inside a command runner, path not measurable`;
     }
   }
-  return { deny: deny ?? unmeasurable, notices };
+  return { deny: deny ?? unmeasurable, notices, unreadCommand };
 }
 
 /**
@@ -3291,6 +3319,16 @@ async function main() {
     );
   }
 
+  // #2249: a quote in the body can hide every following command from the
+  // lexer. Judge its marker before loading any rules. Keep the event ID.
+  const shellCwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
+  if (command.includes('<') && blocker.tokenizeCommand(command).some((token) => token.heredocOpen === true)) {
+    return blockCommand(OPEN_HEREDOC_LABEL, 'git-checkout-discard', OPEN_HEREDOC_WAY, command, sessionId, {
+      caseId: 'git-checkout-discard/unmeasurable',
+      targetClass: classifyTarget(shellCwd, { projectDir }),
+    });
+  }
+
   // G4 — policy load (#972: floor/overlay merge, not first-hit-wins).
   // The plugin-root policy is the FLOOR; a cwd/projectDir policy is an OVERLAY
   // that can only add rules or escalate severity — an empty or malformed
@@ -3320,7 +3358,6 @@ async function main() {
   // #2090 — one profile for the whole call; effectiveSeverity() is the only
   // place that turns it (with the rule's or the case's class) into block/warn.
   const profile = resolveHookProfile();
-  const shellCwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
   /**
    * #2090 — a block case measured `recoverable` under a profile that softens
    * it: the same visible warn channel policy `warn` rules use (stderr + the
@@ -3579,7 +3616,11 @@ async function main() {
           else process.stderr.write(`⚠ ${msg}\n`);
           continue;
         }
-        await blockCommand(verdict.deny, id, PATH_RESET_SAFE_WAY, lineCommand, sessionId, { targetClass: classifyTarget(cwd, { projectDir }) });
+        const way = verdict.unreadCommand === 'heredoc' ? OPEN_HEREDOC_WAY : verdict.unreadCommand ? UNREAD_COMMAND_WAY : PATH_RESET_SAFE_WAY;
+        await blockCommand(verdict.deny, id, way, lineCommand, sessionId, {
+          targetClass: classifyTarget(cwd, { projectDir }),
+          ...(verdict.unreadCommand ? { caseId: `${id}/unmeasurable` } : {}),
+        });
         continue; // unreachable (blockCommand never returns) — kept for clarity
       }
 

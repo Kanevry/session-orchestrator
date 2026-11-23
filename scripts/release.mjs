@@ -88,7 +88,8 @@
 //      tag/registry collision, mirror behind, dead token, CI not green,
 //      leakage-gate hit) OR post-publish reconciliation required OR
 //      --reconcile not yet installable (pending / failed / proof missing;
-//      a confirmed trusted receipt exits 0 even with installable no, as in --help)
+//      a confirmed trusted receipt exits 0 even with installable no or
+//      not measured, as in --help)
 //      OR a published trusted release with a non-successful install check
 //   2  system/usage error before the npm receipt (git/npm spawn failure,
 //      missing NPM_TOKEN, unknown flag, --skip-ci combined with --publish)
@@ -150,6 +151,8 @@ import {
   verifyExportCommit,
 } from './lib/github-export.mjs';
 import { CITATION_STEP, computeSnapshotTree, readSnapshotProbeReceipt } from './lib/snapshot-probe.mjs';
+import { describeNamesList, evaluateNamesListRow } from './lib/confidential-names-list.mjs';
+import { loadOwnerConfig } from './lib/owner-yaml.mjs';
 import {
   archiveContentManifest,
   compareContentManifests,
@@ -463,11 +466,14 @@ const INTENTIONAL_TEST_ASSET_PATHS = new Set([
 // both design rounds for the home page (#1756). Their captions and notes quote the demo run they
 // were built from ("plugin 5.19.0, 13 Nov 2026"); bumping them would falsify the run. Only this
 // one round directory is exempt — a new prototype directory under `design/prototypes/` stays swept.
+// `SECURITY.md` (5.21.2 follow-up, 2026-11-22, #2239): its "Fixed in <version>" advisory sections
+// must name the version that carries the fix ("Update to 5.21.2 or later"); bumping them would
+// falsify the advisory. Only the root file is exempt.
 // `site/_census.json` is deliberately NOT allowlisted: it carries a `"version"` field that
 // `--set-version` re-stamps (scripts/site-numbers.mjs --write, see the post-bump hint in main()),
 // so leaving it under the drift sweep makes the sweep double as its staleness gate — a census
 // not re-stamped after a bump fails `--check` instead of shipping the previous version.
-export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|scripts\/lib\/locks\/index\.mjs|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|skills\/eval\/rubric-v3\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|skills\/release\/SKILL\.md|design\/prototypes\/1756\/|marketing\/remotion\/(?:README\.md|campaign\.json|render-receipt\.json|src\/ReleaseFilm\.tsx)$)/;
+export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|scripts\/lib\/locks\/index\.mjs|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|SECURITY\.md$|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|skills\/eval\/rubric-v3\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|skills\/release\/SKILL\.md|design\/prototypes\/1756\/|marketing\/remotion\/(?:README\.md|campaign\.json|render-receipt\.json|src\/ReleaseFilm\.tsx)$)/;
 
 /** Pure check over packed-entry lines. Returns violations: {name, line}[]. */
 export function checkLeakage(lines) {
@@ -948,9 +954,11 @@ export function archiveIntegrity(tarballPath) {
  * Scan extracted archive bytes, retain that archive for the callback, and always
  * clean up. Command/scan failures never call the publication callback. The
  * 20,000-entry inventory ceiling matches the scanner; revisit for larger packs.
+ * `requireConfidentialNames` (#2238, `mirror: curated`): the scan fails closed
+ * without a usable CP11 name list instead of passing CP11 as unconfigured.
  */
 export async function withCheckedPackage(repoRoot, callback, {
-  runImpl = run, env = process.env, minEntries = MIN_PACKED_ENTRIES, cleanupImpl = rmSync,
+  runImpl = run, env = process.env, minEntries = MIN_PACKED_ENTRIES, cleanupImpl = rmSync, requireConfidentialNames = false,
 } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'so-release-pack-'));
   try {
@@ -978,7 +986,8 @@ export async function withCheckedPackage(repoRoot, callback, {
       const inventoryPath = join(work, 'inventory.json');
       writeFileSync(inventoryPath, JSON.stringify([inventory.record]), { mode: 0o600 });
       const scanner = fileURLToPath(new URL('./lib/validate/check-owner-leakage.mjs', import.meta.url));
-      const scan = runImpl(process.execPath, [scanner, join(unpacked, 'package'), '--require-owner-patterns', '--packed-files', inventoryPath], opts);
+      const scanArgs = [scanner, join(unpacked, 'package'), '--require-owner-patterns', ...(requireConfidentialNames ? ['--require-confidential-names'] : []), '--packed-files', inventoryPath];
+      const scan = runImpl(process.execPath, scanArgs, opts);
       const summaries = [...(scan.stdout || '').matchAll(/^Results: (\d+) passed, (\d+) failed \((\d+) scanned files\)$/gm)];
       if (scan.status !== 0 || summaries.length !== 1 || Number(summaries[0][1]) < 1 || Number(summaries[0][2]) !== 0 || Number(summaries[0][3]) !== inventory.paths.length) return { ok: false, detail: 'required owner policy / packed content scan failed or incomplete' };
       if (archiveDigest(tarballPath) !== digest) throw new Error('archive-changed');
@@ -2195,6 +2204,12 @@ async function preflight(repoRoot, target, { skipCi = false, mode = 'stage' } = 
   // Curated only: the exported tree must have been probed (#1712).
   const probe = evaluateSnapshotProbePreflight(repoRoot, head, mirror);
   add('snapshot-probe', probe.ok, probe.detail);
+  // Curated only: CP11 needs a usable host-local name list (#2238); stale = WARN detail.
+  const namesRow = evaluateNamesListRow({
+    curated: Boolean(mirror.curated),
+    list: mirror.curated ? describeNamesList({ ownerConfig: loadOwnerConfig().config }) : null,
+  });
+  add('confidential-names', namesRow.ok, namesRow.detail);
 
   // 2. Surface parity.
   const surfaceRows = scanSurfaces(repoRoot, target);
@@ -2343,7 +2358,7 @@ async function preflight(repoRoot, target, { skipCi = false, mode = 'stage' } = 
   add('ci-green-on-head-github', ciRows.github.ok, ciRows.github.detail);
 
   // `head` is handed to the publish tail, which refuses to tag anything else.
-  return { checks, head };
+  return { checks, head, curated: Boolean(mirror.curated) };
 }
 
 function changelogExcerpt(repoRoot, target) {
@@ -2975,7 +2990,7 @@ export async function reconcileTrustedRelease(repoRoot, target, deps = {}) {
     });
   const reason = installCheck.reason ?? installCheck.conclusion;
   const detail = `${receipt.detail}; install job ${installCheck.state}${reason ? ` (${reason})` : ''}`;
-  return { ...receipt, installable: installCheck.state === 'passed', detail };
+  return { ...receipt, installable: installCheck.state === 'passed', installState: installCheck.state, detail };
 }
 
 /** Print the registry verdict. A confirmed trusted receipt exits 0 even when installability is unverified. */
@@ -2985,7 +3000,13 @@ export function printReconcileResult(result, { json = false, log = console.log, 
     return result.ok ? 0 : 1;
   }
   const mark = (flag) => (flag ? 'yes' : 'no');
-  log(`${PACKAGE_NAME}@${result.target}: ${result.state} — accepted ${mark(result.accepted)}, available ${mark(result.available)}, installable ${mark(result.installable)}`);
+  // Trusted route only: an install job that is pending or not-measured was never judged,
+  // so printing "no" would claim a failed install. Only 'failed' prints "no".
+  const installState = result.installState;
+  const installable = installState === undefined || installState === 'passed' || installState === 'failed'
+    ? mark(result.installable)
+    : 'not measured';
+  log(`${PACKAGE_NAME}@${result.target}: ${result.state} — accepted ${mark(result.accepted)}, available ${mark(result.available)}, installable ${installable}`);
   if (result.ok) {
     log(`  ${result.detail}`);
     if (result.state === 'superseded') log(`  Note: ${result.target} is installable but no longer \`latest\` — a later release took the tag.`);
@@ -3362,6 +3383,7 @@ async function publishCuratedSnapshot(repoRoot, source, deps = {}) {
   await mustRunTail('git', ['fetch', '--quiet', '--no-tags', 'github', '+refs/heads/main:refs/remotes/github/main'], tail);
   const git = createGitRunner(repoRoot);
   const built = buildGithubExport({ git, source, ...(deps.snapshotCheck ? { snapshotCheck: deps.snapshotCheck } : {}) });
+  for (const warning of built.warnings ?? []) console.error(warning);
   if (built.status === 'created') {
     const verdict = verifyExportCommit({ git, sha: built.sha, source });
     if (!verdict.ok) throw new Error(`curated snapshot ${built.sha} failed verification — ${verdict.reason}`);
@@ -4639,7 +4661,7 @@ async function main() {
   if (values.check || values.publish) {
     const target = readPackageVersion(repoRoot);
     const mode = resolvePublishMode(values);
-    const { checks, head } = await preflight(repoRoot, target, { skipCi: values['skip-ci'], mode });
+    const { checks, head, curated } = await preflight(repoRoot, target, { skipCi: values['skip-ci'], mode });
     const checked = await withCheckedPackage(repoRoot, async (artifact) => {
       checks.push({ name: 'leakage-gate', ok: true, detail: 'packed filenames and required owner-policy content scan verified' });
       const ok = printChecks(checks, values.json && !values.publish, target);
@@ -4663,7 +4685,7 @@ async function main() {
         expectedHead: head,
       });
       return printPublishOutcome(outcome, target);
-    });
+    }, { requireConfidentialNames: curated });
     if (!checked.ok) {
       checks.push({ name: 'leakage-gate', ok: false, detail: checked.detail });
       printChecks(checks, values.json && !values.publish, target);

@@ -48,6 +48,58 @@ const ALLOWLIST_PATH = join(HERE, 'allowlist.json');
 const MANIFEST_DESCRIPTION =
   'Working methods for coding agents from session-orchestrator. grill: stress-test a plan or design one question at a time against the real code. eli5: explain a result in plain words without dropping a fact. deepen: make a task deeper, not bigger, with an outside judge for the result. debug: find the root cause of a bug in four phases before any fix. Skills only, no hooks, no MCP servers.';
 
+// Listing metadata the OpenAI directory requires before a submission
+// (developers.openai.com/plugins/deploy/submission § Listing metadata, read
+// 2026-11-22): displayName and shortDescription at most 30 characters, each
+// defaultPrompt at most 128, a square primary icon. Tests hold the limits.
+export const ICON_PATH = 'assets/icon.svg';
+const LISTING = {
+  displayName: 'Session Orchestrator',
+  shortDescription: 'Grill, explain, deepen, debug',
+  longDescription:
+    'Four working methods for coding agents, taken from the Session Orchestrator plugin. grill stress-tests a plan or design one question at a time against the real code. eli5 restates a result in plain words without dropping a fact. deepen makes a task deeper, not bigger, and has an outside judge check the result. debug finds the root cause of a bug in four phases before any fix. For developers who work with a coding agent in a repository. Limits: this package holds instructions only. It ships no hooks, no MCP server and no scripts, so the session workflow of the full plugin (planning, waves, quality gates, close-out) is not part of it.',
+  category: 'Developer Tools',
+  capabilities: [],
+  defaultPrompt: [
+    'Grill my plan for this change before I build it.',
+    'Explain your last answer in plain words.',
+    'Find the root cause of this failing test before fixing it.',
+  ],
+};
+const LISTING_URL_KEYS = ['websiteURL', 'supportURL', 'privacyPolicyURL', 'termsOfServiceURL'];
+// An SVG can carry script; the icon is the one non-Markdown file in the package.
+// Ceiling: a blocklist for the plain forms only (a namespaced <svg:script> or an
+// entity-coded "javascript:" passes). Enough while the icon is this repo's own
+// tracked file; switch to an element allowlist once an icon can come from elsewhere.
+const SVG_ACTIVE_CONTENT = /<script|<foreignObject|javascript:|\son[a-z]+\s*=/i;
+
+/**
+ * Whether `text` is an SVG document: after prolog, doctype and comments the
+ * first element is `<svg`. A scan with indexOf, so a hostile icon in a checked
+ * package cannot make it backtrack.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+function startsWithSvgElement(text) {
+  let i = 0;
+  for (;;) {
+    while (i < text.length && /\s/.test(text[i])) i += 1;
+    if (text.startsWith('<!--', i)) {
+      const end = text.indexOf('-->', i + 4);
+      if (end === -1) return false;
+      i = end + 3;
+    } else if (text.startsWith('<?', i) || text.startsWith('<!', i)) {
+      const end = text.indexOf('>', i + 2);
+      if (end === -1) return false;
+      i = end + 1;
+    } else {
+      return /^<svg[\s/>]/i.test(text.slice(i, i + 5));
+    }
+  }
+}
+const LISTING_REQUIRED = ['displayName', 'shortDescription', 'longDescription', 'developerName', 'category'];
+
 const HOOKS_SEGMENT = /^hooks(\.json)?$/i;
 const MCP_SEGMENT = /^\.?mcp([_-]?servers)?\.json$/i;
 const FORBIDDEN_KEY = /^(hooks|mcpservers|mcp_servers)$/i;
@@ -233,6 +285,19 @@ export function buildManifest({ repoRoot = DEFAULT_REPO_ROOT } = {}) {
   const repository = repositoryUrl(pkg.repository);
   if (repository) manifest.repository = repository;
   if (typeof pkg.license === 'string') manifest.license = pkg.license;
+  // The four listing URLs have one source: the Codex manifest of the full plugin.
+  const codex = JSON.parse(readFileSync(join(repoRoot, '.codex-plugin', 'plugin.json'), 'utf8')).interface ?? {};
+  manifest.extensions = {
+    'com.openai': {
+      interface: {
+        ...LISTING,
+        developerName: manifest.author?.name ?? codex.developerName,
+        ...Object.fromEntries(LISTING_URL_KEYS.filter((k) => typeof codex[k] === 'string').map((k) => [k, codex[k]])),
+        composerIcon: `./${ICON_PATH}`,
+        logo: `./${ICON_PATH}`,
+      },
+    },
+  };
   return manifest;
 }
 
@@ -266,7 +331,13 @@ function listTree(dir) {
  * @returns {Array<{path: string, data: Buffer}>}
  */
 export function collectPackageFiles({ repoRoot = DEFAULT_REPO_ROOT, skills = selectSkills(), includes = selectIncludes() } = {}) {
-  const files = [{ path: 'plugin.json', data: Buffer.from(`${JSON.stringify(buildManifest({ repoRoot }), null, 2)}\n`) }];
+  const files = [
+    { path: 'plugin.json', data: Buffer.from(`${JSON.stringify(buildManifest({ repoRoot }), null, 2)}\n`) },
+  ];
+  const icon = join(repoRoot, ICON_PATH);
+  // realpath, not lstat: a symlinked assets/ directory reaches a foreign file as well.
+  if (realpathSync(icon) !== join(realpathSync(repoRoot), ICON_PATH)) throw new Error(`${ICON_PATH}: symlink in source, refusing to package`);
+  files.push({ path: ICON_PATH, data: readFileSync(icon) });
   for (const name of skills) {
     const src = join(repoRoot, 'skills', name);
     const skillFiles = [];
@@ -295,7 +366,10 @@ function isOurManifest(manifest) {
 export function isPreviousExportDir(dir) {
   try {
     if (!lstatSync(dir).isDirectory()) return false;
-    if (readdirSync(dir).sort().join('\0') !== 'plugin.json\0skills') return false;
+    // Exports before the listing icon (#1931) had no assets/ directory.
+    const top = readdirSync(dir).sort().join('\0');
+    if (top !== 'plugin.json\0skills' && top !== 'assets\0plugin.json\0skills') return false;
+    if (top.startsWith('assets') && !lstatSync(join(dir, 'assets')).isDirectory()) return false;
     if (!lstatSync(join(dir, 'plugin.json')).isFile() || !lstatSync(join(dir, 'skills')).isDirectory()) return false;
     return isOurManifest(JSON.parse(readFileSync(join(dir, 'plugin.json'), 'utf8')));
   } catch {
@@ -536,6 +610,12 @@ export function validateEntries(entries, { skills, validateManifest, includes = 
     if (e.isDirectory) continue;
     files.set(rel, e.data ?? Buffer.alloc(0));
     if (rel === 'plugin.json') continue;
+    if (rel === ICON_PATH) {
+      const svg = (e.data ?? Buffer.alloc(0)).toString('utf8');
+      if (!startsWithSvgElement(svg)) add('icon-not-svg', e.path, 'the icon does not start with an <svg> element');
+      else if (SVG_ACTIVE_CONTENT.test(svg)) add('icon-active-content', e.path, 'the icon carries script, an event handler or foreign content');
+      continue;
+    }
     const m = /^skills\/([^/]+)\/.+$/.exec(rel);
     if (!m || !allowed.has(m[1])) add('not-allowlisted', e.path, 'file does not belong to an allowlisted skill');
     // Skills are instructions; any other file type is a way to ship code or config.
@@ -567,6 +647,15 @@ export function validateEntries(entries, { skills, validateManifest, includes = 
       };
       walk(manifest, '');
       for (const msg of validateManifest(manifest)) add('manifest-schema', `${root}/plugin.json`, msg);
+      const listing = manifest.extensions?.['com.openai']?.interface;
+      if (listing && typeof listing === 'object') {
+        const missing = LISTING_REQUIRED.filter((k) => typeof listing[k] !== 'string' || listing[k].trim() === '');
+        if (missing.length > 0) add('listing-incomplete', `${root}/plugin.json`, `listing lacks ${missing.join(', ')}`);
+      }
+      for (const key of ['composerIcon', 'logo']) {
+        const ref = listing?.[key];
+        if (typeof ref === 'string' && !files.has(ref.replace(/^\.\//, ''))) add('icon-missing', `${root}/plugin.json`, `"${key}" names "${ref}", a file the package does not carry`);
+      }
     }
   }
 

@@ -249,6 +249,7 @@ import { homedir } from 'node:os';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { execFileSync } from '../scripts/lib/native-command.mjs';
+import { hookProgram } from '../scripts/lib/program-lookup.mjs';
 // Stdlib-only leaf, static like native-command.mjs: SessionEnd removes these
 // files through the SAME name derivation (#2020), so it lives in ONE module.
 import { LEDGER_DIR_REL, LEDGER_STEM, ledgerPathsFor } from '../scripts/lib/wave-dispatch-ledger.mjs';
@@ -1707,7 +1708,7 @@ function makeGitRunner(deadline) {
       throw new GitBudgetExhausted(args[0]);
     }
     try {
-      return execFileSync('git', args, {
+      return execFileSync(hookProgram('git', cwd), args, {
         cwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],

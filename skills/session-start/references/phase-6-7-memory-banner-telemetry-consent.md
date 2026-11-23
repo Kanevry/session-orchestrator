@@ -45,7 +45,7 @@ Cross-reference: PRD F2.3 acceptance criteria (#505); `scripts/lib/memory-banner
 Anonymous usage telemetry is **strictly opt-in** and, on a host that has never decided, is offered exactly once via a single interactive AskUserQuestion. The consent machine lives in `scripts/lib/telemetry/consent.mjs`; this phase only decides *whether* to prompt and then records the operator's answer. The `resolveConsent()` precedence machine is fail-closed — `prompt` is `true` only for a fresh, interactive, not-yet-decided, not-fleet, not-env-overridden host.
 
 ```javascript
-import { readTelemetryState, resolveConsent, isHeadless, grantConsent, denyConsent } from '${PLUGIN_ROOT}/scripts/lib/telemetry/consent.mjs';
+import { readTelemetryState, resolveConsent, isHeadless, telemetrySendBlockReason, grantConsent, denyConsent } from '${PLUGIN_ROOT}/scripts/lib/telemetry/consent.mjs';
 import { loadOwnerConfig } from '${PLUGIN_ROOT}/scripts/lib/owner-yaml.mjs';
 
 const c = resolveConsent({
@@ -54,8 +54,9 @@ const c = resolveConsent({
   state: readTelemetryState().record,          // persisted per-user decision (~/.config/session-orchestrator/telemetry.json)
   interactive: !isHeadless(),                  // fail-closed toward headless — anything but a confirmed TTY counts as headless
 });
-if (!c.prompt) {
-  // silent no-op — already decided, env-override, fleet-enabled, or headless. Do NOT print, do NOT prompt.
+if (!c.prompt || telemetrySendBlockReason(process.env) !== null) {
+  // silent no-op — already decided, env-override, fleet-enabled, headless, or a session
+  // that never sends (Codex, Cursor, pi, no Claude Code entrypoint; #2256). Do NOT print, do NOT prompt.
 }
 ```
 

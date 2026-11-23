@@ -88,12 +88,12 @@ fi
 CLAUDE_INIT_STATUS=$?
 ```
 
-If `claude init` exits 0 and produces a non-empty `CLAUDE.md`, it is the base. Proceed to inject the Harte Regeln block, then the Session Config block.
+If `claude init` exits 0 and produces a non-empty `CLAUDE.md`, it is the base. Proceed to inject the Hard Rules block, then the Session Config block.
 
-**Inject `## Harte Regeln` section** — append the canonical hard-rules content BEFORE the Session Config block, if the section is absent:
+**Inject `## Hard Rules` section** — append the canonical hard-rules content BEFORE the Session Config block, if neither title is present. `## Hard Rules` is current; `## Harte Regeln` is the pre-#2246 German title that existing consumer repos still carry, so accept both (a re-bootstrap must not duplicate the section):
 
 ```bash
-if ! grep -q "^## Harte Regeln" "$REPO_ROOT/CLAUDE.md" 2>/dev/null; then
+if ! grep -qE "^## (Hard Rules|Harte Regeln)" "$REPO_ROOT/CLAUDE.md" 2>/dev/null; then
   cat "$PLUGIN_ROOT/templates/_shared/harte-regeln.md" >> "$REPO_ROOT/CLAUDE.md"
 fi
 ```
@@ -140,7 +140,7 @@ Use the minimal template to synthesize `CLAUDE.md` (for Claude Code/Cursor) or `
    | `{{CMD_BUILD}}` | `pnpm build` / "N/A" / "TBD" |
    | `{{CMD_LINT}}` | `pnpm lint` / `uv run ruff check .` / "TBD" |
    | `{{CONVENTIONS}}` | Pull 3–5 lines from `git log -n 5 --oneline` if available, else "Follow existing project conventions." |
-   | `{{HARD_RULES_TABLE}}` | Verbatim content of `templates/_shared/harte-regeln.md` (rules list, minus the provenance comment line) |
+   | `{{HARD_RULES_TABLE}}` | Verbatim content of `templates/_shared/harte-regeln.md` (rules list, minus the provenance comment line and the `## Hard Rules` heading line — the template already carries the heading) |
    | `{{VCS}}` | See VCS detection below |
    | `{{PROJECT_NAME}}` | `$REPO_NAME` |
    | `{{PLAN_BASELINE_PATH}}` | Omit this entire line (remove the `plan-baseline-path: ...` line from output) |
@@ -151,6 +151,12 @@ Use the minimal template to synthesize `CLAUDE.md` (for Claude Code/Cursor) or `
 3. Write the substituted output to:
    - `CLAUDE.md` for Claude Code and Cursor
    - `AGENTS.md` for Codex CLI
+
+   Create the file with the harness's file-writing tool (Write), or append with
+   `>>` when it already exists. Never build it with a truncating shell redirect
+   (`… > CLAUDE.md`): the destructive guard denies `>` onto `CLAUDE.md` and
+   `AGENTS.md` even when the file does not exist yet, and the denied call costs a
+   turn (#2246).
 
 **VCS detection:**
 

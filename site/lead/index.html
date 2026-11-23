@@ -187,15 +187,15 @@
   <section class="sec install-sec" id="start">
     <div class="wrap">
       <div class="section-heading"><div><p class="eyebrow">Get started</p><h2>Install<br>from npm.</h2></div><p>Needs Node.js 24 or newer, git, and glab signed in to GitLab. Current version and changelog: <a href="https://www.npmjs.com/package/lead-session-orchestrator">npm</a>.</p></div>
-      <p class="install-guide"><b>1. The command line tool.</b> The command is called <code>navigator</code>.</p>
+      <p class="install-guide"><b>1. The command line tool.</b> The command is called <code>lso</code>.</p>
       <div class="cmd-row"><code>npm i -g lead-session-orchestrator</code><button class="copy" type="button" data-copy="npm i -g lead-session-orchestrator">Copy</button></div>
-      <div class="cmd-row"><code>navigator situation</code><button class="copy" type="button" data-copy="navigator situation">Copy</button></div>
-      <div class="cmd-row"><code>navigator status</code><button class="copy" type="button" data-copy="navigator status">Copy</button></div>
-      <div class="cmd-row"><code>navigator stop set --reason &quot;maintenance&quot;</code><button class="copy" type="button" data-copy="navigator stop set --reason &quot;maintenance&quot;">Copy</button></div>
+      <div class="cmd-row"><code>lso situation</code><button class="copy" type="button" data-copy="lso situation">Copy</button></div>
+      <div class="cmd-row"><code>lso status</code><button class="copy" type="button" data-copy="lso status">Copy</button></div>
+      <div class="cmd-row"><code>lso stop set --reason &quot;maintenance&quot;</code><button class="copy" type="button" data-copy="lso stop set --reason &quot;maintenance&quot;">Copy</button></div>
       <p class="small"><code>situation</code>: the current picture on one screen. <code>status</code>: all Claude sessions on this host, open questions first. <code>stop set</code>: nothing new starts until you clear it.</p>
       <p class="install-guide"><b>2. The Inbox.</b> Add the Claude Code mod from the same npm package once from a shell, then type <code>/inbox</code> in a new Claude Code session.</p>
       <div class="cmd-row"><code>claude plugin marketplace add &quot;$(npm root -g)/lead-session-orchestrator&quot;</code><button class="copy" type="button" data-copy="claude plugin marketplace add &quot;$(npm root -g)/lead-session-orchestrator&quot;">Copy</button></div>
-      <div class="cmd-row"><code>claude plugin install owner-inbox@navigator-mods</code><button class="copy" type="button" data-copy="claude plugin install owner-inbox@navigator-mods">Copy</button></div>
+      <div class="cmd-row"><code>claude plugin install owner-inbox@lead-session-orchestrator</code><button class="copy" type="button" data-copy="claude plugin install owner-inbox@lead-session-orchestrator">Copy</button></div>
       <div class="cmd-row"><code>/inbox</code><button class="copy" type="button" data-copy="/inbox">Copy</button></div>
       <p class="small">Needs Claude Code 2.1.296 or newer. Mods are early access in Claude Code and are not sandboxed; a Claude Code release can change them. The other mods and their options are on <a href="https://www.npmjs.com/package/lead-session-orchestrator">npm</a>.</p>
       <p class="install-guide"><b>3. The lead.</b> Copy the Claude Code skill from the same package once, then type <code>/lead</code> in a new Claude Code session.</p>

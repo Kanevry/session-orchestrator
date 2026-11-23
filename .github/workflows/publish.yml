@@ -20,8 +20,10 @@
 #             What stands in for the click: the tag rule, this guard, and the
 #             pre-push hook, which lets a `github` tag through only on a proven
 #             curated snapshot or a version-only probe on one.
-#   install-check — waits up to ten minutes for npm view to return the tagged
-#             version, then verifies the public package in a clean consumer.
+#   install-check — waits up to fifteen minutes for npm view to return the
+#             tagged version and for that version's tarball to answer 200
+#             (the registry can serve the metadata before the tarball, #2212),
+#             then verifies the public package in a clean consumer.
 #             Runs after a successful publish or when the version already exists.
 #
 # `scripts/release.mjs --publish --trusted` hands the publish
@@ -197,7 +199,7 @@ jobs:
           package-manager-cache: false
 
       - name: Wait for the tagged version on npm
-        run: node scripts/wait-for-npm-version.mjs --package session-orchestrator --version "${GITHUB_REF_NAME#v}" --timeout-s 600
+        run: node scripts/wait-for-npm-version.mjs --package session-orchestrator --version "${GITHUB_REF_NAME#v}" --timeout-s 900
 
       - name: Install the tagged version and exercise the shipped hook
         shell: bash

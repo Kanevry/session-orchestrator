@@ -45,6 +45,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { getProjectDir, resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import { execFileSync } from '../scripts/lib/native-command.mjs';
+import { hookProgram } from '../scripts/lib/program-lookup.mjs';
 import {
   ledgerTokenFor,
   removeOwnDispatchLedger,
@@ -102,7 +103,7 @@ export function cleanupDispatchLedgers(input, lockRoot, projectRoot) {
       : (process.env.CLAUDE_PROJECT_DIR || process.cwd());
     let toplevel = '';
     try {
-      toplevel = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      toplevel = execFileSync(hookProgram('git', cwd), ['rev-parse', '--show-toplevel'], {
         cwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -368,6 +369,8 @@ const FLUSH_REASON_MAX_CHARS = 200;
 
 /**
  * Reduce a `flush()` result to the three-field breadcrumb the event carries.
+ * Harness refusals produce `skipped` with `non-interactive` or
+ * `unverified-harness` in both reason fields.
  *
  * `reason` is the FULL reason (length-bounded, see FLUSH_REASON_MAX_CHARS) and
  * `reason_class` is its head token — the part before the first `:` — so an

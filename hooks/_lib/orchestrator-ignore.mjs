@@ -40,6 +40,7 @@ import { readFile, writeFile, link, unlink, mkdir } from 'node:fs/promises';
 import { existsSync, lstatSync } from 'node:fs';
 import path from 'node:path';
 import { execFile } from '../../scripts/lib/native-command.mjs';
+import { hookProgram } from '../../scripts/lib/program-lookup.mjs';
 
 /** Directories that hold durable project data, never plugin runtime output. */
 const PROJECT_DATA_DIRS = ['steering', 'peers', 'policy'];
@@ -63,7 +64,7 @@ export const GENERATED_IGNORE = [
 
 function trackedUnderOrchestrator(repoRoot) {
   return new Promise((resolve) => {
-    execFile('git', ['ls-files', '-z', '--', '.orchestrator'], { cwd: repoRoot, timeout: 2000 }, (err, stdout) => {
+    execFile(hookProgram('git', repoRoot), ['ls-files', '-z', '--', '.orchestrator'], { cwd: repoRoot, timeout: 2000 }, (err, stdout) => {
       if (err) return resolve(null); // unknown → caller writes nothing
       resolve(stdout.length > 0);
     });

@@ -1445,6 +1445,9 @@ MultiEdit block the tool call and report the fix every time; other hooks are
 skipped with **one** warning per 6 hours.
 Install Node.js 24+, expose it on the harness PATH as an absolute directory
 (relative PATH entries are never searched), or set `SO_NODE_BIN`.
+The same absolute-only rule applies to `SO_NODE_BIN` and to the script's search
+lists (`SO_NODE_SEARCH_DIRS` or the built-in Unix install dirs, and nvm); a `~` or `~/…` PATH
+entry is expanded to your home directory instead of being skipped.
 
 Three limits apply:
 

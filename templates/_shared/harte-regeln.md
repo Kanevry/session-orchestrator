@@ -1,16 +1,16 @@
 <!-- source: session-orchestrator plugin (canonical: templates/_shared/harte-regeln.md) -->
-## Harte Regeln
+## Hard Rules
 
-Nicht verhandelbar — gilt unabhängig vom Wachstum dieses Repos, auch unterhalb
-der `.claude/rules/`-Graduationsschwelle (#730/H6):
+Non-negotiable. These hold no matter how this repo grows, even below the point
+where rules move into `.claude/rules/`:
 
-1. Keine Secrets/API-Keys committen (auch nicht in `.env.example`-Kommentaren).
-2. Kein `git push --force` auf den Default-Branch ohne explizite Rückfrage.
-3. Kein `git add -A` / `git add .` — Dateien einzeln stagen.
-4. Destruktive Kommandos (`rm -rf`, `git reset --hard`, `git checkout -- <file>`)
-   nur nach expliziter Bestätigung.
-5. Status-Dokumente (STATE.md, README-Status-Sections, Dashboards) sind INDEX,
-   nie HISTORIE — CCU-009 (see `skills/_shared/state-ownership.md` in the plugin).
-6. Test-/Typecheck-/Lint-Commands in Session Config müssen echte Checks sein,
-   keine Stubs (`echo`/`noop`).
-7. Kein `console.log`/`debugger` in committeten Production-Files.
+1. Never commit secrets or API keys (not even in `.env.example` comments).
+2. No `git push --force` to the default branch without explicit confirmation.
+3. No `git add -A` / `git add .` — stage files one by one.
+4. Destructive commands (`rm -rf`, `git reset --hard`, discarding file changes
+   with `git checkout`) only after explicit confirmation.
+5. Status documents (STATE.md, README status sections, dashboards) are an INDEX,
+   never a HISTORY. Keep them short and link to the detail.
+6. Test, typecheck and lint commands in Session Config must be real checks,
+   not stubs (`echo` / `noop`).
+7. No `console.log` / `debugger` in committed production files.

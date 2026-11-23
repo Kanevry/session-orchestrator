@@ -15,6 +15,7 @@
  */
 import { promisify } from 'node:util';
 
+import { hookProgram } from '../program-lookup.mjs';
 import { execFile } from '../native-command.mjs';
 import { httpRequest } from '../http-request.mjs';
 import { releaseFileLock, tryAcquireFileLock } from '../file-lock.mjs';
@@ -324,7 +325,7 @@ export async function refreshSecurityPulse({
     const pvrDue = force || cachePartStatus(pvrPart(prevPvr), nowMs).due;
     if (pvrDue) {
       const gh = runGh ?? (async (args) => {
-        const { stdout } = await execFileAsync('gh', args, {
+        const { stdout } = await execFileAsync(hookProgram('gh', repoRoot, env), args, {
           encoding: 'utf8', timeout: PVR_TIMEOUT_MS, maxBuffer: PVR_MAX_BYTES,
           cwd: repoRoot, env,
         });

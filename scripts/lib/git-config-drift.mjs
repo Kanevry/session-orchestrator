@@ -103,6 +103,7 @@
 import { accessSync, constants, existsSync } from 'node:fs';
 import { detectPackageManager } from './package-manager.mjs';
 import { isAbsolute, join, relative } from 'node:path';
+import { hookProgram } from './program-lookup.mjs';
 import { spawnSync } from './native-command.mjs';
 
 /** Default timeout in ms for each `git config` invocation. */
@@ -590,7 +591,7 @@ export function checkGitConfigDrift(opts = {}, deps = {}) {
     if (!repoRoot || typeof repoRoot !== 'string') return null;
 
     const activeEnv = env && typeof env === 'object' ? env : process.env;
-    const spawn = deps?.spawn ?? spawnSync;
+    const spawn = deps?.spawn ?? ((cmd, args, options) => spawnSync(hookProgram(cmd, repoRoot, options.env), args, options));
     const ctx = { repoRoot, env: activeEnv, timeoutMs, spawn, repoConfirmed: false };
 
     /** @type {Array<{kind:string, key:string, value:string, detail:string}>} */

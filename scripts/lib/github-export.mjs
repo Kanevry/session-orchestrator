@@ -166,10 +166,10 @@ function sourceExistence(files) {
  * worktree, run `check-owner-leakage.mjs --public-export` over it, then
  * {@link findExcludedCitations} against the source commit's file list (`sourceSha`, or
  * the snapshot's `Source-Commit` trailer). The worktree is always removed. Only the
- * leakage checker's own (already redacted) FAIL lines are surfaced; citation findings
+ * leakage checker's own (already redacted) FAIL and WARN lines are surfaced; citation findings
  * name public files and the removed paths they cite.
  * @param {{ git: GitRunner, commit: string, excludes: string[], includes: string[]|null, sourceSha?: string }} ctx `includes` required (null = deny-only)
- * @returns {{ ok: boolean, reason?: string, findings?: string[] }}
+ * @returns {{ ok: boolean, reason?: string, findings?: string[], warnings: string[] }}
  */
 export function defaultSnapshotCheck({ git, commit, excludes, includes, sourceSha }) {
   requireIncludes('defaultSnapshotCheck', includes);
@@ -178,26 +178,27 @@ export function defaultSnapshotCheck({ git, commit, excludes, includes, sourceSh
   let added = false;
   try {
     const add = git(['-c', 'core.hooksPath=/dev/null', 'worktree', 'add', '--detach', '--quiet', wt, commit]);
-    if (add.status !== 0) return { ok: false, reason: 'temporary worktree for the leakage scan could not be created' };
+    if (add.status !== 0) return { ok: false, reason: 'temporary worktree for the leakage scan could not be created', warnings: [] };
     added = true;
     const res = spawnSync(process.execPath, [LEAKAGE_SCRIPT, wt, '--public-export'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     const findings = (res.stdout ?? '').split('\n').filter((l) => l.startsWith('  FAIL:'));
-    if (res.status !== 0) return { ok: false, reason: `leakage scan failed (${findings.length} finding(s))`, findings };
+    const warnings = (res.stderr ?? '').split(/\r?\n/).filter((line) => /^WARN(?: owner-patterns| validate\/confidential-names)?: /.test(line));
+    if (res.status !== 0) return { ok: false, reason: `leakage scan failed (${findings.length} finding(s))`, findings, warnings };
     // Source file list read once; an unreadable source fails closed.
     const body = sourceSha ? null : git(['cat-file', 'commit', commit]);
     const source = sourceSha ?? (body.status === 0 ? parseSourceCommitTrailer(body.stdout) : null);
-    if (!source) return { ok: false, reason: `snapshot commit carries no ${SOURCE_COMMIT_TRAILER} — citations not measurable` };
+    if (!source) return { ok: false, reason: `snapshot commit carries no ${SOURCE_COMMIT_TRAILER} — citations not measurable`, warnings };
     let sourceFiles;
     try {
       sourceFiles = listTree(git, source);
     } catch {
-      return { ok: false, reason: 'source tree unreadable — citations not measurable' };
+      return { ok: false, reason: 'source tree unreadable — citations not measurable', warnings };
     }
     const citations = findExcludedCitations(wt, excludes, includes, sourceFiles);
     if (citations.length > 0) {
-      return { ok: false, reason: `${citations.length} public file citation(s) point into excluded paths (validate-plugin would fail on GitHub)`, findings: citations };
+      return { ok: false, reason: `${citations.length} public file citation(s) point into excluded paths (validate-plugin would fail on GitHub)`, findings: citations, warnings };
     }
-    return { ok: true };
+    return { ok: true, warnings };
   } finally {
     if (added) git(['worktree', 'remove', '--force', wt]);
     rmSync(dir, { recursive: true, force: true });
@@ -355,7 +356,7 @@ export function verifyExportCommit({ git, sha, source, remote = MIRROR_REMOTE, m
  * @param {string} [opts.remote=MIRROR_REMOTE] remote whose `refs/heads/main` is the public main
  * @param {string} [opts.mirrorRef=MIRROR_REF] local tracking ref that must equal the remote main
  * @param {boolean} [opts.dryRun=false]
- * @param {(ctx: { git: GitRunner, commit: string, excludes: string[], includes: string[]|null, sourceSha: string }) => { ok: boolean, reason?: string, findings?: string[] }} [opts.snapshotCheck]
+ * @param {(ctx: { git: GitRunner, commit: string, excludes: string[], includes: string[]|null, sourceSha: string }) => { ok: boolean, reason?: string, findings?: string[], warnings?: string[] }} [opts.snapshotCheck]
  * @returns {{ status: 'created'|'unchanged'|'dry-run'|'refused', sha?: string, reason?: string, findings?: string[], stats?: object, warnings?: string[] }}
  */
 export function buildGithubExport({
@@ -429,14 +430,15 @@ export function buildGithubExport({
   const newCommit = ct.stdout.trim();
 
   const check = snapshotCheck({ git, commit: newCommit, excludes, includes, sourceSha });
-  if (!check.ok) return refuse(check.reason ?? 'snapshot check failed', { findings: check.findings, stats });
+  warnings.push(...(check.warnings ?? []));
+  if (!check.ok) return refuse(check.reason ?? 'snapshot check failed', { findings: check.findings, stats, warnings });
 
   if (dryRun) return { status: 'dry-run', sha: newCommit, stats, warnings };
 
   if (git(['update-ref', exportRef, newCommit, exportOld ?? '0'.repeat(sourceSha.length)]).status !== 0) {
-    return refuse(`update-ref ${exportRef} lost a compare-and-swap race`);
+    return refuse(`update-ref ${exportRef} lost a compare-and-swap race`, { warnings });
   }
-  return { status: 'created', sha: newCommit, stats };
+  return { status: 'created', sha: newCommit, stats, warnings };
 }
 
 /**

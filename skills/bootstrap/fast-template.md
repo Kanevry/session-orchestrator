@@ -56,10 +56,12 @@ if grep -q "^## Session Config" CLAUDE.md; then
   echo "Session Config block confirmed."
 else
   # Sentinel absent — claude init did NOT populate the file (or wrote minimal content).
-  # Fall back to plugin-template generation: append canonical Harte-Regeln block
+  # Fall back to plugin-template generation: append canonical Hard Rules block
   # BEFORE the Session Config block (pattern: the templates/_shared/... cp steps
   # in Step 3a below).
-  if ! grep -q "^## Harte Regeln" CLAUDE.md 2>/dev/null; then
+  # Accept both titles: "## Hard Rules" (current) and "## Harte Regeln" (pre-#2246
+  # German title, still present in existing consumer repos) — no duplicate on re-bootstrap.
+  if ! grep -qE "^## (Hard Rules|Harte Regeln)" CLAUDE.md 2>/dev/null; then
     cat "$PLUGIN_ROOT/templates/_shared/harte-regeln.md" >> CLAUDE.md
   fi
   # Fall back to plugin-template generation: append canonical Session Config block

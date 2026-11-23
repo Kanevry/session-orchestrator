@@ -554,6 +554,22 @@ function readHeredocBody(command, from, delim, stripTabs) {
  * since the raw text merges into the part of its outer context. Non-enumerable
  * like `parts`, and absent on a word without a substitution.
  *
+ * ## Here-doc body ranges (`heredocSpans`, #2246)
+ *
+ * A word whose spliced substitution text holds terminated here-doc bodies also
+ * carries `heredocSpans: Array<{ start, end }>` — the ranges of `text` that are
+ * those bodies (terminator lines included). Their characters never take part in
+ * the word's own brace expansion (expandBraces): bash expands no braces in a
+ * here-doc body. Non-enumerable, absent when there is none.
+ *
+ * ## Here-doc left open by its substitution (`heredocOpen`, #2249)
+ *
+ * A `<<` operator token opened inside `$( … )` or backticks whose body had not
+ * begun when that substitution closed (`x=$(cat <<E )`) carries `heredocOpen:
+ * true`. bash reads the following lines as the body, zsh runs them; they are
+ * lexed as commands, and the destructive guard denies the line as an
+ * unmeasurable command. Non-enumerable, absent otherwise.
+ *
  * @param {string} command
  * @returns {Array<{ text: string, quoted: boolean, redirect?: { fd: number|null, mode: string }, braceLead?: number, operator?: string, parts?: Array<{ text: string, quote: 'none'|'double'|'single'|'ansi-c'|'escape' }>, substitutions?: Array<{ start: number, end: number }> }>}
  */
@@ -929,6 +945,8 @@ function lexTokens(command, heredocNesting) {
   // Where the raw text of each `$( … )` / backtick / process substitution sits
   // in `text` (see the @returns note on `substitutions`, #1893).
   let subs = [];
+  // Where terminated here-doc bodies sit in `text` (token field `heredocSpans`, #2246).
+  let bodySpans = [];
   const addText = (s, quote) => {
     text += s;
     const last = parts[parts.length - 1];
@@ -969,6 +987,12 @@ function lexTokens(command, heredocNesting) {
   // is still an assignment and the verb after it still runs. The flag only
   // switches off raw-text pattern matching on this word (token field `data`).
   let dataWord = false;
+  // #2246: the source ranges (offsets in `command`) of the terminated here-doc
+  // bodies read in the CURRENT substitution level, nested levels included. On
+  // close they become `bodySpans` of the outer word, whose text then holds the
+  // raw body: `R=$(node <<'E'⏎f({ a: 1, b: 2 })⏎E⏎)` read `{ a: 1, b: 2 }` as
+  // a brace word and denied the line as not measurable.
+  let heredocSpans = [];
   // One entry per open `case … esac` level, innermost last. Each names what the
   // NEXT word at that level is: 'subject' (`case WORD`), 'in' (the `in`),
   // 'pattern' (a clause pattern, or `esac`) or 'body' (commands of an arm).
@@ -1024,6 +1048,7 @@ function lexTokens(command, heredocNesting) {
       // exact pre-#1795 token shape; only a reader asking for `tok.parts` gets it.
       Object.defineProperty(tok, 'parts', { value: parts, enumerable: false });
       if (subs.length > 0) Object.defineProperty(tok, 'substitutions', { value: subs, enumerable: false });
+      if (bodySpans.length > 0) Object.defineProperty(tok, 'heredocSpans', { value: bodySpans, enumerable: false });
       if (dataWord) Object.defineProperty(tok, 'data', { value: true, enumerable: false });
       if (ifsSplit) Object.defineProperty(tok, 'ifsSplit', { value: true, enumerable: false });
       if (quoteOpened && !sawQuote) Object.defineProperty(tok, 'quoteMark', { value: true, enumerable: false });
@@ -1031,6 +1056,7 @@ function lexTokens(command, heredocNesting) {
       text = '';
       parts = [];
       subs = [];
+      bodySpans = [];
       started = false;
       sawQuote = false;
       quoteOpened = false;
@@ -1044,8 +1070,8 @@ function lexTokens(command, heredocNesting) {
   // word in progress (`x=` in `x=$(…)`, or the double-quoted run around
   // `"$(…)"`) is parked in the frame and resumed on close.
   const openSubstitution = (kind, start) => {
-    stack.push({ kind, start, text, parts, subs, started, sawQuote, quoteOpened, dataWord, braceLead, state, sink, arithDepth, caseStates, heredocData });
-    text = ''; parts = []; subs = []; started = false; sawQuote = false; quoteOpened = false; dataWord = false; braceLead = 0; state = 'normal'; arithDepth = 0; caseStates = []; heredocData = false;
+    stack.push({ kind, start, text, parts, subs, bodySpans, started, sawQuote, quoteOpened, dataWord, braceLead, state, sink, arithDepth, caseStates, heredocData, heredocSpans });
+    text = ''; parts = []; subs = []; bodySpans = []; started = false; sawQuote = false; quoteOpened = false; dataWord = false; braceLead = 0; state = 'normal'; arithDepth = 0; caseStates = []; heredocData = false; heredocSpans = [];
     sink = [];
   };
 
@@ -1054,9 +1080,26 @@ function lexTokens(command, heredocNesting) {
   // hoisted; the outer word gets the RAW source text of the whole substitution
   // appended, so the outer token stream is byte-identical to the pre-#1667
   // lexer's word boundaries (`rm -rf $(pwd)/x` keeps ONE operand).
-  const closeSubstitution = (end) => {
+  const closeSubstitution = (end, atEnd = false) => {
     if (state !== 'normal') sawQuote = true;
     flush();
+    // #2249: a here-doc opened in this level whose body has not started when
+    // the level closes (`x=$(cat <<E )`, `` `cat <<E ` ``). bash reads the next
+    // lines as its body, zsh runs them as commands. The entry is dropped, so
+    // those lines lex as commands every rule judges, and its `<<` operator is
+    // marked `heredocOpen`: the destructive guard denies the line as an
+    // unmeasurable command. Not at end of input, where no line follows.
+    // NAMED CEILING (BV-004): a harmless line of this form (`x=$(cat <<E )`,
+    // then `echo hi`, then `E`) is denied too. REVISIT TRIGGER: a real command
+    // denied for a here-doc left open by its substitution.
+    if (!atEnd) {
+      const closing = stack[stack.length - 1];
+      for (let k = pendingHeredocs.length - 1; k >= 0; k--) {
+        if (pendingHeredocs[k].owner !== closing) continue;
+        Object.defineProperty(pendingHeredocs[k].op, 'heredocOpen', { value: true });
+        pendingHeredocs.splice(k, 1);
+      }
+    }
     const frame = stack.pop();
     // Loops, never `push(...arr)`: a spread passes every element as a call
     // argument, and a body of ~125k tokens throws RangeError — which the
@@ -1064,11 +1107,18 @@ function lexTokens(command, heredocNesting) {
     hoisted.push({ text: ';', quoted: false, operator: 'substitution' });
     for (const t of sink) hoisted.push(t);
     const bodyHeldHeredoc = heredocData;
-    ({ text, parts, subs, started, sawQuote, quoteOpened, dataWord, braceLead, state, sink, arithDepth, caseStates, heredocData } = frame);
+    const innerSpans = heredocSpans;
+    ({ text, parts, subs, bodySpans, started, sawQuote, quoteOpened, dataWord, braceLead, state, sink, arithDepth, caseStates, heredocData, heredocSpans } = frame);
     const raw = command.slice(frame.start, end);
     const at = text.length;
     addText(raw, state === 'double' ? 'double' : 'none'); started = true;
     subs.push({ start: at, end: text.length });
+    // #2246: the bodies inside `raw`, as ranges of the outer word, and as
+    // source ranges of the enclosing level (its raw text holds them too).
+    for (const span of innerSpans) {
+      bodySpans.push({ start: at + span.start - frame.start, end: at + span.end - frame.start });
+      heredocSpans.push(span);
+    }
     if (/["']/.test(raw)) sawQuote = true;
     // The enclosing level's raw text holds this body too (nested `$( … )`).
     if (bodyHeldHeredoc) { dataWord = true; heredocData = true; }
@@ -1105,6 +1155,7 @@ function lexTokens(command, heredocNesting) {
       text = '';
       parts = [];
       subs = [];
+      bodySpans = [];
       started = false;
       braceLead = 0;
       return { digits, fd: named ? null : Number.parseInt(digits, 10), name };
@@ -1202,6 +1253,7 @@ function lexTokens(command, heredocNesting) {
         if (!terminated) { lastTerm = false; pendingHeredocs.length = 0; break; }
         lastTerm = true;
         heredocData = true;
+        heredocSpans.push({ start: j, end });
         // Fix cycle 1 (R-F3): the body is the stdin of the statement that
         // wrote `<<`, which may stand left of a pipe while the body token
         // lands in a later statement (`cat <<'E' | sh`). Both links are
@@ -1456,7 +1508,12 @@ function lexTokens(command, heredocNesting) {
         const op = { text: opText, quoted: false, redirect: redirectField(prefix, 'heredoc') };
         sink.push(op);
         if (value && command[end] !== ')') {
-          pendingHeredocs.push({ delim: value, stripTabs, expand: !quoted, op });
+          // `owner`: the innermost open substitution frame (#2249, closeSubstitution).
+          // A frame, not a depth: a closed `( … )` subshell leaves the depth
+          // equal to a later `$( … )` on the same line.
+          let owner = null;
+          for (let s = stack.length - 1; s >= 0 && owner === null; s--) if (stack[s].kind !== 'paren') owner = stack[s];
+          pendingHeredocs.push({ delim: value, stripTabs, expand: !quoted, op, owner });
           i = end - 1;
         } else {
           i = j - 1;
@@ -1599,7 +1656,7 @@ function lexTokens(command, heredocNesting) {
   // keeps the raw remainder.
   while (stack.length > 0) {
     if (topKind() === 'paren') { stack.pop(); continue; }
-    closeSubstitution(command.length);
+    closeSubstitution(command.length, true);
     if (state !== 'normal') sawQuote = true;
     flush();
   }
@@ -8687,7 +8744,21 @@ export function expandBraces(tokens, budget = newBraceBudget()) {
   for (const tok of tokens) {
     if (tok.operator !== undefined || tok.redirect !== undefined || !tok.text.includes('{')) { out.push(tok); continue; }
     const parts = tok.parts ?? [{ text: tok.text, quote: tok.quoted ? 'single' : 'none' }];
-    const chars = parts.flatMap((p) => [...p.text].map((c) => ({ c, on: p.quote === 'none' })));
+    // #2246: a here-doc body spliced in with a substitution's raw text is no
+    // brace text of this word (bash expands no braces in a body); the body's
+    // own `$( … )` are hoisted and read as commands of their own.
+    // One cursor over the sorted ranges: a per-character scan of every range
+    // made a word of 5000 bodies cost 0.4 s (a slow read is an allow).
+    const spans = [...(tok.heredocSpans ?? [])].sort((x, y) => x.start - y.start);
+    let pos = 0;
+    let k = 0;
+    const chars = parts.flatMap((p) => [...p.text].map((c) => {
+      const at = pos;
+      pos += c.length;
+      while (k < spans.length && spans[k].end <= at) k++;
+      const inBody = k < spans.length && spans[k].start <= at;
+      return { c, on: p.quote === 'none' && !inBody };
+    }));
     if (tok.ifsSplit === true && hasOpenBrace(chars)) {
       out.push({ ...tok, braceUnreadable: true });
       changed = true;

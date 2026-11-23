@@ -14,6 +14,12 @@ Das Plugin-Verzeichnis von OpenAI, das ChatGPT und Codex gemeinsam nutzen, nimmt
 
 Das volle Codex-Plugin (`.codex-plugin/plugin.json`) enthält `hooks` und `mcpServers` und kann deshalb nicht so eingereicht werden. Der Großteil von session-orchestrator lebt von Hooks, Subagenten, `AskUserQuestion` und `scripts/`. In ein Paket ohne all das gehört nur, was ohne diese Teile ehrlich funktioniert.
 
+## Listing-Angaben und Icon
+
+Gelesen am 2026-11-22 auf developers.openai.com/plugins/deploy/submission: Vor der Einreichung verlangt das Portal Anzeigename und Untertitel (je höchstens 30 Zeichen), eine Langbeschreibung, Entwicklername, Kategorie und ein quadratisches Hauptbild. Im Paket nach Agent Plugins 1.0.0 stehen sie unter `extensions["com.openai"].interface`. Der Export schreibt sie seitdem selbst: die Texte stehen in `scripts/lib/openai-skills/package.mjs`, die vier Listing-URLs kommen aus `.codex-plugin/plugin.json`, das Icon ist `assets/icon.svg`. Die Prüfung lässt unter `assets/` nur diese eine Datei zu und lehnt ein Icon ab, das ein Symlink ist, dessen erstes Element nach Prolog, Doctype und Kommentaren nicht `<svg` ist oder ein `<script>`-Element oder einen Event-Handler in Klarform trägt. Die Skript-Prüfung ist eine Sperrliste für die einfachen Formen; das reicht, solange das Icon die getrackte Datei dieses Repos ist. Ein Listing ohne Anzeigename, Untertitel, Langbeschreibung, Entwicklername oder Kategorie meldet die Prüfung als `listing-incomplete`; die vier URLs prüft sie nicht, weil OpenAI sie für reine Skill-Pakete nicht verlangt.
+
+Hochladen kann nur ein Konto mit bestätigter Entwickler-Identität (Organisations-Einstellungen, „Verifications“); das verlangt das Portal von jedem Einreicher.
+
 ## Zählung (PSA-006)
 
 Erstmals gemessen am 2026-11-06T10:35:08Z auf `1a42e326` im Worktree `so-e7`. Neu gemessen am 2026-11-06T16:39:12Z auf `0a357b2a` plus den noch nicht committeten Änderungen aus #1966 im Worktree `so-66`; die Tabelle unten zeigt diesen Stand. Seit `1a42e326` haben sich nur session-end, test-runner und wave-executor verschoben, durch fremde Commits (etwa `9954b83a`, `db82140f`). Es gibt 53 Verzeichnisse unter `skills/` und 52 `SKILL.md`, denn `_shared` ist kein Skill. Jede Spalte zählt die Treffer von `rg -c -i -e '<muster>' skills/<skill>/`, summiert über alle Dateien des Skill-Verzeichnisses:

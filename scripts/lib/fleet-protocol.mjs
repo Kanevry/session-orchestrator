@@ -38,6 +38,7 @@
 import fsSync, { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { hookProgram } from './program-lookup.mjs';
 import { execFileSync } from './native-command.mjs';
 
 /** Env var that overrides the navigator directory. */
@@ -401,7 +402,7 @@ const GIT_TIMEOUT_MS = 5_000;
  */
 function gitCommonDir(dir) {
   try {
-    const out = execFileSync('git', ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    const out = execFileSync(hookProgram('git', dir), ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
       env: gitEnv(),
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],

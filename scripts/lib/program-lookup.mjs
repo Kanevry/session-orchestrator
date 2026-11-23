@@ -1,13 +1,18 @@
 /**
- * Locate Windows programs through absolute PATH entries only. No process is
+ * Locate hook programs and Windows executables through absolute PATH entries. No process is
  * started here and node:child_process is not imported, so modules that must
  * stay free of it (scripts/lib/zx.mjs, loaded by a vitest setup file) can use
  * the lookup too. scripts/lib/native-command.mjs re-exports both functions.
  */
-import { existsSync, realpathSync } from 'node:fs';
+import { accessSync, constants, existsSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 const winPath = path.win32;
+
+const hookPrograms = new Map();
+// A negative fd is never open. On Windows '?' cannot name a file. Passing
+// these to Node preserves its native ENOENT throw, result, callback or event.
+const missingHookProgram = process.platform === 'win32' ? 'C:\\?\\unresolved-program' : '/dev/fd/-1';
 
 /** A PATH entry inside a dependency tree (`npm run` prepends `<repo>\node_modules\.bin`). */
 export const NODE_MODULES_SEGMENT = /(^|[\\/])node_modules([\\/]|$)/i;
@@ -29,8 +34,12 @@ function withinDirectory(dir, file) {
  * @returns {string[]}
  */
 export function pathEntries(env) {
-  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path');
-  return (env[pathKey] || '').split(';').map((entry) => entry.replace(/^"(.*)"$/, '$1'));
+  return windowsPath(env).split(';').map((entry) => entry.replace(/^"(.*)"$/, '$1'));
+}
+
+function windowsPath(env) {
+  const key = Object.keys(env).find((entry) => entry.toLowerCase() === 'path');
+  return env[key] || '';
 }
 
 /** Drive-letter (`C:\`) or UNC (`\\server\share`) path; `\x` and `C:x` depend on the current drive or directory. */
@@ -58,21 +67,17 @@ function comparableDir(dir) {
  * Whether a PATH entry may supply a program: fully qualified (drive or UNC,
  * never a `\\?\` or `\\.\` device path), neither the spawn's working directory
  * nor this process's own one, and not inside a node_modules tree.
- * Only those directories themselves are excluded, because the working
- * directory is the one Windows searches implicitly; entries below them stay
- * usable, so a session started in the home directory still finds per-user
- * installs. Ceilings: an entry that names the working directory through a
- * junction or symlink is not recognised (only 8.3 names are resolved), and
- * entries the user put below the repository (an activated in-repo venv's
- * Scripts\, direnv) are trusted like the user's own shell trusts them.
- * Revisit if PATH entries ever come from repository content.
+ * This is the baseline for Windows launchers. It compares cwd spellings
+ * (including 8.3 names) and leaves their descendants available. Hook lookup
+ * also checks physical paths, the project itself and, for ordinary projects,
+ * the project subtree. See hookProgram and the matching pre-Node shell shim.
  * @param {string} dir
  * @param {string} cwd
  * @param {string} [processCwd]
  * @returns {boolean}
  */
 export function isTrustedPathEntry(dir, cwd, processCwd = process.cwd()) {
-  if (!FULLY_QUALIFIED.test(dir)) return false;
+  if (!FULLY_QUALIFIED.test(dir) || NODE_MODULES_SEGMENT.test(dir)) return false;
   const entry = comparableDir(dir);
   // A relative spawn cwd is relative to this process's working directory.
   const spawnDir = winPath.resolve(processCwd, cwd);
@@ -108,6 +113,106 @@ export function resolveExecutable(name, {
     }
   }
   throw Object.assign(new Error(`Cannot locate "${name}" on a PATH entry other than the working directory.`), { code: 'ENOENT' });
+}
+
+function hookPathKey(file) {
+  if (process.platform === 'win32') return comparableDir(file);
+  const normalized = path.resolve(file);
+  // Default macOS volumes fold case and Unicode normalization.
+  return process.platform === 'darwin' ? normalized.normalize('NFD').toLowerCase() : normalized;
+}
+
+function physicalDir(dir) {
+  try { return realpathSync.native(dir); } catch { return null; }
+}
+
+function atOrBelow(dir, root) {
+  return dir === root || dir.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+}
+
+// Case folding is conservative for exclusions, but cannot grant the home
+// exception on a case-sensitive volume. Confirm ambiguous spellings by inode.
+function broadProject(project, home) {
+  if (!project) return false;
+  if (path.dirname(project) === project) return true;
+  if (!home || !atOrBelow(hookPathKey(home), hookPathKey(project))) return false;
+  if (atOrBelow(home, project)) return true;
+  try {
+    const projectStat = statSync(project, { bigint: true });
+    for (let dir = home; ; dir = path.dirname(dir)) {
+      const stat = statSync(dir, { bigint: true });
+      if (stat.ino !== 0n && stat.dev === projectStat.dev && stat.ino === projectStat.ino) return true;
+      if (path.dirname(dir) === dir) return false;
+    }
+  } catch { return false; }
+}
+
+/**
+ * Resolve a bare hook utility without allowing its working tree or a dependency
+ * to supply it. Check the directory and the executable itself so symlinks do
+ * not bridge the boundary. Preserve the trusted install name for multi-call binaries.
+ * @param {string} name
+ * @param {string} [cwd] Spawn working directory.
+ * @param {NodeJS.ProcessEnv} [env] Environment the child will receive.
+ * @returns {string} An absolute executable path, or an absolute ENOENT stand-in.
+ */
+export function hookProgram(name, cwd = process.cwd(), env = process.env) {
+  if (!name || /[\\/:\0]/.test(name) || name === '.' || name === '..') return missingHookProgram;
+  const processCwd = process.cwd();
+  const win = process.platform === 'win32';
+  const searchPath = win ? windowsPath(env) : env.PATH ?? '/usr/bin:/bin';
+  const declared = env.CLAUDE_PROJECT_DIR ?? process.env.CLAUDE_PROJECT_DIR;
+  const absolute = dir => dir && (win ? FULLY_QUALIFIED.test(dir) : path.isAbsolute(dir));
+  const project = absolute(declared) ? declared : processCwd;
+  const home = win ? env.USERPROFILE ?? process.env.USERPROFILE : env.HOME ?? process.env.HOME;
+  const cached = hookPrograms.get(name);
+  if (cached && cached.searchPath === searchPath && cached.processCwd === processCwd &&
+      cached.cwd === cwd && cached.project === project && cached.home === home) return cached.file;
+
+  // Match run-node.sh: cwd and project directories themselves are always
+  // excluded. Only the project excludes descendants, and only when it is
+  // neither a filesystem root nor the physical home directory or its ancestor.
+  const physicalProject = physicalDir(project);
+  const projectKeys = new Set([hookPathKey(path.resolve(project))]);
+  if (physicalProject) projectKeys.add(hookPathKey(physicalProject));
+  const excluded = new Set(projectKeys);
+  for (const dir of [cwd, processCwd]) {
+    excluded.add(hookPathKey(path.resolve(dir)));
+    const physical = physicalDir(dir);
+    if (physical) excluded.add(hookPathKey(physical));
+  }
+  const excludeTree = !broadProject(physicalProject, absolute(home) ? physicalDir(home) : null);
+  function trusted(dir) {
+    const key = hookPathKey(dir);
+    if (NODE_MODULES_SEGMENT.test(dir) || NODE_MODULES_SEGMENT.test(key) || excluded.has(key)) return false;
+    if (excludeTree) {
+      for (const projectKey of projectKeys) if (atOrBelow(key, projectKey)) return false;
+    }
+    return true;
+  }
+
+  let file = missingHookProgram;
+  function usable(candidate) {
+    try {
+      const dir = path.dirname(candidate);
+      if (!trusted(dir) || !trusted(realpathSync.native(dir))) return false;
+      const physical = realpathSync.native(candidate);
+      if (!trusted(path.dirname(physical)) || !statSync(physical).isFile()) return false;
+      accessSync(physical, constants.X_OK);
+      file = candidate;
+      return true;
+    } catch { return false; }
+  }
+  if (win) {
+    try { resolveExecutable(name, { env, cwd, exists: usable }); } catch { /* leave the ENOENT stand-in */ }
+  } else {
+    for (const dir of searchPath.split(':')) {
+      // Keep '..' after symlinks: the kernel resolves the original PATH spelling.
+      if (path.isAbsolute(dir) && usable(`${dir}/${name}`)) break;
+    }
+  }
+  hookPrograms.set(name, { searchPath, processCwd, cwd, project, home, file });
+  return file;
 }
 
 /**

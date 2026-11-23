@@ -92,6 +92,7 @@ import { join, isAbsolute, relative, resolve } from 'node:path';
 
 import { writeStdoutLineSync } from './io.mjs';
 import { isMainModule } from './is-main-module.mjs';
+import { hookProgram } from './program-lookup.mjs';
 import { execFileSync } from './native-command.mjs';
 
 // ---------------------------------------------------------------------------
@@ -379,7 +380,7 @@ export function definitionOf(source) {
 
 /** @param {string} root */
 function trackedFiles(root) {
-  const out = execFileSync('git', ['ls-files'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const out = execFileSync(hookProgram('git', root), ['ls-files'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   return out
     .split('\n')
     .filter(Boolean)
@@ -404,7 +405,7 @@ function stdinPaths(root) {
 /** Short HEAD SHA, or null outside a git repo — the PSA-006 "measured WHEN" anchor. */
 function headRef(root) {
   try {
-    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+    return execFileSync(hookProgram('git', root), ['rev-parse', '--short', 'HEAD'], {
       cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -438,7 +439,7 @@ function isDirty(root) {
     // script, so it executes inside live sessions. Measured on git 2.50.1 with
     // stale stat info: plain status rewrote .git/index, the flagged form did not.
     // Same flag, same reason as hooks/post-bash-write-verify.mjs.
-    const out = execFileSync('git', ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=no'], {
+    const out = execFileSync(hookProgram('git', root), ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=no'], {
       cwd: root,
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,

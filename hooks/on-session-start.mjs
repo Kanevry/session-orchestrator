@@ -55,7 +55,7 @@ import {
 } from '../scripts/lib/session-registry.mjs';
 import { detectColdStart, consumeMarker } from '../scripts/lib/cold-start-detector.mjs';
 import { parseSessionId } from '../scripts/lib/session-id.mjs';
-import { readTelemetryState, resolveConsent, isCiEnv } from '../scripts/lib/telemetry/consent.mjs';
+import { readTelemetryState, resolveConsent, isInteractiveSession, telemetrySendBlockReason } from '../scripts/lib/telemetry/consent.mjs';
 import { loadOwnerConfig } from '../scripts/lib/owner-yaml.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 // SSOT for the "is this a re-entry into the same logical session?" question
@@ -65,6 +65,7 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 // carries next to the raw id (#1746).
 import { SAME_LOGICAL_SESSION_SOURCES, readClaudePid } from './_lib/lock-bootstrap.mjs';
 import { execFile, execFileSync } from '../scripts/lib/native-command.mjs';
+import { hookProgram } from '../scripts/lib/program-lookup.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -292,7 +293,7 @@ function flushBanner() {
  */
 async function gitOutput(args, cwd, timeoutMs = 0, onTimeout = null) {
   try {
-    const { stdout } = await execFileAsync('git', args, { cwd, timeout: timeoutMs });
+    const { stdout } = await execFileAsync(hookProgram('git', cwd), args, { cwd, timeout: timeoutMs });
     return stdout.trim();
   } catch (err) {
     if (err?.killed === true) onTimeout?.();
@@ -667,7 +668,7 @@ async function deriveSemanticCandidate({ projectRoot, mode }) {
     // Derive branch from git (cheap, ~5ms). Fall back to 'main' if outside a repo.
     let branch = 'main';
     try {
-      branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      branch = execFileSync(hookProgram('git', projectRoot), ['rev-parse', '--abbrev-ref', 'HEAD'], {
         cwd: projectRoot,
         stdio: ['ignore', 'pipe', 'ignore'],
         encoding: 'utf8',
@@ -811,24 +812,7 @@ const CONSENT_NUDGE = {
     + 'grantConsent() bzw. denyConsent() aus scripts/lib/telemetry/consent.mjs. Danach nie wieder fragen.',
 };
 
-/**
- * #1872 — is there an operator who could answer an AskUserQuestion in this run?
- *
- * Not when CI is detected, and not when Claude Code runs headless: the
- * entrypoint is `cli` interactively and `sdk-cli` under `claude -p` (measured
- * in a tool child process, 2026-10-28; other SDK hosts use further `sdk-*`
- * values). That the SessionStart hook sees the same value is the best signal
- * available, not a measured fact. Revisit trigger (BV-004): a headless run
- * that still shows the nudge, or a harness that exports a different marker.
- *
- * @param {NodeJS.ProcessEnv} env
- * @returns {boolean}
- */
-export function isInteractiveSession(env) {
-  if (isCiEnv(env)) return false;
-  const entrypoint = String(env.CLAUDE_CODE_ENTRYPOINT ?? '').trim().toLowerCase();
-  return !entrypoint.startsWith('sdk');
-}
+export { isInteractiveSession };
 
 /**
  * #1138 — queue the consent nudge when, and only when, this host has no
@@ -861,6 +845,9 @@ function maybeQueueConsentNudge() {
   try {
     const interactive = isInteractiveSession(process.env);
     if (!interactive) return;
+    // #2256 — never ask for consent where nothing would ever be sent
+    // (Codex, Cursor, pi, or no Claude Code entrypoint).
+    if (telemetrySendBlockReason(process.env) !== null) return;
     const ownerConfig = loadOwnerConfig().config;
     const consent = resolveConsent({
       env: process.env,

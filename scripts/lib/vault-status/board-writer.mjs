@@ -42,7 +42,7 @@
  * CRITICAL SAFETY (Epic #673 #1 risk — never clobber hand-authored vault notes):
  *   1. The `_generator` marker guard refuses any file we did not author.
  *   2. Defense-in-depth: writeBoard hard-refuses to touch `_overview.md`
- *      (sven-owned, must NEVER be written by this generator).
+ *      (hand-maintained, must NEVER be written by this generator).
  *
  * No console noise — library code — except the one stderr line on a
  * canonical-vault refusal (#1450). Plain Node ESM. No external deps.
@@ -607,7 +607,7 @@ export function parseBoardRows(content) {
  * Guard order:
  *   1. dryRun → { action: 'dry-run' } (never touches disk).
  *   2. SAFETY (Epic #673 #1 risk): basename === '_overview.md' →
- *      { action: 'skipped-handwritten' }. `_overview.md` is sven-owned and must
+ *      { action: 'skipped-handwritten' }. `_overview.md` is hand-maintained and must
  *      NEVER be written by this generator, regardless of any marker.
  *   3. file exists → parseFrontmatter:
  *        - !fm || !fm._generator                  → skipped-handwritten
@@ -645,7 +645,7 @@ export function writeBoard(opts) {
     return { action: 'dry-run', path: outputPath };
   }
 
-  // 2. SAFETY (Epic #673 #1 risk): _overview.md is sven-owned — NEVER write it.
+  // 2. SAFETY (Epic #673 #1 risk): _overview.md is hand-maintained — NEVER write it.
   if (path.basename(outputPath) === '_overview.md') {
     return { action: 'skipped-handwritten', path: outputPath };
   }

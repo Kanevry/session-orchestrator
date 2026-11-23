@@ -19,7 +19,12 @@ need it only when using the named feature. Install Node packages with npm; the
 committed lockfile is `package-lock.json`. Do not run `pnpm install` in this
 checkout. <!-- sources: package.json:26; scripts/check-package-manager.mjs:140-158,193-235 -->
 
-Claude Code on native Windows is supported with Node.js 24 and Git for Windows
+**Support tiers.** macOS and Linux are checked before every release. Windows is
+best effort: it runs, but there is no native acceptance path before each release;
+bugs reported against it get fixed. The dated measurements below are evidence of
+what worked on the machines named, not a guarantee.
+
+Claude Code on native Windows has been measured with Node.js 24 and Git for Windows
 (which Claude Code itself requires). Git for Windows supplies `sh` for the hook
 wrappers; the MCP server starts directly with Node and needs neither Bash, jq
 nor `scripts/windows-setup.mjs`. <!-- sources: .claude-plugin/plugin.json:15-17; hooks/hooks.json:14; hooks/run-node.sh:1-29 -->
@@ -183,9 +188,10 @@ questions were the scope of the change, a CI setup choice, or, in one run, the
 Dispatcher Autonomy choice of session-start Phase 1.1. The model route was an
 Anthropic-compatible endpoint (model `gpt-6-sol`). Without
 `SO_TELEMETRY_DISABLED=1` the first session stopped at the one-time telemetry
-consent question instead, because the hook asks it in headless `claude -p` runs
-too (tracked in #1872). In 2 of 5 runs the plugin's SEC-008 detector reported
-that a command the model chose had printed the session's own
+consent question instead, because the hook of 5.14.0 asked it in headless
+`claude -p` runs too. Fixed in 5.16.0 (#1872): the hook no longer asks in CI or
+when `CLAUDE_CODE_ENTRYPOINT` starts with `sdk` (as in `claude -p`). In 2 of 5
+runs the plugin's SEC-008 detector reported that a command the model chose had printed the session's own
 `CLAUDE_CODE_MESSAGING_TOKEN`. That token belonged to the throwaway session and
 ended with it; the cause is tracked in #1873, and those two runs are not
 counted as clean. Older Claude Code versions did not install the dependencies,
@@ -424,7 +430,7 @@ What you get on top:
 - **Checks before a run and before a merge.** Busy repository, low disk or memory, a pipeline that is not green on this exact commit: the lead refuses. It also refuses when it cannot measure.
 - **A trail you can check.** Decisions and merges go into an append-only, hash-chained log.
 
-Install with `npm i -g lead-session-orchestrator`, then run `navigator --help`.
+Install with `npm i -g lead-session-orchestrator`, then run `lso --help`.
 Each works on its own. Together they talk only through files, and a session
 never waits for the lead. Worth knowing before you try it: version 0.x, GitLab
 only for now, tested on macOS. Setup:
@@ -437,5 +443,5 @@ sandboxed, Claude Code 2.1.296 or newer). Add it once from a shell, then type
 
 ```sh
 claude plugin marketplace add "$(npm root -g)/lead-session-orchestrator"
-claude plugin install owner-inbox@navigator-mods
+claude plugin install owner-inbox@lead-session-orchestrator
 ```

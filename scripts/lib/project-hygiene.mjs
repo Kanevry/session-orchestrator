@@ -46,6 +46,7 @@ import { join } from 'node:path';
 import * as yaml from 'js-yaml';
 import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './command-blocker.mjs';
 import { parsePorcelainEntries } from './git-porcelain.mjs';
+import { hookProgram } from './program-lookup.mjs';
 import { execFileSync } from './native-command.mjs';
 
 /** Commits on HEAD past its nearest reachable tag before release hygiene is worth mentioning. */
@@ -64,7 +65,7 @@ export const DEFAULT_ARTIFACT_AGE_DAYS = 30;
  */
 function git(args, cwd) {
   try {
-    return execFileSync('git', args, {
+    return execFileSync(hookProgram('git', cwd), args, {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -339,7 +340,7 @@ function duBytesBatch(repoRoot, relPaths, { platform = process.platform, deadlin
     }
     let out;
     try {
-      out = execFileSync('du', ['-skl', '--', ...chunk], {
+      out = execFileSync(hookProgram('du', repoRoot), ['-skl', '--', ...chunk], {
         cwd: repoRoot,
         // macOS du rewrites a non-ASCII name's bytes under the C locale (`ä`,
         // c3 a4, comes back as e4), so the echoed path no longer matched the

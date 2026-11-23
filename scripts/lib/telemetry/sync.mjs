@@ -10,12 +10,14 @@
  *   - queue.mjs    — the bounded NDJSON offline queue
  *
  * ── Outermost-seam gating (load-bearing privacy invariant) ───────────────────
- * `resolveConsent()` is the FIRST statement of `flush()`. When it returns
+ * `flush()` checks consent first. When `resolveConsent()` returns
  * `send !== true` the function returns immediately — nothing below the gate is
  * reachable: no fetch, no queue write, and NO anon-ID minting. The anon-ID is
  * minted lazily inside `buildBatch()`, which `flush()` calls ONLY after the gate
  * has passed. This makes "no ID exists until an affirmative-consent send is
  * actually attempted" a structural guarantee, not a discipline.
+ * Even with consent, only an interactive Claude Code session may proceed to
+ * the sandbox probe, batch build and queue access.
  *
  * ── Fire-and-forget, never-throw ─────────────────────────────────────────────
  * A flush never throws and never blocks a session beyond the POST timeout. On
@@ -32,6 +34,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 
 import {
+  telemetrySendBlockReason,
   resolveConsent,
   readTelemetryState,
   writeTelemetryState,
@@ -730,8 +733,10 @@ function isSchemaRejection(err) {
  * @param {string} [opts.now]              ISO timestamp (sent_at, last_flush_at, rotation clock).
  * @param {object} [opts.ownerConfig]      Parsed owner.yaml (default: loaded here). Inject to
  *                                         isolate a test from the host's real owner.yaml fleet flag.
- * `reason` values: `gated` (consent), `sandbox:*` (the sandbox guard refused —
- * no network, no queue mutation, no anon-ID mint), `debug`, `queued`, `sent`,
+ * `reason` values: `gated` (consent), `non-interactive` (CI or SDK entrypoint),
+ * `unverified-harness` (foreign harness marker or missing entrypoint),
+ * `sandbox:*` (the sandbox guard refused — no network, no queue mutation, no
+ * anon-ID mint), `debug`, `queued`, `sent`,
  * `rejected-evicted` (the server refused the payload with 400/422 — the batch is
  * dropped instead of re-queued forever), `no-record`, `build-error: …`.
  *
@@ -762,6 +767,11 @@ export async function flush({
   });
   if (consent.send !== true) {
     return { sent: false, queued: false, state: consent.state, reason: 'gated' };
+  }
+
+  const blocked = telemetrySendBlockReason(env);
+  if (blocked) {
+    return { sent: false, queued: false, state: consent.state, reason: blocked };
   }
 
   // SANDBOX GUARD — runs strictly between the consent gate and buildBatch, so a

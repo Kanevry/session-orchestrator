@@ -10,9 +10,13 @@
  * lifecycle import chain (lifecycle imports listing, not the reverse).
  */
 
-import { $ as defaultDollar } from '../zx.mjs';
+import { promisify } from 'node:util';
+import { execFile } from '../native-command.mjs';
+import { hookProgram } from '../program-lookup.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // listWorktrees
@@ -30,7 +34,7 @@ import path from 'node:path';
  * distinction can make the fail-safe call themselves.
  *
  * @param {object} [opts]
- * @param {Function} [opts.$]  Optional zx-compatible executor. Defaults to real zx.$.
+ * @param {Function} [opts.$]  Optional zx-compatible executor.
  *   Tests pass a mock here to avoid vi.mock('zx') under fork pool.
  * @returns {Promise<{ok: boolean, worktrees: Array<{path: string, branch: string, head: string}>, error?: string}>}
  *   `ok: true`  — `git worktree list` ran; `worktrees` is the (possibly empty)
@@ -40,11 +44,11 @@ import path from 'node:path';
  *                 the failure message. An empty list here is NOT a measurement.
  */
 export async function listWorktreesChecked(opts = {}) {
-  const dollar = opts.$ ?? defaultDollar;
-  const git = dollar({ cwd: process.cwd() });
   let output;
   try {
-    const result = await git`git worktree list --porcelain`;
+    const result = opts.$
+      ? await opts.$({ cwd: process.cwd() })`${hookProgram('git')} worktree list --porcelain`
+      : await execFileAsync(hookProgram('git'), ['worktree', 'list', '--porcelain']);
     output = result.stdout;
   } catch (err) {
     return {
@@ -96,7 +100,7 @@ export async function listWorktreesChecked(opts = {}) {
  * empty" from "git failed" use `listWorktreesChecked()` instead (#919.3).
  *
  * @param {object} [opts]
- * @param {Function} [opts.$]  Optional zx-compatible executor. Defaults to real zx.$.
+ * @param {Function} [opts.$]  Optional zx-compatible executor.
  *   Tests pass a mock here to avoid vi.mock('zx') under fork pool.
  * @returns {Promise<Array<{path: string, branch: string, head: string}>>}
  *   Array of worktree descriptors; empty array if none OR on git failure

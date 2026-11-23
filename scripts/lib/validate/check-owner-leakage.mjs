@@ -25,13 +25,18 @@ const includeUntracked = argv.slice(3).includes('--include-untracked');
 // the export policy and implies --require-owner-patterns (a public tree is never scanned blind).
 const publicExport = argv.slice(3).includes('--public-export');
 const requireOwnerPatterns = argv.slice(3).includes('--require-owner-patterns') || publicExport;
+// --require-confidential-names (#2238): the scan publishes something, so CP11 must have a
+// usable list. Unconfigured and inert become `CP11 DISABLED` (fail closed); an explicit
+// `[]` stays the operator's visible opt-out. The CALLER decides when a scan publishes
+// (export, curated release); this standalone file never reads Session Config.
+const requireConfidentialNames = argv.slice(3).includes('--require-confidential-names') || publicExport;
 const packedIndex = argv.indexOf('--packed-files');
 const packedInventoryPath = packedIndex >= 0 ? argv[packedIndex + 1] : null;
 if (isMain && packedIndex >= 0 && (!packedInventoryPath || packedInventoryPath.startsWith('--'))) {
   console.error('packed-files requires an inventory path'); process.exit(1);
 }
 if (isMain && !pluginRoot) {
-  console.error('Usage: check-owner-leakage.mjs <plugin-root> [--include-untracked] [--require-owner-patterns] [--public-export]');
+  console.error('Usage: check-owner-leakage.mjs <plugin-root> [--include-untracked] [--require-owner-patterns] [--require-confidential-names] [--public-export]');
   process.exit(1);
 }
 
@@ -422,7 +427,17 @@ function isMissingDirectSibling(err) {
   return typeof err?.url === 'string' && CP11_DIRECT_SIBLING_URLS.has(err.url);
 }
 
-export async function getConfidentialNamePatterns({ loadOwnerConfig } = {}) {
+/** CP11 reason when a publishing scan finds no list (#2238). Names the regenerate command, never a path. */
+const CP11_REQUIRED_REASON =
+  "no confidential-names list is configured, and this scan publishes (run 'node scripts/confidential-names.mjs generate', then set paths.confidential-names-file in owner.yaml)";
+
+/**
+ * Build the CP11 patterns from the host-local confidential-names list.
+ * @param {{ loadOwnerConfig?: Function, required?: boolean }} [opts] `required` (#2238): a scan
+ *   that publishes; every "no list" outcome except the explicit `[]` opt-out becomes `disabledReason`.
+ * @returns {Promise<{ patterns: RegExp[], disabledReason?: string, inertWarn?: string }>}
+ */
+export async function getConfidentialNamePatterns({ loadOwnerConfig, required = false } = {}) {
   let helpers;
   try {
     helpers = {
@@ -439,6 +454,9 @@ export async function getConfidentialNamePatterns({ loadOwnerConfig } = {}) {
           disabledReason:
             'CP11 configured via SO_CONFIDENTIAL_NAMES_FILE but the confidential-names helpers are not resolvable (standalone copy) — failing closed',
         };
+      }
+      if (required) {
+        return { patterns: [], disabledReason: 'confidential-names helpers are not resolvable (standalone copy), and this scan publishes — failing closed' };
       }
       return {
         patterns: [],
@@ -491,12 +509,14 @@ export async function getConfidentialNamePatterns({ loadOwnerConfig } = {}) {
               'owner.yaml has an invalid paths: section, so a configured confidential-names-file cannot be resolved',
           };
         }
+        if (required) return { patterns: [], disabledReason: CP11_REQUIRED_REASON };
         return {
           patterns: [],
           inertWarn:
             "CP11 inactive — owner.yaml's paths: section was dropped as invalid, but it configures no confidential-names-file",
         };
       }
+      if (required) return { patterns: [], disabledReason: CP11_REQUIRED_REASON };
       return { patterns: [] }; // (b) the ~99% default — inactive, silent.
     }
 
@@ -517,7 +537,14 @@ export async function getConfidentialNamePatterns({ loadOwnerConfig } = {}) {
           'every entry in the configured confidential-names-file was rejected as invalid or oversized',
       };
     }
-    if (status !== 'ok') return { patterns: [] }; // 'empty' — the operator's `[]` opt-out.
+    if (status !== 'ok') {
+      // 'empty' — the operator's `[]` opt-out. A scan that publishes stays green
+      // but says CP11 is off, so "not checked" never reads as "clean" (#2238).
+      if (required) {
+        return { patterns: [], inertWarn: 'CP11 deliberately off — the confidential-names-file is an empty list, and this scan publishes' };
+      }
+      return { patterns: [] };
+    }
     return { patterns: names.map((name) => new RegExp(`\\b${escapeRegex(name)}\\b`, 'i')) };
   } catch (err) {
     return { patterns: [], disabledReason: `confidential-names resolution failed (${err?.name ?? 'Error'})` };
@@ -717,7 +744,7 @@ const scanFiles = textFiles.filter((f) => {
   return true;
 });
 
-const cp11 = await getConfidentialNamePatterns();
+const cp11 = await getConfidentialNamePatterns({ required: requireConfidentialNames });
 const cp11Patterns = cp11.patterns;
 if (cp11.inertWarn) {
   console.error(`WARN: ${cp11.inertWarn}`);

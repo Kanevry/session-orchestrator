@@ -9,7 +9,9 @@ labels: bug
 What happens vs. what should happen.
 
 ## Environment
-- **Claude Code version:**
+- **Harness and version:** (Claude Code / Codex CLI / Cursor IDE / Pi, with its version)
+- **Native shell:** (e.g. zsh, bash, PowerShell, cmd.exe, Git Bash; on Windows say whether native or WSL)
+- **Installation route:** (plugin marketplace, npm, git clone, other)
 - **Plugin version:** (check `.claude-plugin/plugin.json`)
 - **Session type:** [housekeeping / feature / deep]
 - **VCS provider:** [GitHub / GitLab]

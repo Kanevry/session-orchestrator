@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-11-22T11:16:09.488Z",
-  "head": "95f51f59747062fece00249c86d7a4ed02678d70",
+  "generated_at": "2026-11-22T16:48:14.499Z",
+  "head": "cdc323113c93611f4a63df8caf8c7fbbf6e18b39",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -2392,9 +2392,7 @@
     {
       "file": "scripts/lib/zx.mjs",
       "reachable_from": [
-        "on-session-start.mjs",
-        "on-stop.mjs",
-        "pre-bash-destructive-guard.mjs"
+        "on-stop.mjs"
       ]
     }
   ]

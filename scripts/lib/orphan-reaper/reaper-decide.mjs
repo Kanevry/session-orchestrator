@@ -48,7 +48,7 @@ import { REAPER_DEFAULTS } from './defaults.mjs';
 /**
  * The read-only gate command class — an ALLOWLIST, which is why no denylist is
  * needed: a dev server or MCP server matches nothing here and is therefore never
- * a candidate, orphaned or not (PRD § Out-of-Scope: two orphaned `browser-kit`
+ * a candidate, orphaned or not (PRD § Out-of-Scope: two orphaned dev-tool
  * servers were reported, not killed).
  *
  * IN — commands that only read the working copy and can be re-run at will:

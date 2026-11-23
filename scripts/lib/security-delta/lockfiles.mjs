@@ -20,6 +20,7 @@ import { promisify } from 'node:util';
 import { parseAllDocuments } from 'yaml';
 
 import { gitEnv, isGitExecError, PATH_ABSENT } from './floating-tags.mjs';
+import { hookProgram } from '../program-lookup.mjs';
 import { execFile } from '../native-command.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -818,7 +819,7 @@ function parseLockfile(kind, text) {
  */
 export function defaultRunGit(repoRoot) {
   return async (args) => {
-    const { stdout } = await execFileAsync('git', ['-C', repoRoot, ...args], {
+    const { stdout } = await execFileAsync(hookProgram('git', repoRoot), ['-C', repoRoot, ...args], {
       encoding: 'utf8',
       maxBuffer: GIT_MAX_BUFFER,
       env: gitEnv(),

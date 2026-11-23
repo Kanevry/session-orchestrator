@@ -35,7 +35,7 @@ import { appendSkillInvocation } from '../scripts/lib/skill-invocations-schema.m
 import { resolveEventsLedgerRoot } from '../scripts/lib/platform.mjs';
 import { resolveLedgerPath } from '../scripts/lib/ledger-path.mjs';
 import { shouldDailyFlush } from '../scripts/lib/telemetry/sync.mjs';
-import { resolveConsent, readTelemetryState } from '../scripts/lib/telemetry/consent.mjs';
+import { telemetrySendBlockReason, resolveConsent, readTelemetryState } from '../scripts/lib/telemetry/consent.mjs';
 import { loadOwnerConfig } from '../scripts/lib/owner-yaml.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { spawn } from '../scripts/lib/native-command.mjs';
@@ -118,7 +118,7 @@ function readStdinJson() {
 
 /**
  * Non-blocking daily-fallback flush trigger. Ordered cheapest-first:
- *   1. env kill-switches (no I/O) — DO_NOT_TRACK / SO_TELEMETRY_DISABLED.
+ *   1. Check env kill-switches and require an interactive Claude Code session (no I/O).
  *   2. shouldDailyFlush (one telemetry.json read; a queue stat + a sessions.jsonl
  *      read only once the 24h gate has passed) — the common case (flushed within
  *      24h) returns here WITHOUT loading owner.yaml or the roster.
@@ -143,19 +143,24 @@ export function maybeSpawnDailyFlush({
   now = Date.now(),
   statePath,
   queuePath,
-  metricsDir = sessionsMetricsDirPath(),
+  metricsDir,
 } = {}) {
   try {
-    // 1. Cheapest gate: env kill-switches, no file I/O.
+    // 1. Environment checks, before resolving any paths.
     if (isTruthyEnvFlag(env?.DO_NOT_TRACK) || env?.SO_TELEMETRY_DISABLED === '1') {
       return { spawned: false, reason: 'disabled-env' };
+    }
+
+    const blocked = telemetrySendBlockReason(env);
+    if (blocked) {
+      return { spawned: false, reason: blocked };
     }
 
     // 2. Backlog / catch-up check — bails out before owner.yaml load in the
     //    common case. Since #1138 this is due EITHER on a stale non-empty queue
     //    OR on a session that completed after the last successful flush, so the
     //    fallback can originate a ping instead of only retrying failed sends.
-    if (!shouldDailyFlush({ statePath, queuePath, metricsDir, now })) {
+    if (!shouldDailyFlush({ statePath, queuePath, metricsDir: metricsDir ?? sessionsMetricsDirPath(), now })) {
       return { spawned: false, reason: 'not-due' };
     }
 

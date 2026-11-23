@@ -28,6 +28,7 @@ import { SECURITY_DELTA_EVENT } from './security-delta/contract.mjs';
 import { compareVersions, parseVersion } from './security-delta/runtime-floor.mjs';
 import { CACHE_TTL_MS, cachePaths, readCacheFile, stampMs } from './security-pulse/cache.mjs';
 import { maybeSpawnRefresh } from './security-pulse/spawn.mjs';
+import { hookProgram } from './program-lookup.mjs';
 import { execFile } from './native-command.mjs';
 
 const HEAD_TIMEOUT_MS = 1500;
@@ -172,7 +173,7 @@ function defaultReadHead(repoRoot) {
     try {
       const env = {};
       for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('GIT_')) env[k] = v;
-      execFile('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { timeout: HEAD_TIMEOUT_MS, encoding: 'utf8', env }, (err, stdout) => {
+      execFile(hookProgram('git', repoRoot, env), ['-C', repoRoot, 'rev-parse', 'HEAD'], { timeout: HEAD_TIMEOUT_MS, encoding: 'utf8', env }, (err, stdout) => {
         const out = String(stdout ?? '').trim();
         resolve(!err && SHA_RE.test(out) ? out : null);
       });

@@ -1,11 +1,13 @@
 /**
- * desk-rules.mjs — reader for the Orchestrator Desk presence and rules files (#2176).
+ * desk-rules.mjs — reader for the optional presence and rules files written by
+ * a companion app (#2176).
  *
- * Contract: `docs/vertrag-anwesenheit-und-regeln.md` in the orchestrator-desk
- * repo (Schema 1, Desk #26, owner decision queue 13621). The desk app writes
+ * Contract: Schema 1, defined by the companion app. It writes
  * `<navigator>/desk/anwesenheit.json` and `<navigator>/desk/regeln.json`; this
- * module is a port of the reference reader `apps/dashboard/src/regeln.ts`
- * there, and `tests/fixtures/desk-vertrag/` carries its test cases unchanged.
+ * module ports the companion app's reference reader, and
+ * `tests/fixtures/desk-vertrag/` carries the contract's test cases unchanged.
+ * The contract identifiers (`desk/`, `quelle: 'desk-app'`) stay as they are,
+ * and so do this module's export names, which other code imports (#2176, #2227).
  *
  * Rules only ever RESTRICT. A caller keeps today's gate and applies the rule
  * on top: `inaktiv` (both files absent) means "as today"; any present but

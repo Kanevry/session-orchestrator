@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * desk-notify.mjs — the Notification hook of this repo's `.claude/settings.json`,
- * gated by the Orchestrator Desk presence (#2176, Desk contract § Zustellung).
+ * gated by the presence and rules files of an optional companion app (#2176,
+ * contract § Zustellung).
  *
  * Shows the macOS notification only when `notificationAllowed()` says so: at
  * the desk, when away only with `unblock = reach`, and as before when the desk

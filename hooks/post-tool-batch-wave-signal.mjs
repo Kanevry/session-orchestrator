@@ -83,6 +83,7 @@ import {
 import { atomicMutateJson } from './_lib/atomic-json.mjs';
 import { maybeTriggerOrphanScan } from '../scripts/lib/orphan-reaper/trigger.mjs';
 import { execFileSync } from '../scripts/lib/native-command.mjs';
+import { hookProgram } from '../scripts/lib/program-lookup.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -282,7 +283,7 @@ const GIT_OPTS = (projectDir) => ({
  */
 function readHeadSha(projectDir) {
   try {
-    const out = execFileSync('git', ['rev-parse', 'HEAD'], GIT_OPTS(projectDir)).trim();
+    const out = execFileSync(hookProgram('git', projectDir), ['rev-parse', 'HEAD'], GIT_OPTS(projectDir)).trim();
     return /^[0-9a-f]{40}$/i.test(out) ? out : null;
   } catch {
     return null;
@@ -305,8 +306,8 @@ function countFilesChangedSince(projectDir, sha) {
   if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/i.test(sha)) return null;
   try {
     const opts = GIT_OPTS(projectDir);
-    const tracked = execFileSync('git', ['diff', '--name-only', sha], opts);
-    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], opts);
+    const tracked = execFileSync(hookProgram('git', projectDir), ['diff', '--name-only', sha], opts);
+    const untracked = execFileSync(hookProgram('git', projectDir), ['ls-files', '--others', '--exclude-standard'], opts);
     const paths = new Set(
       `${tracked}\n${untracked}`.split('\n').map((l) => l.trim()).filter((l) => l.length > 0),
     );

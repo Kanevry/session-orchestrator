@@ -43,6 +43,7 @@
 
 import path from 'node:path';
 import { dotGitAncestor, getProjectDir, resolveEventsLedgerRoot } from './platform.mjs';
+import { hookProgram } from './program-lookup.mjs';
 import { spawnSync } from './native-command.mjs';
 
 /** @type {Map<string, boolean>} `<root>\0<rel>` → ignored in that worktree */
@@ -64,7 +65,7 @@ function gitEnv() {
 function isIgnoredIn(root, relPath) {
   const key = `${root}\0${relPath}`;
   if (ignoredMemo.has(key)) return ignoredMemo.get(key);
-  const r = spawnSync('git', ['-C', root, 'check-ignore', '-q', '--', relPath], {
+  const r = spawnSync(hookProgram('git', root), ['-C', root, 'check-ignore', '-q', '--', relPath], {
     env: gitEnv(),
     stdio: 'ignore',
     timeout: 2000,

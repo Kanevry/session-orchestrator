@@ -15,6 +15,17 @@
 #     ($SO_NODE_SEARCH_DIRS, colon-separated, overrides the built-in list) > nvm.
 #   - A relative SO_NODE_BIN, PATH entry, search-list entry or nvm directory is
 #     skipped, never resolved against the cwd (the repo being worked on).
+#   - Automatic lookup skips the working and project directories themselves
+#     and any node_modules segment. It skips descendants of the project unless
+#     the project is a filesystem root, the user's home or an ancestor of home.
+#     SO_NODE_BIN remains an explicit absolute override. An unexpanded `~` or
+#     `~/…` PATH entry is rewritten to HOME first and then checked like any
+#     other entry.
+#     CEILING (BV-004): with the project at HOME and the hook's cwd in a repo
+#     below it, that repo's own bin/ on PATH is trusted, as before #2237. A
+#     project at HOME does not shape PATH itself (settings come from the user,
+#     direnv acts when the harness starts in the repo, which then is the
+#     project). Revisit if a harness ever starts in HOME and enters repos.
 #   - Found:   exec's node — stdin/stdout/stderr and exit code pass through
 #              unchanged (PreToolUse exit-2 blocking still works).
 #   - Missing with --fail-closed: prints a diagnostic every time and exits 2.
@@ -43,73 +54,134 @@ if [ "$so_node_bin_abs" = true ] && [ -x "${SO_NODE_BIN:-}" ]; then
   exec "${SO_NODE_BIN:-}" "$@"
 fi
 
-# 2. PATH as inherited from the harness — absolute entries only, on every OS.
-# Relative PATH entries are never searched: an empty entry, `.` or `bin` resolve
-# against the hook's cwd (the repo being worked on), not against an install
-# location (#1969). A clean PATH takes the plain lookup below without an extra
-# process; otherwise the absolute entries are searched in their PATH order.
-path_lookup=true
-# PATH for the few external tools the shim may still run (`find` below): the
-# inherited PATH when it is clean, else only its absolute entries.
-tool_path="${PATH-}"
-case ":${PATH-}:" in
-  *::* | *:[!/]*)
-    abs_path=""
-    rest="${PATH-}:"
-    while [ -n "$rest" ]; do
-      dir="${rest%%:*}"
-      rest="${rest#*:}"
-      # An unexpanded `~` or `~/…` entry (fnm, mise, nodenv) means the home folder:
-      # rewrite it to an absolute HOME path. `~user/…` is never resolved. A colon
-      # in HOME would split the result into further, possibly relative, entries:
-      # then the entry is dropped like any other relative one.
-      case "${HOME-}" in
-        *:*) ;;
-        /*)
-          case "$dir" in
-            \~) dir="$HOME" ;;
-            \~/*) dir="$HOME/${dir#\~/}" ;;
-          esac
-          ;;
-      esac
-      case "$dir" in
-        /*) abs_path="${abs_path:+$abs_path:}$dir" ;;
-      esac
-    done
-    tool_path="$abs_path"
-    # An empty PATH would itself mean the cwd, so only search a non-empty list.
-    node_bin=""
-    if [ -n "$abs_path" ]; then
-      node_bin="$(PATH="$abs_path"; command -v node 2>/dev/null)"
-    fi
-    case "$node_bin" in
-      /*) exec "$node_bin" "$@" ;;
+# 2. Check candidates before exec, including automatic fallback locations.
+# Comparing ancestor directories by identity handles trailing separators,
+# filesystem case rules and short names without mistaking a sibling with a
+# common prefix for a descendant. Check the spelling and the physical directory
+# so neither a link into the project nor a project-local link out is trusted.
+working_dir=$PWD
+absolute_dir() {
+  case "$1" in
+    /*) return 0 ;;
+    [A-Za-z]:[\\/]* | \\\\*) [ "${OS:-}" = Windows_NT ] ;;
+    *) return 1 ;;
+  esac
+}
+
+project_dir=${CLAUDE_PROJECT_DIR:-}
+absolute_dir "$project_dir" || project_dir=$working_dir
+
+at_or_below() {
+  ancestor=$1
+  while :; do
+    [ "$ancestor" -ef "$2" ] && return 0
+    case "$ancestor" in
+      /) return 1 ;;
+      */*) ancestor=${ancestor%/*}; ancestor=${ancestor:-/} ;;
+      *) return 1 ;;
     esac
-    # No node on an absolute entry: never fall back to the relative ones.
-    path_lookup=false
-    ;;
-esac
-if [ "$path_lookup" = true ] && command -v node >/dev/null 2>&1; then
-  exec node "$@"
+  done
+}
+
+# Same rule as hookProgram: compare the physical home with the project once.
+# PWD is a subtree boundary only when it supplied the project directory.
+broad_project() (
+  [ "$project_dir" -ef "$project_dir/.." ] && return 0
+  home_dir=${HOME:-}
+  if [ "${OS:-}" = Windows_NT ]; then
+    home_dir=${USERPROFILE:-}
+    CDPATH= cd -P "$project_dir" || return 1
+    # Git Bash exposes drive roots as /c, /d, etc.
+    case "$PWD" in /[A-Za-z]) [ "$PWD" -ef "${PWD#/}:/" ] && return 0 ;; esac
+  fi
+  absolute_dir "$home_dir" && CDPATH= cd -P "$home_dir" && at_or_below "$PWD" "$project_dir"
+)
+exclude_tree=true
+if broad_project 2>/dev/null; then exclude_tree=false; fi
+
+outside_project() {
+  case "/$1/" in
+    *[\\/][nN][oO][dD][eE]_[mM][oO][dD][uU][lL][eE][sS][\\/]*) return 1 ;;
+  esac
+  [ "$1" -ef "$working_dir" ] && return 1
+  if [ "$exclude_tree" = true ]; then
+    ! at_or_below "$1" "$project_dir"
+  else
+    ! [ "$1" -ef "$project_dir" ]
+  fi
+}
+
+trusted_program() {
+  # Keep missing PATH candidates in this shell; only an actual executable
+  # needs a subshell in which to change directories.
+  [ -f "$1" ] && [ -x "$1" ] || return 1
+  trusted_location "$1"
+}
+
+trusted_location() (
+  candidate=$1
+  absolute_dir "$candidate" || return 1
+  while :; do
+    parent=${candidate%/*}
+    parent=${parent:-/}
+    outside_project "$parent" || return 1
+    CDPATH= cd -P "$parent" 2>/dev/null || return 1
+    if [ "$PWD" != "$parent" ]; then
+      outside_project "$PWD" || return 1
+    fi
+    [ -L "$candidate" ] || return 0
+    # PATH itself is untrusted. Use the system lookup for readlink, including
+    # on hosts whose realpath utility lacks support for resolving files.
+    # The sentinel preserves any trailing newlines in the link value.
+    target=$(command -p readlink "$candidate" && printf '.') || return 1
+    target=${target%'
+.'}
+    case "$target" in
+      /*) candidate=$target ;;
+      *) candidate=$PWD/$target ;;
+    esac
+  done
+)
+
+# Parse literal colon-delimited entries, preserving spaces and glob characters.
+lookup_program() {
+  rest=$1:
+  while [ -n "$rest" ]; do
+    dir=${rest%%:*}
+    rest=${rest#*:}
+    # An unexpanded `~` or `~/…` entry (fnm, mise, nodenv) means the home folder:
+    # rewrite it to an absolute HOME path, as 5.21.x promised. `~user/…` is never
+    # resolved. A colon in HOME would split the result into further, possibly
+    # relative, entries: then the entry is dropped like any other relative one.
+    # The rewritten entry then passes the same trust checks as any other.
+    case "${HOME-}" in
+      *:*) ;;
+      /*)
+        case "$dir" in
+          \~) dir="$HOME" ;;
+          \~/*) dir="$HOME/${dir#\~/}" ;;
+        esac
+        ;;
+    esac
+    case "$dir" in
+      /*)
+        program=$dir/$2
+        if trusted_program "$program"; then return 0; fi
+        ;;
+    esac
+  done
+  return 1
+}
+
+if lookup_program "${PATH-}" node; then
+  exec "$program" "$@"
 fi
 
 # 3. Well-known install locations (Homebrew arm64/intel, system, volta, asdf).
 search_dirs="${SO_NODE_SEARCH_DIRS:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:${VOLTA_HOME:-${HOME:-}/.volta}/bin:${HOME:-}/.asdf/shims:${HOME:-}/.local/bin}"
-old_ifs="${IFS-}"
-IFS=:
-for dir in $search_dirs; do
-  # Only absolute entries: a colon inside HOME or VOLTA_HOME splits an entry
-  # into fragments, and a relative fragment would resolve against the cwd.
-  case "$dir" in
-    /*)
-      if [ -x "$dir/node" ]; then
-        IFS="$old_ifs"
-        exec "$dir/node" "$@"
-      fi
-      ;;
-  esac
-done
-IFS="$old_ifs"
+if lookup_program "$search_dirs" node; then
+  exec "$program" "$@"
+fi
 
 # Windows paths are checked separately to preserve spaces and drive-letter colons.
 # An explicit search list disables these built-in locations (#1900).
@@ -117,27 +189,28 @@ if [ "${SO_NODE_SEARCH_DIRS+x}" != x ]; then
   for dir in "${ProgramFiles:+$ProgramFiles/nodejs}" \
     "${PROGRAMFILES:+$PROGRAMFILES/nodejs}" \
     "${LOCALAPPDATA:+$LOCALAPPDATA/Volta/bin}" "${NVM_SYMLINK:-}"; do
-    if [ -n "$dir" ] && [ -x "$dir/node" ]; then
+    if [ -n "$dir" ] && trusted_program "$dir/node"; then
       exec "$dir/node" "$@"
     fi
   done
 fi
 
-# 4. nvm keeps versioned dirs; any installed version is good enough for hooks.
-#    (Glob order is lexical, not semver — acceptable for a last-resort fallback.)
-#    A relative NVM_DIR or HOME would make the glob relative to the cwd: skipped.
+# 4. nvm keeps versioned dirs; glob order is lexical for this last resort.
 for cand in "${NVM_DIR:-${HOME:-}/.nvm}"/versions/node/*/bin/node; do
-  case "$cand" in
-    /*)
-      if [ -x "$cand" ]; then
-        exec "$cand" "$@"
-      fi
-      ;;
-  esac
+  if trusted_program "$cand"; then
+    exec "$cand" "$@"
+  fi
 done
 
+# Diagnose relative PATH entries too, without ever invoking their node.
+if command -v node >/dev/null 2>&1; then
+  diagnostic="Node candidates on the hook PATH were rejected by the path rules (relative, working directory, project or node_modules)."
+else
+  diagnostic="'node' not found on the hook PATH."
+fi
+
 if [ "$fail_closed" = true ]; then
-  echo "session-orchestrator: Node is missing from the hook PATH; the tool call is blocked. Fix: install Node.js 24+, expose it on the harness PATH as an absolute directory (relative PATH entries are never searched), or set SO_NODE_BIN=/abs/path/to/node." >&2
+  echo "session-orchestrator: $diagnostic The tool call is blocked. Fix: install Node.js 24+, expose it on the harness PATH as an absolute directory (relative PATH entries are never searched), or set SO_NODE_BIN=/abs/path/to/node." >&2
   exit 2
 fi
 
@@ -148,10 +221,9 @@ fi
 #    and `find` only upgrades the check to a 6h TTL when it happens to exist.
 marker="${TMPDIR:-/tmp}/session-orchestrator-node-missing-${USER:-uid}"
 if [ -f "$marker" ]; then
-  # `find` is looked up on the absolute entries only; with none it counts as
-  # missing (no TTL upgrade), because an empty PATH would mean the cwd.
-  if [ -n "$tool_path" ]; then
-    expired="$(PATH="$tool_path"; find "$marker" -mmin +360 2>/dev/null || true)"
+  # The warning path uses the same trust boundary as the Node lookup.
+  if lookup_program "${PATH-}" find; then
+    expired=$("$program" "$marker" -mmin +360 2>/dev/null || true)
   else
     expired=""
   fi
@@ -161,7 +233,7 @@ fi
 if [ -n "$expired" ]; then
   : > "$marker" 2>/dev/null || true
   {
-    echo "session-orchestrator: 'node' not found on the hook PATH — plugin hooks are skipped."
+    echo "session-orchestrator: $diagnostic Plugin hooks are skipped."
     echo "  Fix: install Node.js 24+, expose it on the harness PATH as an absolute directory"
     echo "  (relative PATH entries are never searched), or set SO_NODE_BIN=/abs/path/to/node."
     echo "  (Hook shells do not source ~/.zshrc — Homebrew/nvm/volta installs can be invisible here."

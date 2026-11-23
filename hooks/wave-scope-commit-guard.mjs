@@ -72,7 +72,8 @@ import {
   readProcessLocalSessionIds,
 } from '../scripts/lib/session-identity/own-session.mjs';
 import { resolveOwnLockRoot } from './_lib/hook-root.mjs';
-import { execSync } from '../scripts/lib/native-command.mjs';
+import { execFileSync } from '../scripts/lib/native-command.mjs';
+import { hookProgram } from '../scripts/lib/program-lookup.mjs';
 
 // Resolve the "current" agent id from SO_WAVE_AGENT_ID (when set by the
 // caller) or fall back to a PID-derived marker. The fence files themselves
@@ -489,7 +490,7 @@ function subdirSessionRoot(repoRoot) {
  * gate it; the logic and its exit codes are unchanged.
  */
 async function main() {
-  const repoRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
+  const repoRoot = execFileSync(hookProgram('git'), ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
   // #801: resolve wave-scope.json via the same precedence every other reader
   // uses (.pi/.cursor/.codex/.claude — scope-gate.mjs findScopeFile). The prior
   // hardcoded `.orchestrator/wave-scope.json` path was DEAD — the coordinator
@@ -539,7 +540,7 @@ async function main() {
   // Sub-mode B — allowedPaths check
   // -------------------------------------------------------------------------
 
-  const stagedOutput = execSync('git diff --cached --name-only', { encoding: 'utf8' });
+  const stagedOutput = execFileSync(hookProgram('git'), ['diff', '--cached', '--name-only'], { encoding: 'utf8' });
   const stagedFiles = stagedOutput.split('\n').filter(Boolean);
 
   let blocked = false;

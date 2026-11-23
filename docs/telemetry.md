@@ -15,6 +15,9 @@ it is the locked v1 schema and consent precedence this plugin implements.
   one-line CLI command — no restart, no config-file archaeology.
 - **No CI/headless sends, ever.** Non-interactive sessions never prompt and
   never send, regardless of prior consent state.
+  Usage pings are sent only from interactive Claude Code sessions. Sessions
+  under Codex, Cursor and pi do not send because no reliable marker for an
+  interactive run has been measured for them yet.
 - **Fully open source.** The client code and the ingest-server code both
   live in this repository — nothing is a black box.
 - **Not the same thing as the local metrics used in marketing claims.** See
@@ -126,20 +129,28 @@ Precedence, highest wins:
    telemetry unconditionally. This is the industry-standard signal and
    overrides everything else, including a fleet force-enable.
 2. **`SO_TELEMETRY_DISABLED=1`** — explicit per-shell disable.
-3. **`SO_TELEMETRY=1`** — explicit per-shell force-enable (used for fleet
+3. **Non-interactive sessions never send**, even with `SO_TELEMETRY=1`, fleet
+   mode or saved consent. CI markers (`CI`, `GITHUB_ACTIONS`, `GITLAB_CI`,
+   `CONTINUOUS_INTEGRATION`) and SDK entrypoints (such as `sdk-cli` under
+   `claude -p`) suppress both the consent prompt and sending. Sending also
+   requires a non-empty `CLAUDE_CODE_ENTRYPOINT` and is blocked by any Codex,
+   Cursor or pi harness marker, even if the entrypoint was inherited from
+   Claude Code.
+4. **`SO_TELEMETRY=1`** — explicit per-shell force-enable (used for fleet
    testing without touching the consent file).
-4. **`owner.yaml` `telemetry.enabled`** — host-local fleet-mode opt-in (see
+5. **`owner.yaml` `telemetry.enabled`** — host-local fleet-mode opt-in (see
    below); has no effect on a machine without that file.
-5. **Saved consent** — `~/.config/session-orchestrator/telemetry.json`,
+6. **Saved consent** — `~/.config/session-orchestrator/telemetry.json`,
    written the first time you answer the consent prompt. Never inside any
    repository, never committed.
-6. **First-run prompt** — shown at most once, **interactively only**. A
+7. **First-run prompt** — shown at most once, **interactively only**. A
    headless or CI invocation never shows this prompt and never sends
    telemetry, regardless of any saved state.
 
 The prompt is triggered **mechanically**: `hooks/on-session-start.mjs` calls
 `resolveConsent()` on every session start and, only when no decision is on
-record and the run is not CI, injects a one-line instruction into the session
+record, the session is interactive and it is a session that may send (an
+interactive Claude Code session, see point 3 above), injects a one-line instruction into the session
 via `hookSpecificOutput.additionalContext` — riding the same single stdout
 envelope as the host banner. The skill phase that describes the question
 (`skills/session-start/SKILL.md` § Phase 6.8) is the wording, not the trigger.
@@ -206,10 +217,12 @@ failed one (#1138).
 
 ## The other thing that leaves the host: the update check
 
-Telemetry is not the only outbound request this plugin can make, so the second
-one is documented here rather than somewhere an egress audit would miss it. A
-third default-on path, the security-pulse background refresher, is described in
-[SECURITY.md](../SECURITY.md) § Outbound network; it has its own switch
+Telemetry is opt-in and sends nothing before consent. Two other outbound
+requests are on by default, so they are documented here rather than somewhere an
+egress audit would miss them: the update check (below) and the security-pulse
+background refresher (Node release index, CISA KEV feed, lockfile package names
+and versions to OSV, `gh` for GitHub remotes), described in
+[SECURITY.md](../SECURITY.md) § Outbound network; the refresher has its own switch
 (`SO_SECURITY_PULSE_REFRESH=off`) and also stays off when `DO_NOT_TRACK` or
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set (`scripts/lib/offline-flags.mjs`
 is the one list both paths read). `SO_DISABLE_UPDATE_CHECK` affects only the

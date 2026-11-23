@@ -37,9 +37,11 @@ import {
   isQueryFailure,
   readConfiguredVcs,
 } from './vcs-repo-spec.mjs';
+import { hookProgram } from './program-lookup.mjs';
 import { execFile as _execFile } from './native-command.mjs';
 
-const execFileAsync = promisify(_execFile);
+const runFile = promisify(_execFile);
+const execFileAsync = (cmd, args, options) => runFile(hookProgram(cmd, options.cwd), args, options);
 
 /** Default timeout in milliseconds for CLI invocations. */
 export const DEFAULT_TIMEOUT_MS = 8000;

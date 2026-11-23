@@ -53,6 +53,7 @@ import { promisify } from 'node:util';
 
 import { emitEvent, eventsFilePath } from './events.mjs';
 import { ARCHIVE_DIR_NAME, ARCHIVE_NAME_RE } from './events-schema.mjs';
+import { hookProgram } from './program-lookup.mjs';
 import { execFile } from './native-command.mjs';
 import { atomicWriteText } from './io.mjs';
 
@@ -140,7 +141,7 @@ const NO_DATA_FOR_LOCAL_HEAD_REASONS = new Set([
 async function revParseShas(repoRoot, refs) {
   if (!repoRoot || typeof repoRoot !== 'string') return null;
   try {
-    const { stdout } = await execFileAsync('git', ['rev-parse', ...refs], {
+    const { stdout } = await execFileAsync(hookProgram('git', repoRoot), ['rev-parse', ...refs], {
       cwd: repoRoot,
       encoding: 'utf8',
       timeout: 2000,

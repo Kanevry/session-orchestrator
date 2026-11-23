@@ -41,6 +41,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 
+import { promisify } from 'node:util';
+import { execFile } from '../scripts/lib/native-command.mjs';
+import { hookProgram } from '../scripts/lib/program-lookup.mjs';
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { readTailWindow } from '../scripts/lib/tail-window.mjs';
 import { AGENT_ID_RE, resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
@@ -175,19 +178,20 @@ function warnDependenciesMissingOnce() {
 }
 
 /**
- * Load zx's `$` lazily. Returns null when the package is not installed (after
+ * Check the plugin dependency lazily. Returns false when the package is not installed (after
  * emitting the rate-limited advisory). Any OTHER import failure is re-thrown —
  * a corrupt zx install is not a missing-dependency problem and must not be
  * mislabelled as one.
- * @returns {Promise<Function|null>}
+ * @returns {Promise<boolean>}
  */
-async function loadZx() {
+async function dependenciesAvailable() {
   try {
-    return (await import('../scripts/lib/zx.mjs')).$;
+    await import('../scripts/lib/zx.mjs');
+    return true;
   } catch (err) {
     if (err?.code !== 'ERR_MODULE_NOT_FOUND') throw err;
     warnDependenciesMissingOnce();
-    return null;
+    return false;
   }
 }
 
@@ -202,14 +206,13 @@ async function loadZx() {
  * @returns {Promise<{commit:string|null, branch:string|null}>}
  */
 async function gitInfo(projectRoot) {
-  const $ = await loadZx();
-  if ($ === null) return { commit: null, branch: null };
-  $.verbose = false;
-  $.quiet = true;
+  if (!await dependenciesAvailable()) return { commit: null, branch: null };
   const opts = projectRoot ? { cwd: projectRoot } : {};
   try {
-    const commitResult = await $({ ...opts })`git rev-parse HEAD`;
-    const branchResult = await $({ ...opts })`git rev-parse --abbrev-ref HEAD`;
+    const git = hookProgram('git', projectRoot);
+    const run = promisify(execFile);
+    const commitResult = await run(git, ['rev-parse', 'HEAD'], opts);
+    const branchResult = await run(git, ['rev-parse', '--abbrev-ref', 'HEAD'], opts);
     return {
       commit: commitResult.stdout.trim() || null,
       branch: branchResult.stdout.trim() || null,
