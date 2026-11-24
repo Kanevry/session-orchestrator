@@ -101,11 +101,8 @@ export const LOCK_PATH = '.orchestrator/session.lock';
  * persistent `busy` after a crash or cleanup failure on a supported filesystem.
  * Mixed-version writers which ignore this protocol are not serialized; all
  * processes sharing a checkout must be upgraded together.
- * `lock-reaper.mjs` remains an unguarded legacy deleter, already called by
- * on-session-start and lock-reconcile. Its exclusion is NOT an enforced
- * operational restriction: it can still race a heartbeat or any writer.
- * Revisit its archive/unlink migration before claiming checkout-wide safety,
- * or upon any concurrent reaper activity (separate approved scope required).
+ * The reaper holds this same mutex while re-evaluating and archiving the
+ * primary lock. Its later event write runs outside the critical section.
  *
  * @template T
  * @param {string|undefined} repoRoot
@@ -113,7 +110,7 @@ export const LOCK_PATH = '.orchestrator/session.lock';
  * @param {number} [retryMs=0] bounded contention budget; heartbeat never waits
  * @returns {T|{ok: false, reason: string, error?: string}}
  */
-function mutatePrimaryLock(repoRoot, mutate, retryMs = 0) {
+export function mutatePrimaryLock(repoRoot, mutate, retryMs = 0) {
   const guardPath = `${lockPathFor(repoRoot)}.write`;
   try {
     const deadline = Date.now() + retryMs;
@@ -149,6 +146,49 @@ function mutatePrimaryLock(repoRoot, mutate, retryMs = 0) {
 const PRIMARY_WRITE_MIN_AGE_MS = 2000;
 const PRIMARY_WRITE_RETRY_MS = 100;
 const PRIMARY_WRITE_POLL_MS = 5;
+
+// Each hook invocation has its own Node process. Several failed mutations in
+// one invocation (bootstrap, reaper, heartbeat) share a single diagnostic.
+let reportedAcquireGuard;
+
+/**
+ * Report a persistent acquisition guard after a failed lock operation (#2127).
+ * Await this in the hook so its explicit process.exit cannot discard the event.
+ * BV-004: use the same two-second mtime floor as the writer mutex. The guard
+ * normally spans one synchronous file-lock pass (even our retry budget is only
+ * 100ms). A paused writer can exceed two seconds, so age is evidence of delay
+ * only. Revisit if healthy passes repeatedly cross this floor on a shared FS.
+ * @param {string} repoRoot
+ * @returns {Promise<boolean>} true when this guard received the hook's warning
+ */
+export async function reportStaleAcquireGuard(repoRoot) {
+  try {
+    const lockPath = lockPathFor(repoRoot);
+    const mutexPath = lockPath + '.write';
+    const guardPath = mutexPath + '.acquire';
+    const ageMs = Math.floor(Date.now() - fs.lstatSync(guardPath).mtimeMs);
+    if (ageMs < PRIMARY_WRITE_MIN_AGE_MS) return false;
+    if (reportedAcquireGuard !== undefined) return reportedAcquireGuard === guardPath;
+    // Claim before the first await so concurrent callers cannot emit twice.
+    reportedAcquireGuard = guardPath;
+    const guard = path.basename(guardPath);
+    const mutex = path.basename(mutexPath);
+    try {
+      process.stderr.write(
+        `⚠ session-lock: ${guard} is ${ageMs}ms old and blocks ${mutex}. ` +
+        'session.lock heartbeats may be frozen. Quiesce all writers and verify abandonment before removing the guard.\n',
+      );
+    } catch { /* a closed stderr must not suppress the ledger event */ }
+    try {
+      const { emitEvent } = await import('./events.mjs');
+      await emitEvent('orchestrator.session.lock.stale_acquire_guard', {
+        guard, mutex, age_ms: ageMs,
+      }, { repoRoot: path.resolve(repoRoot ?? process.cwd()) });
+    } catch { /* diagnostics are best-effort */ }
+    return true;
+  } catch { /* a transient guard may already be gone */ }
+  return false;
+}
 
 /** Same synchronous, CPU-cheap polling cadence as the underlying primitive. */
 function sleepPrimaryWrite(ms) {
@@ -968,7 +1008,7 @@ function acquireGuarded({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
  * bootstrap enrichment, so conforming force-takes cannot interleave proofs.
  * BV-004: legacy writers which ignore the mutex may still leave a stale proof;
  * a mismatched proof refuses release, never grants it. Revisit when migrating
- * legacy writers or after a release-proof-mismatch following reaper activity.
+ * legacy writers or after a release-proof-mismatch in a mixed-version checkout.
  *
  * Known limit: the proof is one file per repo and identifies the process that
  * last wrote the lock, never the conversation. Twins sharing one raw
@@ -1199,9 +1239,8 @@ function restoreUnjudgeableTombstone(tomb, lockFile) {
  * A killed reclaimer leaves an abandoned mutex and the old stale tombstone;
  * .write can be recovered after its writer dies and the two-second floor;
  * .write.acquire requires quiescing writers as documented by mutatePrimaryLock.
- * Legacy writers/reaper ignore the mutex and can still interfere with the
- * move/link-back fallback. Revisit on mixed-version starts or reaper activity;
- * neither is claimed safe by #2073's migrated protocol.
+ * Legacy writers that ignore the mutex can still interfere with the move or
+ * link-back. Revisit if a mixed-version start loses a live lock.
  *
  * @param {{ sessionId: string, mode: string, ttlHours: number, repoRoot?: string, semanticSessionId?: string }} args
  * @returns {object} forceAcquire()'s `{ ok: true, lock, replacedLock? }` or
@@ -1769,16 +1808,10 @@ function releaseGuarded({ sessionId, repoRoot, proof }) {
  * an I/O boundary, not a closed concurrency claim on no-hardlink filesystems.
  * On filesystems without hard links every mutation fails with fs-error.
  * A crash can leave .write.acquire behind: see mutatePrimaryLock's recovery
- * boundary. Legacy/mixed-version writers and automatically invoked
- * lock-reaper remain outside this guarantee; concurrent reaper execution is
- * not blocked. Revisit that migration before claiming checkout-wide safety.
- *
- * Stale-guard path: a surviving `.write.acquire` (see mutatePrimaryLock, B6)
- * makes every heartbeat return false. All callers discard the result, so
- * `last_heartbeat` freezes silently while the owner lives; once the TTL
- * passes, lock-reaper.mjs (unguarded) can archive the live owner's lock.
- * No double ownership arises: every later acquire reports `busy`. #2127
- * covers the warning/event on this path and the reaper guard.
+ * boundary. Hook callers report a persistent acquisition guard when the
+ * heartbeat fails. The reaper also needs the mutex before archiving, even
+ * after a blocked heartbeat ages past its TTL. A mixed-version writer that
+ * ignores the mutex can still interfere; revisit on mixed-version starts.
  *
  * @param {{ repoRoot?: string, sessionId: string }} opts
  * @returns {boolean}

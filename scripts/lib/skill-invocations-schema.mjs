@@ -233,11 +233,12 @@ export async function readSkillInvocations(filePath) {
  * measured 2026-10-27: a session cleared before its first Stop left only
  * lifecycle events in events.jsonl but two rows here.
  *
- * Sync and never throws: it runs inside the SessionStart/SessionEnd backfill.
+ * Reads synchronously and never throws.
  * A missing file is a readable zero (the hook creates it on the first Skill
  * call); a file that exists but cannot be read is `readable: false`, and the
  * caller must then treat the session's activity as not measured.
  *
+ * @deprecated Use `countSkillInvocationsAcrossFiles` in `session-close-backfill.mjs`.
  * @param {string} filePath — absolute path, e.g. {@link defaultSkillInvocationsPath}
  * @param {(p: string, enc: string) => string} [readFileSync] — test seam
  * @returns {{counts: Map<string, number>, readable: boolean}}

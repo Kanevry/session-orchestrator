@@ -20,6 +20,7 @@ updated: <ISO 8601 UTC>      # last write timestamp, touched by any writer
 session: <session-label>     # attribution/history label; normally semantic since #573, legacy UUID-v4 remains readable; never a lock/registry ownership key
 session-id: <raw id>         # the RAW/native harness session id from session.lock (#1368); omit when absent; never a lock/registry ownership key
 session-start-ref: <sha>     # git ref at session start
+files-touched: [<path>]      # verified repository-relative paths from this session's waves (#868)
 ---
 ```
 
@@ -39,7 +40,7 @@ The `session-type: none` + `status: idle` combination is used only for bootstrap
 | `## Current Wave` | Next wave to execute | wave-executor (post-wave) |
 | `## Wave History` | Completed wave records | wave-executor (post-wave) |
 | `## Deviations` | Plan adaptation log | wave-executor (step 3) |
-| `## What Not To Retry` | Failed/abandoned approaches not to repeat (#623) | session-end (Phase 1.6) |
+| `## What Not To Retry` | Failed and abandoned approaches (#623, #867) | session-end (Phase 1.6), wave-executor (abandonment checkpoint) |
 | `## Open Questions` | Unresolved user-facing questions (agent → gate → next session) | wave-executor (inter-wave) + session-end (marks answered; appends one vault-orphan entry at Phase 3.7e, #1563) |
 
 Wave History lines MAY include a `→ issue #NNN` suffix (or `→ existing #NNN` when a duplicate was detected) for SPIRAL/FAILED agents, linking to the auto-created carryover issue (#261). This is optional and backward-compatible; readers that do not recognize the notation can skip it. Session-end Phase 1.6 uses the presence of this suffix to decide whether to retro-file a carryover as a fallback safety net.
@@ -58,6 +59,7 @@ A log of failed or abandoned approaches that future sessions should NOT re-attem
 `why_failed` MUST cite at least one concrete file (and line, if applicable) that grounds the failure — a bare narrative reason without a file reference is not acceptable.
 
 - **Writer:** session-end Phase 1.6 — for every SPIRAL/FAILED agent it appends one entry via `appendWhatNotToRetryOnDisk(repoRoot, entry)`; the coordinator MAY also add a free-text entry through the same helper.
+- **Abandoned approaches:** wave-executor records `tried`, `why-abandoned`, `files-touched`, and `summary` via `appendAbandonedBranchOnDisk`. Entries share the existing cap and lock. Session-plan reads the structured entries via `readAbandonedBranches`.
 - **Reader:** session-start Phase 6.5.1 — surfaces the section as a forced-read block wrapped in the HISTORICAL guard banner (`scripts/lib/historical-guard.mjs`). It is a READER only and never mutates the slot.
 - **Cap:** at most `MAX_WHAT_NOT_TO_RETRY` (10) entries, pruned FIFO (oldest dropped) on each append — a simple last-N trim, NOT a per-entry success-clear.
 - **Idle-Reset preservation (load-bearing):** **`## What Not To Retry` SURVIVES the completed-branch Idle Reset** — unlike per-session `## Deviations` (which is emptied) and `## Wave History` (which is demoted into `## Previous Session`). It is a cross-session continuity record, so session-start's Idle Reset MUST NOT clear, demote, or drop it.
@@ -317,7 +319,9 @@ Rejecting such a lock outright was considered and refused. At the time, a reject
 
 The Phase-1.2 stale-lock prompt (`skills/session-start/references/phase-1-2-session-lock.md`) renders a `null` `heartbeatAgeMinutes` as "last heartbeat: never (lock has no last_heartbeat)" and drops the "ttl has expired" clause in that case, instead of `Math.round(null)` = "0 minutes ago".
 
-**Corrupt lock (2026-10-02).** A `session.lock` that fails `parseLock()` (invalid JSON, or JSON without the six-field shape) makes `acquire()` return `reason: 'corrupt'` (`existingLock: null`), and the SessionStart bootstrap reclaims it with one stderr WARN. Before this, the file wedged the repo: `readLock()` returned `null`, the create-or-fail hit `EEXIST`, and the vanished-race branch answered `active` with `existingLock: null` on every attempt, which the bootstrap never forces. Reclaiming is safe because such a file can never be a live lock: all four production writers write a full `buildLock()` body atomically (tmp+link / tmp+rename).
+**Corrupt lock (2026-10-02).** A `session.lock` that fails `parseLock()` (invalid JSON, or JSON without the six-field shape) makes `acquire()` return `reason: 'corrupt'` (`existingLock: null`), and the SessionStart bootstrap reclaims it with one stderr WARN. Before this, the file wedged the repo: `readLock()` returned `null`, the create-or-fail hit `EEXIST`, and the vanished-race branch answered `active` with `existingLock: null` on every attempt, which the bootstrap never forces.
+
+All primary-lock mutations share the `session.lock.write` mutex. `createSessionLockExclusive()` publishes a new lock by hard link during acquisition or takeover of a stale or corrupt lock. `writeLockAtomic()` replaces the primary by rename on force-acquisition, heartbeat refresh and owner enrichment. Tombstone recovery can also restore the primary by hard link or exclusive create. Release removes the owned primary under the mutex. The reaper takes the same mutex, rechecks eligibility, archives the bytes and removes the stale primary. A busy mutex preserves the primary even after its heartbeat expires.
 
 **Unreadable lock (#1494).** A lock path that exists but cannot be read (`EACCES`, or a directory: `EISDIR`) makes `acquire()` return `reason: 'unreadable'` (`existingLock: null`, `error`). It used to answer `active` / `existingLock: null`, which the bootstrap neither forced nor reported, so every session ran without a lock and left no trace. It is still never reclaimed (no lock writer produces it, and a directory may hold content nobody here created), but the SessionStart bootstrap now prints one stderr WARN and emits `orchestrator.session.lock.read_anomaly` with `status: 'unreadable'`.
 

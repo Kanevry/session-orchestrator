@@ -24,13 +24,16 @@
  * Sync, fs-only, never throws, no process spawns.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { resolveSessionRoot } from '../../scripts/lib/platform.mjs';
-import { findOwnScopeFile } from '../../scripts/lib/scope-gate.mjs';
 import {
   classifyManifestSession,
   readProcessLocalSessionIds,
 } from '../../scripts/lib/session-identity/own-session.mjs';
+
+/** Same order as the scope gate's manifest lookup (scripts/lib/scope-gate.mjs). */
+const OWN_WAVE_DIRS = Object.freeze(['.pi', '.cursor', '.codex', '.claude']);
 
 /**
  * Wave roles are short labels (`Discovery`, `Impl-Core`, `Quality`, …). The
@@ -56,11 +59,21 @@ export function readOwnWave(input, opts = {}) {
       : resolveSessionRoot(input?.cwd);
     const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
     if (ownIds.size === 0) return null;
-    const { path: scopePath } = findOwnScopeFile(root, ownIds, classifyManifestSession);
-    if (scopePath === null) return null;
-    const scope = JSON.parse(readFileSync(scopePath, 'utf8'));
-    if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) return null;
-    if (classifyManifestSession(scope, ownIds).verdict !== 'own') return null;
+    // Telemetry only: take the first manifest provably bound to THIS session, in
+    // harness order. findOwnScopeFile (scripts/lib/scope-gate.mjs) deliberately
+    // keeps an unbound manifest as the decider for the scope GUARDS (ENFORCE);
+    // for the wave label that rule hid our own bound manifest behind a stale
+    // unbound one from another harness (#2222 point 2), so it is not reused here.
+    let scope = null;
+    for (const dir of OWN_WAVE_DIRS) {
+      const candidate = path.join(root, dir, 'wave-scope.json');
+      if (!existsSync(candidate)) continue;
+      let parsed;
+      try { parsed = JSON.parse(readFileSync(candidate, 'utf8')); } catch { continue; }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+      if (classifyManifestSession(parsed, ownIds).verdict === 'own') { scope = parsed; break; }
+    }
+    if (scope === null) return null;
     if (scope.wave === null || scope.wave === '') return null;
     const wave = Number(scope.wave);
     if (!Number.isSafeInteger(wave) || wave <= 0) return null;

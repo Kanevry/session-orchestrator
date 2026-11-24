@@ -3,6 +3,11 @@
  * Cursor channel (`cursor-agent`), in a detached git worktree, and measure the
  * result at the filesystem rather than from the model's own prose (#1150).
  *
+ * BV-004 (#1154 P4): the wave coordinator invokes this adapter from
+ * wave-loop-dispatch.md § Third branch. The unwired-census advisory is
+ * acceptable for this prose caller. Revisit when a code-driven coordinator
+ * owns cursor: dispatch and can preserve the same diff-review gate.
+ *
  * Why this module exists rather than a shell wrapper:
  *   - `never_foreign` (the hard role lock in the operator's routing policy
  *     `tools/routing/routing.yaml`) is enforced by NOTHING on the Cursor

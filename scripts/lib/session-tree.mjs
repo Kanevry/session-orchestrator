@@ -106,6 +106,15 @@ async function streamJsonl(file, onRow) {
   return { present: true, rows, malformed_lines: malformed };
 }
 
+function updateNewestSession(newest, row) {
+  if (!isStr(row.parent_session_id)) return;
+  const ms = Date.parse(row.timestamp);
+  if (ms >= newest.ms) {
+    newest.id = row.parent_session_id;
+    newest.ms = ms;
+  }
+}
+
 /**
  * Raw id of the newest session in `subagents.jsonl` rows (max timestamp).
  *
@@ -113,17 +122,30 @@ async function streamJsonl(file, onRow) {
  * @returns {string|null}
  */
 export function newestSessionId(subagentRows) {
-  let best = null;
-  let bestMs = -Infinity;
-  for (const r of subagentRows) {
-    if (!isStr(r.parent_session_id)) continue;
-    const ms = Date.parse(r.timestamp);
-    if (Number.isFinite(ms) && ms >= bestMs) {
-      bestMs = ms;
-      best = r.parent_session_id;
+  const newest = { id: null, ms: -Infinity };
+  for (const row of subagentRows) updateNewestSession(newest, row);
+  return newest.id;
+}
+
+function addSessionPair(pairs, rawId, label) {
+  if (!isStr(rawId) || !isStr(label)) return;
+  if (!pairs.has(rawId)) pairs.set(rawId, new Set());
+  pairs.get(rawId).add(label);
+}
+
+// Resolve the whole connected component even when a linking row arrived last.
+function widenSessionIds(raw, semantic, pairs) {
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [id, labels] of pairs) {
+      for (const label of labels) {
+        if (raw.has(id) === semantic.has(label)) continue;
+        raw.add(id);
+        semantic.add(label);
+        grew = true;
+      }
     }
   }
-  return best;
 }
 
 /**
@@ -139,37 +161,20 @@ export function newestSessionId(subagentRows) {
 export function buildSessionTree({ selector, subagentRows, eventRows, sessionRows }) {
   const raw = new Set();
   const semantic = new Set();
-  const agentStops = (eventRows ?? []).filter((e) => e?.event === AGENT_STOPPED);
-
-  // Resolve the selector to raw + semantic ids (both directions).
+  const pairs = new Map();
   if (subagentRows.some((r) => r.parent_session_id === selector)) raw.add(selector);
   for (const s of sessionRows ?? []) {
     if (s.raw_session_id === selector) raw.add(selector);
     if (s.session_id === selector) semantic.add(selector);
+    addSessionPair(pairs, s.raw_session_id, s.session_id);
   }
-  for (const e of agentStops) {
+  for (const e of eventRows ?? []) {
+    if (e?.event !== AGENT_STOPPED) continue;
     if (e.session_id === selector) raw.add(selector);
     if (e.semantic_session_id === selector) semantic.add(selector);
+    addSessionPair(pairs, e.session_id, e.semantic_session_id);
   }
-  // Widen over every raw ↔ semantic pair until neither set grows (#2218 review):
-  // a single pass made the result depend on row order — a pair could only be
-  // used if the id that links it had already been added by an EARLIER row.
-  const pairs = [];
-  for (const s of sessionRows ?? []) {
-    if (isStr(s.session_id) && isStr(s.raw_session_id)) pairs.push([s.raw_session_id, s.session_id]);
-  }
-  for (const e of agentStops) {
-    if (isStr(e.session_id) && isStr(e.semantic_session_id)) pairs.push([e.session_id, e.semantic_session_id]);
-  }
-  for (let grew = true; grew;) {
-    grew = false;
-    for (const [r, s] of pairs) {
-      if (raw.has(r) === semantic.has(s)) continue;
-      raw.add(r);
-      semantic.add(s);
-      grew = true;
-    }
-  }
+  widenSessionIds(raw, semantic, pairs);
 
   /** @type {Map<string, object>} */
   const agents = new Map();
@@ -319,35 +324,19 @@ function byStart(x, y) {
   return a < b ? -1 : a > b ? 1 : x.agent_id < y.agent_id ? -1 : 1;
 }
 
-/**
- * Load the three ledgers for `repoRoot` and build the tree.
- *
- * `subagents.jsonl` resolves through {@link resolveLedgerPath} (a linked
- * worktree reads the main checkout's copy when it ignores the ledger);
- * events and sessions map through `resolveEventsLedgerRoot`, as their writers do.
- *
- * @param {object} args
- * @param {string} args.repoRoot — absolute repo root
- * @param {string|null} [args.session] — raw UUID or semantic label; default newest
- * @returns {Promise<object>} the tree plus a `sources` block
- * @throws {LedgerUnreadableError} when `subagents.jsonl` is absent or unreadable
- */
-export async function loadSessionTree({ repoRoot, session = null }) {
-  const subPath = resolveLedgerPath(SUBAGENTS_REL, repoRoot);
-  const subagentRows = [];
-  let sub;
-  try {
-    sub = await streamJsonl(subPath, (r) => subagentRows.push(r));
-  } catch (err) {
-    throw new LedgerUnreadableError(subPath, err?.code ?? String(err?.message ?? err));
+async function readRelatedRows(repoRoot, sessPath, raw, semantic, pairs) {
+  function matchesSession(id, label) {
+    if (pairs) addSessionPair(pairs, id, label);
+    return raw.has(id) || semantic.has(label);
   }
-  if (!sub.present) throw new LedgerUnreadableError(subPath, 'absent');
 
-  const sessPath = path.join(resolveEventsLedgerRoot(repoRoot), SESSIONS_REL);
   const sessionRows = [];
   let sess = { present: false, rows: 0, malformed_lines: 0, error: null };
   try {
-    sess = { ...(await streamJsonl(sessPath, (r) => sessionRows.push(r))), error: null };
+    const stats = await streamJsonl(sessPath, (r) => {
+      if (matchesSession(r.raw_session_id, r.session_id)) sessionRows.push(r);
+    });
+    sess = { ...stats, error: null };
   } catch (err) {
     sess.error = err?.code ?? 'read-failed';
   }
@@ -355,7 +344,10 @@ export async function loadSessionTree({ repoRoot, session = null }) {
   let ev;
   let eventRows = null;
   try {
-    const read = readEventsWithRotations(repoRoot);
+    const read = readEventsWithRotations(repoRoot, { filter: (e) => {
+      if (e?.event === AGENT_STOPPED) return matchesSession(e.session_id, e.semantic_session_id);
+      return e?.event === WAVE_COMPLETED && raw.has(e.session_id);
+    } });
     eventRows = read.events;
     // `present` = at least one source was actually READ. `complete !== null`
     // only says a source EXISTS: an unreadable active file with no archive
@@ -373,9 +365,58 @@ export async function loadSessionTree({ repoRoot, session = null }) {
     };
   }
 
-  const selector = isStr(session) ? session.trim() : newestSessionId(subagentRows);
+  return { sessionRows, sess, eventRows, ev };
+}
+
+async function readSubagents(file, onRow) {
+  let stats;
+  try {
+    stats = await streamJsonl(file, onRow);
+  } catch (err) {
+    throw new LedgerUnreadableError(file, err?.code ?? String(err?.message ?? err));
+  }
+  if (!stats.present) throw new LedgerUnreadableError(file, 'absent');
+  return stats;
+}
+
+/**
+ * Load the three ledgers for `repoRoot` and build the tree.
+ *
+ * `subagents.jsonl` resolves through {@link resolveLedgerPath} (a linked
+ * worktree reads the main checkout's copy when it ignores the ledger);
+ * events and sessions map through `resolveEventsLedgerRoot`, as their writers do.
+ *
+ * @param {object} args
+ * @param {string} args.repoRoot — absolute repo root
+ * @param {string|null} [args.session] — raw UUID or semantic label; default newest
+ * @returns {Promise<object>} the tree plus a `sources` block
+ * @throws {LedgerUnreadableError} when `subagents.jsonl` is absent or unreadable
+ */
+export async function loadSessionTree({ repoRoot, session = null }) {
+  const subPath = resolveLedgerPath(SUBAGENTS_REL, repoRoot);
+  const newest = { id: null, ms: -Infinity };
+  if (!isStr(session)) await readSubagents(subPath, (row) => updateNewestSession(newest, row));
+  const selector = isStr(session) ? session.trim() : newest.id ?? '';
+
+  // The selector can be either kind of id. Keep candidate rows here; the
+  // builder verifies which ids were actually observed (including subagents).
+  const raw = new Set([selector]);
+  const semantic = new Set([selector]);
+  const pairs = new Map();
+  const sessPath = path.join(resolveEventsLedgerRoot(repoRoot), SESSIONS_REL);
+  let related = await readRelatedRows(repoRoot, sessPath, raw, semantic, pairs);
+  widenSessionIds(raw, semantic, pairs);
+  if (raw.size > 1 || semantic.size > 1) {
+    // An alias may have appeared after its rows, including across rotations.
+    related = await readRelatedRows(repoRoot, sessPath, raw, semantic);
+  }
+  const { sessionRows, sess, eventRows, ev } = related;
+  const subagentRows = [];
+  const sub = await readSubagents(subPath, (r) => {
+    if (raw.has(r.parent_session_id)) subagentRows.push(r);
+  });
   const tree = buildSessionTree({
-    selector: selector ?? '',
+    selector,
     subagentRows,
     eventRows,
     sessionRows: sess.present ? sessionRows : null,

@@ -27,11 +27,11 @@ Entered when `$ARGUMENTS` contains `--refresh-lock`. No scaffolding questions ar
 
    `refreshBootstrapLock` writes (or replaces, if already present) exactly two lines — `refreshed-at: <ISO 8601 UTC>` and `refreshed-plugin-version: <current plugin version>` — via the same atomic tmp-file + rename pattern used by the Retroactive Flow's lock write: write to a sibling tmp file, then rename over the target so the lock is never observed half-written. **Every other line of the lock — `bootstrapped-at`, `timestamp`, `plugin-version`, `tier`, `archetype`, `source`, … — is left byte-identical.** This is the provenance-honesty guarantee: a refresh is an acknowledgement, not a re-bootstrap. On failure (`result.ok === false`), surface `result.message` and stop — do not retry with a fabricated lock.
 
-3a. **Ignore the store-lock and runtime-lock artifacts (#1489 Pkt 17, #1495, added 2026-10-02).** Execute the bash block in [`_shared-template.md#store-lock-ignore`](../_shared-template.md) (link relative to `references/` — new in this step, not moved). The freshness probe sends every drifted repo here, so this is the one path on which a repo bootstrapped before that step existed — any tier, Deep included — picks up the `.gitignore` patterns that section lists (store locks, session lock, `runtime/`, `current-session.json`, `tmp/` and the other runtime files). Only a repo the probe flags as drifted gets here. Idempotent; it touches nothing but missing ignore lines.
+3a. **Ignore runtime artifacts and hook logs (#1489 Pkt 17, #1495, #2246).** Execute the bash block in [`_shared-template.md#store-lock-ignore`](../_shared-template.md). When the freshness probe flags a repo as drifted, the refresh can pick up missing runtime patterns and the three exact hook-log paths at any tier. The block only appends missing lines to `.gitignore`.
 
 4. **No auto-commit.** Unlike the Retroactive Flow, `--refresh-lock` does not stage or commit. The refreshed lock (two changed/added lines) and any `.gitignore` append from step 3a are small, reviewable diffs; the user commits them alongside their own work at their own cadence.
 
-5. **Report.** Print: `Lock refreshed (refreshed-at: <now>, plugin-version: <current>). Original bootstrap provenance unchanged.` When step 3a appended to `.gitignore`, add: `.gitignore: store-lock patterns appended (unstaged).`
+5. **Report.** Print `Lock refreshed (refreshed-at: <now>, plugin-version: <current>). Original bootstrap provenance unchanged.` When step 3a appends entries, add `.gitignore: runtime ignore patterns appended (unstaged).`
 
 **Idempotency.** Running `/bootstrap --refresh-lock` twice in a row replaces the same two lines in place — it never duplicates them.
 

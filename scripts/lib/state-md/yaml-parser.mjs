@@ -3,7 +3,7 @@
  * the session-orchestrator STATE.md contract. Not a general-purpose YAML
  * implementation — handles:
  *   - Scalar strings, booleans, integers, nulls
- *   - Flow-style integer arrays (`[1, 2, 3]`)
+ *   - Flow-style scalar arrays (`[1, 2, 3]`, `[src/a.mjs, "src/b,c.mjs"]`)
  *   - Block-style sequences of mappings (issue #244), e.g. `docs-tasks:` with
  *     indented `- key: value` entries. Only one nesting level supported.
  *   - Single-line FLOW MAPPINGS as list items (`- { k: v, … }`) — hand-written
@@ -298,7 +298,7 @@ function parseScalar(raw) {
   if (raw.startsWith('[') && raw.endsWith(']')) {
     const inner = raw.slice(1, -1).trim();
     if (inner === '') return [];
-    return inner.split(',').map((s) => parseScalar(s.trim()));
+    return splitFlowSegments(inner).map((s) => parseScalar(s.trim()));
   }
   if (raw.startsWith('"') && raw.endsWith('"')) {
     // Double-quoted: the serializer emits these via JSON.stringify, so JSON.parse

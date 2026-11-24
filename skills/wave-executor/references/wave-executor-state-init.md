@@ -68,6 +68,8 @@ The modules load from `${PLUGIN_ROOT}`, never relative to the shell's cwd: a cwd
 
 Create the `<state-dir>` directory if needed (`mkdir -p <state-dir>`, e.g. `mkdir -p <repoRoot>/.claude` on Claude Code — the `resolveStateDir()` directory, never `.orchestrator/`, #1790) before writing. This file is the persistent state record — other skills and resumed sessions read it.
 
+Initialize via `writeStateMd(repoRoot, contents => …)`. A fresh session starts with `files-touched` omitted. When resuming the same active or paused session, retain its existing ledger and wave history. Carry forward the existing `## What Not To Retry` section from the continuity handoff.
+
 **Then VALIDATE `total-waves` against the resolved shape — do not skip this.** A plan whose wave count the shape does not produce must never be dispatched silently:
 
 ```bash

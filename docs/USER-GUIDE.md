@@ -322,6 +322,36 @@ context leaves ordinary planning available; a match does not authorize adoption.
 Private findings stay out of public output and generated repositories. This needs
 no new Session Config key; see the [shared procedure](../skills/_shared/private-capability-context.md).
 
+### `/security [mode]`
+
+Read-only security overview of a repository. It measures, shows what it found and proposes fixes as text; it never edits a lockfile, a setting or a config file.
+
+```
+/security
+/security deps
+/security posture
+/security agent-setup
+/security review
+```
+
+- **`status`** (default when no mode is given) — which security mechanisms run in this repo: CI audit job, signature check, secret scan, close-time security delta, hallucinated-package check, advisory pulse, mirror-protection audit, update automation. Each is `on`, `off`, `not-wired` or `not-measurable` (with a reason).
+- **`deps`** — advisories in every lockfile, ranked `fix-now`, `can-wait` or `not-reachable`, each with a proposed fix.
+- **`posture`** — install and publish settings: script execution, release-age cooldown, floating tags, runtime floor, update automation, mirror protection.
+- **`agent-setup`** — what steers the agent in this repo and on this host, and whether it contains an endpoint override, a fetch-and-execute hook, a switched-off approval, a wildcard allow entry, a token in an allowlist or hidden Unicode. Output names file, key and class, never a value.
+- **`review`** — routes to the existing `security-reviewer` agent for the current diff. It has no checklist of its own.
+
+Reading a `deps` result:
+
+```
+lockfile package-lock.json   fail   0 fix now, 0 can wait, 1 not reachable, 0 severity not measurable
+not-reachable: <package>@<version> [package-lock.json] — medium advisory ...; transitive, dev-only
+  fix: override to <version>; or exception with date
+```
+
+Work through `fix-now` entries first. `can-wait` is below your audit threshold; `not-reachable` is dev-only or a direct dependency that nothing imports. A malicious package is always `fix-now` with the fix "remove the package". A `degraded` result means a lockfile could not be checked and is never "no advisories".
+
+`/security` is not a vulnerability scanner or a diff reviewer of its own: advisories come from the existing advisory service, and a diff review is the `security-reviewer` agent. It does not replace the guards or hooks; see [SECURITY.md](../SECURITY.md).
+
 ---
 
 ## 4. Session Types

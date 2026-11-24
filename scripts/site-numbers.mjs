@@ -904,7 +904,7 @@ export const CENSUS_LINE_FIELDS = Object.freeze([
  * Render the census line.
  *
  * The `Version X.Y.Z` opening is load-bearing beyond this file: `SURFACES` in
- * `scripts/release.mjs` matches `/Version\s+(\d+\.\d+\.\d+)/g` against
+ * `scripts/release.mjs` matches `/Version\s+(\d+\.\d+\.\d+\S*)/g` against
  * `site/llms-full.txt`, so the literal must keep exactly this shape or the
  * release drift check stops seeing the surface it guards.
  *
@@ -1034,6 +1034,7 @@ export const SITEMAP_PAGES = Object.freeze([
   { page: 'commands/index.html', loc: 'https://session-orchestrator.com/commands' },
   { page: 'de/commands/index.html', loc: 'https://session-orchestrator.com/de/commands' },
   { page: 'lead/index.html', loc: 'https://session-orchestrator.com/lead' },
+  { page: 'mcp/index.html', loc: 'https://session-orchestrator.com/mcp' },
   { page: 'impressum/index.html', loc: 'https://session-orchestrator.com/impressum' },
   { page: 'datenschutz/index.html', loc: 'https://session-orchestrator.com/datenschutz' },
 ]);

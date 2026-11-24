@@ -56,7 +56,7 @@ Extract `persistence` from `$CONFIG`. If `persistence` is `false`, abort with me
 **Telemetry on abort (#1200, #1206):** before stopping, emit the abort form of the run-completion event. Kept as a minimal `emit-event.mjs` call, not routed through `scripts/sweep-expired-learnings.mjs` — no store-write CLI has run yet at this gate (it fires before Step 1.4 even reads `learnings.jsonl`), so there is no mechanical pipeline call site to fold this emit into, unlike the Step 3.5(5)/(6) success path below:
 
 ```bash
-node scripts/emit-event.mjs --type orchestrator.evolve.completed --payload \
+node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.evolve.completed --payload \
   "$(node -e "process.stdout.write(JSON.stringify({aborted: 'persistence-disabled', reason: 'Learnings require persistence to be enabled in Session Config.'.slice(0,300), duration_ms: DURATION_MS}))")"
 ```
 

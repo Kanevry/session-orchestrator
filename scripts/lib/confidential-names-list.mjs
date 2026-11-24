@@ -7,12 +7,15 @@
  * of, and DESCRIBES its state (status, count, age) for the release preflight and
  * the advisory pre-commit line.
  *
- * Two host-local files, both beside owner.yaml in the private config dir and never
+ * Three host-local files, all beside owner.yaml in the private config dir and never
  * in a repo:
  *   - `confidential-names.json`        generated; a JSON array of names (the loader's shape)
  *   - `confidential-names-allow.json`  hand-kept; a JSON array of names the generator
  *     must NOT emit — common words that are also project paths, and own products
  *     the operator advertises publicly. Matched case-insensitively. Never overwritten.
+ *   - `confidential-names-extra.json`  hand-kept; a JSON array of names the generator
+ *     ALWAYS emits (customer or product names that are no GitLab project), unless
+ *     the exception list names them too. Never overwritten.
  *
  * Privacy: nothing here prints a name. Results carry counts; reasons carry exit
  * codes and basenames. glab's stdout/stderr never reach the caller's output (its
@@ -22,6 +25,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
+import { expandTilde } from './common.mjs';
 import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
 import { resolveHostPath } from './config/host-paths.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
@@ -30,6 +34,35 @@ import { inspectConfidentialNames } from './validate/confidential-names.mjs';
 
 export const NAMES_FILE = 'confidential-names.json';
 export const ALLOW_FILE = 'confidential-names-allow.json';
+export const EXTRA_FILE = 'confidential-names-extra.json';
+
+/**
+ * Group namespace segments that only describe how a code host is organised
+ * (#2251). Measured 2026-11-23: seven of nine unlisted group segments were such
+ * words and matched 6 to 757 files of a public tree each — listed, they turn every
+ * export red without guarding anything confidential. Applied to GROUP segments
+ * only; a project path or name that happens to be one of these words stays listed,
+ * so nothing guarded before is dropped. Lowercase, compared case-insensitively;
+ * no word shorter than the length limit, which drops those anyway.
+ * A confidential group name that collides with an entry here goes into the extra
+ * list. Revisit trigger (BV-004): a generate run whose remaining group segments
+ * still match widely — add the word here rather than to every operator's exceptions.
+ */
+export const GENERIC_GROUP_SEGMENTS = new Set([
+  // products and delivery
+  'products', 'product', 'apps', 'app', 'services', 'service', 'platform', 'platforms',
+  'releases', 'release', 'mobile', 'web', 'websites', 'sites', 'backend', 'frontend',
+  'clients', 'plugins', 'extensions', 'bots', 'agents', 'ventures',
+  // code organisation
+  'libs', 'libraries', 'packages', 'modules', 'components', 'core', 'shared', 'common',
+  'tools', 'tooling', 'utils', 'scripts', 'config', 'configs', 'templates', 'examples',
+  'demos', 'playground', 'sandbox', 'experiments', 'labs', 'research', 'misc',
+  'archive', 'archived', 'legacy', 'projects', 'repos', 'docs', 'documentation',
+  // teams and operations
+  'team', 'teams', 'internal', 'public', 'private', 'dev', 'development', 'ops',
+  'devops', 'infra', 'infrastructure', 'infra-ops', 'security', 'testing',
+  'data', 'design', 'marketing', 'personal',
+]);
 
 /** A list older than this is stale: the release preflight says so (warn, never red). */
 export const MAX_LIST_AGE_DAYS = 7;
@@ -48,14 +81,21 @@ const MIN_NAME_LENGTH = 3;
 // Same cap as the loader's MAX_NAME_LENGTH; a longer entry would be dropped there.
 const MAX_NAME_LENGTH = 256;
 
+/** @typedef {{ path?: unknown, name?: unknown, namespace?: { kind?: unknown, full_path?: unknown } }} MemberProject */
+
 /**
- * Default host-local paths of the two files, under the private config dir.
+ * Default host-local paths of the three files, under the private config dir.
  * @param {{ env?: Record<string, string|undefined> }} [opts]
- * @returns {{ namesPath: string, allowPath: string }}
+ * @returns {{ namesPath: string, allowPath: string, extraPath: string }}
  */
 export function defaultListPaths({ env = process.env } = {}) {
   const dir = resolvePrivateConfigDir({ env });
-  return { namesPath: join(dir, NAMES_FILE), allowPath: join(dir, ALLOW_FILE) };
+  return { namesPath: join(dir, NAMES_FILE), allowPath: join(dir, ALLOW_FILE), extraPath: join(dir, EXTRA_FILE) };
+}
+
+/** @param {string} name trimmed @returns {boolean} */
+function withinLengthLimits(name) {
+  return name.length >= MIN_NAME_LENGTH && name.length <= MAX_NAME_LENGTH;
 }
 
 /**
@@ -65,7 +105,7 @@ export function defaultListPaths({ env = process.env } = {}) {
  * silently stop guarding the missing names.
  *
  * @param {{ run?: (cmd: string, args: string[], opts: object) => {status: number|null, stdout?: string, error?: Error} }} [deps]
- * @returns {{ ok: true, projects: Array<{path?: unknown, name?: unknown}>, pages: number } | { ok: false, reason: string }}
+ * @returns {{ ok: true, projects: MemberProject[], pages: number } | { ok: false, reason: string }}
  */
 export function fetchMemberProjects({ run = spawnSync } = {}) {
   const projects = [];
@@ -92,48 +132,98 @@ export function fetchMemberProjects({ run = spawnSync } = {}) {
 }
 
 /**
- * Candidate names from project `path` and `name`, case-insensitively deduplicated
- * (first spelling wins), too-short and over-long entries dropped.
- * @param {Array<{path?: unknown, name?: unknown}>} projects
- * @returns {{ names: string[], tooShort: number }}
+ * Candidate names from project paths, names and group namespace segments.
+ * Dedupe case-insensitively (first spelling wins) and enforce length limits.
+ * Group segments enter the list by default (#2251), except the words in
+ * GENERIC_GROUP_SEGMENTS, which describe the host's structure, not a confidential
+ * name; those are counted as `groupGeneric`. `includeGroups: false` leaves every
+ * group segment out (still counted in `groupSegments`). Project paths and names
+ * are never filtered.
+ * @param {MemberProject[]} projects
+ * @param {{ includeGroups?: boolean }} [opts]
+ * @returns {{ names: string[], tooShort: number, groupSegments: number, groupGeneric: number }}
  */
-export function deriveNames(projects) {
+export function deriveNames(projects, { includeGroups = true } = {}) {
   const seen = new Map();
+  const groupSegments = new Set();
+  const groupGeneric = new Set();
   let tooShort = 0;
-  for (const p of projects) {
-    for (const raw of [p?.path, p?.name]) {
-      if (typeof raw !== 'string') continue;
-      const name = raw.trim();
-      if (name.length < MIN_NAME_LENGTH) {
-        if (name) tooShort += 1;
-        continue;
+
+  /** @param {unknown} raw @param {boolean} [fromGroup] */
+  function addName(raw, fromGroup = false) {
+    if (typeof raw !== 'string') return;
+    const name = raw.trim();
+    const key = name.toLowerCase();
+    if (fromGroup) {
+      if (withinLengthLimits(name)) groupSegments.add(key);
+      // A group segment left out of the list must not move the list's own counts.
+      if (!includeGroups) return;
+      if (GENERIC_GROUP_SEGMENTS.has(key)) {
+        groupGeneric.add(key);
+        return;
       }
-      if (name.length > MAX_NAME_LENGTH) continue;
-      const key = name.toLowerCase();
-      if (!seen.has(key)) seen.set(key, name);
+    }
+    if (name.length < MIN_NAME_LENGTH) {
+      if (name) tooShort += 1;
+      return;
+    }
+    if (name.length > MAX_NAME_LENGTH) return;
+    if (!seen.has(key)) seen.set(key, name);
+  }
+
+  for (const project of projects) {
+    addName(project?.path);
+    addName(project?.name);
+    const namespace = project?.namespace;
+    if (namespace?.kind === 'group' && typeof namespace.full_path === 'string') {
+      for (const segment of namespace.full_path.split('/')) addName(segment, true);
     }
   }
-  return { names: [...seen.values()], tooShort };
+  return { names: [...seen.values()], tooShort, groupSegments: groupSegments.size, groupGeneric: groupGeneric.size };
 }
 
 /**
- * Read the exception list. Absent is normal (nothing excepted); a present file
- * that is not a JSON array of strings is `malformed` and the caller refuses to
- * generate — silently ignoring it would publish names the operator excepted for
- * a reason, or, worse, guard nothing they expect it to guard.
- * @param {string} allowPath
+ * Read a hand-kept name file (the exception list or the extra list). Absent is
+ * normal (no entries); a present file that is not a JSON array of strings is
+ * `malformed` and the caller refuses to generate — silently ignoring it would
+ * publish names the operator excepted for a reason, or guard nothing they expect
+ * it to guard.
+ * @param {string} listPath
  * @returns {{ status: 'absent'|'ok'|'malformed', names: string[] }}
  */
-export function readAllowList(allowPath) {
-  if (!existsSync(allowPath)) return { status: 'absent', names: [] };
+export function readAllowList(listPath) {
+  if (!existsSync(listPath)) return { status: 'absent', names: [] };
   try {
-    const raw = readFileSync(allowPath, 'utf8');
+    const raw = readFileSync(listPath, 'utf8');
     const parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
     if (!Array.isArray(parsed) || parsed.some((e) => typeof e !== 'string')) return { status: 'malformed', names: [] };
     return { status: 'ok', names: parsed.map((e) => e.trim()).filter(Boolean) };
   } catch {
     return { status: 'malformed', names: [] };
   }
+}
+
+/**
+ * Add the extra list to the candidates: same length limits, case-insensitive
+ * dedupe (an extra name already derived keeps the derived spelling).
+ * @param {string[]} candidates @param {string[]} extra
+ * @returns {{ names: string[], extra: number, tooShort: number }}
+ *   `extra` counts the distinct extra names within the length limits.
+ */
+export function mergeExtraNames(candidates, extra) {
+  const seen = new Map(candidates.map((n) => [n.toLowerCase(), n]));
+  const valid = new Set();
+  let tooShort = 0;
+  for (const name of extra) {
+    if (!withinLengthLimits(name)) {
+      if (name.length < MIN_NAME_LENGTH) tooShort += 1;
+      continue;
+    }
+    const key = name.toLowerCase();
+    valid.add(key);
+    if (!seen.has(key)) seen.set(key, name);
+  }
+  return { names: [...seen.values()], extra: valid.size, tooShort };
 }
 
 /**
@@ -164,22 +254,28 @@ export function writeNamesList(namesPath, names) {
 }
 
 /**
- * Generate the list: fetch, derive, subtract exceptions, write (unless dryRun).
- * Refuses to write zero names — a `[]` file is the loader's explicit opt-out and
- * would read as "CP11 switched off" instead of "generation went wrong".
+ * Generate the list: fetch, derive, add the extra list, subtract exceptions,
+ * write (unless dryRun). The exception list wins over the extra list, so it stays
+ * the one place to loosen the list. Refuses to write zero names — a `[]` file is
+ * the loader's explicit opt-out and would read as "CP11 switched off" instead of
+ * "generation went wrong".
  *
- * @param {{ namesPath: string, allowPath: string, dryRun?: boolean, run?: Function }} opts
- * @returns {{ ok: true, projects: number, pages: number, candidates: number, tooShort: number, excepted: number, names: number, written: boolean, allowList: string }
+ * @param {{ namesPath: string, allowPath: string, extraPath?: string, dryRun?: boolean, includeGroups?: boolean, run?: Function }} opts
+ *   `extraPath` omitted = no extra list.
+ * @returns {{ ok: true, projects: number, pages: number, candidates: number, groupSegments: number, groupGeneric: number, groupsIncluded: boolean, extra: number, tooShort: number, excepted: number, names: number, written: boolean, allowList: string, extraList: string }
  *   | { ok: false, reason: string }}
  */
-export function generateNamesList({ namesPath, allowPath, dryRun = false, run }) {
+export function generateNamesList({ namesPath, allowPath, extraPath, dryRun = false, includeGroups = true, run }) {
   const allow = readAllowList(allowPath);
   if (allow.status === 'malformed') return { ok: false, reason: `${basename(allowPath)} is not a JSON array of strings` };
+  const extraList = extraPath ? readAllowList(extraPath) : { status: 'absent', names: [] };
+  if (extraList.status === 'malformed') return { ok: false, reason: `${basename(extraPath)} is not a JSON array of strings` };
   const fetched = fetchMemberProjects(run ? { run } : {});
   if (!fetched.ok) return fetched;
   if (fetched.projects.length === 0) return { ok: false, reason: 'glab api returned no projects — nothing written' };
-  const derived = deriveNames(fetched.projects);
-  const result = applyAllowList(derived.names, allow.names);
+  const derived = deriveNames(fetched.projects, { includeGroups });
+  const merged = mergeExtraNames(derived.names, extraList.names);
+  const result = applyAllowList(merged.names, allow.names);
   if (result.names.length === 0) return { ok: false, reason: 'every derived name is excepted or too short — nothing written' };
   if (!dryRun) {
     const w = writeNamesList(namesPath, result.names);
@@ -189,12 +285,17 @@ export function generateNamesList({ namesPath, allowPath, dryRun = false, run })
     ok: true,
     projects: fetched.projects.length,
     pages: fetched.pages,
-    candidates: derived.names.length,
-    tooShort: derived.tooShort,
+    candidates: merged.names.length,
+    groupSegments: derived.groupSegments,
+    groupGeneric: derived.groupGeneric,
+    groupsIncluded: includeGroups,
+    extra: merged.extra,
+    tooShort: derived.tooShort + merged.tooShort,
     excepted: result.excepted,
     names: result.names.length,
     written: !dryRun,
     allowList: allow.status,
+    extraList: extraList.status,
   };
 }
 
@@ -206,7 +307,7 @@ export function generateNamesList({ namesPath, allowPath, dryRun = false, run })
  *   `file` is the basename only.
  */
 export function describeNamesList({ env = process.env, ownerConfig, now = Date.now() } = {}) {
-  const namesPath = resolveHostPath('confidential-names-file', '', { env, ownerConfig });
+  const namesPath = expandTilde(resolveHostPath('confidential-names-file', '', { env, ownerConfig }));
   if (typeof namesPath !== 'string' || namesPath.trim() === '') {
     return { status: 'unconfigured', count: 0, ageDays: null, stale: false, file: null };
   }

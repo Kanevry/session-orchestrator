@@ -20,11 +20,15 @@ import {wrapHistorical} from '${PLUGIN_ROOT}/scripts/lib/historical-guard.mjs';
 
 let contents;
 try { contents = readFileSync('<state-dir>/STATE.md', 'utf8'); } catch { process.exit(0); }
-const entries = readWhatNotToRetry(contents);
+const entries = readWhatNotToRetry(contents, { includeAbandonedDetails: true });
 if (entries.length === 0) process.exit(0); // silent no-op when slot empty
 
 const body = ['⛔ What Not To Retry (do NOT re-attempt the following — prior sessions failed/abandoned these):']
-  .concat(entries.map((e) => '- ' + e.approach + ' (' + e.session_id + ', ' + e.date + ') — why: ' + e.why_failed))
+  .concat(entries.map((e) => {
+    const line = '- ' + e.approach + ' (' + e.session_id + ', ' + e.date + ') — why: ' + e.why_failed;
+    if (e.summary === undefined || e['files-touched'] === undefined) return line;
+    return line + '\n  - Files touched: ' + JSON.stringify(e['files-touched']) + '\n  - Summary: ' + e.summary;
+  }))
   .join('\n');
 console.log(wrapHistorical(body));
 "
@@ -33,7 +37,7 @@ console.log(wrapHistorical(body));
 Behaviour:
 - Section non-empty → render the guarded forced-read block (always; no AUQ).
 - Section absent or empty (or `(none yet)` placeholder) → silent no-op (no banner).
-- The reader does NOT mutate STATE.md. session-end Phase 1.6.6 is the sole writer; Idle Reset PRESERVES this section (see "Idle Reset" above).
+- The reader leaves STATE.md untouched. Session-end Phase 1.6.6 and the wave-executor's abandonment checkpoint share the same lock-guarded writer. Idle Reset preserves this section (see "Idle Reset" above).
 
 Incorporate the rendered block into the Session Overview under a **What Not To Retry** slot (see `presentation-format.md`). Verify each entry against current `git` state and open issues before acting — an approach that failed in a prior session may now be viable after intervening fixes.
 

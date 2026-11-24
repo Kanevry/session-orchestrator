@@ -8,6 +8,7 @@
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import {
   runCheck,
   extractCount,
@@ -62,7 +63,7 @@ if (!lintCmd) {
   process.exit(1);
 }
 
-const startTime = Date.now();
+const startTime = performance.now();
 
 // --- Typecheck ---
 const tcResult = await runCheck(typecheckCmd, CHECK_OPTS);
@@ -310,7 +311,7 @@ const lintWarnings =
 const debugArtifacts = collectDebugArtifacts(sessionStartRef);
 
 // --- Duration ---
-const durationSeconds = Math.round((Date.now() - startTime) / 1000);
+const durationSeconds = Math.round((performance.now() - startTime) / 1000);
 
 // --- Stub map ---
 const stubbed = {};

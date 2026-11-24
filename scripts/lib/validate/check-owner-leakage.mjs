@@ -480,7 +480,7 @@ export async function getConfidentialNamePatterns({ loadOwnerConfig, required = 
       };
     }
 
-    const namesPath = resolveHostPath('confidential-names-file', '', {
+    let namesPath = resolveHostPath('confidential-names-file', '', {
       env: process.env,
       ownerConfig: owner.config,
     });
@@ -520,6 +520,11 @@ export async function getConfidentialNamePatterns({ loadOwnerConfig, required = 
       return { patterns: [] }; // (b) the ~99% default — inactive, silent.
     }
 
+    // Vendored scanners with absolute paths can run without the shared path module.
+    if (namesPath.startsWith('~')) {
+      const { expandTilde } = await import('../common.mjs');
+      namesPath = expandTilde(namesPath);
+    }
     const { status, names } = inspectConfidentialNames({ namesPath });
     if (status === 'missing') {
       return { patterns: [], disabledReason: 'a confidential-names-file is configured but does not exist' };

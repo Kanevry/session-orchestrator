@@ -66,7 +66,7 @@ Run all checks in parallel where possible. For each check use the status symbols
 | `CLAUDE.md` exists (at most 80 non-exempt lines; runtime `## Session Config` block exempt) | `node "$PLUGIN_ROOT/scripts/lib/claude-md-budget-lint.mjs" --file CLAUDE.md` |
 | `.claude/rules/` has path-scoped rules | `ls .claude/rules/*.md 2>/dev/null` |
 | `.claude/settings.json` exists | `ls .claude/settings.json` |
-| `.mcp.json` exists with servers | `ls .mcp.json` |
+| `.mcp.json` exists with servers (or `mcp/servers.json` named by a plugin manifest) | `ls .mcp.json mcp/servers.json 2>/dev/null`; a file with an empty `mcpServers` object declares nothing |
 | `.gitignore` covers `.env*`, `node_modules`, build artifacts | `grep -E '\.env\*|node_modules' .gitignore` |
 
 ### Category 2: Code Quality
@@ -154,11 +154,11 @@ Do not mark any Clank check as `✗`. Absence of Clank is not a failure outside 
 
 ### Category 9: MCP Configuration
 
-**Scope:** Audits only the repo-local `.mcp.json` file — does NOT cover the user-machine MCPJungle gateway or globally-imported MCP servers.
+**Scope:** Audits only the repo-local MCP declaration (a root `.mcp.json` for repos that use one; session-orchestrator itself declares the server once per harness in `.claude-plugin/plugin.json` and `mcp/servers.json`, with no root `.mcp.json`) — does NOT cover the user-machine MCPJungle gateway or globally-imported MCP servers.
 
 | Check | Method |
 |---|---|
-| `.mcp.json` exists | `ls .mcp.json 2>/dev/null` |
+| `.mcp.json` exists, or the MCP server is declared in a plugin manifest (`mcp/servers.json`, inline `mcpServers`) | `ls .mcp.json mcp/servers.json 2>/dev/null; grep -l mcpServers .claude-plugin/plugin.json .codex-plugin/plugin.json .cursor-plugin/plugin.json 2>/dev/null` — none of them: report `not measured` (no MCP declaration), not pass |
 | MCP servers match project type | Read `.mcp.json`, verify server list is appropriate (e.g., `shadcn` only for frontend repos, no stale servers) |
 | No stale or unused MCP entries | Cross-reference `.mcp.json` servers against project stack markers |
 | MCP server health probe (optional — requires `mcporter`) | For each server declared in repo-local `.mcp.json`: if `command -v mcporter` is present, run `mcporter list --json` and read the per-server `status` field — `ok` → ✓ pass; `auth` → ⚠ warn (remediation: `mcporter auth <server>`); `offline`/`error` → ✗ fail. If `mcporter` is absent → mark this check `skipped` with note "enable with `npm install -g mcporter`". `mcporter` is never a hard dependency; the repo audit proceeds without it. |

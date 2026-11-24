@@ -112,7 +112,7 @@ For each kept phase:
       2. "Warn + carryover and close" — file a carryover issue (labels `carryover`, `priority::high`) titled `[Carryover] custom-phase '<name>' (mode=hard) exited <code>` capturing the phase name + captured summary for a follow-up session, log the Deviation entry, then continue the close.
       3. "Override and close" — proceed, log a Deviation entry in STATE.md `## Deviations`:
          `- [<ISO timestamp>] Phase 2.5: custom-phase '<name>' (mode=hard) exited <code>, overridden by user.`
-         In addition to the Deviation entry, emit an override-ratio event so the override feeds the `override_ratio` metric (#730/H5): `node scripts/emit-event.mjs --type orchestrator.finding.overridden --payload '{"phase":"2.5","kind":"custom-phase-hard","count":N}'`.
+         In addition to the Deviation entry, emit an override-ratio event so the override feeds the `override_ratio` metric (#730/H5): `node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.finding.overridden --payload '{"phase":"2.5","kind":"custom-phase-hard","count":N}'`.
       4. "Abort close" — exit close without writing.
     - On Codex CLI / Cursor IDE: same options as a numbered Markdown list.
 
@@ -145,7 +145,7 @@ duplicates issues.
 Emit ONE event per filed issue (note: event-name segments use underscores, never hyphens):
 
 ```bash
-node scripts/emit-event.mjs --type orchestrator.broken_window.filed --payload \
+node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.broken_window.filed --payload \
   "$(node -e "process.stdout.write(JSON.stringify({source:'<2.0a|2.3|2.5|1.8|wave-override>', issue:<IID>, due:'<YYYY-MM-DD>'}))")"
 ```
 
@@ -167,7 +167,7 @@ discipline as `createSpiralCarryoverIssue`).
 After STATE.md is finalized with `status: completed` (Phase 3.4) and Recommendations are written (Phase 3.7a), release the distributed session-lock with ONE verifying command:
 
 ```bash
-node scripts/release-session-lock.mjs --session-id "<raw session_id>" --json
+node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/release-session-lock.mjs" --session-id "<raw session_id>" --json
 ```
 
 `--session-id` is the PHYSICAL raw value established by session-start Phase 1.2 and stored in `.orchestrator/session.lock` `session_id` — never STATE.md `session:` and never `semantic_session_id`, both of which are attribution labels.

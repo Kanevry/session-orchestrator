@@ -311,7 +311,7 @@ This advances the auto-dream cadence marker (`readDreamSignals` → `lastCleanup
 As the LAST step of every completed run — dry-run, apply-pending, or healthy no-op alike — emit the completion event. This is mandatory and it is the whole mechanism; there is no second, prose-only path that also works:
 
 ```bash
-node scripts/emit-event.mjs \
+node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" \
   --type orchestrator.memory.cleanup_completed \
   --payload "{\"semantic_session_id\":\"<the session: value from STATE.md frontmatter>\",\"mode\":\"<dry-run|apply-pending|no-op>\"}"
 ```

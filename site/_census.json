@@ -1,20 +1,20 @@
 {
   "$schema": "site-numbers/1 census snapshot",
   "metrics": {
-    "version": "5.21.2",
-    "skills": "54",
-    "commands": "33",
+    "version": "5.22.0",
+    "skills": "55",
+    "commands": "34",
     "agents": "14",
     "hooks": "33",
-    "tests": "912",
-    "sessions": "336",
+    "tests": "923",
+    "sessions": "338",
     "learnings": "47",
     "rules": "32",
     "rules-generated": "9",
     "blocked-commands": "18",
-    "npm-downloads-30d": "4014",
+    "npm-downloads-30d": "4346",
     "github-stars": "53",
-    "counted-at": "2026-11-22",
-    "counted-sha": "9f1e40f4"
+    "counted-at": "2026-11-24",
+    "counted-sha": "dbf95b82"
   }
 }

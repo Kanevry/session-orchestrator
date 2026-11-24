@@ -395,12 +395,15 @@ On Codex CLI / Cursor IDE, substitute `.codex/` or `.cursor/` for `.claude/` per
 
 Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refresh-Lock Flow in `SKILL.md` — the last two because a repo bootstrapped before this step existed never gets it otherwise: both flows write no `.gitignore` of their own.
 
-`.orchestrator/` itself stays versioned: `bootstrap.lock`, `policy/`, `steering/`, `peers/` and the `.orchestrator/metrics/*.jsonl` ledgers are durable project data. What the plugin writes there at runtime is per-process state or a per-run artifact that a `git add -A` would otherwise commit — the session lock is rewritten on every SessionStart, every store rewrite leaves a full backup copy of the ledger beside it, the auto-dream sidecar is a full replacement body of the operator's private MEMORY.md, and the quality-gate and ux-grill artifacts can carry secrets or a rendered password. Each pattern below names one writer's file, its `.acquire` guard where it has one, and its own temp files (left behind only by a crash mid-write). Rotated and archived ledger copies (`*.jsonl.[0-9]*`, `*.jsonl.archive-*`, `metrics/_archive/`) are ignored too (owner decision 2026-10-03, #1507 Pkt 4): the live `*.jsonl` ledger is the versioned record, and the rotated history beside it is not.
+Keep `bootstrap.lock`, `policy/`, `steering/`, `peers/` and the project ledgers under `.orchestrator/metrics/` versioned, including `sessions.jsonl`, `learnings.jsonl` and `eval.jsonl`. Bootstrap ignores the three hook logs listed below (owner decision 2026-11-23, #2246). The block only appends to `.gitignore`, so any files Git already tracks stay tracked.
+
+The patterns also cover runtime state and per-run artifacts that a `git add -A` would otherwise commit. The session lock is rewritten on every SessionStart, every store rewrite leaves a full backup copy of the ledger beside it, the auto-dream sidecar is a full replacement body of the operator's private MEMORY.md, and the quality-gate and ux-grill artifacts can carry secrets or a rendered password. The patterns include `.acquire` guards, crash leftovers and rotated and archived ledger copies (owner decision 2026-10-03, #1507 Pkt 4).
 
 | Pattern(s) | Written by |
 |---|---|
+| `.orchestrator/metrics/events.jsonl`, `.orchestrator/metrics/subagents.jsonl`, `.orchestrator/metrics/skill-invocations.jsonl` | the hooks, respectively through `scripts/lib/events.mjs`, `hooks/subagent-telemetry.mjs` and `hooks/skill-invocation-telemetry.mjs` |
 | `.orchestrator/metrics/*.jsonl.lock*`, `.file.lock.*` | the store locks of the ledgers (`scripts/lib/file-lock.mjs` temps sit beside every lock) |
-| `.orchestrator/metrics/*.jsonl.bak-*` | the store backups: the keep-3 `<store>.bak-<ISO>` copy before every learnings rewrite (`scripts/lib/learnings/io.mjs`) and the `<stem>.pre-drop-malformed.jsonl.bak-<ISO>` snapshot of `sweep-expired-learnings --drop-malformed` (`scripts/lib/learnings/expiry-sweep.mjs`); the `*.jsonl` ledgers themselves stay versioned |
+| `.orchestrator/metrics/*.jsonl.bak-*` | the store backups: the keep-3 `<store>.bak-<ISO>` copy before every learnings rewrite (`scripts/lib/learnings/io.mjs`) and the `<stem>.pre-drop-malformed.jsonl.bak-<ISO>` snapshot of `sweep-expired-learnings --drop-malformed` (`scripts/lib/learnings/expiry-sweep.mjs`) |
 | `.orchestrator/session.lock`, `.orchestrator/.session.lock.*` | the session lock, every SessionStart (`scripts/lib/session-lock.mjs`, `hooks/_lib/lock-bootstrap.mjs`) |
 | `.orchestrator/runtime/` | the lock-owner proof written beside it on every SessionStart, plus agent-status and cache files |
 | `.orchestrator/current-session.json`, `.orchestrator/.current-session.*` | the SessionStart hook |
@@ -413,7 +416,7 @@ Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refres
 | `.orchestrator/staging-fence/` | the staging-fence commit mutex and intent log |
 | `.orchestrator/tmp/` | machine-local scratch: lock-reaper archives of reaped session locks (`tmp/reaped-locks/`, carrying host name, pid and session ids), worktree metadata (`tmp/worktree-meta/`), the orphan-reaper throttle marker (`tmp/reaper-last-scan`) |
 | `.orchestrator/metrics/*.jsonl.bak.*` | the legacy evolve backup `learnings.jsonl.bak.evolve-<ts>`, a full store copy still on disk in older repos (`scripts/lib/learnings/io.mjs`) |
-| `.orchestrator/metrics/*.jsonl.[0-9]*`, `.orchestrator/metrics/*.jsonl.archive-*`, `.orchestrator/metrics/_archive/` | rotated ledger history of the events log (`scripts/lib/events.mjs`): the legacy numbered `events.jsonl.<n>` slots, older `*.jsonl.archive-*` copies and the `_archive/` directory of rotated `events-<first>_<last>.jsonl` files (`scripts/lib/events-schema.mjs`); the live `*.jsonl` ledgers stay versioned |
+| `.orchestrator/metrics/*.jsonl.[0-9]*`, `.orchestrator/metrics/*.jsonl.archive-*`, `.orchestrator/metrics/_archive/` | rotated ledger history of the events log (`scripts/lib/events.mjs`): the legacy numbered `events.jsonl.<n>` slots, older `*.jsonl.archive-*` copies and the `_archive/` directory of rotated `events-<first>_<last>.jsonl` files (`scripts/lib/events-schema.mjs`) |
 | `.orchestrator/metrics/*.jsonl.tmp-*` | atomic-write temp files of the ledgers (`scripts/lib/autopilot/telemetry.mjs`), left behind only by a crash |
 | `.orchestrator/metrics/.*.tmp.*` | temp files of the shared atomic writers (`scripts/lib/io.mjs`, named `.<base>.tmp.<hex>`), left behind only by a crash |
 | `.orchestrator/pending-dream.md` | the auto-dream sidecar — a full replacement body of the private MEMORY.md (`scripts/lib/auto-dream.mjs`) |
@@ -437,8 +440,11 @@ _GI_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
 _GI="$_GI_ROOT/.gitignore"
 _GI_MISSING=()
 _GI_UNREADABLE=false
-# Never add a file consumers COMMIT here: .orchestrator/bootstrap.lock, policy/, steering/, the *.jsonl ledgers.
+# Keep bootstrap.lock, policy/, steering/ and project ledgers eligible for version control.
 _GI_PATTERNS=(
+  '.orchestrator/metrics/events.jsonl'
+  '.orchestrator/metrics/subagents.jsonl'
+  '.orchestrator/metrics/skill-invocations.jsonl'
   '.orchestrator/metrics/*.jsonl.lock*' '.file.lock.*'
   '.orchestrator/metrics/*.jsonl.bak-*'
   '.orchestrator/session.lock' '.orchestrator/.session.lock.*'
@@ -491,7 +497,7 @@ if [[ -n "$_GI_ROOT" && ! -L "$_GI" && ( ! -e "$_GI" || -r "$_GI" ) && ${#_GI_MI
   # A last line without a trailing newline would fuse with the comment below: `.env` + `# …`
   # becomes `.env# …`, which git no longer reads as `.env` — the append would UN-ignore it.
   if [[ -s "$_GI" && -n "$(tail -c1 "$_GI")" ]]; then printf '\n' >> "$_GI"; fi
-  printf '%s\n' '# session-orchestrator runtime locks and state (never versioned)' "${_GI_MISSING[@]}" >> "$_GI"
+  printf '%s\n' '# session-orchestrator runtime artifacts and hook logs' "${_GI_MISSING[@]}" >> "$_GI"
 fi
 ```
 

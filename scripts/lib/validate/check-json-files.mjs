@@ -135,10 +135,17 @@ for (const manifestRel of ['.codex-plugin/plugin.json', '.cursor-plugin/plugin.j
   }
   if (!foreignPath.endsWith('.json')) continue;
   const foreignAbs = join(pluginRoot, foreignPath.replace(/^\.\//, ''));
-  if (existsSync(foreignAbs) && isValidJson(foreignAbs)) {
+  if (!existsSync(foreignAbs) || !isValidJson(foreignAbs)) {
+    fail(`${manifestRel} mcpServers file is missing or not valid JSON: ${foreignPath}`);
+    continue;
+  }
+  // Parsable is not measured: the manifest requires `mcpServers` and names this file to
+  // declare servers, so `{}` declares nothing (the Codex contract checks the path only).
+  const servers = JSON.parse(readFileSync(foreignAbs, 'utf8'))?.mcpServers;
+  if (servers && typeof servers === 'object' && !Array.isArray(servers) && Object.keys(servers).length > 0) {
     pass(`${manifestRel} mcpServers file is valid JSON: ${foreignPath}`);
   } else {
-    fail(`${manifestRel} mcpServers file is missing or not valid JSON: ${foreignPath}`);
+    fail(`${manifestRel} mcpServers file is valid JSON but declares no server under mcpServers: ${foreignPath}`);
   }
 }
 

@@ -996,7 +996,7 @@ export function pruneGateProcessLedger(repoRoot, {
  * @param {number} [opts.maxOutputBytes]
  * @param {Function} [opts.spawnFn]  `(cmd, options) => ChildProcess`. Tests inject a fake.
  * @param {(target: number, signal: string) => unknown} [opts.killFn]  Tests ALWAYS inject.
- * @param {() => number} [opts.now]
+ * @param {() => number} [opts.now]  Wall clock for the process ledger's start timestamp.
  * @param {(pid: number) => boolean} [opts.isAliveFn]
  * @param {((pgid: number) => boolean)|null} [opts.groupAliveFn]  Group probe for the
  *   normal-exit path and for the ladder's grace window (#1708). Defaults to
@@ -1046,6 +1046,7 @@ export function spawnInGroup(cmd, {
 
   return new Promise((resolve) => {
     const startedAt = now();
+    const startedMono = performance.now();
     /** @type {number|null} */
     let pid = null;
     /** @type {number|null} */
@@ -1098,7 +1099,7 @@ export function spawnInGroup(cmd, {
         leftoverGroup,
         pid: pid ?? -1,
         pgid: pgid ?? -1,
-        durationMs: now() - startedAt,
+        durationMs: Math.round(performance.now() - startedMono),
         ...(platform === 'win32' && ladderStarted ? { ok: cleanupError === null && survivors?.length === 0, error: cleanupError } : {}),
       });
     };

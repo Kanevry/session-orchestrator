@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session Orchestrator docs server (MCP) | Ask the docs from your own agent</title>
+<meta name="description" content="A public, read-only MCP server for the Session Orchestrator documentation. Add one URL to your agent and ask the docs. No account, no sign-in, nothing to install.">
+<link rel="canonical" href="https://session-orchestrator.com/mcp">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Session Orchestrator">
+<meta property="og:url" content="https://session-orchestrator.com/mcp">
+<meta property="og:title" content="Session Orchestrator docs server (MCP) | Ask the docs from your own agent">
+<meta property="og:description" content="A public, read-only MCP server for the Session Orchestrator documentation. Add one URL to your agent and ask the docs. No account, no sign-in, nothing to install.">
+<meta property="og:image" content="https://session-orchestrator.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Session Orchestrator: From your task to checked work. The commands /session, /go and /close beside an illustration of an agent workshop under human direction.">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Session Orchestrator docs server (MCP) | Ask the docs from your own agent">
+<meta name="twitter:description" content="A public, read-only MCP server for the Session Orchestrator documentation. Add one URL to your agent and ask the docs. No account, no sign-in, nothing to install.">
+<meta name="twitter:image" content="https://session-orchestrator.com/og.png">
+<meta name="twitter:image:alt" content="Session Orchestrator: From your task to checked work. The commands /session, /go and /close beside an illustration of an agent workshop under human direction.">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "@id": "https://session-orchestrator.com/mcp",
+  "url": "https://session-orchestrator.com/mcp",
+  "name": "Session Orchestrator docs server (MCP) | Ask the docs from your own agent",
+  "description": "A public, read-only MCP server for the Session Orchestrator documentation. Add one URL to your agent and ask the docs. No account, no sign-in, nothing to install.",
+  "inLanguage": "en",
+  "about": {
+    "@id": "https://session-orchestrator.com/#software"
+  },
+  "isPartOf": {
+    "@id": "https://session-orchestrator.com/#website"
+  }
+}
+</script>
+
+<link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
+<link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
+<link rel="stylesheet" href="/assets/site.css?v=20261118">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.22.0</span></span></a>
+    <nav class="nav" aria-label="Main"><a href="/guide#how-it-works">How it works</a><a href="/commands">Commands</a><a href="/guide">Guide</a><a href="/lead">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
+    <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="/guide#how-it-works">How it works</a><a href="/commands">Commands</a><a href="/guide">Guide</a><a href="/lead">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
+    <a class="top-install" href="/#install">Install</a>
+  </div>
+</header>
+<main id="main">
+  <p class="sr" id="copy-live" role="status" aria-live="polite"></p>
+
+  <section class="sec" id="top">
+    <div class="wrap">
+      <p class="eyebrow">Docs server · MCP · read-only</p>
+      <h1 class="h-display">Ask the docs from your own agent.</h1>
+      <p class="lede">One URL, nothing to install. Add it to any agent that speaks MCP, then ask how to install Session Orchestrator, which skill fits a task, or what is wrong with your Session Config.</p>
+      <p class="cmd"><code>https://mcp.session-orchestrator.com/mcp</code><button class="copy" type="button" data-copy="https://mcp.session-orchestrator.com/mcp">Copy</button></p>
+      <p class="small">Streamable HTTP. No account, no sign-in. It answers from the documentation of the released version, currently v<span class="num" data-metric="version">5.22.0</span>.</p>
+      <nav aria-label="On this page"><p class="small"><a href="#connect">Connect</a> · <a href="#tools">The five tools</a> · <a href="#examples">Try these</a> · <a href="#limits">What it does not do</a> · <a href="#privacy">Privacy</a> · <a href="#which">Server or plugin</a></p></nav>
+    </div>
+  </section>
+
+  <section class="sec" id="connect" aria-labelledby="connect-h">
+    <div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">Connect</p><h2 id="connect-h">Add it to<br>your agent.</h2></div><p>Pick your client. Claude Code and Codex CLI were tested with these commands. The other clients are described as their vendors document it; they were not tested here.</p></div>
+
+      <h3>Claude Code</h3>
+      <p class="small">Tested on macOS.</p>
+      <p class="cmd"><code>claude mcp add --transport http session-orchestrator https://mcp.session-orchestrator.com/mcp</code><button class="copy" type="button" data-copy="claude mcp add --transport http session-orchestrator https://mcp.session-orchestrator.com/mcp">Copy</button></p>
+      <p class="cmd"><code>claude mcp list</code><button class="copy" type="button" data-copy="claude mcp list">Copy</button></p>
+      <p><code>claude mcp list</code> then shows the server as connected. For a team, Claude Code&rsquo;s documentation describes <code>--scope project</code>, which writes the server into <code>.mcp.json</code> in the project; not tested here.</p>
+
+      <h3>Codex CLI</h3>
+      <p class="small">Tested on macOS and Linux.</p>
+      <p class="cmd"><code>codex mcp add session-orchestrator --url https://mcp.session-orchestrator.com/mcp</code><button class="copy" type="button" data-copy="codex mcp add session-orchestrator --url https://mcp.session-orchestrator.com/mcp">Copy</button></p>
+      <p class="cmd"><code>codex mcp list</code><button class="copy" type="button" data-copy="codex mcp list">Copy</button></p>
+      <p>According to OpenAI&rsquo;s documentation, the ChatGPT desktop app and the Codex IDE extension read the same configuration; not tested here.</p>
+
+      <h3>Cursor</h3>
+      <p class="small">From Cursor&rsquo;s documentation, not tested here. Put this in <code>.cursor/mcp.json</code>:</p>
+      <div class="cmd">
+        <pre class="code">{"mcpServers":{"session-orchestrator":{"url":"https://mcp.session-orchestrator.com/mcp"}}}</pre>
+        <button class="copy" type="button" data-copy="{&quot;mcpServers&quot;:{&quot;session-orchestrator&quot;:{&quot;url&quot;:&quot;https://mcp.session-orchestrator.com/mcp&quot;}}}">Copy</button>
+      </div>
+
+      <h3>VS Code (Copilot)</h3>
+      <p class="small">From the VS Code documentation, not tested here. Put this in <code>.vscode/mcp.json</code>:</p>
+      <div class="cmd">
+        <pre class="code">{"servers":{"session-orchestrator":{"type":"http","url":"https://mcp.session-orchestrator.com/mcp"}}}</pre>
+        <button class="copy" type="button" data-copy="{&quot;servers&quot;:{&quot;session-orchestrator&quot;:{&quot;type&quot;:&quot;http&quot;,&quot;url&quot;:&quot;https://mcp.session-orchestrator.com/mcp&quot;}}}">Copy</button>
+      </div>
+
+      <h3>Pi</h3>
+      <p class="small">From Pi&rsquo;s documentation, not tested here.</p>
+      <p class="cmd"><code>pi mcp add session-orchestrator --url https://mcp.session-orchestrator.com/mcp</code><button class="copy" type="button" data-copy="pi mcp add session-orchestrator --url https://mcp.session-orchestrator.com/mcp">Copy</button></p>
+
+      <h3>Claude desktop app and claude.ai</h3>
+      <p class="small">From Anthropic&rsquo;s documentation, not tested here.</p>
+      <p>Open Customize &rsaquo; Connectors &rsaquo; Add custom connector. Enter a name and the URL above, and choose &ldquo;No sign-in&rdquo;. On Team and Enterprise plans, an owner adds it.</p>
+    </div>
+  </section>
+
+  <section class="sec" id="tools" aria-labelledby="tools-h">
+    <div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">What it offers</p><h2 id="tools-h">Five tools,<br>all read-only.</h2></div><p>Your agent picks the tool. You just ask your question.</p></div>
+      <div class="table-scroll" role="region" aria-label="The five tools" tabindex="0">
+        <table class="kv">
+          <caption class="sr">The five tools of the docs server</caption>
+          <tbody>
+            <tr><th scope="row"><code>search</code></th><td>Searches the public documentation of the released plugin version.</td></tr>
+            <tr><th scope="row"><code>fetch</code></th><td>Reads one documentation section in full.</td></tr>
+            <tr><th scope="row"><code>list_skills</code></th><td>Finds the skill that fits a task.</td></tr>
+            <tr><th scope="row"><code>check_session_config</code></th><td>Checks a pasted Session Config block for keys that have no effect, and names the key you probably meant.</td></tr>
+            <tr><th scope="row"><code>get_release_notes</code></th><td>Shows the latest version and what changed.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="examples" aria-labelledby="examples-h">
+    <div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">Try these</p><h2 id="examples-h">Three questions<br>to start with.</h2></div><p>Each one was asked against the live server, with the answer described below it.</p></div>
+      <ol class="cards steps">
+        <li class="card">
+          <h3>Check a config</h3>
+          <pre class="code">Check this Session Config block for mistakes:
+
+## Session Config
+persistance: true</pre>
+          <p>The answer names the typo and suggests <code>persistence</code>.</p>
+        </li>
+        <li class="card">
+          <h3>Get unstuck</h3>
+          <pre class="code">How do I install Session Orchestrator in Codex, and what if node_modules is missing?</pre>
+          <p>The answer cites the setup section, with a link to it.</p>
+        </li>
+        <li class="card">
+          <h3>Find a skill</h3>
+          <pre class="code">Which skill finds the root cause of a failing test?</pre>
+          <p>The answer names <code>debug</code> and how to invoke it.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="sec technical-sec" id="limits" aria-labelledby="limits-h">
+    <div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">Limits</p><h2 id="limits-h">What it<br>does not do.</h2></div><p>It reads documentation. That is all.</p></div>
+      <ul>
+        <li>It does not install the plugin and has no hooks.</li>
+        <li>It runs no command and changes nothing.</li>
+        <li>It cannot see your repository. It only checks the text you send to it.</li>
+      </ul>
+      <p>The full plugin, with planning, waves, quality gates and close-out, is still installed as described on the <a href="/#install">home page</a>.</p>
+    </div>
+  </section>
+
+  <section class="sec" id="privacy" aria-labelledby="privacy-h">
+    <div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">Privacy</p><h2 id="privacy-h">Nothing<br>to sign up for.</h2></div><p>No account, no sign-in, no cookies.</p></div>
+      <ul>
+        <li>The server stores no input and keeps no log of requests or IP addresses.</li>
+        <li>A Session Config block you ask it to check is sent to the server, checked in memory and not stored.</li>
+        <li>All five tools are marked read-only.</li>
+        <li>The plugin is open source under the MIT licence: <a href="https://github.com/Kanevry/session-orchestrator">source on GitHub</a>.</li>
+      </ul>
+      <p class="small">The server&rsquo;s own pages: <a href="https://mcp.session-orchestrator.com/privacy">privacy</a> and <a href="https://mcp.session-orchestrator.com/terms">terms</a>.</p>
+    </div>
+  </section>
+
+  <section class="sec" id="which" aria-labelledby="which-h">
+    <div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">Server or plugin</p><h2 id="which-h">When to use<br>what.</h2></div><p>The docs server answers questions. The plugin does the work in your repository.</p></div>
+      <div class="table-scroll" role="region" aria-label="Docs server, plugin or npm" tabindex="0">
+        <table class="table">
+          <caption class="sr">When to use the docs server, the full plugin or npm</caption>
+          <thead>
+            <tr><th scope="col">Use</th><th scope="col">When</th><th scope="col">How</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Docs server</td><td>You are evaluating, stuck during install, or configuring. Or you work in a web or cloud agent that cannot install local plugins.</td><td>Add the URL above.</td></tr>
+            <tr><td>Full plugin</td><td>You work locally, in a terminal or an IDE. Needs Node.js 24 or later and a git repository.</td><td>From GitHub, through your coding tool: in Claude Code <code>/plugin marketplace add Kanevry/session-orchestrator</code>, then <code>/plugin install session-orchestrator@kanevry</code>. Codex CLI, Cursor and Pi: see the <a href="/#install">install section</a>.</td></tr>
+            <tr><td>npm</td><td>You use Pi, or you want the <code>doctor</code> check. <code>npm i -g</code> alone does not activate the plugin in Claude Code or Codex.</td><td><code>pi install npm:session-orchestrator</code>; <code>npx session-orchestrator doctor</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec end" id="next"><div class="wrap end-grid"><div><p class="eyebrow">Next step</p><h2>Ready to let it<br>do the work?</h2><p>Install the full plugin. The <a href="/guide">guide</a> walks you through your first session.</p></div><a class="btn btn-primary" href="/#install">Install session-orchestrator<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div></section>
+</main>
+<footer class="foot"><div class="wrap"><div class="footer-main"><a class="brand" href="/">session-orchestrator</a><p>An open-source project by Bernhard Götzendorfer.</p></div><div class="footer-links"><nav aria-label="More links"><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a href="https://www.npmjs.com/package/session-orchestrator">npm</a><a href="/guide">Guide</a><a href="/lead">Lead session</a><a href="/llms.txt">llms.txt</a><a href="/impressum">Imprint</a><a href="/datenschutz">Privacy</a></nav><a class="support-link" href="https://paypal.me/Kanevry">Buy me a coffee, if this helped.</a></div></div></footer>
+<script src="/_vercel/insights/script.js" defer></script>
+<script src="/assets/ui.js?v=20261118" defer></script>
+</body>
+</html>

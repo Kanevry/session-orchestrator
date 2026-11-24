@@ -579,7 +579,10 @@ async function handleStop(input, reaperTrigger = null) {
   // Best-effort: never throws, never blocks the Stop hook.
   if (sessionId && !codexExec.released) {
     try {
-      updateHeartbeat({ sessionId, repoRoot: projectRoot });
+      if (!updateHeartbeat({ sessionId, repoRoot: projectRoot })) {
+        const { reportStaleAcquireGuard } = await import('../scripts/lib/session-lock.mjs');
+        await reportStaleAcquireGuard(projectRoot);
+      }
     } catch { /* best-effort */ }
   }
 

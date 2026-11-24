@@ -140,7 +140,7 @@ export async function runGitleaksCheck({
   timeoutMs = BUDGET.totalMs,
 } = {}) {
   const started = Date.now();
-  const done = (r) => makeCheckResult({ id: 'gitleaks', ms: Date.now() - started, ...r });
+  const done = (r) => makeCheckResult({ id: 'gitleaks', ms: Math.max(0, Date.now() - started), ...r });
   let dir = null;
   try {
     if (!base) return done({ status: 'skipped', reason: 'no-range' });

@@ -1726,8 +1726,10 @@ async function main() {
   // returns false without writing when the lock belongs to another session),
   // so no `touchIfOwn()` wrapper is warranted — see scripts/lib/session-lock.mjs.
   try {
-    const { updateHeartbeat } = await import('../scripts/lib/session-lock.mjs');
-    updateHeartbeat({ repoRoot: projectRoot, sessionId });
+    const { updateHeartbeat, reportStaleAcquireGuard } = await import('../scripts/lib/session-lock.mjs');
+    if (!updateHeartbeat({ repoRoot: projectRoot, sessionId })) {
+      await reportStaleAcquireGuard(projectRoot);
+    }
   } catch { /* hook must remain non-blocking */ }
 
   // Size-based rotation of events.jsonl (#251). Session-start is the single

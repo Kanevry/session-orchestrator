@@ -87,13 +87,13 @@
 //   1  preflight/check failure (stale surface, missing CHANGELOG entry,
 //      tag/registry collision, mirror behind, dead token, CI not green,
 //      leakage-gate hit) OR post-publish reconciliation required OR
-//      --reconcile not yet installable (pending / failed / proof missing;
-//      a confirmed trusted receipt exits 0 even with installable no or
-//      not measured, as in --help)
+//      --reconcile not yet installable (pending / failed / proof missing,
+//      or a confirmed trusted receipt whose install job failed)
 //      OR a published trusted release with a non-successful install check
 //   2  system/usage error before the npm receipt (git/npm spawn failure,
 //      missing NPM_TOKEN, unknown flag, --skip-ci combined with --publish)
-//   3  published, install job not measured — look at the Actions URL; never rerun --publish
+//   3  published, install job not measured (--publish --trusted, --reconcile
+//      on a trusted proof) — look at the Actions URL; never rerun --publish
 //
 // FAIL-CLOSED IS THE HOUSE RULE (the defect class this file kept re-growing):
 //   A preflight check reports on evidence it GATHERED. When the gathering
@@ -271,11 +271,11 @@ export const SURFACES = [
   },
   {
     file: 'site/llms.txt',
-    patterns: [/Version:\s*(\d+\.\d+\.\d+)/],
+    patterns: [/Version:\s*(\d+\.\d+\.\d+\S*)/],
   },
   {
     file: 'site/llms-full.txt',
-    patterns: [/Version\s+(\d+\.\d+\.\d+)/g],
+    patterns: [/Version\s+(\d+\.\d+\.\d+\S*)/g],
   },
 ];
 
@@ -2978,7 +2978,11 @@ async function reconcileTrustedReceipt(repoRoot, target, deps, read) {
   return { ...base, ok: false, state: 'pending', reason: verdict?.state ?? 'pending', detail: `${verdict?.detail ?? 'not run'} — inspect the tag’s Actions run if it waits`, attempts, commit, proofPath: read.path };
 }
 
-/** A trusted receipt proves publication. Installability needs a recorded pass or one fresh job lookup. */
+/**
+ * A trusted receipt proves publication. Installability needs a recorded pass or one fresh job lookup.
+ * `ok` is true only for a passed install job: `installState` keeps measured-failed and not-measured
+ * apart, and neither counts as success (#2229).
+ */
 export async function reconcileTrustedRelease(repoRoot, target, deps = {}) {
   const read = readReleaseProof(repoRoot, target, { readImpl: deps.readImpl });
   const receipt = await reconcileTrustedReceipt(repoRoot, target, deps, read);
@@ -2986,18 +2990,30 @@ export async function reconcileTrustedRelease(repoRoot, target, deps = {}) {
   const installCheck = read.proof.installCheck?.state === 'passed'
     ? read.proof.installCheck
     : await waitForInstallCheck(repoRoot, target, resolveTrustedRepoSpec(repoRoot, deps), {
-      runImpl: deps.runImpl, now: deps.nowImpl, sleep: deps.sleepImpl, waitMs: 0,
+      runImpl: deps.runImpl, now: deps.nowImpl, sleep: deps.sleepImpl, waitMs: 0, expectedCommit: receipt.commit,
     });
   const reason = installCheck.reason ?? installCheck.conclusion;
   const detail = `${receipt.detail}; install job ${installCheck.state}${reason ? ` (${reason})` : ''}`;
-  return { ...receipt, installable: installCheck.state === 'passed', installState: installCheck.state, detail };
+  const installable = installCheck.state === 'passed';
+  return { ...receipt, ok: installable, installable, installState: installCheck.state, detail };
 }
 
-/** Print the registry verdict. A confirmed trusted receipt exits 0 even when installability is unverified. */
+/**
+ * Exit code of a reconcile result. Without `installState` (staged/direct, or a trusted receipt
+ * that was not confirmed): 0 when ok, else 1. With a confirmed trusted receipt: install job
+ * passed 0, measured failure 1, not measured 3 — the --publish --trusted meaning of exit 3.
+ */
+function reconcileExitCode(result) {
+  if (result.installState === undefined) return result.ok ? 0 : 1;
+  if (result.installState === 'passed') return 0;
+  return result.installState === 'failed' ? 1 : 3;
+}
+
+/** Print the registry verdict and return {@link reconcileExitCode}. */
 export function printReconcileResult(result, { json = false, log = console.log, error = console.error } = {}) {
   if (json) {
     log(JSON.stringify(result, null, 2));
-    return result.ok ? 0 : 1;
+    return reconcileExitCode(result);
   }
   const mark = (flag) => (flag ? 'yes' : 'no');
   // Trusted route only: an install job that is pending or not-measured was never judged,
@@ -3011,6 +3027,14 @@ export function printReconcileResult(result, { json = false, log = console.log, 
     log(`  ${result.detail}`);
     if (result.state === 'superseded') log(`  Note: ${result.target} is installable but no longer \`latest\` — a later release took the tag.`);
     return 0;
+  }
+  if (result.installState !== undefined) {
+    // Confirmed trusted receipt, install job not passed: published, so never rerun --publish.
+    error(`  ${result.detail}`);
+    error(result.installState === 'failed'
+      ? '  The public install job failed. The version is published; inspect the tag\u2019s Actions run. Never rerun --publish.'
+      : `  The public install job was not measured. The version is published; inspect the tag\u2019s Actions run or run \`node scripts/release.mjs --reconcile --target ${result.target}\` again later. Never rerun --publish.`);
+    return reconcileExitCode(result);
   }
   error(`  ${result.reason}: ${result.detail}`);
   if (result.state === 'pending') {
@@ -3645,6 +3669,7 @@ async function waitForInstallCheck(repoRoot, target, spec, {
   now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   waitMs = INSTALL_CHECK_WAIT_MS,
+  expectedCommit,
 }) {
   // resolveRepoSpec returns [HOST/]OWNER/REPO, or its raw input for an
   // unrecognized remote. Only a normalized identity can select a run.
@@ -3656,6 +3681,10 @@ async function waitForInstallCheck(repoRoot, target, spec, {
   const repo = `${mirror.owner}/${mirror.name}`;
   const repositoryUrl = `https://${host}/${repo}`;
   let url = `${repositoryUrl}/actions/workflows/publish.yml`;
+  // Only a run on the commit the GitHub tag points at (handedOff.commit) is evidence (#2229).
+  if (typeof expectedCommit !== 'string' || !FULL_SHA_RE.test(expectedCommit)) {
+    return { state: 'not-measured', reason: 'the commit the workflow builds is unknown', url };
+  }
   const deadline = now() + waitMs;
   const gh = (args) => {
     // With no retries, each gh request still needs time to start and read GitHub.
@@ -3672,11 +3701,12 @@ async function waitForInstallCheck(repoRoot, target, spec, {
   let reason;
   do {
     try {
-      // gh lists newest first. Older runs cannot supply evidence for a newer run.
-      const runs = gh(['run', 'list', '--repo', repo, '--workflow', 'publish.yml', '--branch', `v${target}`, '--json', 'databaseId,status,conclusion', '--limit', '5']);
+      // gh lists newest first. Older runs cannot supply evidence for a newer run, and a
+      // run of the tag on another commit, or not started by the tag push, none at all.
+      const runs = gh(['run', 'list', '--repo', repo, '--workflow', 'publish.yml', '--branch', `v${target}`, '--json', 'databaseId,status,conclusion,headSha,event', '--limit', '5']);
       if (!Array.isArray(runs)) throw new Error('invalid workflow run listing');
-      if (runs.length) {
-        const newest = runs[0];
+      const newest = runs.find((entry) => entry?.headSha === expectedCommit && entry?.event === 'push');
+      if (newest) {
         if (!Number.isSafeInteger(newest?.databaseId) || newest.databaseId <= 0) throw new Error('invalid workflow run ID');
         url = `${repositoryUrl}/actions/runs/${newest.databaseId}`;
         const view = gh(['run', 'view', String(newest.databaseId), '--repo', repo, '--json', 'jobs']);
@@ -3684,7 +3714,9 @@ async function waitForInstallCheck(repoRoot, target, spec, {
         if (verdict.state === 'passed' || verdict.state === 'failed') return { ...verdict, url };
         reason = verdict.reason;
       } else {
-        reason = 'no workflow run found for the tag';
+        reason = runs.length
+          ? `no push-triggered workflow run for the tag on ${expectedCommit.slice(0, 12)} (${runs.length} run(s) on other commits or events)`
+          : 'no workflow run found for the tag';
       }
     } catch (err) {
       reason = err?.message ?? err?.code ?? String(err);
@@ -3807,7 +3839,7 @@ export async function runTrustedPublishRelease(repoRoot, target, deps = {}) {
   const repoSpec = resolveTrustedRepoSpec(repoRoot, deps);
   const release = ensureGithubReleaseImpl(repoRoot, target, { repoSpec, runImpl: deps.runImpl });
   const live = await verifyLiveSiteImpl(target);
-  const installCheck = await waitForInstallCheck(repoRoot, target, repoSpec, { runImpl: deps.runImpl, now, sleep, waitMs: deps.installWaitMs });
+  const installCheck = await waitForInstallCheck(repoRoot, target, repoSpec, { runImpl: deps.runImpl, now, sleep, waitMs: deps.installWaitMs, expectedCommit });
   written = writeProof(withInstallCheck(proof, installCheck, new Date(now()).toISOString()));
   const reconciliation = [];
   if (!written.ok) reconciliation.push({ phase: 'install-check-proof', detail: written.detail });
@@ -4146,7 +4178,9 @@ export async function verifyLiveSite(expected, opts = {}) {
         last = `HTTP ${res.status} from ${url}`;
       } else {
         const body = await res.text();
-        const m = body.match(/^Version:\s*([0-9]+\.[0-9]+\.[0-9]+)/m);
+        // The whole token after `Version:` is compared, so a served 5.21.1-rc.1
+        // or 5.21.1.2 is a mismatch, never a prefix hit on 5.21.1.
+        const m = body.match(/^Version:\s*([0-9]+\.[0-9]+\.[0-9]+\S*)/m);
         if (!m) {
           last = `no "Version: X.Y.Z" line in ${url} (${body.length} bytes) — the surface moved, fix the check`;
         } else if (m[1] === expected) {
@@ -4488,7 +4522,7 @@ export async function resumeReleaseTail(repoRoot, target, deps = {}) {
     } else if (trusted) {
       const repoSpec = resolveTrustedRepoSpec(repoRoot, deps);
       const installCheck = await waitForInstallCheck(repoRoot, target, repoSpec, {
-        runImpl, now, sleep: deps.sleepImpl, waitMs: deps.installWaitMs,
+        runImpl, now, sleep: deps.sleepImpl, waitMs: deps.installWaitMs, expectedCommit: handedCommit,
       });
       if (installCheck.state === 'not-measured') {
         steps.push({ phase: 'install-check', state: 'unmeasured', detail: `install job not measured (${installCheck.reason}) — check ${installCheck.url}` });
@@ -4579,7 +4613,7 @@ async function main() {
     console.log('  --direct   with --publish only: the pre-2027 route (npm publish with a Bypass-2FA token, tail in the same run).');
     console.log('  --trusted  with --publish (ADR-0018 route B): no local npm publish; proof, tag and push, then the GitHub workflow');
     console.log('             publishes in environment npm-publish; waits for the provenance + content receipt (SO_RELEASE_TRUSTED_WAIT_MS).');
-    console.log('             After a confirmed receipt, checks Verify public npm install every 20 s for up to 15 min.');
+    console.log(`             After a confirmed receipt, checks ${INSTALL_CHECK_JOB} every 20 s for up to ${INSTALL_CHECK_WAIT_MS / 60_000} min.`);
     console.log('             With --check: the route-B preflight only, incl. the publish-route row with the trusted-publisher evidence; publishes nothing.');
     console.log('             Refused with --direct, --reconcile, --resume-tail, --set-version and alone.');
     console.log('  Receipt boundary (--direct): before the confirmed npm receipt, failure aborts; after it, never rerun --publish.');
@@ -4594,7 +4628,7 @@ async function main() {
     console.log('               release commit, else refused before any push); a pending receipt still pushes missing tags (the GitHub tag starts');
     console.log('               the workflow); GitHub release and site wait for a confirmed receipt.');
     console.log(`               Every tail push/fetch runs in its own process group with a ${TAIL_CHILD_TIMEOUT_MS / 1000} s deadline; its PID is printed on stderr.`);
-    console.log('Exit codes: 0 success (--trusted: install job passed; --reconcile: installable, superseded or trusted receipt confirmed; --resume-tail: tail complete), 1 preflight/check failure, post-publish reconciliation, a measured non-successful --trusted install-check, --reconcile pending/failed/proof missing or --resume-tail incomplete/refused, 2 system/usage error before any npm receipt, OR an unconfirmed --publish stage (npm exited 0 but no receipt could be read: the version MAY be staged and the proof is written with staged.confirmed=false; check npm stage list, never rerun --publish), 3 published, install job not measured — look at the Actions URL; never rerun --publish.');
+    console.log('Exit codes: 0 success (--trusted: install job passed; --reconcile: installable, superseded, or trusted receipt confirmed with install job passed; --resume-tail: tail complete), 1 preflight/check failure, post-publish reconciliation, a measured non-successful --trusted or trusted --reconcile install-check, --reconcile pending/failed/proof missing or --resume-tail incomplete/refused, 2 system/usage error before any npm receipt, OR an unconfirmed --publish stage (npm exited 0 but no receipt could be read: the version MAY be staged and the proof is written with staged.confirmed=false; check npm stage list, never rerun --publish), 3 published, install job not measured (--trusted or trusted --reconcile) — look at the Actions URL; never rerun --publish.');
     return 0;
   }
 

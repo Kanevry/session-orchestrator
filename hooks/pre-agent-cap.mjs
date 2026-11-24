@@ -341,8 +341,9 @@ async function main() {
     const sidecarUseIds = new Set(started.map((s) => s.useId).filter(Boolean));
     const claims = lib.liveClaims(ledgerPath === null ? [] : readJsonOrNull(ledgerPath)?.claims, sidecarUseIds, now, useId);
     let running;
-    // A sidecar marked finished never counts, so it never forces the transcript read (#2049).
-    const sameClass = started.filter((s) => s.finished !== true && classify(s.agentType) === cls).length
+    // A sidecar marked finished does not count, so it does not force the transcript read
+    // (#2049) — except a resume candidate, which countRunning re-checks (#2056).
+    const sameClass = started.filter((s) => (s.finished !== true || lib.isResumeCandidate(s, now)) && classify(s.agentType) === cls).length
       + claims.filter((c) => c.cls === cls).length;
     if (sameClass < cap.caps[cls]) {
       // Upper bound of this class already below its cap — the transcript is not

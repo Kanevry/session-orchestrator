@@ -136,7 +136,7 @@ function dropSubsection(lines, heading) {
  * frontmatter (Phase 7.5 reads them); a readable copy heads `## Previous Session`.
  * 7. The five `scope-baseline-*` keys are deleted. 8. The three `outcome-*`
  * keys are deleted (#1824): the closed session's outcome is not the next one's.
- * No other key is deleted.
+ * 9. The per-session `files-touched` ledger is deleted (#868).
  *
  * When neither a Wave History section nor a recommendation exists, an existing
  * `## Previous Session` is left as it is — there is nothing to replace it with.
@@ -193,7 +193,7 @@ export function resetStateMdToIdle(contents) {
     body += `## Previous Session\n\n${blocks.join('\n\n')}\n`;
   }
 
-  const fields = { status: 'idle', 'current-wave': 0 };
+  const fields = { status: 'idle', 'current-wave': 0, 'files-touched': null };
   for (const key of SCOPE_BASELINE_KEYS) fields[key] = null;
   for (const key of Object.values(OUTCOME_FIELDS)) fields[key] = null;
   const next = updateFrontmatterFields(

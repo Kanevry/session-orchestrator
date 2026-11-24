@@ -405,8 +405,10 @@ async function main() {
   try {
     const sessionId = await resolveSessionIdForHeartbeat(input, sessionFile);
     if (typeof sessionId === 'string' && sessionId.length > 0) {
-      const { updateHeartbeat } = await import('../scripts/lib/session-lock.mjs');
-      updateHeartbeat({ repoRoot: lockRoot, sessionId });
+      const { updateHeartbeat, reportStaleAcquireGuard } = await import('../scripts/lib/session-lock.mjs');
+      if (!updateHeartbeat({ repoRoot: lockRoot, sessionId })) {
+        await reportStaleAcquireGuard(lockRoot);
+      }
     }
   } catch { /* best effort — hook must remain non-blocking */ }
 

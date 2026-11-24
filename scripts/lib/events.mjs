@@ -53,6 +53,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { getProjectDir, resolveEventsLedgerRoot, SO_SHARED_DIR } from './platform.mjs';
 import { readLock } from './session-lock.mjs';
 import { resolveStateMdWriteTarget } from './state-md/frontmatter-mutators.mjs';
@@ -357,10 +358,9 @@ function waveForRecord(root, attribution) {
   }
   // The ledger's `wave` is numeric in 1876 of 1876 live records; a manifest
   // carrying `"wave": "3"` used to write the STRING through verbatim and split
-  // every downstream group-by. Coerce, and omit anything that is not an integer
-  // (`"abc"`, `2.5`) rather than writing a NaN or a fraction.
+  // every downstream group-by. Wave numbering starts at one.
   const waveNum = Number(scope?.wave);
-  if (scope?.wave === null || scope?.wave === '' || !Number.isInteger(waveNum)) return {};
+  if (!Number.isInteger(waveNum) || waveNum <= 0) return {};
 
   const ownIds = new Set([
     ...readProcessLocalSessionIds(),
@@ -520,38 +520,90 @@ export async function emitEvent(type, payload = {}, opts = {}) {
 // Rotation-aware reading (#1401)
 // ---------------------------------------------------------------------------
 
+// Each batch ends at a line boundary. Carry only the unfinished line across
+// reads and let the decoder retain any incomplete UTF-8 character.
+function* readEventBatches(filePath, onReadError) {
+  let fd;
+  try {
+    fd = openSync(filePath, 'r');
+    const stat = fstatSync(fd);
+    if (stat.isDirectory()) throw new Error('EISDIR: illegal operation on a directory, read');
+    const buffer = Buffer.allocUnsafe(SCAN_CHUNK_BYTES);
+    const decoder = new StringDecoder('utf8');
+    let carry = '';
+    let remaining = stat.isFile() ? stat.size : Infinity;
+    while (remaining > 0) {
+      const bytes = readSync(fd, buffer, 0, Math.min(remaining, buffer.length), null);
+      if (bytes === 0) break;
+      remaining -= bytes;
+      const chunk = decoder.write(buffer.subarray(0, bytes));
+      const end = chunk.lastIndexOf('\n') + 1;
+      if (end > 0) {
+        yield parseEventLines(carry + chunk.slice(0, end));
+        carry = '';
+      }
+      carry += chunk.slice(end);
+    }
+    yield parseEventLines(carry + decoder.end());
+  } catch (err) {
+    onReadError(err);
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch (err) { onReadError(err); }
+    }
+  }
+}
+
 /**
- * Read one JSONL source into a descriptor — never throws.
+ * Read one JSONL source into a descriptor, reporting file read errors.
  *
  * @param {string} filePath
  * @param {'active'|'archive'|'legacy-ring'} kind
- * @returns {{path: string, kind: string, readable: boolean, records: object[],
+ * @param {(record: object) => boolean} [filter]
+ * @returns {{path: string, kind: string, readable: boolean, records: number,
+ *            events: object[], tombstones: object[],
  *            malformed_lines: number, first_ts: string|null, last_ts: string|null,
  *            error?: string}}
  */
-function readEventSource(filePath, kind) {
-  let text;
-  try {
-    text = readFileSync(filePath, 'utf8');
-  } catch (err) {
+function readEventSource(filePath, kind, filter) {
+  const events = [];
+  const tombstones = [];
+  let count = 0;
+  let malformedLines = 0;
+  let readError;
+  function* sourceRecords() {
+    for (const batch of readEventBatches(filePath, (err) => { readError = err; })) {
+      malformedLines += batch.malformedLines;
+      count += batch.records.length;
+      for (const record of batch.records) {
+        yield record;
+        if (record.event === ROTATION_EVENT) tombstones.push(record);
+        if (!filter || filter(record)) events.push(record);
+      }
+    }
+  }
+  const { firstTs, lastTs } = summarizeEventRecords(sourceRecords());
+  if (readError) {
     return {
       path: filePath,
       kind,
       readable: false,
-      records: [],
+      events: [],
+      tombstones: [],
+      records: 0,
       malformed_lines: 0,
       first_ts: null,
       last_ts: null,
-      error: err?.message ?? String(err),
+      error: readError.message ?? String(readError),
     };
   }
-  const { records, malformedLines } = parseEventLines(text);
-  const { firstTs, lastTs } = summarizeEventRecords(records);
   return {
     path: filePath,
     kind,
     readable: true,
-    records,
+    events,
+    tombstones,
+    records: count,
     malformed_lines: malformedLines,
     first_ts: firstTs,
     last_ts: lastTs,
@@ -708,16 +760,17 @@ export function tombstoneGap(record, ownArchiveDir, readSet) {
  * read — today only `unindexed-archive-file` (see {@link discoverArchives}).
  * A notice never moves `complete`.
  *
- * CEILING (BV-004): every source is read fully into memory — at the default
- * `max-size-mb: 10` / `max-backups: 5` that is up to ~60 MB transient. There is
- * no windowing parameter because no caller has asked for one; revisit when a
- * consumer needs a `since` filter or `max-size-mb` is raised past ~100.
+ * Each source is read in bounded chunks, carrying its last unfinished line.
+ * Memory grows with retained events, rotation tombstones and the longest line.
  *
  * @param {string} [repoRoot] — project root; defaults exactly as
  *   {@link eventsFilePath} does (and only the default form honours the test
  *   sandbox seam).
  * @param {object} [opts={}]
  * @param {string} [opts.filePath] — override the active-log path outright.
+ * @param {(record: object) => boolean} [opts.filter] — runs once per readable
+ *   record in discovery order. Only matching records appear in `events`;
+ *   source counts, time order and gap reporting always cover the whole ledger.
  * @returns {{events: object[], sources: object[], malformed_lines: number,
  *            gaps: object[], notices: object[], complete: boolean|null,
  *            active_path: string}}
@@ -727,10 +780,10 @@ export function readEventsWithRotations(repoRoot, opts = {}) {
   const { archives, legacy, ringHoles, unindexed } = discoverArchives(activePath);
 
   const sources = [
-    ...archives.map((p) => readEventSource(p, 'archive')),
-    ...legacy.map((p) => readEventSource(p, 'legacy-ring')),
+    ...archives.map((p) => readEventSource(p, 'archive', opts.filter)),
+    ...legacy.map((p) => readEventSource(p, 'legacy-ring', opts.filter)),
   ];
-  if (existsSync(activePath)) sources.push(readEventSource(activePath, 'active'));
+  if (existsSync(activePath)) sources.push(readEventSource(activePath, 'active', opts.filter));
 
   // Time order across sources; undatable sources last, stable by path.
   sources.sort((a, b) => {
@@ -749,7 +802,7 @@ export function readEventsWithRotations(repoRoot, opts = {}) {
   // Rule 1 — every rotation tombstone must still point at a file (resolution
   // and the three outcomes: {@link tombstoneGap}).
   for (const source of sources) {
-    for (const record of source.records) {
+    for (const record of source.tombstones) {
       const gap = tombstoneGap(record, ownArchiveDir, onDisk);
       if (gap === null) continue;
       gaps.push({
@@ -787,13 +840,16 @@ export function readEventsWithRotations(repoRoot, opts = {}) {
   const events = [];
   let malformed = 0;
   for (const source of sources) {
-    events.push(...source.records);
+    for (const event of source.events) events.push(event);
     malformed += source.malformed_lines;
   }
 
   return {
     events,
-    sources: sources.map(({ records, ...rest }) => ({ ...rest, records: records.length })),
+    sources: sources.map(({ events: _events, tombstones: _tombstones, records, ...rest }) => ({
+      ...rest,
+      records,
+    })),
     malformed_lines: malformed,
     gaps,
     notices: unindexed.map((p) => ({ kind: 'unindexed-archive-file', path: p })),
@@ -853,9 +909,9 @@ export function listEventSourcesNewestFirst(opts = {}) {
  *
  * ## Why this exists
  *
- * `readEventsWithRotations` loads every source fully — up to ~60 MB transient
- * at the default `max-size-mb: 10` × `max-backups: 5`. That is the right shape
- * for a cold analysis and the wrong one for a session-start probe, so the two
+ * An unfiltered `readEventsWithRotations` retains every event across sources.
+ * That is the right shape for a cold analysis and the wrong one for a
+ * session-start probe, so the two
  * HOT-PATH readers (`maintenance-due-banner.mjs`, `backfill-abandoned-sessions.mjs`)
  * stayed single-file and answered "never happened" from the active file alone.
  * This reader gives them the whole history at a bounded memory cost.

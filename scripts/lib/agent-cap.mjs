@@ -15,7 +15,9 @@
  *   The sidecar carries `agentType` and `toolUseId`.
  * - FINISHED: first the sidecar's own `"finished": true`, which the harness
  *   writes when the agent ends and drops again while a resumed agent runs
- *   (measured 2026-11-12, #2049). Otherwise an injected `isFinished(entry)` probe. The hook passes
+ *   (measured 2026-11-12, #2049) — unless the agent shows a resume signature
+ *   ({@link isResumeCandidate}) and the transcript probe reads it as running
+ *   (#2056: the sidecar is rewritten up to ~0.45 s AFTER the resume). Otherwise an injected `isFinished(entry)` probe. The hook passes
  *   `makeFinishedProbe()` of `hooks/pre-task-scope-disjoint.mjs` — one liveness
  *   reading for both dispatch guards (terminal `<task-notification>` carrier,
  *   synchronous `tool_result`, SendMessage resume re-opens; no evidence → 30 min
@@ -140,6 +142,22 @@ const MAX_CLAIMS = 64;
  * under-counts by one. Revisit if a live agent is ever measured silent > 30 min.
  */
 export const STALE_RUNNING_MS = 45 * 60_000;
+
+/**
+ * How recent an agent's own transcript write must be for a `finished: true`
+ * sidecar to be re-checked against the transcript probe (#2056). The harness
+ * appends the resume message to the agent's transcript and rewrites the sidecar
+ * ≤ ~0.45 s later (measured 2026-11-23, 50 probes @ 0.45 s, Claude Code
+ * 2.1.330); 10 s covers hook-vs-append skew with margin and keeps the parent
+ * transcript read off every ordinary hook call.
+ * Ceiling: a resume whose transcript append is > 10 s older than the hook call
+ * while the sidecar still says finished is not caught (the cap may under-count
+ * by one); a finished agent whose terminal notification has not reached the
+ * parent transcript within 10 s of its last write over-counts for that window.
+ * Revisit if the sidecar-rewrite gap is ever measured > 5 s, or a cap overshoot
+ * with a finished-marked sidecar shows up in the log.
+ */
+export const RESUME_PROBE_WINDOW_MS = 10_000;
 
 /** A last-activity time further in the future than this is clock skew: unknown, not "fresh". */
 const ACTIVITY_SKEW_MS = 5 * 60_000;
@@ -330,9 +348,36 @@ export function liveClaims(claims, sidecarUseIds, now, selfUseId = '') {
 }
 
 /**
+ * A sidecar-finished entry that may in fact be a resumed, running agent (#2056):
+ * its own transcript was written AFTER the sidecar (a finished agent's sidecar
+ * is written last; `at` is the sidecar mtime truncated to whole ms, hence the
+ * `+ 1`) and within {@link RESUME_PROBE_WINDOW_MS} of `now`, and it
+ * has a `useId` for the probe to look up. Cheap: no I/O, so the hook's upper
+ * bound can use it to decide whether a transcript read is needed at all.
+ *
+ * @param {{ useId?: string, at?: string, lastActivityMs?: number, finished?: boolean }} entry
+ * @param {number} now
+ * @returns {boolean}
+ */
+export function isResumeCandidate(entry, now) {
+  if (entry?.finished !== true || !Number.isFinite(now)) return false;
+  if (typeof entry.useId !== 'string' || entry.useId === '') return false;
+  const last = entry.lastActivityMs;
+  const sidecarAt = Date.parse(entry.at ?? '');
+  return Number.isFinite(last) && Number.isFinite(sidecarAt)
+    && last >= sidecarAt + 1 && Math.abs(now - last) <= RESUME_PROBE_WINDOW_MS;
+}
+
+/** `at` that makes the probe's TTL fallback read "finished" — so only a definite RUNNING state yields `false`. */
+const EPOCH_AT = new Date(0).toISOString();
+
+/**
  * Count running agents per class.
  *
- * An entry with `finished === true` (sidecar proof, #2049) is not running.
+ * An entry with `finished === true` (sidecar proof, #2049) is not running —
+ * unless {@link isResumeCandidate} holds and the probe reads its `useId` as
+ * running (#2056). The probe is asked with `at` = epoch, so "no evidence" falls
+ * to the TTL and reads finished: only a definite running state overrides the sidecar.
  * With a finite `now`, an entry whose `lastActivityMs` is older than
  * {@link STALE_RUNNING_MS} is not running regardless of `isFinished`. A
  * missing, non-finite or future-dated (beyond clock skew) `lastActivityMs`
@@ -346,13 +391,20 @@ export function liveClaims(claims, sidecarUseIds, now, selfUseId = '') {
 export function countRunning(started, claims, { isFinished, classify, now }) {
   const counts = { [CLASS_STARTING]: 0, [CLASS_READING]: 0 };
   for (const entry of started) {
-    if (entry?.finished === true) continue;
+    if (entry?.finished === true) {
+      if (!isResumeCandidate(entry, now)) continue;
+      let resumed;
+      try { resumed = isFinished({ useId: entry.useId, desc: '', at: EPOCH_AT }) === false; } catch { resumed = false; }
+      if (!resumed) continue;
+    }
     const last = entry?.lastActivityMs;
     if (Number.isFinite(now) && Number.isFinite(last) && last <= now + ACTIVITY_SKEW_MS
       && now - last > STALE_RUNNING_MS) continue;
-    let finished;
-    try { finished = isFinished(entry) === true; } catch { finished = false; }
-    if (finished) continue;
+    if (entry?.finished !== true) {
+      let finished;
+      try { finished = isFinished(entry) === true; } catch { finished = false; }
+      if (finished) continue;
+    }
     counts[classify(entry.agentType) === CLASS_READING ? CLASS_READING : CLASS_STARTING] += 1;
   }
   for (const claim of claims) counts[claim.cls === CLASS_READING ? CLASS_READING : CLASS_STARTING] += 1;

@@ -259,7 +259,7 @@ export async function runLockfileCheck({
 } = {}) {
   const started = Date.now();
   const deadline = Number.isFinite(deadlineAt) ? deadlineAt : started + BUDGET.networkMs;
-  const ms = () => Date.now() - started;
+  const ms = () => Math.max(0, Date.now() - started);
   let pending = 0; // public packages not yet measured, for the internal-error path
 
   try {

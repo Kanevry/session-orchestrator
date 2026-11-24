@@ -120,7 +120,10 @@ import { hookProgram } from '../scripts/lib/program-lookup.mjs';
  * @returns {boolean}
  */
 function mayStage(command) {
-  return /\b(?:add|stage)\b/.test(command) && /\bgit\b/.test(command);
+  // #2190 item 3: a word glued to a LITERAL backslash-n (`printf 'cd x\ngit add
+  // b' | sh`) has no `\b` before it, so the `\n` the printf turns into a newline
+  // hid the verb. `(?<=\\n)` admits that one escape; false positives stay inert.
+  return /(?:\b|(?<=\\n))(?:add|stage)\b/.test(command) && /(?:\b|(?<=\\n))git\b/.test(command);
 }
 
 /**
@@ -172,6 +175,12 @@ const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'fish'
  * as `dashCPayloads` does (#1944 sister gap).
  */
 const SU_LIKE_SHELLS = new Set(['su', 'runuser', 'sg']);
+// NAMED CEILING (BV-004, #2190 item 2): a su-like program fed through xargs
+// argv (`printf '%s\n' root -c 'git add b' | xargs su`) is not recorded — the
+// set above is deliberately kept out of the xargs reader's shell argv (#2013).
+// The fence only records, so the loss is a missing collision entry. REVISIT
+// TRIGGER: #2013 acceptance 2 (su-like programs in the xargs reader), or a wave
+// agent seen staging through that shape.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -302,26 +311,40 @@ function nestedShellPayloads(segment, resolved, lib) {
     if (!reading) continue;
     for (const p of reading.payloads) out.add(p);
   }
+  // #2190 item 1: every shell token used to re-walk the whole rest of the
+  // segment (the loose `-c` scan, and `argvWordsWithoutRedirects` once per
+  // view), so a line of N shell words cost O(N^2) — 90 kB ran 8.4 s against
+  // the 5 s hook budget and a timeout loses the record. Both are computed
+  // once per segment, on first use, and shared by every token.
+  let nextC = null;
+  let views = null;
   for (let i = 0; i < segment.length - 1; i++) {
     const tok = segment[i];
     const shell = tok.quoted ? null : path.basename(tok.text);
     if (shell === null || !DASH_C_SHELLS.has(shell)) continue;
-    for (let j = i + 1; j < segment.length - 1; j++) {
-      if (/^-[A-Za-z]*c$/.test(segment[j].text)) {
-        out.add(segment[j + 1].text);
-        break;
-      }
-    }
+    if (nextC === null) nextC = nextDashCIndex(segment);
+    if (nextC[i + 1] !== -1) out.add(segment[nextC[i + 1] + 1].text);
     // #1944: su (and runuser/sg) run `-c S` behind a user name and in glued or
     // `--command=` spellings the loose scan above misses (`sg GROUP S` even
     // without `-c`); the blocker's su grammar reads them with the REAL verb.
+    // NAMED CEILING (BV-004, #2190): su/runuser/sg/fish still re-walk the rest
+    // of the segment per token (`suCommandStrings` is position-free), so a
+    // line made of thousands of those words stays quadratic; the sh/bash/zsh
+    // path below is linear. REVISIT TRIGGER: a command of this shape seen
+    // near the hook budget, or `suCommandStrings` taking a precomputed suffix.
     const suLike = SU_LIKE_SHELLS.has(shell);
     if ((suLike || shell === 'fish') && typeof lib.suCommandStrings === 'function' && typeof lib.argvWordsWithoutRedirects === 'function') {
       for (const payload of lib.suCommandStrings(lib.argvWordsWithoutRedirects(segment, i + 1), shell)) out.add(payload);
     }
     if (grammar && !suLike) {
-      for (const bash of [true, false]) {
-        const payload = lib.shellCommandString(lib.argvWordsWithoutRedirects(segment, i + 1, { bash }), {
+      if (views === null) views = [true, false].map((bash) => argvSuffixes(segment, lib, bash));
+      for (const [bash, view] of [[true, views[0]], [false, views[1]]]) {
+        // A redirect token carrying a shell name starts a span the suffix
+        // map cannot place: read that one token the long way.
+        const words = segment[i].redirect
+          ? lib.argvWordsWithoutRedirects(segment, i + 1, { bash })
+          : view.from(i + 1);
+        const payload = lib.shellCommandString(words, {
           zsh: shell === 'zsh',
           ksh: shell === 'ksh',
         });
@@ -330,6 +353,73 @@ function nestedShellPayloads(segment, resolved, lib) {
     }
   }
   return [...out];
+}
+
+/**
+ * `next[k]` = the first index `j >= k` whose word is a `-…c` option with a
+ * following word (`j < segment.length - 1`), or -1. One backward pass, so the
+ * loose `-c` scan of {@link nestedShellPayloads} is O(1) per shell token.
+ *
+ * @param {Array<{ text: string }>} segment
+ * @returns {Int32Array}
+ */
+function nextDashCIndex(segment) {
+  const next = new Int32Array(segment.length + 1).fill(-1);
+  for (let k = segment.length - 2; k >= 0; k--) {
+    next[k] = /^-[A-Za-z]*c$/.test(segment[k].text) ? k : next[k + 1];
+  }
+  return next;
+}
+
+/**
+ * The argv words of the WHOLE segment in one `argvWordsWithoutRedirects` pass,
+ * plus `from(k)`: the same words `argvWordsWithoutRedirects(segment, k, view)`
+ * would return, as a no-copy view. Valid for every `k` that is a loop index of
+ * the full pass — `k = i + 1` for a non-redirect token `i` always is (a redirect
+ * span ends before a fresh word starts) — which is why the caller falls back
+ * to the direct call for a redirect token.
+ *
+ * The words are the segment's own token objects (or a redirect's
+ * `bashArgvWord`), so a Map from word to position places each segment index
+ * without re-implementing the blocker's redirect-span rule.
+ *
+ * @param {Array<{ text: string, redirect?: object, bashArgvWord?: object }>} segment
+ * @param {{ argvWordsWithoutRedirects: Function }} lib
+ * @param {boolean} bash
+ * @returns {{ from: (k: number) => Array<{ text: string, quoted: boolean }> }}
+ */
+function argvSuffixes(segment, lib, bash) {
+  const words = lib.argvWordsWithoutRedirects(segment, 0, { bash });
+  const position = new Map();
+  for (let w = 0; w < words.length; w++) position.set(words[w], w);
+  const starts = new Array(segment.length + 1);
+  starts[segment.length] = words.length;
+  for (let k = segment.length - 1; k >= 0; k--) {
+    const tok = segment[k];
+    const word = tok.redirect ? tok.bashArgvWord : tok;
+    starts[k] = word !== undefined && position.has(word) ? position.get(word) : starts[k + 1];
+  }
+  return {
+    from(k) {
+      const start = starts[k];
+      if (start === 0) return words;
+      const length = words.length - start;
+      // Index-and-length view: `shellCommandString` stops at the first
+      // deciding word, so a copy of the suffix per token would bring the
+      // quadratic back.
+      return new Proxy([], {
+        get(target, key) {
+          if (key === 'length') return length;
+          if (typeof key === 'string' && /^\d+$/.test(key)) return Number(key) < length ? words[start + Number(key)] : undefined;
+          return Reflect.get(target, key);
+        },
+        has(target, key) {
+          if (typeof key === 'string' && /^\d+$/.test(key)) return Number(key) < length;
+          return Reflect.has(target, key);
+        },
+      });
+    },
+  };
 }
 
 /**

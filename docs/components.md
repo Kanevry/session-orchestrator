@@ -7,8 +7,8 @@ Detailed component inventory and architecture reference for Session Orchestrator
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK["Skills<br/>31 you type · 23 background"]
-    COORD -->|invokes| CMD[Commands<br/>33 slash-cmds]
+    COORD -->|reads| SK["Skills<br/>32 you type · 23 background"]
+    COORD -->|invokes| CMD[Commands<br/>34 slash-cmds]
     COORD -->|dispatches| AG[Agents<br/>14 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
@@ -18,7 +18,7 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (54: 31 you type, 23 in the background)
+## Skills (55: 32 you type, 23 in the background)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
 - **Authoring:** `mcp-builder`, `hook-development`, `frontmatter-guard`
@@ -29,14 +29,15 @@ flowchart LR
 - **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `remote-offload`, `spinout`, `npm-publish`
 - **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`, `ux-grill`, `test-audit`, `public-audit` (measures the public technical discoverability of an explicitly configured site: redirects, metadata, JSON-LD, sitemaps, robots, crawler responses; no login, no browser, no ranking claims)
 - **Content review:** `persona-panel`
+- **Security:** `security` (read-only `/security`: `status`, `deps`, `posture`, `agent-setup`, plus a `review` router to the `security-reviewer` agent; measures through `scripts/security.mjs`)
 - **Operator ergonomics:** `eli5` (plain-language restatement of the last answer)
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
 
-## Commands (33)
+## Commands (34)
 
-A slash command has exactly ONE definition. 31 are skills with `user-invocable: true` in `skills/<name>/SKILL.md` (the same file the model dispatches; `argument-hint` and `disable-model-invocation` live there too), and 2 are plain `commands/*.md` files without a same-named skill. Claude Code registers both shapes as `/session-orchestrator:<name>`, so a name that exists as both a command file and a user-invocable skill is listed twice in the `/` picker — `tests/commands/headless-bare-command-availability.test.mjs` forbids that twin. Claude Code lists a skill whose frontmatter has NO `user-invocable` key too, so every one of the 54 skills states the key explicitly: the other 23 say `false` and stay out of the picker (#1515).
+A slash command has exactly ONE definition. 32 are skills with `user-invocable: true` in `skills/<name>/SKILL.md` (the same file the model dispatches; `argument-hint` and `disable-model-invocation` live there too), and 2 are plain `commands/*.md` files without a same-named skill. Claude Code registers both shapes as `/session-orchestrator:<name>`, so a name that exists as both a command file and a user-invocable skill is listed twice in the `/` picker — `tests/commands/headless-bare-command-availability.test.mjs` forbids that twin. Claude Code lists a skill whose frontmatter has NO `user-invocable` key too, so every one of the 55 skills states the key explicitly: the other 23 say `false` and stay out of the picker (#1515).
 
-- **Skills (31):** `/architecture`, `/autopilot`, `/backlog`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/deepen`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/public-audit`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/test-audit`, `/tmux-layout`, `/ux-grill`, `/write-executable-plan`.
+- **Skills (32):** `/architecture`, `/autopilot`, `/backlog`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/deepen`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/public-audit`, `/reconcile`, `/release`, `/repo-audit`, `/security`, `/spinout`, `/sunset-review`, `/test`, `/test-audit`, `/tmux-layout`, `/ux-grill`, `/write-executable-plan`.
 - **Command files (2):** `/session` (its skill is `session-start`) and `/templates-ack` (an in-session hook bypass with no skill body).
 
 Under `claude -p`, `/session` and `/plan` are reserved terminal built-ins; use `/session-orchestrator:session` and `/session-orchestrator:plan` there.
@@ -71,6 +72,7 @@ Codex uses the curated seven-event project subset `SessionStart`, `PreToolUse`, 
 - **Pi:** `package.json` `pi` manifest, `pi/extensions/session-orchestrator.ts` bridge, `hooks/hooks-pi.json`, `scripts/pi-install.mjs`.
 - **Portable cross-harness surface (generated, never hand-edited):** root `AGENTS.md` (byte-identical copy of `CLAUDE.md`) and `.agents/skills/<name>/SKILL.md` — mirrors carrying only spec-legal frontmatter plus a pointer body. These two surfaces are written by `scripts/generate-agents-skills.mjs` and drift-checked via its `--check` form inside `scripts/validate-plugin.mjs`. Native plugin manifests are maintained separately, with versions updated by `scripts/release.mjs`.
 - **Scripts:** deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, session-shape) plus shared lib under `scripts/lib/*.mjs` — e.g. `session-shape.mjs` (the one wave-shape resolver for `/session` mode + `--profile`), `maintenance-due-banner.mjs` (the single session-start probe for the whole maintenance loop), `session-end/tail-runner.mjs` (the mechanical apply-half of Phase 3.6.4's Expired-Learnings Sweep), `issue-budget-reconcile.mjs` (close-time recorded-vs-charged cross-check), `telemetry/pricing.mjs` (per-model USD-per-token rates for cost estimation), `process-group.mjs` (the one `spawnInGroup`/`killProcessGroup` primitive both quality-gate paths use) and `orphan-reaper.mjs` (stable entry + CLI over `orphan-reaper/`: the pure `decideReapCandidates` decision, `runOrphanScan`, the bounded B5 audit) — all covered by the vitest suite. Standalone CLIs added in the same cycle: `scripts/check-sessions-integrity.mjs` (validates the just-written `sessions.jsonl` record against the schema AND vault-mirror's real render path; exit 0/1/2). `scripts/session-ledger-census.mjs` (#1835, read-only) sorts every `abandoned` stub into `empty / conversation / dispatched / unmeasured` from its `work_evidence` field or the events ledger, and prints close and abort rates with and without measured empty restarts. `scripts/apply-session-learnings.mjs` (#1446) is the only sanctioned session-end/retro write path for `learnings.jsonl`: confirm/contradict, strict validation of new records, passive decay, then `pruneLearnings()`; dry-run by default, exit 0/1/2. Config parsers live beside their block: `scripts/lib/config/reaper.mjs`, `scripts/lib/config/gate.mjs`.
+- **Security scripts:** `scripts/security.mjs` (read-only CLI, `--mode status|deps|posture|agent-setup`, `--ref`, `--json`; modules under `scripts/lib/security/`) and `scripts/security-emit.mjs` (passes the CLI's JSON through and records one counts-only `orchestrator.security.command` event). Both are covered by the vitest suite.
 
 ## `/harness-audit` — Anthropic large-codebase rubric
 

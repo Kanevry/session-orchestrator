@@ -56,6 +56,7 @@ function serverNames(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : [];
 }
 
+/** `null` for an absent file (`text` null) and for text that does not parse; callers tell the two apart. */
 function parseJson(text) {
   try {
     return JSON.parse(text);
@@ -63,6 +64,9 @@ function parseJson(text) {
     return null;
   }
 }
+
+/** Files whose MCP declaration is compared below; one that exists but does not parse is not "absent". */
+const MCP_FILES = ['.claude-plugin/plugin.json', '.mcp.json'];
 
 /**
  * @param {object} input
@@ -104,8 +108,18 @@ export function findDirectoryFindings({ entries, read }) {
 
   // Claude Code loads a root .mcp.json and then the inline declaration; the scan refuses
   // a server name that appears in both (13 findings on 5.21.0).
-  const inline = serverNames(parseJson(read('.claude-plugin/plugin.json') ?? '')?.mcpServers);
-  const rootFile = serverNames(parseJson(read('.mcp.json') ?? '')?.mcpServers);
+  const mcpTexts = Object.fromEntries(MCP_FILES.map((p) => [p, read(p)]));
+  const unparsable = MCP_FILES.filter((p) => mcpTexts[p] !== null && parseJson(mcpTexts[p]) === null);
+  if (unparsable.length > 0) {
+    // Not "no server declared": the duplicate check below could not look at these files.
+    findings.push({
+      code: 'mcp-unparsable', severity: 'blocking', measured: unparsable.length,
+      message: `${unparsable.join(', ')} present but not valid JSON; the MCP duplicate check could not run on it`,
+      paths: unparsable,
+    });
+  }
+  const inline = serverNames(parseJson(mcpTexts['.claude-plugin/plugin.json'] ?? '')?.mcpServers);
+  const rootFile = serverNames(parseJson(mcpTexts['.mcp.json'] ?? '')?.mcpServers);
   const repeated = inline.filter((name) => rootFile.includes(name));
   if (repeated.length > 0) {
     findings.push({
@@ -140,12 +154,21 @@ export function findDirectoryFindings({ entries, read }) {
  * `strict` is red on a blocking finding. Holds never turn a run red: a reviewer
  * decides them, the project cannot clear them by itself.
  * @param {{ mode: string, entries: TreeEntry[], read: (path: string) => string|null }} input
- * @returns {{ mode: string, ok: boolean, files: number, bytes: number, findings: Finding[] }}
+ * @returns {{ mode: string, ok: boolean, checked: boolean, files: number|null, bytes: number|null, findings: Finding[], holds: string[] }}
+ *   `checked: false` = nothing was measured (mode off or empty listing); `ok` is then an
+ *   exit-code verdict only. `holds` lists the open hold codes: `ok` in strict is no listing
+ *   clearance, a reviewer still decides them.
  */
 export function runDirectoryPreflight({ mode, entries, read }) {
   if (!MODES.includes(mode)) throw new TypeError(`unknown mode '${mode}' (known: ${MODES.join(', ')})`);
-  if (mode === 'off') return { mode, ok: true, files: 0, bytes: 0, findings: [] };
+  if (mode === 'off') return { mode, ok: true, checked: false, files: null, bytes: null, findings: [], holds: [] };
   const findings = findDirectoryFindings({ entries, read });
-  const ok = mode !== 'strict' || findings.every((f) => f.severity !== 'blocking');
-  return { mode, ok, files: entries.length, bytes: entries.reduce((n, e) => n + e.size, 0), findings };
+  // An empty listing measured nothing: every check above passes on it by absence.
+  const checked = entries.length > 0;
+  if (!checked) {
+    findings.push({ code: 'empty-listing', severity: 'blocking', message: 'the tree listing is empty; nothing was measured' });
+  }
+  const ok = mode !== 'strict' || (checked && findings.every((f) => f.severity !== 'blocking'));
+  const holds = findings.filter((f) => f.severity === 'hold').map((f) => f.code);
+  return { mode, ok, checked, files: entries.length, bytes: entries.reduce((n, e) => n + e.size, 0), findings, holds };
 }

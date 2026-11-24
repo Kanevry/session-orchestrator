@@ -116,7 +116,7 @@ After the trusted receipt is confirmed, the release command checks the tag’s *
 | Another tail step is unfinished | 1 | Run `node scripts/release.mjs --resume-tail --target X.Y.Z` from the checkout that holds the proof. |
 | Published, other tail steps complete, install job still unmeasured | 3 | Inspect the Actions URL and run `--resume-tail --target X.Y.Z` to wait for the result. |
 
-On a trusted `--resume-tail`, the command checks the install job after the live-site step unless the proof already records `passed`. This also lets it finish releases whose older proofs lack `installCheck`. Trusted `--reconcile` verifies the receipt and uses the recorded pass or makes one fresh job check. A confirmed receipt yields `published` and exit 0. The output shows `installable yes` only for a passing install job.
+On a trusted `--resume-tail`, the command checks the install job after the live-site step unless the proof already records `passed`. This also lets it finish releases whose older proofs lack `installCheck`. Trusted `--reconcile` verifies the receipt and uses the recorded pass or makes one fresh job check. A confirmed receipt yields `published`; the exit code follows the install job: 0 passed, 1 failed, 3 not measured (#2229). The output shows `installable yes` only for a passing install job.
 
 **The order differs from the other routes.** Under route B the tag is pushed BEFORE npm has the version (ADR-0018 accepts this). A failed run is fixed forward with a new patch version, never by re-tagging.
 

@@ -1176,11 +1176,17 @@ function lastAgentIdIn(block) {
 }
 
 /**
- * The frame Claude Code 2.1.322 puts around a trailer-less report (#2049), at
- * the start of a line — the real form puts a `<tools-used-before-summary>`
- * line ahead of it, so it is not the text prefix.
+ * The frame Claude Code 2.1.322 puts around a trailer-less report (#2049): the
+ * LEADING line of the text, optionally behind a `<tools-used-before-summary>`
+ * line. Anchored at the text start (#2190 item 7): matching a column-zero
+ * `[Subagent hand-back]` ANYWHERE let a line inside an unframed report discard
+ * the harness's real trailer id (a resume to it then re-opened nothing, a
+ * false ALLOW). Ceiling (BV-004): a frame the harness puts behind more than
+ * that one lead line reads as unframed, so a forged trailer in such a report
+ * counts as a resume address (a false DENY, TTL-less). REVISIT TRIGGER: a
+ * transcript showing another lead form.
  */
-const HAND_BACK_FRAME_RE = /(?:^|\n)\[Subagent hand-back\]/;
+const HAND_BACK_FRAME_RE = /^\s*(?:<tools-used-before-summary>[^<]*<\/tools-used-before-summary>\s*)?\[Subagent hand-back\]/;
 
 /**
  * The harness trailer in its structural form: a column-zero `agentId:` line,

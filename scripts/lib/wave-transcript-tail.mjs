@@ -62,9 +62,14 @@ import { readLock, isLockLive } from './session-lock.mjs';
 import { resolveSubagentSidecar } from '../../hooks/_lib/subagent-paths.mjs';
 import { isMainModule } from './is-main-module.mjs';
 import { getProjectDir } from './platform.mjs';
+import { readTailWindow } from './tail-window.mjs';
 
 const DEFAULT_INTERVAL_S = 2;
 const WAVE_SCOPE_REL = '.claude/wave-scope.json';
+// BV-004 (#1154 P5): only the last 1 MiB of the live ledger seeds restart
+// deduplication. Older or rotated-away findings can recur. Revisit if an
+// observed duplicate traces back to a seed outside this window.
+const RESTART_SEED_MAX_BYTES = 1024 * 1024;
 
 /**
  * Single-instance guard. `monitors/monitors.json` starts this tailer on
@@ -838,13 +843,13 @@ async function tailLoop({ intervalS }) {
   // Restart-safety: do not re-announce findings already recorded for this
   // session. Seeded on the SEMANTIC id — the same key `report()` writes.
   try {
-    const evPath = eventsFilePath(repoRoot); // #1514 point 1: the repo's one ledger
-    if (existsSync(evPath)) {
-      const seeded = seedFromEvents(readFileSync(evPath, 'utf8').split('\n'), semanticSessionId, state);
-      if (seeded > 0) note(`seeded ${seeded} prior finding counters from events.jsonl`);
-    }
+    const { text, cut } = readTailWindow(eventsFilePath(repoRoot), RESTART_SEED_MAX_BYTES);
+    const lines = text.split('\n');
+    if (cut) lines.shift(); // the byte window may start inside a record
+    const seeded = seedFromEvents(lines, semanticSessionId, state);
+    if (seeded > 0) note(`seeded ${seeded} prior finding counters from events.jsonl`);
   } catch (err) {
-    note(`could not seed from events.jsonl: ${String(err?.message ?? err)}`);
+    if (err?.code !== 'ENOENT') note(`could not seed from events.jsonl: ${String(err?.message ?? err)}`);
   }
 
   /** @type {Map<string, number>} */

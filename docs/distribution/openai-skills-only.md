@@ -2,6 +2,8 @@
 
 Stand: 2026-11-06, gemessen auf `0a357b2a` mit den Änderungen aus #1966 (vor dem Commit). Issues: #1931, #1966, #1968.
 
+> Stand 2026-11-23: Das Portal nimmt keine reinen Skill-Pakete mehr an („We are not accepting more skills-only submissions at this time“). Der offene Weg ist das Paket mit entferntem MCP-Server: [openai-remote-mcp.md](./openai-remote-mcp.md) (#2260). Dieses Dokument beschreibt weiter die Skill-Auswahl und die Prüfregeln, die beide Varianten teilen.
+
 ## Warum nur Skills
 
 Das Plugin-Verzeichnis von OpenAI, das ChatGPT und Codex gemeinsam nutzen, nimmt session-orchestrator nur als reines Skill-Paket an. Die Regeln wurden am 2026-11-03 auf developers.openai.com/plugins gelesen:

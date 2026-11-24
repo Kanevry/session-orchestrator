@@ -240,14 +240,15 @@ async function isSameClaudeProcess(lock, claudePid) {
 const ENRICH_READ_RETRIES = 5;
 const ENRICH_READ_RETRY_MS = 10;
 
-/** Fixed diagnostic: never interpolate a path or untrusted mutex body. */
-function warnBusyMutation() {
-  process.stderr.write('⚠ lock-bootstrap: session.lock.write remains busy — this session runs without a lock\n');
-}
-
-/** The primary lock is already held when only its enrichment stays busy. */
-function warnBusyEnrichment() {
-  process.stderr.write('⚠ lock-bootstrap: session.lock.write remains busy; lock held with its ownership proof, but not enriched (semantic_session_id, claude_pid)\n');
+/** Probe only after the last busy retry. Keep hook diagnostics best-effort. */
+async function warnBusyMutation(repoRoot, lockHeld = false) {
+  try {
+    const { reportStaleAcquireGuard } = await import('../../scripts/lib/session-lock.mjs');
+    if (await reportStaleAcquireGuard(repoRoot)) return;
+    process.stderr.write(lockHeld
+      ? '⚠ lock-bootstrap: session.lock.write remains busy; lock held with its ownership proof, but not enriched (semantic_session_id, claude_pid)\n'
+      : '⚠ lock-bootstrap: session.lock.write remains busy — this session runs without a lock\n');
+  } catch { /* diagnostics must not interrupt bootstrap */ }
 }
 
 /**
@@ -569,7 +570,7 @@ export async function bootstrapLock({
   // failure is swallowed and the bail proceeds. The return contract is unchanged —
   // bootstrapLock STILL returns null on this path.
   if (!acquireResult || acquireResult.ok !== true) {
-    if (acquireResult?.reason === 'busy') warnBusyMutation();
+    if (acquireResult?.reason === 'busy') await warnBusyMutation(repoRoot);
     // #1494 / #599: a lock path that exists but cannot be read (EACCES, or a
     // directory) is never reclaimed — but it is no longer silent either. The
     // WARN is discarded by the harness, so the read_anomaly event (the one
@@ -609,7 +610,7 @@ export async function bootstrapLock({
       enrichment = enrichOwnedSessionLock({ repoRoot, sessionId, semanticSessionId, claudePid });
       if (enrichment.ok) break;
       if (!['busy', 'no-lock'].includes(enrichment.reason) || attempt >= ENRICH_READ_RETRIES) {
-        if (enrichment.reason === 'busy') warnBusyEnrichment();
+        if (enrichment.reason === 'busy') await warnBusyMutation(repoRoot, true);
         return null;
       }
       await new Promise((resolve) => setTimeout(resolve, ENRICH_READ_RETRY_MS));

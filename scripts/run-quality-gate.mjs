@@ -819,8 +819,8 @@ async function main() {
   }
   // The navigator `zeit` is the run start (ceiling C5).
   const startedAt = Date.now();
-  // Monotonic twin of `startedAt` for the event's `duration_ms` (#2197): a wall-clock
-  // step during a 10-minute gate must not bend the measured run time.
+  // Monotonic twin of `startedAt` for every measured duration (#2197, #2266): a
+  // wall-clock step during a gate must not bend the event or the navigator record.
   const startedMono = performance.now();
 
   const result = reusedFrom !== null ? {
@@ -895,7 +895,7 @@ async function main() {
       }
       const ergebnis = navKey ? navigatorVerdict({ envelope, exitCode: outcome.exitCode, timedOut: result.timedOut }) : null;
       if (ergebnis) {
-        navigator.write({ key: navKey, gateDef: navGateDef, ergebnis, zeit: new Date(startedAt).toISOString(), dauerMs: Date.now() - startedAt });
+        navigator.write({ key: navKey, gateDef: navGateDef, ergebnis, zeit: new Date(startedAt).toISOString(), dauerMs: Math.round(performance.now() - startedMono) });
       }
     }
   }

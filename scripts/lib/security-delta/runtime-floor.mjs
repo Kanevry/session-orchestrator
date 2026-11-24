@@ -170,7 +170,7 @@ function resolveDeclared(parts, index) {
 export async function runRuntimeFloorCheck({ repoRoot, base, head, deadlineAt, request = httpRequest } = {}) {
   const started = Date.now();
   const deadline = deadlineAt ?? started + BUDGET.networkMs;
-  const done = (r) => makeCheckResult({ id: 'runtime-floor', ms: Date.now() - started, ...r });
+  const done = (r) => makeCheckResult({ id: 'runtime-floor', ms: Math.max(0, Date.now() - started), ...r });
   let unreadable = 0;
   // Every result after the read: unreadable files make it degraded and count as unchecked.
   const finish = (r) =>

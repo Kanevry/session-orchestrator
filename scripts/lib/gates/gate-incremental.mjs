@@ -6,6 +6,7 @@
 // Required env: TYPECHECK_CMD, TEST_CMD
 // Optional env: FILES (comma-separated), SESSION_START_REF
 
+import { performance } from 'node:perf_hooks';
 import {
   runCheck,
   resolveTestFiles,
@@ -53,7 +54,7 @@ if (!testCmd) {
   process.exit(1);
 }
 
-const start = Date.now();
+const start = performance.now();
 
 // A skipped test run spawned nothing: `{ status: 'skip' }`, no kill keys.
 let testResult = { status: 'skip' };
@@ -100,7 +101,7 @@ if (testCmd !== 'skip') {
   }
 }
 
-const duration_seconds = Math.round((Date.now() - start) / 1000);
+const duration_seconds = Math.round((performance.now() - start) / 1000);
 
 const result = {
   variant: 'incremental',

@@ -738,9 +738,13 @@ export const PROBES = [
       if ((r.phase === 'running' || r.phase === 'canceled') && r.pushed?.verdict?.status !== 'red') {
         const pid = r.details?.currentPipelineId;
         const ref = pid !== null && pid !== undefined ? ` (#${pid})` : '';
-        return r.phase === 'running'
-          ? `⚠ ci-status: CI running on HEAD${ref} — no verdict yet`
-          : `⚠ ci-status: last CI run on HEAD was canceled${ref} — no verdict`;
+        if (r.phase === 'running') return `⚠ ci-status: CI running on HEAD${ref} — no verdict yet`;
+        const dropped = r.details?.droppedStatuses;
+        const active = Array.isArray(dropped)
+          ? ['running', 'pending'].find((status) => dropped.includes(status))
+          : undefined;
+        const sibling = active ? ` — a run for this commit is still ${active}` : '';
+        return `⚠ ci-status: last CI run on HEAD was canceled${ref} — no verdict${sibling}`;
       }
       // `status: 'unknown'` is the SAME collapse one level over: HEAD carries
       // no pipeline (the normal state of a working session with local commits),

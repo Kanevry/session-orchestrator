@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Commands: which one to type, and what happens next</title>
-<meta name="description" content="All 33 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
+<meta name="description" content="All 34 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
 <link rel="canonical" href="https://session-orchestrator.com/commands">
 <link rel="alternate" hreflang="en" href="https://session-orchestrator.com/commands">
 <link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de/commands">
@@ -13,7 +13,7 @@
 <meta property="og:site_name" content="Session Orchestrator">
 <meta property="og:url" content="https://session-orchestrator.com/commands">
 <meta property="og:title" content="Commands: which one to type, and what happens next">
-<meta property="og:description" content="All 33 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
+<meta property="og:description" content="All 34 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -21,7 +21,7 @@
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Commands: which one to type, and what happens next">
-<meta name="twitter:description" content="All 33 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
+<meta name="twitter:description" content="All 34 session-orchestrator commands by situation: when to use each one, what you get, how to type it in Claude Code, Codex, Cursor and Pi, and what it changes.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
 <meta name="twitter:image:alt" content="Session Orchestrator: From your task to checked work. The commands /session, /go and /close beside an illustration of an agent workshop under human direction.">
 <link rel="icon" href="/favicon.svg">
@@ -91,7 +91,7 @@
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.21.2</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.22.0</span></span></a>
     <nav class="nav" aria-label="Main">
       <a href="/guide#how-it-works">How it works</a>
       <a href="/commands" aria-current="page">Commands</a>
@@ -115,7 +115,7 @@
 <main id="main">
   <section class="sec" id="top">
     <div class="wrap">
-      <p class="eyebrow">33 commands &middot; Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
+      <p class="eyebrow">34 commands &middot; Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
       <h1 class="h-display">Which command helps me right now?</h1>
       <p class="lede">Pick what you want to do. Each command below says when to use it, what you get, how to type it and what happens next.</p>
 
@@ -176,8 +176,8 @@
   <div class="cmd-filter" id="cmd-filter-box" hidden>
     <label for="cmd-filter">Filter commands</label>
     <input type="search" id="cmd-filter" autocomplete="off" spellcheck="false" placeholder="for example: test, issues, commit" aria-describedby="cmd-count">
-    <p class="cmd-count" id="cmd-count" role="status" aria-live="polite">33 of 33 commands</p>
-    <p class="cmd-empty" id="cmd-empty" hidden>No command matches. Clear the field to see all 33.</p>
+    <p class="cmd-count" id="cmd-count" role="status" aria-live="polite">34 of 34 commands</p>
+    <p class="cmd-empty" id="cmd-empty" hidden>No command matches. Clear the field to see all 34.</p>
   </div>
 
   <section class="cmd-group" id="start-here" aria-labelledby="start-here-h">
@@ -443,6 +443,18 @@
       <dt>Then</dt><dd>Fix failing categories in <code>/session housekeeping</code>.</dd>
       </dl>
       <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/repo-audit/SKILL.md">Source: skills/repo-audit/SKILL.md</a></p>
+    </article>
+    <article class="cmd-card" id="security" data-command="security">
+      <h3><a class="cmd-name" href="#security"><code>/security</code></a></h3>
+      <dl class="cmd-facts">
+      <dt>When</dt><dd>You want to know which security mechanisms run in a repo, what its dependency advisories mean, whether its install settings are safe, or what steers the agent.</dd>
+      <dt>You get</dt><dd>One table per mode. <code>status</code>: which security mechanisms run. <code>deps</code>: lockfile advisories ranked fix now, can wait or not reachable, each with a proposed fix. <code>posture</code>: script execution, release-age cooldown, floating tags, runtime floor, update automation, mirror protection. <code>agent-setup</code>: instruction files, settings, hooks, MCP servers, skills and plugins in the repo and on the host. <code>review</code> hands your changes to the security reviewer. Not a vulnerability scanner.</dd>
+      <dt>Type it</dt><dd><dl class="forms"><dt>Claude Code</dt><dd><code>/security [status|deps|posture|agent-setup|review] [--ref &lt;commit&gt;]</code></dd><dt>Codex</dt><dd><code>$session-orchestrator:security</code></dd><dt>Cursor</dt><dd><code>/security</code></dd><dt>Pi</dt><dd><code>/security</code></dd></dl></dd>
+      <dt>Touches</dt><dd><span class="touch touch-read">Reads only</span> <span class="touch-note">proposes fixes, edits nothing; records one event</span></dd>
+      <dt>Needs</dt><dd>Nothing. Without a mode it runs <code>status</code>.</dd>
+      <dt>Then</dt><dd>Apply the proposed fixes you agree with, for example in <code>/session housekeeping</code>.</dd>
+      </dl>
+      <p class="cmd-src"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/skills/security/SKILL.md">Source: skills/security/SKILL.md</a></p>
     </article>
     <article class="cmd-card" id="sunset-review" data-command="sunset-review">
       <h3><a class="cmd-name" href="#sunset-review"><code>/sunset-review</code></a></h3>

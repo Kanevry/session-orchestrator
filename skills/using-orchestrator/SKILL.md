@@ -109,6 +109,12 @@ Case-insensitive. Partial matches score lower than exact matches (see Confidence
 | `evolve learnings` | EN | `skills/evolve/SKILL.md` | "evolve learnings from this session" |
 | `evolve learnings` | DE | `skills/evolve/SKILL.md` | "evolve learnings — vault-sync entries" |
 | `/bootstrap` | EN/DE | `skills/bootstrap/SKILL.md` | "/bootstrap --retroactive" |
+| `/security` | EN/DE | `skills/security/SKILL.md` | "/security deps" |
+| `security status` | EN | `skills/security/SKILL.md` | "what's the security status of this repo" |
+| `npm audit is red` | EN | `skills/security/SKILL.md` (mode: deps) | "npm audit is red, what do I fix first" |
+| `Sicherheitsstatus` | DE | `skills/security/SKILL.md` | "zeig mir den Sicherheitsstatus" |
+| `check the agent setup` | EN | `skills/security/SKILL.md` (mode: agent-setup) | "/security agent-setup" |
+| `Abhängigkeiten prüfen` | DE | `skills/security/SKILL.md` (mode: deps) | "Abhängigkeiten prüfen — dependency advisories" |
 
 ## Confidence Scoring
 

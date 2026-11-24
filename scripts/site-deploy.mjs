@@ -61,6 +61,8 @@ Options:
   -h, --help       show this help
 
 Production reaches the domains only through --mode promote.
+A stage receipt never expires: an older stage build stays promotable (the way back), and
+the receipt is a record that this checkout staged the URL, not a security boundary.
 Rollback: vercel rollback <previous url> --scope <scope>, run from a directory linked to
 the project (e.g. the --keep export directory); in an unlinked checkout the CLI prompts
 to link.
@@ -92,12 +94,18 @@ function readConfig() {
 
 const tail = (text) => text.trim().split('\n').slice(-STDERR_TAIL).join('\n');
 
-/** The stage receipt for `url`, or null when absent or unreadable (promote refuses). */
+/**
+ * The stage receipt for `url`: `{ receipt }` (null when no file exists) or `{ error }` when
+ * the file exists but cannot be read or parsed. Promote refuses in both cases; only the
+ * message differs, so a damaged receipt is not mistaken for a never-staged deployment.
+ */
 function readReceipt(url) {
+  const name = stageReceiptName(url);
   try {
-    return JSON.parse(readFileSync(join(REPO_ROOT, STAGE_RECEIPT_DIR, stageReceiptName(url)), 'utf8'));
-  } catch {
-    return null;
+    return { receipt: JSON.parse(readFileSync(join(REPO_ROOT, STAGE_RECEIPT_DIR, name), 'utf8')) };
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { receipt: null };
+    return { error: `stage receipt unreadable: ${name}` };
   }
 }
 
@@ -162,7 +170,9 @@ export function main(argv = process.argv.slice(2)) {
 
   let staged = null;
   if (mode === 'promote') {
-    const check = checkStageReceipt(readReceipt(values.url), { url: values.url, config });
+    const read = readReceipt(values.url);
+    if (read.error) return fail(1, read.error);
+    const check = checkStageReceipt(read.receipt, { url: values.url, config });
     if (!check.ok) return fail(1, check.reason);
     staged = check.receipt;
   }

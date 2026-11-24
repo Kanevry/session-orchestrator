@@ -25,12 +25,17 @@ owner-leakage scanner. The list lives beside owner.yaml, never in a repo, and th
 command never prints a name: only counts, statuses and file basenames.
 
 generate   Read every GitLab project the account is a MEMBER of (glab api, GET only,
-           paged), take each project's path and name, dedupe case-insensitively, drop
-           names shorter than 3 characters, subtract the exception list, and write the
-           list atomically with mode 0600 (directory 0700 when created).
+           paged), take each project's path and name and the segments of its group
+           namespace (generic structure words such as products or infra skipped),
+           add the extra list, dedupe case-insensitively, drop names shorter than 3
+           characters, subtract the exception list, and write the list atomically
+           with mode 0600 (directory 0700 when created).
   --out <path>     target file (default: <config dir>/confidential-names.json)
   --allow <path>   exception list, a JSON array of names never to emit (default:
                    <config dir>/confidential-names-allow.json; absent = no exceptions)
+  --extra <path>   extra list, a JSON array of names always to emit unless excepted
+                   (default: <config dir>/confidential-names-extra.json; absent = none)
+  --no-groups      leave group namespace segments out of the list (still counted)
   --dry-run        fetch and count, write nothing
   --json           counts as JSON on stdout
 
@@ -57,7 +62,9 @@ export function main(argv = process.argv.slice(2)) {
       options: {
         out: { type: 'string' },
         allow: { type: 'string' },
+        extra: { type: 'string' },
         'dry-run': { type: 'boolean', default: false },
+        'no-groups': { type: 'boolean', default: false },
         advisory: { type: 'boolean', default: false },
         json: { type: 'boolean', default: false },
         help: { type: 'boolean', default: false },
@@ -80,13 +87,15 @@ export function main(argv = process.argv.slice(2)) {
   return cmd === 'generate' ? runGenerate(values) : runStatus(values);
 }
 
-/** @param {{ out?: string, allow?: string, 'dry-run': boolean, json: boolean }} values */
+/** @param {{ out?: string, allow?: string, extra?: string, 'dry-run': boolean, 'no-groups': boolean, json: boolean }} values */
 function runGenerate(values) {
   const defaults = defaultListPaths();
   const result = generateNamesList({
     namesPath: values.out ?? defaults.namesPath,
     allowPath: values.allow ?? defaults.allowPath,
+    extraPath: values.extra ?? defaults.extraPath,
     dryRun: values['dry-run'],
+    includeGroups: !values['no-groups'],
   });
   if (values.json) console.log(JSON.stringify(result));
   if (!result.ok) {
@@ -96,7 +105,10 @@ function runGenerate(values) {
   if (!values.json) {
     console.log(
       `${result.written ? 'wrote' : 'dry run:'} ${result.names} names from ${result.projects} projects ` +
-        `(${result.candidates} distinct, ${result.excepted} excepted, ${result.tooShort} too short; exception list ${result.allowList})`,
+        `(${result.candidates} distinct candidates; ${result.groupSegments} distinct group segments ` +
+        `${result.groupsIncluded ? `included, ${result.groupGeneric} generic skipped` : 'counted, not listed'}; ` +
+        `${result.extra} extra, ${result.excepted} excepted, ${result.tooShort} too short; ` +
+        `exception list ${result.allowList}, extra list ${result.extraList})`,
     );
   }
   return 0;

@@ -25,14 +25,20 @@ import {
 } from './lib/openai-skills/package.mjs';
 import { writeZip } from './lib/openai-skills/zip.mjs';
 
-const HELP = `Usage: node scripts/export-openai-skills.mjs [--out <dir>] [--zip] [--check [<path>]] [--json]
+const HELP = `Usage: node scripts/export-openai-skills.mjs [--with-mcp] [--out <dir>] [--zip] [--check [<path>]] [--json]
 
 Builds the skills-only package for the OpenAI plugin directory (ChatGPT, Codex):
 one plugin root "${PLUGIN_NAME}/" with an Agent Plugins 1.0.0 plugin.json and the
 allowlisted skills (scripts/lib/openai-skills/allowlist.json). No hooks, no MCP
 configuration, no scripts.
 
+With --with-mcp the package also carries a root mcp.json that names the remote,
+read-only documentation server (server/mcp/), the review test cases and the
+release notes; upload it through "With MCP"
+(docs/distribution/openai-remote-mcp.md). A check needs the same flag.
+
 Options:
+  --with-mcp       Build or check the variant with the remote documentation server
   --out <dir>      Output directory, relative to the working directory
                    (default: <repo>/${DEFAULT_OUT_DIR}, gitignored). Refused
                    when it equals or contains the repo or your home directory.
@@ -59,6 +65,7 @@ export async function main(argv) {
       options: {
         out: { type: 'string' },
         zip: { type: 'boolean', default: false },
+        'with-mcp': { type: 'boolean', default: false },
         check: { type: 'boolean', default: false },
         json: { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
@@ -85,6 +92,7 @@ export async function main(argv) {
   }
 
   // Like --check's path, an explicit --out is relative to the caller's cwd.
+  const mcp = values['with-mcp'];
   const outDir = values.out === undefined ? resolve(DEFAULT_REPO_ROOT, DEFAULT_OUT_DIR) : resolve(values.out);
 
   try {
@@ -94,7 +102,7 @@ export async function main(argv) {
         process.stderr.write(`export-openai-skills: nothing to check at ${target}\n`);
         return 1;
       }
-      const violations = await validatePackage(target);
+      const violations = await validatePackage(target, { mcp });
       if (values.json) {
         process.stdout.write(`${JSON.stringify({ ok: violations.length === 0, target, violations }, null, 2)}\n`);
       } else if (violations.length === 0) {
@@ -112,7 +120,7 @@ export async function main(argv) {
     // Checked before building, so a refusal leaves nothing half-written.
     const zipExists = assertReplaceableZip(zipTarget);
     mkdirSync(outDir, { recursive: true });
-    const { root, files } = buildPackage({ outDir, skills });
+    const { root, files } = buildPackage({ outDir, skills, mcp });
     let zipPath = null;
     if (values.zip) {
       zipPath = zipTarget;
@@ -122,8 +130,8 @@ export async function main(argv) {
       unlinkSync(zipTarget);
     }
     // A build is only reported as ok after it passed its own check.
-    const violations = await validatePackage(zipPath ?? root, { skills });
-    const result = { ok: violations.length === 0, root, zip: zipPath, skills, files: files.map((f) => f.path), violations };
+    const violations = await validatePackage(zipPath ?? root, { skills, mcp });
+    const result = { ok: violations.length === 0, root, zip: zipPath, mcp, skills, files: files.map((f) => f.path), violations };
     if (values.json) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } else {

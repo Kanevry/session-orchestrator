@@ -45,6 +45,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { execFileSync } from '../native-command.mjs';
+import { TOKEN_SHAPES } from './token-shapes.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI: single positional arg required
@@ -87,26 +88,8 @@ const PATTERNS = [
     regex: /AIzaSy[A-Za-z0-9_-]{33}/,
     hint: 'use AIzaSy-PLACEHOLDER (canonical placeholder shape)',
   },
-  {
-    name: 'F5 (Anthropic sk-ant-)',
-    regex: /sk-ant-[A-Za-z0-9_-]{30,}/,
-    hint: 'use sk-ant-<PLACEHOLDER>-<padding to ≥30 chars after the prefix>',
-  },
-  {
-    name: 'F6 (GitHub PAT classic ghp_)',
-    regex: /ghp_[A-Za-z0-9]{36,}/,
-    hint: 'use ghp_PLACEHOLDER<padding> (must be ≥36 chars after the underscore)',
-  },
-  {
-    name: 'F7 (GitHub PAT fine-grained github_pat_)',
-    regex: /github_pat_[A-Za-z0-9_]{30,}/,
-    hint: 'use github_pat_PLACEHOLDER<padding> (must be ≥30 chars after the prefix)',
-  },
-  {
-    name: 'F8 (GitLab PAT glpat-)',
-    regex: /glpat-[A-Za-z0-9_-]{20,}/,
-    hint: 'use glpat-PLACEHOLDER<padding> (must be ≥20 chars after the prefix)',
-  },
+  // F5–F8 (token shapes) live in ./token-shapes.mjs, shared with /security agent-setup.
+  ...TOKEN_SHAPES,
   {
     name: 'F9 (Slack webhook URL)',
     regex: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]+/,

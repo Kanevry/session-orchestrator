@@ -296,7 +296,7 @@ function refKey(ref) {
  */
 export async function runFloatingTagCheck({ repoRoot, base, head } = {}) {
   const started = Date.now();
-  const done = (r) => makeCheckResult({ id: 'floating-tag', ms: Date.now() - started, ...r });
+  const done = (r) => makeCheckResult({ id: 'floating-tag', ms: Math.max(0, Date.now() - started), ...r });
   try {
     if (!base) return done({ status: 'skipped', reason: 'no-range' });
     if (!isSafeRef(base) || !isSafeRef(head)) return done({ status: 'degraded', reason: 'invalid-ref', unchecked: 1 });

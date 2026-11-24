@@ -149,7 +149,7 @@ export const MAX_WHAT_NOT_TO_RETRY = 10;
  * @returns {string}
  */
 function collapseNewlines(value) {
-  return value.replace(/\r?\n+/g, ' ').trim();
+  return value.replace(/[\r\n]+/g, ' ').trim();
 }
 
 /**
@@ -161,9 +161,11 @@ function collapseNewlines(value) {
  * `(none yet)` placeholder. Returns `[]` on unparseable input.
  *
  * @param {string} contents
- * @returns {Array<{approach: string, why_failed: string, session_id: string, date: string}>}
+ * @param {object} [opts]
+ * @param {boolean} [opts.includeAbandonedDetails] Include structured details when present.
+ * @returns {Array<{approach: string, why_failed: string, session_id: string, date: string, summary?: string, 'files-touched'?: string[]}>}
  */
-export function readWhatNotToRetry(contents) {
+export function readWhatNotToRetry(contents, { includeAbandonedDetails = false } = {}) {
   const parsed = parseStateMd(contents);
   if (parsed === null) return [];
   const lines = parsed.body.split(/\r?\n/);
@@ -180,20 +182,46 @@ export function readWhatNotToRetry(contents) {
     const approach = head[1];
     const session_id = head[2].trim();
     const date = head[3].trim();
-    let why_failed = '';
-    // Look ahead for the `- why: <...>` sub-bullet within this entry.
+    const entry = { approach, why_failed: '', session_id, date };
+    let hasWhy = false;
+    // Look ahead for the sub-bullets belonging to this entry.
     for (let j = i + 1; j < lines.length; j++) {
       if (/^##\s+/.test(lines[j])) break;
-      if (/^-\s+\*\*/.test(lines[j].trim())) break; // next top-level entry
-      const why = /^-\s+why:\s*(.*)$/.exec(lines[j].trim());
-      if (why) {
-        why_failed = why[1];
-        break;
+      const line = lines[j].trim();
+      if (/^-\s+\*\*/.test(line)) break;
+      const field = /^-\s+(why|summary|files-touched):\s*(.*)$/.exec(line);
+      if (!field) continue;
+      const [, name, value] = field;
+      if (name === 'why' && !hasWhy) {
+        entry.why_failed = value;
+        hasWhy = true;
+        if (!includeAbandonedDetails) break;
+      } else if (includeAbandonedDetails && name === 'summary') {
+        entry.summary = value;
+      } else if (includeAbandonedDetails && name === 'files-touched') {
+        try {
+          const paths = JSON.parse(value);
+          if (Array.isArray(paths) && paths.every((path) => typeof path === 'string')) {
+            entry['files-touched'] = paths;
+          }
+        } catch { /* A malformed detail leaves the legacy entry readable. */ }
       }
     }
-    entries.push({ approach, why_failed, session_id, date });
+    entries.push(entry);
   }
   return entries;
+}
+
+/** Read the structured subset of the What Not To Retry history. */
+export function readAbandonedBranches(contents) {
+  return readWhatNotToRetry(contents, { includeAbandonedDetails: true })
+    .filter((entry) => entry.summary !== undefined && entry['files-touched'] !== undefined)
+    .map((entry) => ({
+      tried: entry.approach,
+      'why-abandoned': entry.why_failed,
+      'files-touched': entry['files-touched'],
+      summary: entry.summary,
+    }));
 }
 
 /**
@@ -212,17 +240,23 @@ export function readWhatNotToRetry(contents) {
  * @param {string} [entry.why_failed]    — why it failed; defaults to '(no reason recorded)'
  * @param {string} [entry.session_id]    — originating session id; defaults to 'unknown-session'
  * @param {string} [entry.date]          — YYYY-MM-DD; defaults to today (UTC date slice)
+ * @param {string} [entry.tried]         — structured entry's equivalent of approach
+ * @param {string} [entry.why-abandoned] — structured entry's equivalent of why_failed
+ * @param {string[]} [entry.files-touched] — verified paths for the abandoned approach
+ * @param {string} [entry.summary]       — what the next attempt should know
  * @returns {string}
  */
 export function appendWhatNotToRetry(contents, entry) {
   const parsed = parseStateMd(contents);
   if (parsed === null) return contents;
   const e = entry || {};
-  const approach = (typeof e.approach === 'string' && e.approach.length > 0)
-    ? e.approach
+  const tried = e.tried ?? e.approach;
+  const whyAbandoned = e['why-abandoned'] ?? e.why_failed;
+  const approach = (typeof tried === 'string' && tried.length > 0)
+    ? tried
     : '(unspecified approach)';
-  const why = (typeof e.why_failed === 'string' && e.why_failed.length > 0)
-    ? e.why_failed
+  const why = (typeof whyAbandoned === 'string' && whyAbandoned.length > 0)
+    ? whyAbandoned
     : '(no reason recorded)';
   const sid = (typeof e.session_id === 'string' && e.session_id.length > 0)
     ? e.session_id
@@ -238,6 +272,11 @@ export function appendWhatNotToRetry(contents, entry) {
   // space so the entry stays single-line and round-trips losslessly.
   const headBullet = `- **${collapseNewlines(approach)}** (${sid}, ${date})`;
   const whyBullet = `  - why: ${collapseNewlines(why)}`;
+  const bullets = [headBullet, whyBullet];
+  if (typeof e.tried === 'string' && typeof e.summary === 'string' && Array.isArray(e['files-touched'])) {
+    const paths = [...new Set(e['files-touched'].filter((path) => typeof path === 'string' && path.length > 0))];
+    bullets.push(`  - files-touched: ${JSON.stringify(paths)}`, `  - summary: ${collapseNewlines(e.summary)}`);
+  }
 
   const lines = parsed.body.split('\n');
   let headingIdx = -1;
@@ -253,7 +292,7 @@ export function appendWhatNotToRetry(contents, entry) {
     // Append section at end of body. Ensure trailing newline before adding.
     let bodyOut = parsed.body;
     if (!bodyOut.endsWith('\n')) bodyOut += '\n';
-    bodyOut += `\n## What Not To Retry\n\n${headBullet}\n${whyBullet}\n`;
+    bodyOut += `\n## What Not To Retry\n\n${bullets.join('\n')}\n`;
     rebuiltBody = bodyOut;
   } else {
     // Find end-of-section: next `## ` heading or end of lines.
@@ -278,7 +317,7 @@ export function appendWhatNotToRetry(contents, entry) {
     }
     if (placeholderIdx !== -1) {
       // Replace the placeholder line with the head bullet, then insert why.
-      lines.splice(placeholderIdx, 1, headBullet, whyBullet);
+      lines.splice(placeholderIdx, 1, ...bullets);
     } else if (lastEntryIdx !== -1) {
       // Insert after the last entry's why sub-bullet (or the entry itself):
       // scan forward over any indented sub-bullets belonging to lastEntryIdx.
@@ -291,14 +330,14 @@ export function appendWhatNotToRetry(contents, entry) {
       ) {
         insertAt++;
       }
-      lines.splice(insertAt, 0, headBullet, whyBullet);
+      lines.splice(insertAt, 0, ...bullets);
     } else {
       // Empty section (heading only): insert heading, blank, entry, why.
       let insertAt = headingIdx + 1;
       while (insertAt < sectionEnd && lines[insertAt].trim() === '') insertAt++;
       const before = lines.slice(0, headingIdx + 1);
       const after = lines.slice(insertAt);
-      const rebuilt = [...before, '', headBullet, whyBullet, ...after];
+      const rebuilt = [...before, '', ...bullets, ...after];
       rebuiltBody = rebuilt.join('\n');
     }
     if (rebuiltBody === undefined) {
@@ -310,6 +349,11 @@ export function appendWhatNotToRetry(contents, entry) {
   rebuiltBody = pruneWhatNotToRetry(rebuiltBody);
 
   return serializeStateMd({ frontmatter: parsed.frontmatter, body: rebuiltBody });
+}
+
+/** Append the structured entry using the shared What Not To Retry format. */
+export function appendAbandonedBranch(contents, entry) {
+  return appendWhatNotToRetry(contents, entry);
 }
 
 /**
@@ -767,6 +811,11 @@ export async function appendWhatNotToRetryOnDisk(repoRoot, entry, opts = {}) {
     (contents) => appendWhatNotToRetry(contents, entry),
     opts
   );
+}
+
+/** Append the structured entry under the shared What Not To Retry writer's lock. */
+export function appendAbandonedBranchOnDisk(repoRoot, entry, opts = {}) {
+  return appendWhatNotToRetryOnDisk(repoRoot, entry, opts);
 }
 
 /**

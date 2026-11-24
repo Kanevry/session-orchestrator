@@ -92,6 +92,10 @@ function isIssueCreateArgv(cmd, args) {
  * the operator's real tree. Production keeps the cwd default unchanged; this
  * gate only fires when `process.env.VITEST` is set.
  *
+ * BV-004 (#1154 P6): this guard covers the ambient-root fallback at this
+ * issue-budget write boundary. Revisit when the writer can require an
+ * explicit root from every caller and tests can still exercise that contract.
+ *
  * @param {string} budgetRoot — ledger root about to be passed to `chargeIssueBudget`
  * @returns {string|null} refusal message, or null when charging may proceed
  */

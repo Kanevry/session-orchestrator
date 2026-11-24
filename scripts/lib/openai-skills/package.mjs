@@ -67,6 +67,105 @@ const LISTING = {
   ],
 };
 const LISTING_URL_KEYS = ['websiteURL', 'supportURL', 'privacyPolicyURL', 'termsOfServiceURL'];
+
+// The remote variant (#2260, docs/distribution/openai-remote-mcp.md): the same
+// skills plus ONE read-only documentation server (server/mcp/). The directory
+// takes it through "With MCP"; the skills-only path is closed to new plugins.
+export const REMOTE_MCP_SERVER = 'session-orchestrator';
+export const REMOTE_MCP_URL = 'https://mcp.session-orchestrator.com/mcp';
+export const MCP_SCHEMA_URL = 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json';
+const MCP_CONFIG = {
+  $schema: MCP_SCHEMA_URL,
+  mcpServers: { [REMOTE_MCP_SERVER]: { type: 'streamable-http', url: REMOTE_MCP_URL } },
+};
+/** The exact bytes of the package's mcp.json; the check compares against them. */
+export const MCP_CONFIG_TEXT = `${JSON.stringify(MCP_CONFIG, null, 2)}\n`;
+// Names every allowlisted skill as "<name>:", like MANIFEST_DESCRIPTION.
+const MCP_MANIFEST_DESCRIPTION =
+  'Working methods for coding agents from session-orchestrator, plus a read-only documentation server. grill: stress-test a plan or design one question at a time against the real code. eli5: explain a result in plain words without dropping a fact. deepen: make a task deeper, not bigger, with an outside judge for the result. debug: find the root cause of a bug in four phases before any fix. The server searches the Session Orchestrator docs, checks a Session Config block, lists skills and returns release notes. No hooks.';
+const MCP_LISTING = {
+  displayName: 'Session Orchestrator',
+  shortDescription: 'Agent methods and docs lookup',
+  longDescription:
+    'Session Orchestrator is an open-source session harness for coding agents. This plugin brings two parts of it to ChatGPT and Codex. First, four working methods as skills: grill stress-tests a plan or design one question at a time against the real code, eli5 restates a result in plain words without dropping a fact, deepen makes a task deeper, not bigger, and has an outside judge check the result, and debug finds the root cause of a bug in four phases before any fix. Second, a read-only documentation server: it searches the Session Orchestrator documentation, reads a section in full, checks a Session Config block for keys that have no effect, lists the skills of the full plugin and returns release notes. The server needs no sign-in, changes nothing and stores no input. Limits: this plugin ships no hooks and no scripts, so the session workflow of the full plugin (planning, waves, quality gates, close-out) is not part of it.',
+  category: 'Developer Tools',
+  capabilities: [
+    'Search and read the Session Orchestrator documentation',
+    'Check a Session Config block for keys that have no effect',
+    'List skills and read release notes',
+    'Stress-test plans, explain results, find root causes',
+  ],
+  defaultPrompt: [
+    'Grill my plan for this change before I build it.',
+    'Check my Session Config block for mistakes.',
+    'What does the Session Config key agents-per-wave do?',
+  ],
+};
+// The listing and the review cases show what this package does on its own (skills,
+// documentation lookup, config check). They do not lead with installing the full
+// plugin: the directory rejects plugins that mainly point to another product
+// (plugin guidelines 3.3a, 5.4). The server still answers install questions.
+// Review material the directory requires for a plugin with an MCP server:
+// exactly five positive and three negative cases, and release notes. The demo
+// recording URL is entered in the portal once the recording exists.
+const MCP_REVIEW = {
+  test_cases: {
+    positive: [
+      {
+        description: 'Explain what telemetry collects and how to turn it off',
+        prompt: 'What does Session Orchestrator telemetry collect, and how do I turn it off?',
+        tools_triggered: 'search, fetch',
+        expected_behavior: 'Finds the telemetry documentation, lists what is collected and names the consent setting and the kill switches, with a link to the documentation.',
+      },
+      {
+        description: 'Check a Session Config block with a typo',
+        prompt: 'Check this Session Config block:\n\npersistance: true\nwaves: 5\nenforcement: warn',
+        tools_triggered: 'check_session_config',
+        expected_behavior: 'Reports that the key "persistance" has no effect and suggests "persistence"; names the starter keys left at their default.',
+      },
+      {
+        description: 'Find the skill of the full plugin for a task',
+        prompt: 'Which Session Orchestrator skill audits the UX of a running web app?',
+        tools_triggered: 'list_skills',
+        expected_behavior: 'Names the ux-grill skill with its description and how to invoke it.',
+      },
+      {
+        description: 'Latest version and changes',
+        prompt: 'What is the latest Session Orchestrator version and what changed in it?',
+        tools_triggered: 'get_release_notes',
+        expected_behavior: 'Returns the latest released version with its date, a summary of its release notes and a link to the changelog.',
+      },
+      {
+        description: 'Explain a configuration key',
+        prompt: 'What does the Session Config key agents-per-wave do in Session Orchestrator?',
+        tools_triggered: 'search, fetch',
+        expected_behavior: 'Finds the reference section for agents-per-wave and explains the key from it, citing the documentation link.',
+      },
+    ],
+    // Near misses: each resembles a tool (docs search, config check) but is about
+    // something else, so no tool of this plugin may fire. Measured 2026-11-23 with
+    // Codex 0.169, two runs each: zero calls to the server.
+    negative: [
+      {
+        description: 'Documentation of another product',
+        prompt: 'Search the React documentation for how useEffect cleanup works.',
+      },
+      {
+        description: 'A configuration file that is not a Session Config block',
+        prompt:
+          'Check this GitHub Actions workflow for mistakes:\n\nname: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm test',
+      },
+      {
+        description: 'Unrelated request',
+        prompt: 'What will the weather be in Vienna tomorrow?',
+      },
+    ],
+  },
+  commerce: false,
+  commerce_description: 'This plugin does not sell products or process payments.',
+};
+const MCP_RELEASE_NOTES =
+  'First release with a documentation server: search and read the Session Orchestrator documentation, check a Session Config block, list skills and read release notes. Skills: grill, eli5, deepen, debug.';
 // An SVG can carry script; the icon is the one non-Markdown file in the package.
 // Ceiling: a blocklist for the plain forms only (a namespaced <svg:script> or an
 // entity-coded "javascript:" passes). Enough while the icon is this repo's own
@@ -262,10 +361,10 @@ function repositoryUrl(repo) {
  * version/homepage/license/repository from `package.json`, author from
  * `.claude-plugin/plugin.json` (package.json carries none).
  *
- * @param {{ repoRoot?: string }} [opts]
+ * @param {{ repoRoot?: string, mcp?: boolean }} [opts] `mcp`: the variant with the remote documentation server
  * @returns {Record<string, unknown>}
  */
-export function buildManifest({ repoRoot = DEFAULT_REPO_ROOT } = {}) {
+export function buildManifest({ repoRoot = DEFAULT_REPO_ROOT, mcp = false } = {}) {
   const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
   const claudePlugin = JSON.parse(readFileSync(join(repoRoot, '.claude-plugin', 'plugin.json'), 'utf8'));
   /** @type {Record<string, unknown>} */
@@ -273,7 +372,7 @@ export function buildManifest({ repoRoot = DEFAULT_REPO_ROOT } = {}) {
     $schema: SCHEMA_URL,
     name: PLUGIN_NAME,
     version: pkg.version,
-    description: MANIFEST_DESCRIPTION,
+    description: mcp ? MCP_MANIFEST_DESCRIPTION : MANIFEST_DESCRIPTION,
   };
   const a = claudePlugin.author;
   if (a && typeof a === 'object') {
@@ -290,12 +389,15 @@ export function buildManifest({ repoRoot = DEFAULT_REPO_ROOT } = {}) {
   manifest.extensions = {
     'com.openai': {
       interface: {
-        ...LISTING,
+        ...(mcp ? MCP_LISTING : LISTING),
         developerName: manifest.author?.name ?? codex.developerName,
         ...Object.fromEntries(LISTING_URL_KEYS.filter((k) => typeof codex[k] === 'string').map((k) => [k, codex[k]])),
+        // The privacy and terms pages of this variant describe the server and are served by it.
+        ...(mcp ? { privacyPolicyURL: new URL('/privacy', REMOTE_MCP_URL).href, termsOfServiceURL: new URL('/terms', REMOTE_MCP_URL).href } : {}),
         composerIcon: `./${ICON_PATH}`,
         logo: `./${ICON_PATH}`,
       },
+      ...(mcp ? { review: MCP_REVIEW, publication: { release_notes: MCP_RELEASE_NOTES } } : {}),
     },
   };
   return manifest;
@@ -327,13 +429,14 @@ function listTree(dir) {
 /**
  * The package as a flat file list (POSIX paths relative to the plugin root).
  *
- * @param {{ repoRoot?: string, skills?: string[], includes?: Record<string, Include[]> }} [opts]
+ * @param {{ repoRoot?: string, skills?: string[], includes?: Record<string, Include[]>, mcp?: boolean }} [opts]
  * @returns {Array<{path: string, data: Buffer}>}
  */
-export function collectPackageFiles({ repoRoot = DEFAULT_REPO_ROOT, skills = selectSkills(), includes = selectIncludes() } = {}) {
+export function collectPackageFiles({ repoRoot = DEFAULT_REPO_ROOT, skills = selectSkills(), includes = selectIncludes(), mcp = false } = {}) {
   const files = [
-    { path: 'plugin.json', data: Buffer.from(`${JSON.stringify(buildManifest({ repoRoot }), null, 2)}\n`) },
+    { path: 'plugin.json', data: Buffer.from(`${JSON.stringify(buildManifest({ repoRoot, mcp }), null, 2)}\n`) },
   ];
+  if (mcp) files.push({ path: 'mcp.json', data: Buffer.from(MCP_CONFIG_TEXT) });
   const icon = join(repoRoot, ICON_PATH);
   // realpath, not lstat: a symlinked assets/ directory reaches a foreign file as well.
   if (realpathSync(icon) !== join(realpathSync(repoRoot), ICON_PATH)) throw new Error(`${ICON_PATH}: symlink in source, refusing to package`);
@@ -368,7 +471,8 @@ export function isPreviousExportDir(dir) {
     if (!lstatSync(dir).isDirectory()) return false;
     // Exports before the listing icon (#1931) had no assets/ directory.
     const top = readdirSync(dir).sort().join('\0');
-    if (top !== 'plugin.json\0skills' && top !== 'assets\0plugin.json\0skills') return false;
+    // The remote variant (#2260) adds mcp.json.
+    if (!['plugin.json\0skills', 'assets\0plugin.json\0skills', 'assets\0mcp.json\0plugin.json\0skills'].includes(top)) return false;
     if (top.startsWith('assets') && !lstatSync(join(dir, 'assets')).isDirectory()) return false;
     if (!lstatSync(join(dir, 'plugin.json')).isFile() || !lstatSync(join(dir, 'skills')).isDirectory()) return false;
     return isOurManifest(JSON.parse(readFileSync(join(dir, 'plugin.json'), 'utf8')));
@@ -471,8 +575,8 @@ export function assertSafeOutDir(outDir, { guardedRoots = [DEFAULT_REPO_ROOT, ho
  * @returns {{ root: string, files: Array<{path: string, data: Buffer}> }}
  * @throws {ExportRefusedError}
  */
-export function buildPackage({ outDir, repoRoot = DEFAULT_REPO_ROOT, skills = selectSkills(), includes = selectIncludes(), fs }) {
-  const files = collectPackageFiles({ repoRoot, skills, includes });
+export function buildPackage({ outDir, repoRoot = DEFAULT_REPO_ROOT, skills = selectSkills(), includes = selectIncludes(), mcp = false, fs }) {
+  const files = collectPackageFiles({ repoRoot, skills, includes, mcp });
   const moveDir = (from, to) => renameSyncWithRetry(from, to, { fs });
   const root = join(outDir, PLUGIN_NAME);
   const exists = existsSync(root) || isSymlinkPath(root);
@@ -550,12 +654,14 @@ function parseSkillFrontmatter(text) {
  *
  * @param {Array<{path: string, data: Buffer|null, isDirectory?: boolean, isSymlink?: boolean}>} entries
  *   paths relative to the archive/build container (each starting with the plugin root segment)
- * @param {{ skills: string[], validateManifest: (m: unknown) => string[], includes?: Record<string, Include[]> }} ctx
+ * @param {{ skills: string[], validateManifest: (m: unknown) => string[], includes?: Record<string, Include[]>, mcp?: boolean }} ctx
  *   `includes`: the declared includes per skill; each must be present in a
- *   shipped skill, and the skill must point at it, not at the repo path
+ *   shipped skill, and the skill must point at it, not at the repo path.
+ *   `mcp`: the remote variant; exactly one root `mcp.json` naming our server is
+ *   required, and every other MCP configuration stays a violation
  * @returns {Array<{code: string, path: string, message: string}>}
  */
-export function validateEntries(entries, { skills, validateManifest, includes = {} }) {
+export function validateEntries(entries, { skills, validateManifest, includes = {}, mcp = false }) {
   /** @type {Array<{code: string, path: string, message: string}>} */
   const v = [];
   const add = (code, path, message) => v.push({ code, path, message });
@@ -606,10 +712,22 @@ export function validateEntries(entries, { skills, validateManifest, includes = 
       continue;
     }
     if (segs.slice(1).some((s) => HOOKS_SEGMENT.test(s))) add('hooks-present', e.path, 'lifecycle hooks make the plugin ineligible');
-    if (segs.slice(1).some((s) => MCP_SEGMENT.test(s))) add('mcp-config-present', e.path, 'MCP configuration is excluded from skills-only packages');
+    const isRemoteConfig = mcp && rel === 'mcp.json' && !e.isDirectory;
+    if (!isRemoteConfig && segs.slice(1).some((s) => MCP_SEGMENT.test(s))) {
+      add('mcp-config-present', e.path, mcp ? 'the only MCP configuration allowed is the root mcp.json' : 'MCP configuration is excluded from skills-only packages');
+    }
     if (e.isDirectory) continue;
     files.set(rel, e.data ?? Buffer.alloc(0));
     if (rel === 'plugin.json') continue;
+    if (isRemoteConfig) {
+      // Byte-for-byte what this exporter writes: one server, our URL, no headers, no auth.
+      // Bytes, not parsed values: JSON.parse keeps the last of two duplicate keys, so a
+      // second server or a foreign URL hidden behind a duplicate would compare equal.
+      if ((e.data ?? Buffer.alloc(0)).toString('utf8') !== MCP_CONFIG_TEXT) {
+        add('mcp-config-unexpected', e.path, `mcp.json must declare exactly the server "${REMOTE_MCP_SERVER}" at ${REMOTE_MCP_URL}`);
+      }
+      continue;
+    }
     if (rel === ICON_PATH) {
       const svg = (e.data ?? Buffer.alloc(0)).toString('utf8');
       if (!startsWithSvgElement(svg)) add('icon-not-svg', e.path, 'the icon does not start with an <svg> element');
@@ -652,12 +770,27 @@ export function validateEntries(entries, { skills, validateManifest, includes = 
         const missing = LISTING_REQUIRED.filter((k) => typeof listing[k] !== 'string' || listing[k].trim() === '');
         if (missing.length > 0) add('listing-incomplete', `${root}/plugin.json`, `listing lacks ${missing.join(', ')}`);
       }
+      if (mcp) {
+        // A plugin with an MCP server needs all four listing URLs and the review cases.
+        const noUrl = LISTING_URL_KEYS.filter((k) => !/^https:\/\/[^\s@]+$/.test(listing?.[k] ?? ''));
+        if (noUrl.length > 0) add('listing-incomplete', `${root}/plugin.json`, `listing lacks an HTTPS URL for ${noUrl.join(', ')}`);
+        const review = manifest.extensions?.['com.openai']?.review;
+        const cases = review?.test_cases;
+        const count = (list) => (Array.isArray(list) ? list.length : 0);
+        if (count(cases?.positive) !== 5 || count(cases?.negative) !== 3) {
+          add('review-incomplete', `${root}/plugin.json`, `review needs exactly 5 positive and 3 negative test cases, found ${count(cases?.positive)} and ${count(cases?.negative)}`);
+        }
+        const notes = manifest.extensions?.['com.openai']?.publication?.release_notes;
+        if (typeof notes !== 'string' || notes.trim() === '') add('review-incomplete', `${root}/plugin.json`, 'publication.release_notes missing');
+      }
       for (const key of ['composerIcon', 'logo']) {
         const ref = listing?.[key];
         if (typeof ref === 'string' && !files.has(ref.replace(/^\.\//, ''))) add('icon-missing', `${root}/plugin.json`, `"${key}" names "${ref}", a file the package does not carry`);
       }
     }
   }
+
+  if (mcp && !files.has('mcp.json')) add('mcp-config-missing', `${root ?? '.'}/mcp.json`, 'root mcp.json missing');
 
   const shipped = [...new Set([...files.keys()].map((p) => /^skills\/([^/]+)\//.exec(p)?.[1]).filter(Boolean))].sort();
   if (shipped.length === 0) add('no-skills', `${root ?? '.'}/skills`, 'at least one skill is required');
@@ -749,10 +882,10 @@ export function readPackageDir(dir) {
  * Validate a build directory or a `.zip` file.
  *
  * @param {string} target
- * @param {{ skills?: string[], includes?: Record<string, Include[]> }} [opts]
+ * @param {{ skills?: string[], includes?: Record<string, Include[]>, mcp?: boolean }} [opts]
  * @returns {Promise<Array<{code: string, path: string, message: string}>>}
  */
-export async function validatePackage(target, { skills = selectSkills(), includes = selectIncludes() } = {}) {
+export async function validatePackage(target, { skills = selectSkills(), includes = selectIncludes(), mcp = false } = {}) {
   const validateManifest = await loadManifestValidator();
   // Any regular file is read as an archive, whatever its extension's case.
   if (!lstatSync(target).isDirectory()) {
@@ -760,13 +893,13 @@ export async function validatePackage(target, { skills = selectSkills(), include
       return [{ code: 'zip-malformed', path: target, message: 'not a directory and not a zip archive' }];
     }
     try {
-      return validateEntries(readZip(readFileSync(target)), { skills, validateManifest, includes });
+      return validateEntries(readZip(readFileSync(target)), { skills, validateManifest, includes, mcp });
     } catch (err) {
       if (err instanceof ZipFormatError) return [{ code: 'zip-malformed', path: target, message: err.message }];
       throw err;
     }
   }
-  return validateEntries(readPackageDir(target), { skills, validateManifest, includes });
+  return validateEntries(readPackageDir(target), { skills, validateManifest, includes, mcp });
 }
 
 /** @returns {boolean} whether the file starts with a local-header or empty-archive signature */

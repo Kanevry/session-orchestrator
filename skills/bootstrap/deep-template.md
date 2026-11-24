@@ -546,7 +546,7 @@ fi
 
 **Idempotent.** Existing files are preserved.
 
-**Gitignore guidance:** same as Standard — `.orchestrator/metrics/*.jsonl` MUST remain tracked.
+**Gitignore guidance.** Keep `sessions.jsonl`, `learnings.jsonl`, `eval.jsonl` and the other project ledgers eligible for version control. The inherited Fast Step 3 ignores the three hook logs by exact path via [`_shared-template.md#store-lock-ignore`](_shared-template.md).
 
 > Note: Standard tier (Step 3b) only creates `learnings.jsonl`. Deep adds `sessions.jsonl` + the `README.md`. This step is NOT a shared partial because the Deep variant is a superset, not identical.
 

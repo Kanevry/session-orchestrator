@@ -133,8 +133,11 @@ Extract these fields for planning:
    - Which waves were completed in the prior session
    - Which agents completed, which were partial/failed
    - What deviations were logged
+   - Which approaches were abandoned. Read `readAbandonedBranches(contents)` from `${PLUGIN_ROOT}/scripts/lib/state-md.mjs` and use the guarded history to evaluate alternatives before repeating work.
    - Use this to avoid re-doing completed work and to prioritize carryover tasks
    If no STATE.md or `status: completed`, proceed with fresh planning.
+
+   When re-planning discards a tried approach, hand its `tried`, `why-abandoned`, verified `files-touched`, and `summary` to the wave-executor coordinator. Record it with the locked write in [Post-Wave § 3a](../wave-executor/references/wave-loop-review.md#3a-post-wave-update-statemd) before dispatching the replacement plan.
 
 0.5. **Read project intelligence**: > Skip if `persistence` is `false` in Session Config.
    If `.orchestrator/metrics/learnings.jsonl` exists, read active learnings (confidence > 0.3, not expired). Sort by `confidence` DESC (tiebreaker: `created_at` DESC) and slice to the first `learnings-surface-top-n` entries (default 15) before applying the four categories below. If the top-N slice is empty, skip the categories.
@@ -355,6 +358,13 @@ For each role's wave, distribute its classified tasks across the allocated agent
   - If both tasks share >50% of their file scope → merge them into one agent
   - If the overlapping task is NOT on the critical path (no downstream dependencies) → move it to Impl-Polish
   - If both are on the critical path → merge into one agent and note in Risk Mitigation
+   On resume or re-plan, compare the proposed paths (`plannedPaths`, the union of scopes for the wave) with the current session's verified paths. Review overlaps against the current diff, drop completed work, and order intentional follow-up edits after their dependencies.
+
+   ```js
+   import { readFilesTouched } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+   const touched = new Set(readFilesTouched(contents));
+   const previouslyTouched = plannedPaths.filter((path) => touched.has(path));
+   ```
 6. **Contract-Lock detection (#730/H1)**: After deconfliction, check whether ≥2 agents in the SAME wave each depend on a shared contract surface — a file/module defining interfaces, schemas, shared types, or shared constants that all of them read but none exclusively owns (e.g. `types/*.ts`, `*.schema.*`, a shared `constants.*`, an OpenAPI/Zod spec). If so, do NOT let the N agents co-define it in parallel:
    a. Extract the shared contract into ONE dedicated **Contract-Lock** task on a single agent, and REMOVE the contract file from every impl agent's file scope (this is what makes the remaining scopes disjoint — step 5 then has nothing left to merge).
    b. Order it BEFORE the N implementation agents — either as the final task of the preceding wave, or as a serialized first slot in this wave (annotate the wave-plan item `contract-lock: true`; the wave-executor honors the flag per `skills/wave-executor/wave-loop.md` § Contract-Lock Serialization).

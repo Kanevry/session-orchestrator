@@ -31,8 +31,7 @@
  * [0,1]-clamped floor coercion (default 0.5, NEVER 0), the `detailParts.join('; ')`
  * rationale style (engine.mjs L481-485), and the never-throws contract.
  *
- * Pure + DI, NEVER throws, NO I/O. NOT wired into dispatcher launch this session
- * (that is #682). No imports beyond node builtins (none needed).
+ * Pure + DI, NEVER throws, NO I/O.
  */
 
 const DEFAULT_CONFIDENCE_FLOOR = 0.5;
@@ -92,8 +91,11 @@ function coerceFloor(rawFloor) {
 /**
  * Compute the autonomous-dispatch suitability verdict over four injected signal
  * gates. PURE, NEVER throws, NO I/O. The caller (dispatcher) is responsible for
- * gathering ci / resourceVerdict / confidence / recentRuns and acting on the
- * verdict (#682 wires this into launch).
+ * gathering ci / resourceVerdict / confidence / recentRuns and acting on the verdict.
+ *
+ * BV-004 ceiling (#1852): G3 receives `ci` from tests only. Revisit
+ * when dispatcher launch consumes this verdict and can supply a `checkCiStatus`
+ * result for the candidate repository.
  *
  * @param {SuitabilityDeps} [deps]
  * @returns {SuitabilityVerdict}

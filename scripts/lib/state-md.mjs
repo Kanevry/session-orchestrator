@@ -10,14 +10,11 @@
  * @see scripts/lib/state-md/mission-status.mjs      parseMissionStatus, parseMissionStatusStrict, MISSION_STATUS_VALUES, writeMissionStatus, setMissionStatus, setMissionStatusDetailed, readMissionStatus, recoverFrontmatterMissionStatusDetailed, writeMissionStatusOnDisk, setMissionStatusOnDisk
  * @see scripts/lib/state-md/recommendations.mjs     parseRecommendations
  *
- * Plus THREE small non-re-export surfaces at the bottom of this file (each with
- * its own docblock explaining why it is composed here rather than added as a
- * fourth mutator module): the `session-profile` frontmatter accessors, the
- * `outcome-*` frontmatter accessors (#1824), and the `started_at` /
- * `session-id` frontmatter SOURCES (#1368).
+ * Also composes the files-touched ledger (#868), the session-profile and
+ * outcome frontmatter accessors, and the session identity sources (#1368).
  */
 
-import { parseStateMd as _parseStateMd } from './state-md/yaml-parser.mjs';
+import { parseStateMd as _parseStateMd, serializeStateMd as _serializeStateMd } from './state-md/yaml-parser.mjs';
 import { updateFrontmatterFields as _updateFrontmatterFields } from './state-md/frontmatter-mutators.mjs';
 import { readLock as _readLock } from './session-lock.mjs';
 import { readProcessLocalSessionIds as _readProcessLocalSessionIds } from './session-identity/own-session.mjs';
@@ -46,6 +43,9 @@ export {
   appendWhatNotToRetry,
   readWhatNotToRetry,
   appendWhatNotToRetryOnDisk,
+  appendAbandonedBranch,
+  appendAbandonedBranchOnDisk,
+  readAbandonedBranches,
   readOpenQuestions,
   appendOpenQuestion,
   markOpenQuestionAnswered,
@@ -74,6 +74,33 @@ export {
 } from './state-md/mission-status.mjs';
 
 export { parseRecommendations } from './state-md/recommendations.mjs';
+
+/** Read verified repository-relative paths from the current session's waves. */
+export function readFilesTouched(contents) {
+  return [...new Set(filesTouched(_parseStateMd(contents)?.frontmatter))];
+}
+
+/** Add verified paths in wave order. Use inside writeStateMd for on-disk updates. */
+export function mergeFilesTouched(contents, paths) {
+  const parsed = _parseStateMd(contents);
+  if (!parsed || !Array.isArray(paths)) return contents;
+  const previous = filesTouched(parsed.frontmatter);
+  const merged = [...new Set([...previous, ...paths.filter(isPathString)])];
+  if (merged.length === previous.length && merged.every((path, index) => path === previous[index])) {
+    return contents;
+  }
+  parsed.frontmatter['files-touched'] = merged;
+  return _serializeStateMd(parsed);
+}
+
+function filesTouched(frontmatter) {
+  const paths = frontmatter?.['files-touched'];
+  return Array.isArray(paths) ? paths.filter(isPathString) : [];
+}
+
+function isPathString(value) {
+  return typeof value === 'string' && value.length > 0;
+}
 
 // ---------------------------------------------------------------------------
 // Session profile (PRD docs/prd/2026-09-06-ultradeep-session-profile.md)

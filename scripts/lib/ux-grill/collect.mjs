@@ -71,6 +71,14 @@ const EXEC_TIMEOUT_MS = 120_000;
 
 // Re-read the document so a transition started by a finishing animation is
 // included too. Decorative loops and paused animations need no settling time.
+// NAMED CEILING (BV-004, #2190 item 9): a long but FINITE animation still running
+// at the 2-s cap fails this precheck, and the caller then skips the WHOLE axe run
+// (`measure-failed` on `a11y`), though only `color-contrast` reads mixed colours.
+// Narrowing needs `agent-browser a11y` to disable or select single rules (it takes
+// `--tags`/`--selector` only, measured 2026-11-23 via `a11y --help`), or a post-hoc
+// filter that adds a second skip kind to the run record. REVISIT TRIGGER: a route
+// whose animation outlasts the cap loses every non-contrast axe finding in a report,
+// or `a11y` gains rule selection.
 const AXE_SETTLED_EVAL = `(async () => {
   const deadline = performance.now() + 2000;
   while (document.getAnimations().some(animation =>

@@ -481,6 +481,14 @@ After reviewing wave results, adjust the next wave's agent count based on perfor
 After each wave completes and before the progress update, update `<state-dir>/STATE.md`:
 
 1. **Frontmatter**: set `current-wave` to the just-completed wave number; set `status` to `active` (or `paused` if waiting on user input). Readers that need the RUNNING wave (e.g. `scripts/memory-propose.mjs`) read `<state-dir>/wave-scope.json` `wave` (only when the manifest is bound to this session via `semantic_session_id`; an unbound manifest is ignored — it may be a peer's, #1123) and fall back to `current-wave + 1` (#1166) — do not change this field's meaning.
+   Use repository-relative paths verified in 3d and any coordinator edits verified against the wave baseline. An empty wave leaves the ledger unchanged.
+
+   ```js
+   import { mergeFilesTouched, writeStateMd } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+   await writeStateMd(repoRoot, (contents) => mergeFilesTouched(updateWaveState(contents), verifiedPaths));
+   ```
+
+   `updateWaveState` applies the checkpoint changes below to the current contents inside the same lock.
 2. **`## Current Wave`**: replace contents with next wave info — wave number, role, agents to dispatch and count
 3. **`## Wave History`**: append an entry for the completed wave:
    > **Record the SUITE COUNT, not just "gates green" — and name the platform (#944).** The wave line MUST carry the full-suite pass/fail count from the gate that just ran (`<passed>/<failed>`), not merely that typecheck and lint were clean. A deep session on 2026-07-30 logged typecheck/lint/validate-plugin for every wave and no suite count; a test that had been vacuous for its entire life sat red on HEAD through three waves and was found only by the review panel — in a session whose own premise was turning CI from red to green.
@@ -495,6 +503,19 @@ After each wave completes and before the progress update, update `<state-dir>/ST
 4. **`## Deviations`**: if the plan was adapted in step 3, append a timestamped entry:
    ```
    - [<ISO timestamp>] Wave N: <what changed and why>
+   ```
+
+   When adapting the plan discards a tried approach or rejects a wave, record that decision before continuing into the replacement plan. Use the paths verified for the discarded approach, or an empty list if it changed no files.
+
+   ```js
+   import { appendAbandonedBranchOnDisk } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+   await appendAbandonedBranchOnDisk(repoRoot, {
+     tried,
+     'why-abandoned': whyAbandoned,
+     'files-touched': abandonedPaths,
+     summary,
+     session_id: semanticSessionId,
+   });
    ```
 
 5. **Heartbeat refresh (#590-3)** — after the STATE.md write, refresh the session-lock heartbeat so long-running deep sessions do not let the 4h TTL lapse between waves. Best-effort: a failure must NOT block the wave.

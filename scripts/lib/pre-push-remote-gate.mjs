@@ -118,6 +118,12 @@ const finite = (value) => typeof value === 'number' && Number.isFinite(value);
  * Ceiling (BV-004): `batch_last_max` is offload's batch admission threshold, the
  * only per-host load limit `status` reports; offload itself admits a gate by
  * cpu_idle, not by load. REVISIT TRIGGER: offload reports a gate load limit.
+ * Ceiling (BV-004, #2190 item 4): on `win-wsl` `last_5` is the WSL VM's own
+ * load, not the Windows host's — a busy Windows side reads as a free host. The
+ * host-side figure exists only behind the host knob `RO_HOST_PROBE=windows`
+ * (offload #689), which `status --json` does not fold into `last_5`.
+ * REVISIT TRIGGER: `status --json` reporting the Windows-host load, or a gate on
+ * win-wsl timing out while its `last_5` read free.
  *
  * @param {string} alias
  * @returns {{ measured: false } | { measured: true, free: boolean, load: number, max: number, slots: number }}
@@ -286,6 +292,12 @@ export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, 
     // RO_ADMISSION_WAIT=0 (#2186): offload >= 1.8.0 would otherwise wait up to 600 s for a gate
     // slot per busy host inside this 1860-s budget; refusing at once (exit 10) lets the loop try the
     // next route. Older offload ignores the variable and refuses at once anyway.
+    // Ceiling (BV-004, #2190 item 6): offload reads the host file AFTER the environment, so a
+    // `RO_ADMISSION_WAIT=` line in `hosts/<alias>.env` would beat this 0 (measured 2026-11-23: in
+    // none of the 5 host files). The proof-carrying fix is offload's `--nicht-warten`, which an
+    // older offload rejects as an unknown option — unverifiable from here, so not passed.
+    // REVISIT TRIGGER: a host file setting RO_ADMISSION_WAIT, or the minimum offload version
+    // being raised to one with `--nicht-warten`.
     { encoding: 'utf8', timeout: 1_860_000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, RO_ADMISSION_WAIT: '0' } });
     // Wall time of the remote run including transport, on a monotonic clock (#2197).
     const durationMs = Math.max(0, Math.round(performance.now() - startedMs));
@@ -338,6 +350,11 @@ export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, 
     if (!passed && (report?.error === 'gate-timeout' || report?.test?.rerun_skipped === 'gate-timeout' ||
       [report?.test, report?.typecheck, report?.lint].some((check) => check?.timed_out === true))) {
       logFn(`a check hit its deadline on ${alias} — retry on a less loaded host: SO_GATE_HOSTS=<alias> git push (offload status -H <alias> --json shows last_5 and free gate slots).`);
+    }
+    // No report at all (killed host, offload budget exhausted, empty run) is the case the hint
+    // above cannot see, and the one where the host's load is the likeliest cause (#2190 item 5).
+    if (!passed && !report) {
+      logFn(`remote gate on ${alias} returned no report (exit ${run.status ?? run.error?.code ?? run.signal}) — if the host was loaded, retry on a less loaded one: SO_GATE_HOSTS=<alias> git push (offload status -H <alias> --json shows last_5 and free gate slots).`);
     }
     return { code: passed ? 0 : 1, passed, alias, report: report ?? null, hostSource };
   }

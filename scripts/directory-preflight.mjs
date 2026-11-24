@@ -29,10 +29,11 @@ untouched; building the snapshot tree writes unreferenced tree objects, as the e
 Options:
   --source <rev>   source commit (default HEAD)
   --mode <mode>    ${MODES.join(' | ')} (default warn)
-                   off     measure nothing, exit 0
+                   off     measure nothing, exit 0 (output says checked: false)
                    warn    report findings, exit 0
-                   strict  exit 3 on a blocking finding; holds stay a report, because a
-                           reviewer decides them
+                   strict  exit 3 on a blocking finding or an empty listing; holds stay a
+                           report, because a reviewer decides them; exit 0 is no
+                           listing clearance
   --json           print one JSON object instead of the human summary
   --version        print the plugin version
   -h, --help       show this help
@@ -88,7 +89,7 @@ export function preflightSource({ repoRoot, source = 'HEAD', mode = 'warn', git 
 }
 
 function render(result) {
-  if (result.mode === 'off') return 'directory preflight: off\n';
+  if (result.mode === 'off') return 'directory preflight: off, not checked\n';
   const lines = [`directory preflight (${result.mode}): ${result.files} files, ${(result.bytes / 1048576).toFixed(1)} MiB, snapshot tree ${result.snapshotTree.slice(0, 12)}`];
   if (result.findings.length === 0) lines.push('  no findings');
   for (const f of result.findings) {
@@ -96,6 +97,8 @@ function render(result) {
     for (const p of (f.paths ?? []).slice(0, 8)) lines.push(`             ${p}`);
     if ((f.paths?.length ?? 0) > 8) lines.push(`             … ${f.paths.length - 8} more`);
   }
+  if (!result.checked) lines.push('  NOT CHECKED: the listing was empty, so no measurement backs this result');
+  else if (result.holds.length > 0) lines.push(`  ok is no listing clearance: ${result.holds.length} hold(s) stay open for a reviewer (${result.holds.join(', ')})`);
   return `${lines.join('\n')}\n`;
 }
 

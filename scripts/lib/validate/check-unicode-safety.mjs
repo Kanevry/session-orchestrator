@@ -170,7 +170,7 @@ const EXTENDED_PICTOGRAPHIC = /\p{Extended_Pictographic}/u;
  * @param {string} prevChar the preceding code point (as a string), or ''
  * @returns {boolean}
  */
-function isOrphanVariationSelector(codePoint, prevChar) {
+export function isOrphanVariationSelector(codePoint, prevChar) {
   if (codePoint < 0xfe00 || codePoint > 0xfe0f) return false;
   if (codePoint === 0xfe0f && prevChar && EXTENDED_PICTOGRAPHIC.test(prevChar)) {
     return false; // legit emoji-presentation selector

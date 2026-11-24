@@ -32,8 +32,9 @@ export { DEFAULT_KILL_GRACE_MS } from '../process-group.mjs';
 /**
  * Roles that may NEVER run on a foreign model. Copied verbatim from
  * the operator's routing policy `tools/routing/routing.yaml` § never_foreign (read 2026-08-25).
- * Keep in sync by hand — the YAML lives in a different repo and is parsed there
- * by awk, not by a shared library.
+ * BV-004 (#1154 P7): parity is checked only when an explicit routing YAML is
+ * supplied (SO_ROUTING_POLICY_PATH in dispatch-common.test.mjs). Revisit at
+ * #1150 release or consumer adoption and run that check with the real policy.
  * @type {readonly string[]}
  */
 export const NEVER_FOREIGN_ROLES = Object.freeze([
