@@ -40,6 +40,7 @@ import { baselineSourcePath, resolveBaselineLocation } from '../baseline-archety
 import { makeCheckResult, makeFinding } from './contract.mjs';
 import { PATH_ABSENT } from './floating-tags.mjs';
 import { defaultRunGit, readLockfileDelta } from './lockfiles.mjs';
+import { performance } from 'node:perf_hooks';
 
 const ID = 'package-floor';
 
@@ -330,8 +331,8 @@ export async function runPackageFloorCheck({
   homeDir,
   readConfigFile,
 } = {}) {
-  const started = Date.now();
-  const ms = () => Math.max(0, Date.now() - started);
+  const started = performance.now();
+  const ms = () => performance.now() - started;
   let pending = 1;
   try {
     if (!base || !head) return makeCheckResult({ id: ID, status: 'skipped', reason: 'no-range', ms: ms() });

@@ -15,6 +15,8 @@ description: >
 
 # Quality Gates — Reference Skill
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 This skill defines the canonical quality check commands. Do NOT invoke this skill directly.
 Consuming skills (session-start, wave-executor, session-end, session-reviewer) reference the
 variant they need and execute the commands inline.
@@ -171,16 +173,16 @@ Prefer `scripts/run-quality-gate.mjs` for deterministic execution with structure
 
 ```bash
 # Baseline (session-start)
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.mjs" --variant baseline --config "$CONFIG"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/run-quality-gate.mjs" --variant baseline --config "$CONFIG"
 
 # Incremental (wave-executor)
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.mjs" --variant incremental --config "$CONFIG" --files changed-file1.ts,changed-file2.ts
+node "${CLAUDE_PLUGIN_ROOT}/scripts/run-quality-gate.mjs" --variant incremental --config "$CONFIG" --files changed-file1.ts,changed-file2.ts
 
 # Full Gate (Quality wave, session-end) — --receipt reuses a green run on the same content tree (#1897)
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.mjs" --variant full-gate --config "$CONFIG" --session-start-ref "$SESSION_START_REF" --receipt
+node "${CLAUDE_PLUGIN_ROOT}/scripts/run-quality-gate.mjs" --variant full-gate --config "$CONFIG" --session-start-ref "$SESSION_START_REF" --receipt
 
 # Per-File (session-reviewer)
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.mjs" --variant per-file --config "$CONFIG" --files specific-file.ts
+node "${CLAUDE_PLUGIN_ROOT}/scripts/run-quality-gate.mjs" --variant per-file --config "$CONFIG" --files specific-file.ts
 ```
 
 The script handles graceful degradation (missing tools → skip), structured JSON output matching the schemas above, and proper exit codes (0=pass, 1=error, 2=gate-failed). Only Full Gate exits 2: the three reporting variants exit 0 after a failing or killed check, so their verdict is in the JSON envelope (a kill also turns the event into `.failed`; a plain failing check does not). stdout stays one JSON document; Full Gate's stderr carries the failure disclosure, the re-run summary and, when the test command exited 0 while its output counts failures, the one `failed_despite_pass` line (see What decides the verdict).

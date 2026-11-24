@@ -20,7 +20,7 @@ Build the topic from what this session is about, as plain words:
 Write the topic words verbatim with your file-writing tool (not the shell) to a new temporary UTF-8 file, then redirect that file into the script, with the path in double quotes:
 
 ```bash
-node "${PLUGIN_ROOT}/scripts/print-vault-pointers.mjs" < "<topic file>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/print-vault-pointers.mjs" < "<topic file>"
 ```
 
 Run this Bash call with a tool timeout of 15000 ms; the script ends itself after 8 s, and the tool timeout is the outer limit should it ever not. The topic text never appears in a shell command: not in a heredoc (a line of issue text equal to the heredoc's end word ends the input early and the shell runs the rest), not in a `--topic "…"` argument (`$(…)` or backticks would run before the script starts). This is the same rule `commands/session.md` sets for the invocation text. The script sanitizes the topic (letters, digits, spaces, hyphens; at most 120 characters), resolves the command (`vault-search` on PATH, else `python3 <vault-dir>/scripts/retrieval/vault_search.py`), stops it after 5 s, and prints at most 5 pointers in at most 600 characters. When `vault-integration.vault-dir` resolves to a directory, the search is pinned to it and the block header names it, so the paths can be read from any repo. A host that switched the integration off (`SO_VAULT_INTEGRATION=off`, owner.yaml) runs no search. It always exits 0. Empty stdout means no block: omit the slot and continue. Never retry and never run a second query in this phase.

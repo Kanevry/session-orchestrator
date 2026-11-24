@@ -29,7 +29,7 @@ Read `.orchestrator/metrics/sessions.jsonl` and keep only REAL sessions: drop ev
 
 Compute aggregates:
 - Total sessions (real only), average duration, session type distribution (deep/feature/housekeeping)
-- `N abandoned stubs excluded` — its own dashboard line, never folded into Total sessions. Split it by what the stubs measurably did (#1835): `node scripts/session-ledger-census.mjs --json` reports `empty / conversation / dispatched / unmeasured`. Only `empty` is a measured restart without recorded work (no turn, agent, wave, tool event or Skill call); `unmeasured` is not zero work. Never derive the split from a stub's `total_waves` / `total_agents` — those are placeholders listed in `_backfill_incomplete_fields`
+- `N abandoned stubs excluded` — its own dashboard line, never folded into Total sessions. Split it by what the stubs measurably did (#1835): `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-ledger-census.mjs" --json` reports `empty / conversation / dispatched / unmeasured`. Only `empty` is a measured restart without recorded work (no turn, agent, wave, tool event or Skill call); `unmeasured` is not zero work. Never derive the split from a stub's `total_waves` / `total_agents` — those are placeholders listed in `_backfill_incomplete_fields`
 - Average completion rate, total carryover rate (carryover / planned across all sessions)
 - Agent success rate (complete / total dispatched), spiral rate (spiral / total)
 - Most common wave roles, average files changed per wave — `waves[].files_changed` is not one shape across the ledger: a number (use it), an array (use its length), or null/absent (MISSING — exclude the wave from the average, never count it as 0). Report the n behind the average: `avg files/wave X (n=<waves with a value> of <all waves>)`
@@ -92,7 +92,7 @@ Read Session Config to obtain the `vault-integration.gitlab-groups` list. If not
 **Step 2 — Dry-run scan**
 
 ```bash
-node scripts/vault-backfill.mjs --groups <CSV>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/vault-backfill.mjs" --groups <CSV>
 ```
 
 Captures stdout (per-repo JSON action records) and stderr (progress logging). Present the dry-run table to the user so they can review which repos would receive `.vault.yaml` stubs.
@@ -261,8 +261,8 @@ Collect new patterns as learning objects in the same strict schema session-end u
 Write them **only** through `scripts/apply-session-learnings.mjs` (#1446) — never by hand, never with a shell redirect. Put `{"confidence_updates": [...], "new_learnings": [...]}` in a sidecar under `.orchestrator/tmp/` via the Write tool, preview, then apply. `--decay-rate 0` keeps a retro from applying the per-session passive decay a second time:
 
 ```bash
-node scripts/apply-session-learnings.mjs --input .orchestrator/tmp/retro-learnings.json --decay-rate 0 --json
-node scripts/apply-session-learnings.mjs --input .orchestrator/tmp/retro-learnings.json --decay-rate 0 --apply --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/apply-session-learnings.mjs" --input .orchestrator/tmp/retro-learnings.json --decay-rate 0 --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/apply-session-learnings.mjs" --input .orchestrator/tmp/retro-learnings.json --decay-rate 0 --apply --json
 ```
 
 Exit `1` means a record failed validation (the message names its id) and nothing was written.

@@ -226,6 +226,8 @@ export async function readSkillInvocations(filePath) {
   return entries;
 }
 
+let warnedAboutCountSkillInvocationsBySession = false;
+
 /**
  * Count the `selected` rows per `session_id` (#1835). A Skill call is a tool
  * call (`hooks/skill-invocation-telemetry.mjs`, PreToolUse `Skill`), so a
@@ -244,6 +246,10 @@ export async function readSkillInvocations(filePath) {
  * @returns {{counts: Map<string, number>, readable: boolean}}
  */
 export function countSkillInvocationsBySession(filePath, readFileSync = fsReadFileSync) {
+  if (!warnedAboutCountSkillInvocationsBySession) {
+    warnedAboutCountSkillInvocationsBySession = true;
+    console.warn('countSkillInvocationsBySession is deprecated. Use countSkillInvocationsAcrossFiles from scripts/lib/session-close-backfill.mjs.');
+  }
   const counts = new Map();
   let raw;
   try {

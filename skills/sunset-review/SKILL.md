@@ -61,7 +61,7 @@ The walker — `scripts/lib/sunset/walker.mjs` — is **read-only** and was buil
 - The window is the period over which dispatch counts are tallied. Keep the default unless the operator has a reason to narrow it.
 
 ### Phase 2 — Run the walker (JSON mode)
-Run the read-only walker and capture its JSON:
+Run the read-only walker from the session-orchestrator checkout whose plugin surface and ledgers it scans:
 
 ```bash
 node scripts/lib/sunset/walker.mjs --json --window-days 90 > /tmp/sunset-walk.json

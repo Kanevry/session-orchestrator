@@ -65,8 +65,8 @@ Review `<state-dir>/rules/` files that are relevant to this session's work:
 1. Finalize the frontmatter in ONE lock-guarded write, into the SAME file Phase 3.7a wrote (#1640 — identical `statePath`, passed explicitly): `status: completed`, `updated: <ISO 8601 UTC>` (#184), the final wave count as `current-wave`, and `session-id` re-stamped to this process's own raw id when one is measurable (after a mid-session `/clear` the record still names the pre-`/clear` id; the re-stamp keeps it this session's). Do not hand-edit any of these fields:
    ```bash
    node --input-type=module -e "
-   import {execSync} from '${PLUGIN_ROOT}/scripts/lib/native-command.mjs';
-   import {markStateMdCompletedOnDisk} from '${PLUGIN_ROOT}/scripts/lib/state-md/frontmatter-mutators.mjs';
+   import {execSync} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/native-command.mjs';
+   import {markStateMdCompletedOnDisk} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md/frontmatter-mutators.mjs';
    const repoRoot = execSync('git rev-parse --show-toplevel', {encoding: 'utf8'}).trim();
    const statePath = '<state-dir>/STATE.md'; // same value as Phase 3.7a
    const res = await markStateMdCompletedOnDisk(repoRoot, {statePath, currentWave: <final wave number>});
@@ -86,7 +86,7 @@ Pre-dispatch snapshots (`refs/so-snapshots/<sessionId>/wave-*`) are created by w
 
 ```bash
 node --input-type=module -e "
-import { listSnapshots, deleteSnapshot, gcSnapshots } from '${PLUGIN_ROOT}/scripts/lib/coordinator-snapshot.mjs';
+import { listSnapshots, deleteSnapshot, gcSnapshots } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/coordinator-snapshot.mjs';
 
 // Step A: delete this session's snapshots (clean close → we don't need them)
 const mine = await listSnapshots({ sessionId: '${SESSION_ID}' });
@@ -112,7 +112,7 @@ This cleanup is the counterpart to the session-start Phase 1.5 recovery prompt: 
 Drain the host-local telemetry send-queue once, fire-and-forget. The flush is **advisory** — the close must never fail, stall, or surface an error because of telemetry:
 
 ```javascript
-import { flush } from '${PLUGIN_ROOT}/scripts/lib/telemetry/sync.mjs';
+import { flush } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/telemetry/sync.mjs';
 
 // Fire-and-forget. flush() is contractually never-throw + internally gated (resolveConsent)
 // + 3s-timeout-bounded; the try/catch is defense-in-depth, never a real failure path.
@@ -149,7 +149,7 @@ Read `skills/session-end/learning-patterns.md` for extraction heuristics, confid
 Run the aggregator ONCE. Config gates short-circuit FIRST (no disk touch); the input-detection helpers run only when the config gate passed. It NEVER throws — a per-phase probe error fail-opens to `run: true` (run the phase rather than silently lose it):
 
 ```javascript
-import { planTailPhases } from '${PLUGIN_ROOT}/scripts/lib/session-end/phase-skip.mjs';
+import { planTailPhases } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/session-end/phase-skip.mjs';
 
 const { plan, skippedReport } = await planTailPhases({
   repoRoot: process.cwd(),
@@ -227,7 +227,7 @@ const boardResult = await mirrorBoard({
 
 Evaluate the just-closed session deterministically and, when configured, with an advisory LLM judge. This phase is a thin hook — the full evaluation flow lives in `skills/eval/SKILL.md`; only the close-out integration is described here.
 
-1. **Deterministic run.** Invoke `node scripts/eval-session.mjs --json` — with no `--session`, the cascade (`resolveSession`, revised #822) walks records newest-to-oldest (source order) and evaluates the first one that is either `status:'completed'` or non-abandoned with evidence of completed work (typically the record Phase 3.7 just appended). Model capture: the coordinator passes `--model-id <id> --model-source self-report`; the `$ANTHROPIC_MODEL` env var wins automatically when set. Pass the configured pseudonym through with `--handle <eval.handle>` (omit when `null`). The CLI appends the eval record to `.orchestrator/metrics/eval.jsonl` (`appendEvalRecord` is never-throw); run from a linked worktree, that is the main checkout's journal when the worktree ignores it (`resolveLedgerPath`, #1722), so the record survives the worktree.
+1. **Deterministic run.** Invoke `node "${CLAUDE_PLUGIN_ROOT}/scripts/eval-session.mjs" --json` — with no `--session`, the cascade (`resolveSession`, revised #822) walks records newest-to-oldest (source order) and evaluates the first one that is either `status:'completed'` or non-abandoned with evidence of completed work (typically the record Phase 3.7 just appended). Model capture: the coordinator passes `--model-id <id> --model-source self-report`; the `$ANTHROPIC_MODEL` env var wins automatically when set. Pass the configured pseudonym through with `--handle <eval.handle>` (omit when `null`). The CLI appends the eval record to `.orchestrator/metrics/eval.jsonl` (`appendEvalRecord` is never-throw); run from a linked worktree, that is the main checkout's journal when the worktree ignores it (`resolveLedgerPath`, #1722), so the record survives the worktree.
 2. **Advisory judge (opt-in).** When `eval.judge` is not `off`, run the judge flow per `skills/eval/SKILL.md` § Phase 3: the coordinator dispatches the read-only `eval-judge` agent (DI'd dispatch, untrusted-data nonce fence), merges the advisory judge dimensions (`method: "judge"`, `advisory: true`, `calibration_status: "uncalibrated"`) into the record, and appends the merged record. When `eval.judge: off`, no agent is dispatched and no judge dimensions are produced.
 3. **HTML report (opt-in).** When `eval.report: html` (the default), call `writeEvalReport(record, …)` from `scripts/lib/eval/report.mjs` to emit the self-contained run report under `.orchestrator/eval/reports/<run-id>.html` (gitignored, regenerable from the record). When `eval.report: none`, skip the report.
 
@@ -239,7 +239,7 @@ Evaluate the just-closed session deterministically and, when configured, with an
 
 > **Ordering:** Runs AFTER Phase 3.7d and BEFORE Phase 3.4 (`status: completed`), so its one Open Question lands while STATE.md is still `status: active`. See the Phase 3.4 Runtime Ordering Note canonical order.
 
-Names the untracked vault files this session may have left behind: `node "$PLUGIN_ROOT/scripts/vault-orphans.mjs" --since <STATE.md started_at> --json` lists untracked vault files modified since the session start, minus files carrying a `_generator: session-orchestrator-` marker. The results are candidates — mtime is a hint, not proof of authorship. The coordinator names them in the Final Report and records ONE Open Question via `appendOpenQuestionOnDisk` (up to 10 paths plus the count). It never commits, moves or deletes anything in the vault (PSA-003). Exit 2 / `status: unavailable` is reported as "could not measure", never as "no orphans". Non-blocking.
+Names the untracked vault files this session may have left behind: `node "${CLAUDE_PLUGIN_ROOT}/scripts/vault-orphans.mjs" --since <STATE.md started_at> --json` lists untracked vault files modified since the session start, minus files carrying a `_generator: session-orchestrator-` marker. The results are candidates — mtime is a hint, not proof of authorship. The coordinator names them in the Final Report and records ONE Open Question via `appendOpenQuestionOnDisk` (up to 10 paths plus the count). It never commits, moves or deletes anything in the vault (PSA-003). Exit 2 / `status: unavailable` is reported as "could not measure", never as "no orphans". Non-blocking.
 
 **See `phase-3-7e-vault-orphans.md` for full details.**
 

@@ -17,6 +17,8 @@ color: cyan
 
 # Repo Audit Skill
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 Perform a comprehensive audit of the host repository against the ecosystem baseline. Emits a structured Markdown checklist report and a JSON sidecar for trend tracking.
 
 ## Invocation
@@ -63,7 +65,7 @@ Run all checks in parallel where possible. For each check use the status symbols
 
 | Check | Method |
 |---|---|
-| `CLAUDE.md` exists (at most 80 non-exempt lines; runtime `## Session Config` block exempt) | `node "$PLUGIN_ROOT/scripts/lib/claude-md-budget-lint.mjs" --file CLAUDE.md` |
+| `CLAUDE.md` exists (at most 80 non-exempt lines; runtime `## Session Config` block exempt) | `node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/claude-md-budget-lint.mjs" --file CLAUDE.md` |
 | `.claude/rules/` has path-scoped rules | `ls .claude/rules/*.md 2>/dev/null` |
 | `.claude/settings.json` exists | `ls .claude/settings.json` |
 | `.mcp.json` exists with servers (or `mcp/servers.json` named by a plugin manifest) | `ls .mcp.json mcp/servers.json 2>/dev/null`; a file with an empty `mcpServers` object declares nothing |

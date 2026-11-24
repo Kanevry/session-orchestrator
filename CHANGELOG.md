@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The source of the documentation server is public** (#2260). `server/mcp/` is now part of the public export, so anyone can check the server's privacy statements (it stores nothing and logs no input) against the code. The `/mcp` page links to it; the server's own pages follow with its next deploy.
+
+- **The site has a page `/edih` in English and German for European Digital Innovation Hubs and SMEs** (#2267). It explains a first checked session in one afternoon, names the two default network connections with their switches, and says that live Pi compatibility has not yet been verified in a recorded run. `docs/edih-proof-runs.md` fixes the pass criteria for three recorded Pi runs in advance; none has run yet.
+- **The site has English terms of use at `/terms`, and `/edih` names the support reply time for EDIH customers** (#2267). The terms cover the MIT License and statutory rights, the operator and hosting, cookieless measurement and the EU AI Act role of users as deployers. `/edih` and `/de/edih` state that EDIH customers receive a written reply within 3 working days to support requests submitted via GitHub Issues, and link the terms from the page and the footer.
+
+### Fixed
+
+- **Pi tells the model where the plugin lives** (#2277). The extension supplies the absolute package root in the system prompt, and every generated Pi prompt points to its command or skill file under that root. When they are unset, it also sets `CLAUDE_PLUGIN_ROOT` and `PI_PLUGIN_ROOT` to that root and `SO_PLATFORM=pi` in the Pi process, so `${CLAUDE_PLUGIN_ROOT}` calls in skills run from Pi's bash tool, and the scripts they start still use the `.pi/` state directory; every child process of Pi inherits these values.
+- **The shell MCP server returns the same JSON-RPC errors as the Node transport** (#2275). Malformed JSON gets `-32700`, invalid requests get `-32600`, and valid notifications receive no reply. The shell launcher now hands every line to the Node server, so Node is required to start it, as it already was for the plugin.
+- **Security-delta reports each check's duration in whole milliseconds** (#2275). The result contract rounds fractional durations after validation.
+- **`/security posture` reports a migration hint for a pnpm 12+ pin with only `onlyBuiltDependencies`** (#2275). The check passes because pnpm 12.21.0 blocked unapproved builds with that configuration.
+- **The MCP starter and plugin resolver prefer the highest cached `x.y.z` version** (#2275), ignoring a build suffix such as Codex's `+codex.<timestamp>`. Modification time breaks ties and orders copies without a release version.
+- **`/security status` shows the reason for a skipped advisory pulse, and security events reach the repository ledger from subdirectories** (#2211). Commands run inside a linked worktree use the main checkout's ledger.
+- **The axe pre-check waits for finite animations to finish** (#2190). It uses the latest expected finish time, up to 10 seconds, so a 2.5-second page animation can complete before the accessibility scan.
+- **`countSkillInvocationsBySession` warns on its first call** (#1852). The warning directs callers to `countSkillInvocationsAcrossFiles` in `scripts/lib/session-close-backfill.mjs`.
+- **Both MCP stdio transports reject `id: null` with `-32600 Invalid Request` and leave notifications without a reply** (#2274), including notifications for unknown methods.
+- **Security-delta keeps network checks on the performance clock when a custom timer is supplied** (#2274). The runtime-floor check falls back to its default budget for a non-finite deadline, and network duration is reported in whole milliseconds.
+- **`/security posture` checks mirror protection only for recognized GitHub hosts and accepts pnpm's `allowBuilds` map** (#2211). A pnpm 12+ pin with only the legacy `onlyBuiltDependencies` setting now reports the migration fix.
+- **The MCP server answers `ping` and marks failed tool calls with `isError: true`** (#2272), in both the Node transport (Claude Code) and the shell transport (Codex, Cursor). MCP 2024-11-05 requires an empty result for `ping`; 5.22.0 answered "Method not found". A tool call outside a git repository or a failed read now comes back as a tool result with `isError: true` instead of plain text or a JSON-RPC protocol error.
+- **Bounded ledger and transcript reads retain the first complete record** (#2268) when the window starts immediately after a newline.
+- **STATE.md flow arrays accept apostrophes inside unquoted values** (#2268) without swallowing the following entries.
+- **Gitleaks scan budgets and security-delta check durations use a monotonic clock** (#2268) so wall-clock changes cannot distort them.
+- **Security-delta network deadlines use a monotonic clock** (#2270) so wall-clock jumps can no longer shorten or extend network checks.
+- **The 37 skill command sites that used the shell fallback now use plain `${CLAUDE_PLUGIN_ROOT}`** (#2258, slices 1–3). Claude Code left the fallback intact, so Bash ran `node "/scripts/x.mjs"` and failed to find the module. The skill header explains how to resolve the absolute path when the token remains literal. When `/close` runs in the plugin repo, the mirror uses that checkout's export code. Plugin paths formerly written with `$PLUGIN_ROOT` or `${PLUGIN_ROOT}` and bare calls to shipped scripts now use `${CLAUDE_PLUGIN_ROOT}` too. The linter reports unsubstituted forms and missing skill headers, including paths in skill references. The hook-development lesson is exempt from the header rule because its examples teach hook manifest paths.
+
+### Changed
+
+- **The install guide documents headless bootstrap permissions, and the security skill explains manual review on Cursor and Pi** (#2275, #2205). The bootstrap measurement covers `claude -p --plugin-dir` only.
+
 ## [5.22.0] - 2026-11-24
 
 `/security` gives one read-only entry for repository security work, and `/bootstrap` measures the repo before it asks. Hooks no longer start `node`, `git` or other tools from inside the project. The confidential-names list covers GitLab group names, telemetry sends only from interactive Claude Code sessions, the lock reaper no longer deletes the lock of a live session, and gate and check durations can no longer be negative. A read-only documentation server for the OpenAI plugin directory comes with its own package variant.

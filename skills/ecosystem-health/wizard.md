@@ -27,7 +27,7 @@ files. The user reviews `git status` and commits manually.
 Run silently before prompting.
 
 ```bash
-node "$PLUGIN_ROOT/scripts/lib/ecosystem-wizard.mjs" --repo-root "$(pwd)" [--dry-run]
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/ecosystem-wizard.mjs" --repo-root "$(pwd)" [--dry-run]
 ```
 
 The detection phase reads:

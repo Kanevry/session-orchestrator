@@ -16,8 +16,8 @@ Before each wave dispatch:
    **Deriving `blockedCommands` (effective floor∪overlay policy, #155/#972):** Before writing `wave-scope.json`, derive the blocked patterns from the EFFECTIVE policy via the shared merge module — the plugin's floor policy united with the repo's overlay policy. (A bare `jq` over the repo-local policy file alone under-counts the merged result since #972.)
    ```bash
    BLOCKED=$(node --input-type=module -e "
-   import { loadEffectivePolicy, blockedCommandPatterns } from '$PLUGIN_ROOT/scripts/lib/blocked-commands-policy.mjs';
-   const { rules } = await loadEffectivePolicy({ cwd: process.cwd(), projectDir: process.env.CLAUDE_PROJECT_DIR ?? null, pluginRoot: '$PLUGIN_ROOT' });
+   import { loadEffectivePolicy, blockedCommandPatterns } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/blocked-commands-policy.mjs';
+   const { rules } = await loadEffectivePolicy({ cwd: process.cwd(), projectDir: process.env.CLAUDE_PROJECT_DIR ?? null, pluginRoot: '${CLAUDE_PLUGIN_ROOT}' });
    console.log(JSON.stringify(blockedCommandPatterns(rules)));
    ")
    ```
@@ -31,7 +31,7 @@ Before each wave dispatch:
 
    **Deriving the session binding (#1123, made mechanical #1207):** `wave-scope.json` lives in the WORKING COPY, and `hooks/enforce-scope.mjs` applies whatever it finds there to every session running in that checkout. Without a binding, a Discovery wave's `allowedPaths: []` denied every write of an unrelated parallel session. Name the writer — both fields come from ONE `attributionForRecord()` call, which reads `.orchestrator/session.lock` and confirms it against this process's own identity before returning anything:
    ```bash
-   MANIFEST=$(printf '%s' "$DRAFT_MANIFEST" | node "$PLUGIN_ROOT/scripts/wave-scope-binding.mjs" \
+   MANIFEST=$(printf '%s' "$DRAFT_MANIFEST" | node "${CLAUDE_PLUGIN_ROOT}/scripts/wave-scope-binding.mjs" \
      --merge --wave "$WAVE" --role "$ROLE")
    ```
    `$DRAFT_MANIFEST` is the manifest below WITHOUT the two binding keys; `$MANIFEST` is what you write to `wave-scope.json`. `--merge` reads that draft on stdin and prints it back with `session_id` / `semantic_session_id` merged in — or with both keys ABSENT (and the unbound event emitted) when the binding is `{}`. It passes every other field through untouched and drops any stale binding key the draft carried, so the merge itself can no longer produce `"session_id": ""` or a leftover id from a previous run. Without `--merge` the same command prints only the binding object (`{"session_id": …}`) and you merge it yourself — the older, hand-copied form.
@@ -58,7 +58,7 @@ Before each wave dispatch:
    The `wave` field also doubles as the RUNNING-wave signal for readers outside this step's STATE.md `current-wave` (which records the just-completed wave, per step 1 of `3a. Post-Wave: Update STATE.md` above): `scripts/memory-propose.mjs` reads it directly for proposal attribution only when the manifest is bound to the calling session (`semantic_session_id` matches the session's own semantic id); an unbound or foreign manifest is ignored and the reader falls back to `current-wave + 1` (#1166, #1123).
 
    **What the binding means to a reader.** Three states, and the disposition differs for each. **Absent** = legacy = ENFORCE: a manifest written before #1123 (or by a stale skill body) binds nobody, so it must keep constraining everyone exactly as it did before — this is the only state that preserves the pre-#1123 contract, and `validate-wave-scope.mjs` marks it with one advisory stderr line rather than an error, because § 3.3's pre-union skeleton is itself an unbound manifest. **Own session** = ENFORCE, unchanged. **Foreign session** — `session_id` present (or the legacy `session`, still read for one transition release, #1153 P2) and not this session's id — = ALLOW: `hooks/enforce-scope.mjs` lets the write through and emits `orchestrator.scope.foreign_session_ignored` so the skip is counted rather than silent. A foreign manifest is somebody else's wave plan; it never had authority over this session's writes, and the event is what keeps that visible instead of leaving an allow nothing recorded. (The reader half lives in `hooks/enforce-scope.mjs` — the writer's only obligation is to name itself honestly here.)
-2. Validate by piping through `node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs"` (`$PLUGIN_ROOT` — see "Shell variables used in this section" above). If validation fails (exit 1), fix the JSON based on stderr errors and retry.
+2. Validate by piping through `node "${CLAUDE_PLUGIN_ROOT}/scripts/validate-wave-scope.mjs"`. If validation fails (exit 1), fix the JSON based on stderr errors and retry.
 3. **`allowedPaths` is COMPUTED from one canonical declaration array — never hand-transcribed (#1020/#1083).** Transcribing either declaration shape or the union by hand produced scope divergences. Globs stay verbatim (`scripts/*.sh`) — the enforcement hook resolves them at check time.
 
    **3.1 — materialize both declaration shapes once.** Build one JSON array from the session plan, one `{id, files}` record for every agent plus exactly one `coordinator` record for the coordinator's planned direct edits. `files` arrays, their entries and their order are the plan's verbatim declarations. Run from the **project root**, materialize it ONCE and capture the aggregate-sidecar path:
@@ -66,7 +66,7 @@ Before each wave dispatch:
    ```bash
    WAVE_SCOPE_RECORDS='[{"id":"W3-I1","files":["scripts/example.mjs"]},{"id":"coordinator","files":["skills/wave-executor/wave-loop.md"]}]'
    WAVE_SCOPES_SIDECAR="$(
-     printf '%s' "$WAVE_SCOPE_RECORDS" | node "$PLUGIN_ROOT/scripts/materialize-wave-scope.mjs" \
+     printf '%s' "$WAVE_SCOPE_RECORDS" | node "${CLAUDE_PLUGIN_ROOT}/scripts/materialize-wave-scope.mjs" \
        --state-dir "$STATE_DIR" --wave "$WAVE" --warn-missing
    )"
    [ -n "$WAVE_SCOPES_SIDECAR" ] || { echo "materialize-wave-scope produced no sidecar path" >&2; exit 1; }
@@ -96,7 +96,7 @@ Before each wave dispatch:
    **3.2 — assert disjointness BEFORE computing the union.** The materialized aggregate is an ARRAY of `{id, files}` records (never an object map: a duplicated agent id must stay visible), including `coordinator.json`. Run:
 
    ```bash
-   node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs" \
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/validate-wave-scope.mjs" \
      --assert-disjoint "$WAVE_SCOPES_SIDECAR" < <state-dir>/wave-scope.json
    ```
 
@@ -105,7 +105,7 @@ Before each wave dispatch:
    **3.3 — compute the union.** `--union` is a QUERY MODE that still requires a schema-valid manifest on stdin, so write the skeleton first with `"allowedPaths": []`, then:
 
    ```bash
-   node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs" \
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/validate-wave-scope.mjs" \
      --union "$WAVE_SCOPES_SIDECAR" < <state-dir>/wave-scope.json
    ```
 
@@ -121,7 +121,7 @@ Before each wave dispatch:
 
    > **Fail-closed:** an ABSENT or unrecognised `role` does **not** expand. Omitting it fails loudly (an agent's write to its own test is blocked, recoverable by one re-union); the opposite default would silently hand a Quality phase-1 simplification agent write access to the suite. `{ enabled: false }` is the unconditional opt-out and `{ enabled: true }` the explicit opt-in — both override the role.
 
-   **It emits a GLOB, never a computed concrete path.** Resolve via the production file's basename, e.g. `foo.mjs` → `tests/**/foo*.test.mjs` — the same form `§ 4. Test-consolidation branch` already uses, stated once. The measurement is `scripts/lib/test-sibling-coverage.mjs`, not a count restated here — run `node scripts/lib/test-sibling-coverage.mjs --json` and cite its envelope (it carries its own definition, `ref` and the uncovered list). It counts production files by negation (every tracked file a sibling-rule source matches that is not test-side) and reports three figures: **glob** (the scope gate's own `testSiblingsFor()` + `pathMatchesPattern()`), **exact** (a `tests/**/<stem>.test.mjs` exists), **mirror** (the naive 1:1 path `tests/<path minus scripts/>.test.mjs`). Measured at `HEAD=af58a173`, 2026-10-03, index clean, over the script's population (tracked `.mjs` matched by the sibling-rule source minus every test-side path, 571 files): glob **511/571 (89.5 %)**, exact **491/571 (86.0 %)**, mirror **353/571 (61.8 %)**. So the glob is right ~9 times in 10 and *harmless* when wrong — it grants write access to a path that may not exist; a computed mirror path would be wrong ~38 % of the time **and still deny the real test**. The residual is real, mostly semantic naming (`scripts/lib/learnings/*.mjs` → `tests/unit/learnings.test.mjs`) and untested root config files: when an agent's test sibling does not match the glob, add it by hand to that agent's "Files:" scope in the session plan. This is a default, not a guarantee.
+   **It emits a GLOB, never a computed concrete path.** Resolve via the production file's basename, e.g. `foo.mjs` → `tests/**/foo*.test.mjs` — the same form `§ 4. Test-consolidation branch` already uses, stated once. The measurement is `scripts/lib/test-sibling-coverage.mjs`, not a count restated here — run `node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/test-sibling-coverage.mjs" --json` and cite its envelope (it carries its own definition, `ref` and the uncovered list). It counts production files by negation (every tracked file a sibling-rule source matches that is not test-side) and reports three figures: **glob** (the scope gate's own `testSiblingsFor()` + `pathMatchesPattern()`), **exact** (a `tests/**/<stem>.test.mjs` exists), **mirror** (the naive 1:1 path `tests/<path minus scripts/>.test.mjs`). Measured at `HEAD=af58a173`, 2026-10-03, index clean, over the script's population (tracked `.mjs` matched by the sibling-rule source minus every test-side path, 571 files): glob **511/571 (89.5 %)**, exact **491/571 (86.0 %)**, mirror **353/571 (61.8 %)**. So the glob is right ~9 times in 10 and *harmless* when wrong — it grants write access to a path that may not exist; a computed mirror path would be wrong ~38 % of the time **and still deny the real test**. The residual is real, mostly semantic naming (`scripts/lib/learnings/*.mjs` → `tests/unit/learnings.test.mjs`) and untested root config files: when an agent's test sibling does not match the glob, add it by hand to that agent's "Files:" scope in the session plan. This is a default, not a guarantee.
 
    > Re-measure before citing these figures downstream — a count re-briefed later is a claim about the past (`.claude/rules/parallel-sessions.md` § PSA-006). The previous hand count (`730ee9d`, 2026-08-03: 375 / 272 of 439, denominator `scripts/` + `hooks/` + `skills/` only) is superseded by the script (#1030 P3).
 
@@ -137,7 +137,7 @@ Before each wave dispatch:
    **Pre-Dispatch Scope-Union Assertion (#796):** `wave-scope.json` is GLOBAL per wave — `hooks/enforce-scope.mjs` Gate 7 checks EVERY agent against the same `allowedPaths` union, so a union that (re)written for only ONE agent silently denies its siblings' legitimate writes. Before each `Agent()` batch, mechanically assert — for EVERY agent in the batch — that its fileScope ⊆ `wave-scope.allowedPaths`. `$AGENT_FILESCOPE_JSON` is that agent's § 3.1 file — `<state-dir>/filescopes/wave-<N>/<agent-id>.json`, already written above and shared with every other consumer. Do not re-write it to a temp path here (§ 3.1 says why that degrades silently); just run:
 
    ```bash
-   node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs" \
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/validate-wave-scope.mjs" \
      --assert-subset "$AGENT_FILESCOPE_JSON" --expand-test-siblings \
      < <state-dir>/wave-scope.json
    ```

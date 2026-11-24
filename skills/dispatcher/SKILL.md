@@ -17,6 +17,8 @@ model: sonnet
 
 # Dispatcher Skill
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 > Cross-repo autopilot front-door — enumerate → rank → owner-AUQ → atomic claim → route. Read-only until the operator confirms; the only mutating step is the atomic `session.lock` claim, and it happens BEFORE any launch.
 
 ## Invocation
@@ -60,7 +62,7 @@ The dispatcher answers one question: *"of all my repos, which is the most worthw
 Run the read path (non-mutating). Either invoke the CLI directly or call `runDispatch` from the module:
 
 ```bash
-node scripts/lib/dispatcher/cli.mjs --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/dispatcher/cli.mjs" --json
 ```
 
 The JSON object has keys `{ candidates, free, ranked, warnings, recommended }`:
@@ -168,7 +170,7 @@ With the lease held, routing splits on whether the chosen entry is model-invocab
 ## CLI
 
 ```bash
-node scripts/lib/dispatcher/cli.mjs [--json] [--dry-run] [--repo <name>] [--start-dir <path>] [--help] [--version]
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/dispatcher/cli.mjs" [--json] [--dry-run] [--repo <name>] [--start-dir <path>] [--help] [--version]
 ```
 
 | Flag | Description |

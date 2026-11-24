@@ -9,9 +9,12 @@
  * cancelled (the checks own their own timeouts; gitleaks is handed the
  * remaining budget as its kill ceiling).
  *
- * The network checks additionally get `deadlineAt = start + budget.networkMs`,
- * after which they start no new request.
+ * Both budgets use the monotonic clock by default. Network checks get
+ * `deadlineMono = performance.now() + budget.networkMs`, independent of an
+ * injected `now`, and start no new request after it.
  */
+import { performance } from 'node:perf_hooks';
+
 import { runAgeGateCheck } from './age-gate.mjs';
 import { BUDGET, MODES, deriveStatus, deriveVerdict, makeCheckResult, summarize } from './contract.mjs';
 import { runFloatingTagCheck } from './floating-tags.mjs';
@@ -25,7 +28,7 @@ import { runRuntimeFloorCheck } from './runtime-floor.mjs';
  * @property {string} repoRoot
  * @property {string|null} base
  * @property {string} head
- * @property {number} deadlineAt   epoch ms; network checks start no request after it
+ * @property {number} deadlineMono  milliseconds on the `performance.now()` time base
  * @property {number} timeoutMs    remaining total budget at start, in ms
  */
 
@@ -41,11 +44,11 @@ import { runRuntimeFloorCheck } from './runtime-floor.mjs';
  * `package-floor` register check (#1769 stage 3). @type {ReadonlyArray<CheckSpec>}
  */
 export const DEFAULT_CHECKS = Object.freeze([
-  { id: 'lockfile', network: true, run: ({ repoRoot, base, head, deadlineAt }) => runLockfileCheck({ repoRoot, base, head, deadlineAt }) },
+  { id: 'lockfile', network: true, run: ({ repoRoot, base, head, deadlineMono }) => runLockfileCheck({ repoRoot, base, head, deadlineMono }) },
   {
     id: 'runtime-floor',
     network: true,
-    run: ({ repoRoot, base, head, deadlineAt }) => runRuntimeFloorCheck({ repoRoot, base, head, deadlineAt }),
+    run: ({ repoRoot, base, head, deadlineMono }) => runRuntimeFloorCheck({ repoRoot, base, head, deadlineMono }),
   },
   { id: 'floating-tag', network: false, run: ({ repoRoot, base, head }) => runFloatingTagCheck({ repoRoot, base, head }) },
   {
@@ -59,11 +62,14 @@ export const DEFAULT_CHECKS = Object.freeze([
 
 const LATE = Symbol('late');
 
+/** Whole milliseconds since `start`; the monotonic clock returns fractions (#2270). */
+const elapsedMs = (now, start) => Math.max(0, Math.round(now() - start));
+
 /**
  * Race one check against the shared total deadline.
  * @param {CheckSpec} spec
  * @param {CheckContext} ctx
- * @param {number} totalDeadline  epoch ms
+ * @param {number} totalDeadline  milliseconds on the injected clock's time base
  * @param {() => number} now
  * @param {number} start
  * @returns {Promise<object>} CheckResult
@@ -83,7 +89,7 @@ async function runOne(spec, ctx, totalDeadline, now, start) {
   } finally {
     clearTimeout(timer);
   }
-  const ms = Math.max(0, now() - start);
+  const ms = elapsedMs(now, start);
   if (outcome === LATE) return makeCheckResult({ id: spec.id, status: 'degraded', reason: 'budget', unchecked: 1, ms });
   if (!outcome || typeof outcome !== 'object') {
     return makeCheckResult({ id: spec.id, status: 'degraded', reason: 'internal-error', unchecked: 1, ms });
@@ -103,7 +109,7 @@ async function runOne(spec, ctx, totalDeadline, now, start) {
  * @param {string} [opts.head]
  * @param {string} [opts.mode]                 one of MODES (default `off`)
  * @param {ReadonlyArray<CheckSpec>} [opts.checks]  injectable for tests
- * @param {() => number} [opts.now]
+ * @param {() => number} [opts.now]  monotonic clock for durations and the total budget (injectable for tests)
  * @param {{totalMs:number, networkMs:number}} [opts.budget]
  * @returns {Promise<{schema:1, mode:string, range:string, status:string, verdict:string, checks:object[], totals:ReturnType<typeof summarize>, ms:{total:number, network:number}}>}
  */
@@ -113,7 +119,7 @@ export async function runSecurityDelta({
   head,
   mode = 'off',
   checks = DEFAULT_CHECKS,
-  now = Date.now,
+  now = () => performance.now(),
   budget = BUDGET,
 } = {}) {
   if (!MODES.includes(mode)) throw new TypeError(`security-delta: mode must be one of ${MODES.join('|')}, got ${JSON.stringify(mode)}`);
@@ -127,7 +133,7 @@ export async function runSecurityDelta({
       repoRoot,
       base: base || null,
       head,
-      deadlineAt: start + budget.networkMs,
+      deadlineMono: performance.now() + budget.networkMs,
       timeoutMs: budget.totalMs,
     };
     const totalDeadline = start + budget.totalMs;
@@ -135,7 +141,7 @@ export async function runSecurityDelta({
     results = settled.map((s, i) =>
       s.status === 'fulfilled'
         ? s.value
-        : makeCheckResult({ id: checks[i].id, status: 'degraded', reason: 'internal-error', unchecked: 1, ms: Math.max(0, now() - start) }),
+        : makeCheckResult({ id: checks[i].id, status: 'degraded', reason: 'internal-error', unchecked: 1, ms: elapsedMs(now, start) }),
     );
   }
 
@@ -153,6 +159,6 @@ export async function runSecurityDelta({
     verdict: deriveVerdict(mode, results),
     checks: results,
     totals: summarize(results),
-    ms: { total: Math.max(0, now() - start), network },
+    ms: { total: elapsedMs(now, start), network: Math.round(network) },
   };
 }

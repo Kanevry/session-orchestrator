@@ -843,9 +843,9 @@ async function tailLoop({ intervalS }) {
   // Restart-safety: do not re-announce findings already recorded for this
   // session. Seeded on the SEMANTIC id — the same key `report()` writes.
   try {
-    const { text, cut } = readTailWindow(eventsFilePath(repoRoot), RESTART_SEED_MAX_BYTES);
+    const { text, partialFirstLine } = readTailWindow(eventsFilePath(repoRoot), RESTART_SEED_MAX_BYTES);
     const lines = text.split('\n');
-    if (cut) lines.shift(); // the byte window may start inside a record
+    if (partialFirstLine) lines.shift();
     const seeded = seedFromEvents(lines, semanticSessionId, state);
     if (seeded > 0) note(`seeded ${seeded} prior finding counters from events.jsonl`);
   } catch (err) {

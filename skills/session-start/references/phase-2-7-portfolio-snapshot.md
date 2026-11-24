@@ -29,7 +29,7 @@ fi
 Invoke `scripts/lib/gitlab-portfolio/cli.mjs` in dry-run mode (same orchestrator used by `/portfolio`):
 
 ```bash
-node scripts/lib/gitlab-portfolio/cli.mjs \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/gitlab-portfolio/cli.mjs" \
   --vault-dir "$VAULT_DIR" \
   --dry-run \
   --session-start-snapshot   # instructs cli.mjs to emit the compact JSON summary for banner rendering

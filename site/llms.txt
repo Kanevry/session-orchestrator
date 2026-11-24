@@ -13,8 +13,11 @@ Version: 5.22.0 · npm: session-orchestrator · requires Node.js >= 24 (package.
 - [User guide](https://session-orchestrator.com/guide)
 - [Lead for several sessions](https://session-orchestrator.com/lead)
 - [Docs server for your agent (MCP)](https://session-orchestrator.com/mcp)
+- [Session Orchestrator for EDIH advisers and SMEs](https://session-orchestrator.com/edih)
+- [Session Orchestrator für EDIH-Beratung und KMU](https://session-orchestrator.com/de/edih)
 - [Impressum](https://session-orchestrator.com/impressum)
 - [Datenschutzerklärung](https://session-orchestrator.com/datenschutz)
+- [Terms of use](https://session-orchestrator.com/terms)
 - [Full description for LLMs](https://session-orchestrator.com/llms-full.txt)
 
 ## Install

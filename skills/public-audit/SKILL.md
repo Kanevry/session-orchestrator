@@ -9,6 +9,8 @@ color: cyan
 
 # Public Audit
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 Measure the public technical discoverability of the site explicitly configured by the user. Read [soul.md](soul.md) before execution and [rubric-v1.md](rubric-v1.md) when interpreting results. This skill implements stage O of #2108; stage L remains open.
 
 ## Input and execution
@@ -16,10 +18,10 @@ Measure the public technical discoverability of the site explicitly configured b
 Use the existing manifest or the user's selected file. The default is `.orchestrator/public-audit.md`. <!-- path-check: example -->
 Read [references/manifest.md](references/manifest.md) when preparing or correcting input. If no manifest exists, prepare the example with the user's known site and page types; obtain missing required values before making requests. Do not guess domains, discover pages by crawling, or infer IndexNow keys.
 
-Run the deterministic CLI from the plugin repository, passing the manifest path explicitly when the audited project is elsewhere. The implementation is `scripts/lib/public-audit/cli.mjs`. <!-- path-check: planned #2108 -->
+Run the deterministic CLI from the audited project, passing its manifest path. The implementation is `scripts/lib/public-audit/cli.mjs`. <!-- path-check: planned #2108 -->
 
 ```bash
-node scripts/lib/public-audit/cli.mjs --manifest <file> --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/public-audit/cli.mjs" --manifest <file> --json
 ```
 
 Without `--json`, the CLI prints a readable report. `--out <file>` writes only the selected output path. The default request allowance is five per normalized hostname; `--max-requests-per-host` accepts integers from 1 through 5 and cannot increase that ceiling. `--help` prints usage without loading a manifest or making requests.

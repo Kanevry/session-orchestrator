@@ -13,8 +13,8 @@
 Run this ONCE at the start of wave execution (before the first wave — not per-wave). The `PreToolUse` skill-invocation matcher does NOT fire for prose-invoked skills, so `wave-executor` is under-counted in `skill-invocations.jsonl` (verified gap: 0 `wave-executor` rows despite a 25-agent session). Emit one `selected` record here so telemetry reflects reality. Best-effort — a write failure NEVER blocks dispatch.
 
 ```js
-import { appendSkillInvocation } from '$PLUGIN_ROOT/scripts/lib/skill-invocations-schema.mjs';
-import { resolveLedgerPath } from '$PLUGIN_ROOT/scripts/lib/ledger-path.mjs';
+import { appendSkillInvocation } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs';
+import { resolveLedgerPath } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/ledger-path.mjs';
 try {
   await appendSkillInvocation(
     // In a linked worktree the main checkout's ledger when it is gitignored there (#1722).
@@ -37,7 +37,7 @@ For each wave, resolve its assigned role(s) from the session plan's role-to-wave
 Run this ONCE, immediately after the Self-Report above and before Wave 1 dispatches — never per-wave, same "before the first wave" anchor as the empty-waves rule above. Freezes the session's scope baseline into STATE.md frontmatter so the drift tripwire in `wave-loop-scope-manifest.md` step 7a has a denominator to compare the rest of the session against.
 
 ```js
-import { writeBaseline } from '$PLUGIN_ROOT/scripts/lib/scope-baseline.mjs';
+import { writeBaseline } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/scope-baseline.mjs';
 
 const result = await writeBaseline({
   repoRoot: process.cwd(),
@@ -271,7 +271,7 @@ Threshold derived from `.orchestrator/metrics/subagents.jsonl` (n=340 wave bound
 **Peer signal — once per wave, plus once per distinct foreign repo cited:**
 
 ```bash
-node "$PLUGIN_ROOT/scripts/lib/peer-discovery.mjs" --check-live "<repoRoot>" --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/peer-discovery.mjs" --check-live "<repoRoot>" --json
 # → {"live":false,"reason":"no-lock","probe":"lock-only","peerCount":0,"peer":null}
 ```
 
@@ -385,7 +385,7 @@ Before dispatching each agent, prepend a line-numbered GROUNDING block to its pr
     MAX_FILES="$(echo "$CONFIG" | jq -r '."grounding-injection-max-files"')" \
     SESSION_ID="<session_id>" WAVE="$wave_num" AGENT_TYPE="<subagent_type>" \
     PERSISTENCE="$(echo "$CONFIG" | jq -r '.persistence')" \
-    bash "$PLUGIN_ROOT/scripts/compute-grounding-injection.sh"
+    bash "${CLAUDE_PLUGIN_ROOT}/scripts/compute-grounding-injection.sh"
 
 Capture stdout as `$GROUNDING_BLOCK`. If empty, dispatch the agent unchanged (legacy behavior).
 
@@ -414,7 +414,7 @@ Claude Code's Agent tool with `isolation: "worktree"` syncs the agent's worktree
 For each worktree-isolated agent about to be dispatched:
 
 ```js
-import { checkUntrackedOverlap } from '$PLUGIN_ROOT/scripts/lib/pre-dispatch-check.mjs';
+import { checkUntrackedOverlap } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/pre-dispatch-check.mjs';
 
 const result = checkUntrackedOverlap({
   scope: agentFileScope,        // same array used for `allowedPaths`
@@ -450,7 +450,7 @@ Before dispatching agents for this wave, checkpoint any uncommitted coordinator 
 **Gate:** `$CONFIG.persistence == true`. When `persistence: false`, skip this step entirely.
 
 ```js
-import { saveSnapshot } from '$PLUGIN_ROOT/scripts/lib/coordinator-snapshot.mjs';
+import { saveSnapshot } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/coordinator-snapshot.mjs';
 
 const snap = await saveSnapshot({
   sessionId: '<session_id>',
@@ -505,7 +505,7 @@ After `wave-scope.json` is written for this wave and before assembling the `Agen
 
 **Invocation:** once per wave, run from the repo root and capture stdout as `$RULES_BLOCK`:
 
-    RULES_BLOCK="$(node "$PLUGIN_ROOT/scripts/print-applicable-rules.mjs" --context wave)" || {
+    RULES_BLOCK="$(node "${CLAUDE_PLUGIN_ROOT}/scripts/print-applicable-rules.mjs" --context wave)" || {
         printf 'WARN: wave rule loading failed (exit %s). Continuing without the rule block.\n' "$?" >&2
         RULES_BLOCK=''
     }
@@ -542,7 +542,7 @@ This replaces the older prose slot "Relevant patterns from `<state-dir>/rules/`"
 
 **Invocation:** once per agent, immediately after that agent's `$AGENT_FILESCOPE_JSON` is written, capture stdout as `$LEARNINGS_INDEX`:
 
-    LEARNINGS_INDEX="$(node "$PLUGIN_ROOT/scripts/print-learnings-index.mjs" \
+    LEARNINGS_INDEX="$(node "${CLAUDE_PLUGIN_ROOT}/scripts/print-learnings-index.mjs" \
       --file-scope "$AGENT_FILESCOPE_JSON" \
       --task-text "<the agent's task title / one-line description>" 2>/dev/null)"
 
@@ -578,7 +578,7 @@ Marker line plus fenced block, in that order: `hooks/pre-task-scope-disjoint.mjs
 **Scope-echo line (#1092).** Immediately AFTER the fenced `FILE-SCOPE` block, append one more line — the receive-side counterpart of the hook's send-side `scope_checked` record. Get it from the CLI, never hand-typed:
 
 ```bash
-node scripts/lib/scope-echo.mjs --scope-file "$AGENT_FILESCOPE_JSON" --instruction
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/scope-echo.mjs" --scope-file "$AGENT_FILESCOPE_JSON" --instruction
 ```
 
 It prints exactly one line (`renderScopeEchoInstruction` in `scripts/lib/scope-echo.mjs`), naming the `scopeDigest` of that agent's own scope file: `End your final report with the line: SCOPE-DIGEST: <8-hex>`. Append it verbatim.

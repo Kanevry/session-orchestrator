@@ -1,10 +1,18 @@
 # Session Config Reading
 
+Plugin root: see the Plugin root line of the SKILL.md that loaded this file.
+
 ## Resolving the Plugin Root
+
+Use the plain `${CLAUDE_PLUGIN_ROOT}` token in skill commands. Claude Code substitutes it only while loading SKILL.md. In a reference read later, or on Codex, Cursor or Pi, the plugin root is the directory that contains the loading skill's `skills/` folder (two levels above the folder of its SKILL.md). Write that absolute path literally into each command.
+
+### Hook environments
+
+The following example documents the environment lookup in a hook wrapper. Skill commands use the path above.
 
 Harnesses expose different root variables. Codex hook manifests provide native `${PLUGIN_ROOT}`; their validated wrapper also exports `CODEX_PLUGIN_ROOT="${PLUGIN_ROOT}"` for shared compatibility code and sets `SO_PLATFORM=codex`. Claude Code uses `CLAUDE_PLUGIN_ROOT`, Cursor IDE uses `CURSOR_RULES_DIR`, and Pi uses `PI_PLUGIN_ROOT`.
 
-Resolve shell paths in this order:
+In the hook environment:
 
 1. Keep a non-empty native `$PLUGIN_ROOT` supplied by the harness.
 2. If `SO_PLATFORM` names a supported harness, prefer its matching compatibility variable. In particular, `SO_PLATFORM=codex` makes `$CODEX_PLUGIN_ROOT` win over an ambient Claude variable.
@@ -48,7 +56,7 @@ fi
 
 > **Canonical Field Reference:** For the complete list of all Session Config fields, types, defaults, and descriptions, see `docs/session-config-reference.md`. Skills should NOT maintain inline copies of field documentation — always reference the canonical doc.
 
-Run `node "$PLUGIN_ROOT/scripts/parse-config.mjs"` to get the validated config JSON. If it exits with code 1, read stderr for the error and report to the user.
+Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/parse-config.mjs"` to get the validated config JSON. If it exits with code 1, read stderr for the error and report to the user.
 
 Store the JSON output as `$CONFIG` for use throughout this skill — extract fields with `echo "$CONFIG" | jq -r '.field-name'`.
 
@@ -64,7 +72,7 @@ const effective = resolveAgentCap(config['agents-per-wave'], sessionType); // nu
 From a shell, the same answer arrives inside the resolved shape (`waves[].agentCap`):
 
 ```bash
-node scripts/session-shape.mjs --repo-root "$PWD" --session-type "$SESSION_TYPE" --no-event \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/session-shape.mjs" --repo-root "$PWD" --session-type "$SESSION_TYPE" --no-event \
   | jq '[.waves[] | {n, role, agentCap}]'
 ```
 
@@ -90,7 +98,7 @@ When `agent-mapping` is not present, session-plan falls back to auto-discovery (
 
 ## Fallback
 
-If the script is not available (missing file, `$PLUGIN_ROOT` unresolvable), fall back to reading the project instruction file manually per `docs/session-config-reference.md`. The `## Session Config` block is read from `CLAUDE.md` (Claude Code, Cursor IDE) or `AGENTS.md` (Codex CLI, Pi), depending on which platform is active.
+If the script is not available (missing file, unresolvable plugin root), fall back to reading the project instruction file manually per `docs/session-config-reference.md`. The `## Session Config` block is read from `CLAUDE.md` (Claude Code, Cursor IDE) or `AGENTS.md` (Codex CLI, Pi), depending on which platform is active.
 
 ## Host-Local Path Resolution (#653)
 
@@ -201,7 +209,7 @@ Flow-style arrays are also accepted: `globs: ["src/**", "tests/**"]`.
 In the live path the coordinator does NOT call the loader directly — it runs the CLI `scripts/print-applicable-rules.mjs` (which calls the loader) once per wave and captures stdout as the `<APPLICABLE-RULES>` block:
 
 ```sh
-RULES_BLOCK="$(node "$PLUGIN_ROOT/scripts/print-applicable-rules.mjs" --context wave)" || {
+RULES_BLOCK="$(node "${CLAUDE_PLUGIN_ROOT}/scripts/print-applicable-rules.mjs" --context wave)" || {
     printf 'WARN: wave rule loading failed (exit %s). Continuing without the rule block.\n' "$?" >&2
     RULES_BLOCK=''
 }

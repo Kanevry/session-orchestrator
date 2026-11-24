@@ -1,5 +1,7 @@
 # Monitor Filter Patterns
 
+Plugin root: see the Plugin root line of the SKILL.md that loaded this file.
+
 > Vetted Monitor-tool snippets for the recurring observation points in the
 > session-orchestrator workflow. Each snippet ships with the description
 > string, recommended timeout, and an explicit failure
@@ -179,7 +181,7 @@ JSONL — that itself is a signal worth surfacing manually.
 
 **Interactive detachment seam (Spike #640).** In an interactive session,
 a headless autopilot run detached via
-Bash `run_in_background` (`node scripts/autopilot.mjs --headless … &`)
+Bash `run_in_background` (`node "${CLAUDE_PLUGIN_ROOT}/scripts/autopilot.mjs" --headless … &`)
 is observed through the returned **task-id**, its **output-file**
 (`.../tasks/<id>.output`), and the **completion notification** — never
 through `TaskList` / `claude agents`, which lists nested *agent* sessions

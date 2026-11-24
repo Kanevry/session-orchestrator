@@ -27,7 +27,7 @@ import { loadOwnerConfig, resolveOwnerYamlPath } from '../owner-yaml.mjs';
 import { runFloatingTagCheck } from '../security-delta/floating-tags.mjs';
 import { runRuntimeFloorCheck } from '../security-delta/runtime-floor.mjs';
 import { EMPTY_TREE } from '../security-pulse/refresh.mjs';
-import { resolveRepoHost, resolveRepoSpec } from '../vcs-repo-spec.mjs';
+import { resolveGithubMirrorTarget } from '../vcs-repo-spec.mjs';
 import { makeResult } from './contract.mjs';
 import { findUpdateAutomationFiles } from './status.mjs';
 
@@ -116,8 +116,10 @@ const shown = (v) => (/^\d+$/.test(v) ? v : '(non-numeric value)');
 function detectPackageManager(reader, pkg) {
   if (pkg.problem) return { pm: null, problem: pkg.problem };
   if (pkg.json && typeof pkg.json.packageManager === 'string') {
-    const name = pkg.json.packageManager.split('@')[0].trim();
-    if (name) return { pm: name, source: 'packageManager field', problem: null };
+    const [name, version = ''] = pkg.json.packageManager.split('@');
+    const pm = name.trim();
+    const major = /^(\d+)(?:\.|$)/.exec(version.trim())?.[1];
+    if (pm) return { pm, major: major ? Number(major) : null, source: 'packageManager field', problem: null };
   }
   if (reader.has('package-lock.json')) return { pm: 'npm', source: 'package-lock.json', problem: null };
   if (reader.has('pnpm-lock.yaml')) return { pm: 'pnpm', source: 'pnpm-lock.yaml', problem: null };
@@ -157,18 +159,34 @@ function scriptExecutionCheck(ctx) {
   if (npmrc.problem) return { ...base, state: 'not-measurable', detail: '.npmrc not read', reason: npmrc.problem };
   if (npmrc.map.get('ignore-scripts') === 'true') return { ...base, state: 'pass', detail: `${pm.pm}: ignore-scripts=true in .npmrc`, file: '.npmrc' };
   if (pm.pm === 'pnpm') {
-    if (Array.isArray(ws.yaml?.onlyBuiltDependencies)) {
-      return { ...base, state: 'pass', detail: 'pnpm: build allowlist onlyBuiltDependencies in pnpm-workspace.yaml', file: 'pnpm-workspace.yaml' };
-    }
-    if (Array.isArray(pkg.json?.pnpm?.onlyBuiltDependencies)) {
-      return { ...base, state: 'pass', detail: 'pnpm: build allowlist pnpm.onlyBuiltDependencies in package.json', file: 'package.json' };
+    const sources = [
+      { config: ws.yaml, file: 'pnpm-workspace.yaml', prefix: '' },
+      { config: pkg.json?.pnpm, file: 'package.json', prefix: 'pnpm.' },
+    ];
+    const allow = sources.find(({ config }) => {
+      const builds = config?.allowBuilds;
+      return typeof builds === 'object' && builds !== null && !Array.isArray(builds);
+    });
+    if (allow) return { ...base, state: 'pass', detail: `pnpm: build allowlist ${allow.prefix}allowBuilds in ${allow.file}`, file: allow.file };
+    const legacy = sources.find(({ config }) => Array.isArray(config?.onlyBuiltDependencies));
+    // BV-004: Schwelle 12 gemessen an 12.21.0; pnpm 11 nicht gemessen. Revisit: Messung mit pnpm 11 oder ein Fehlalarm.
+    const ignoresLegacy = pm.major >= 12;
+    if (legacy && !ignoresLegacy) {
+      return { ...base, state: 'pass', detail: `pnpm: build allowlist ${legacy.prefix}onlyBuiltDependencies in ${legacy.file}`, file: legacy.file };
     }
     if (ws.problem) return { ...base, state: 'not-measurable', detail: 'pnpm-workspace.yaml not read', reason: ws.problem };
     if (pkg.problem) return { ...base, state: 'not-measurable', detail: 'package.json not read', reason: pkg.problem };
+    // With the legacy list alone, pnpm 12.21.0 blocked builds (ERR_PNPM_IGNORED_BUILDS).
+    // BV-004 ceiling: dangerouslyAllowAllBuilds is not read here. Revisit-Trigger: a measured override of that default.
+    if (legacy) return {
+      ...base, state: 'pass', file: legacy.file,
+      detail: 'pnpm 12+ ignores the legacy list and blocks unapproved builds by default',
+      fix: 'migrate onlyBuiltDependencies to allowBuilds',
+    };
     return {
       ...base, state: 'fail', file: '.npmrc',
-      detail: 'pnpm: no ignore-scripts=true in .npmrc and no onlyBuiltDependencies allowlist',
-      fix: 'set ignore-scripts=true in .npmrc or add onlyBuiltDependencies to pnpm-workspace.yaml',
+      detail: 'pnpm: no ignore-scripts=true in .npmrc and no build allowlist',
+      fix: `set ignore-scripts=true in .npmrc or add ${ignoresLegacy ? 'allowBuilds' : 'onlyBuiltDependencies'} to pnpm-workspace.yaml`,
     };
   }
   return { ...base, state: 'fail', file: '.npmrc', detail: 'npm: ignore-scripts=true is not set in .npmrc', fix: 'set ignore-scripts=true in .npmrc' };
@@ -270,20 +288,16 @@ function probe(cmd, args, env) {
 
 async function mirrorProtectionCheck(repoRoot, env) {
   const base = { id: 'mirror-protection', check: 'mirror protection' };
-  let spec;
-  let host;
-  try {
-    spec = resolveRepoSpec({ repoRoot, vcs: 'github' });
-    host = resolveRepoHost({ repoRoot, vcs: 'github' });
-  } catch {
-    spec = undefined;
-  }
-  if (!spec) return { check: { ...base, state: 'skipped', detail: 'not run', reason: 'no GitHub remote' }, findings: [] };
+  const target = resolveGithubMirrorTarget({ repoRoot });
+  if (!target) return { check: { ...base, state: 'skipped', detail: 'not run', reason: 'no GitHub remote' }, findings: [] };
   if (probe('gh', ['--version'], env) === 'missing') return { check: { ...base, state: 'skipped', detail: 'not run', reason: 'gh not installed' }, findings: [] };
-  const authArgs = host ? ['auth', 'status', '--hostname', host] : ['auth', 'status'];
+  const authArgs = ['auth', 'status', '--hostname', target.host];
   if (probe('gh', authArgs, env) !== 'ok') return { check: { ...base, state: 'skipped', detail: 'not run', reason: 'gh not authenticated' }, findings: [] };
 
-  const audit = await auditGithubBranchProtection({ repoRoot });
+  const audit = await auditGithubBranchProtection({ repoRoot }, {
+    resolveRepoSpec: () => target.spec,
+    resolveRepoHost: () => target.host,
+  });
   if (typeof audit?.degraded === 'string') {
     return { check: { ...base, state: 'not-measurable', detail: 'audit could not measure the mirror', reason: `audit degraded (${audit.degraded})` }, findings: [] };
   }

@@ -25,6 +25,8 @@ description: >
 
 # Evolve Skill
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Invocation
 
 Invoked as `/evolve [analyze|review|list|dialectic [--apply]]` with mode: **$ARGUMENTS** (if empty, default to `analyze` — parsed in Step 1.3).
@@ -56,7 +58,7 @@ Extract `persistence` from `$CONFIG`. If `persistence` is `false`, abort with me
 **Telemetry on abort (#1200, #1206):** before stopping, emit the abort form of the run-completion event. Kept as a minimal `emit-event.mjs` call, not routed through `scripts/sweep-expired-learnings.mjs` — no store-write CLI has run yet at this gate (it fires before Step 1.4 even reads `learnings.jsonl`), so there is no mechanical pipeline call site to fold this emit into, unlike the Step 3.5(5)/(6) success path below:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.evolve.completed --payload \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" --type orchestrator.evolve.completed --payload \
   "$(node -e "process.stdout.write(JSON.stringify({aborted: 'persistence-disabled', reason: 'Learnings require persistence to be enabled in Session Config.'.slice(0,300), duration_ms: DURATION_MS}))")"
 ```
 
@@ -100,7 +102,7 @@ Route based on mode:
 
 Extracts learnings from session history: pattern extraction across the 9 built-in analyzer types plus `evolve.extra-sources`, deduplication, relation judgment (#1016), the AskUserQuestion confirmation gate, and the archive-safe write pipeline (through the C2 auto-repair feeder). See [references/evolve-analyze-mode.md](references/evolve-analyze-mode.md). **Read WHEN:** Phase 2's Mode Dispatch routes to `analyze` (the default mode).
 
-**Agent-usage census (#1617).** Before extraction, run `node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/agent-usage-census.mjs" --days 14` (read-only over `~/.claude/projects` subagent transcripts, ~20 s for 14 days). Report the model shares and the top agent types (runs, turns/run, output/run, cache rebuilds, start context) in the analyze summary, and quote `malformed_lines`. It is an observation, not a learning source: nothing is written from it, and a shift (a type moving model, a new dominant type) goes to the operator as a finding. Housekeeping step 4 runs `/evolve analyze`, so the weekly maintenance loop carries the census without a second entry.
+**Agent-usage census (#1617).** Before extraction, run `node "${CLAUDE_PLUGIN_ROOT}/scripts/agent-usage-census.mjs" --days 14` (read-only over `~/.claude/projects` subagent transcripts, ~20 s for 14 days). Report the model shares and the top agent types (runs, turns/run, output/run, cache rebuilds, start context) in the analyze summary, and quote `malformed_lines`. It is an observation, not a learning source: nothing is written from it, and a shift (a type moving model, a new dominant type) goes to the operator as a finding. Housekeeping step 4 runs `/evolve analyze`, so the weekly maintenance loop carries the census without a second entry.
 
 ---
 

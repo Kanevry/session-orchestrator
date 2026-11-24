@@ -13,6 +13,8 @@ model: inherit
 
 # Test Audit
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 A test earns its place by catching a regression nothing else catches. This skill applies that bar at three depths. It complements `.claude/rules/test-value.md` (TV-001..TV-005) and the repo's test-quality / test-hygiene rules; it replaces none of them.
 
 Rule references below (`test-value.md`, `receiving-review.md`, `parallel-sessions.md`, `bash-harness-pitfalls.md`) name the repo's `.claude/rules/`. A consumer repo often lacks them; then read them from the plugin's `rules/always-on/`.

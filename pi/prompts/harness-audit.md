@@ -4,8 +4,8 @@ description: Run the harness audit and report the rubric score for this reposito
 
 # /harness-audit
 
-Use the Session Orchestrator skill definition at `skills/harness-audit/SKILL.md`.
+Read `skills/harness-audit/SKILL.md` under the Session Orchestrator package root given in your system prompt and follow it exactly.
 
 Arguments: $@
 
-Read that skill file and follow it exactly. When it references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
+When the file references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.

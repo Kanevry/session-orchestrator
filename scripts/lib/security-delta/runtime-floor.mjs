@@ -12,6 +12,7 @@ import { basename } from 'node:path';
 import { httpRequest } from '../http-request.mjs';
 import { BUDGET, makeCheckResult, makeFinding } from './contract.mjs';
 import { isDockerfile, isFixturePath, isGitExecError, isSafeRef, listTree, parseImageRefs, showFile } from './floating-tags.mjs';
+import { performance } from 'node:perf_hooks';
 
 export const NODE_INDEX_URL = 'https://nodejs.org/dist/index.json';
 
@@ -163,14 +164,14 @@ function resolveDeclared(parts, index) {
  * @param {string} [opts.repoRoot]
  * @param {string|null} [opts.base]        empty → skipped/no-range
  * @param {string} [opts.head]
- * @param {number} [opts.deadlineAt]       epoch ms; no request starts after it
+ * @param {number} [opts.deadlineMono]    milliseconds on the `performance.now()` time base. No request starts after it.
  * @param {typeof httpRequest} [opts.request]
  * @returns {Promise<ReturnType<typeof makeCheckResult>>}
  */
-export async function runRuntimeFloorCheck({ repoRoot, base, head, deadlineAt, request = httpRequest } = {}) {
-  const started = Date.now();
-  const deadline = deadlineAt ?? started + BUDGET.networkMs;
-  const done = (r) => makeCheckResult({ id: 'runtime-floor', ms: Math.max(0, Date.now() - started), ...r });
+export async function runRuntimeFloorCheck({ repoRoot, base, head, deadlineMono, request = httpRequest } = {}) {
+  const started = performance.now();
+  const deadline = Number.isFinite(deadlineMono) ? deadlineMono : started + BUDGET.networkMs;
+  const done = (r) => makeCheckResult({ id: 'runtime-floor', ms: performance.now() - started, ...r });
   let unreadable = 0;
   // Every result after the read: unreadable files make it degraded and count as unchecked.
   const finish = (r) =>
@@ -201,12 +202,12 @@ export async function runRuntimeFloorCheck({ repoRoot, base, head, deadlineAt, r
     const needIndex = measurable.filter((d) => d.c.parts.length > 1);
     if (needIndex.length === 0) return finish({ status: 'ok', checked: majorOnly.length });
 
-    if (Date.now() >= deadline) {
+    if (performance.now() >= deadline) {
       return finish({ status: 'degraded', reason: 'timeout', checked: majorOnly.length, unchecked: needIndex.length });
     }
     let index;
     try {
-      const res = await request(NODE_INDEX_URL, { timeoutMs: Math.max(1, deadline - Date.now()), maxBytes: INDEX_MAX_BYTES });
+      const res = await request(NODE_INDEX_URL, { timeoutMs: Math.max(1, deadline - performance.now()), maxBytes: INDEX_MAX_BYTES });
       if (!res?.ok) throw new Error(`HTTP ${res?.status}`);
       index = await res.json();
       if (!Array.isArray(index)) throw new Error('index is not an array');

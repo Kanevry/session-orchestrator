@@ -17,6 +17,8 @@ description: >
 
 # Bootstrap Skill
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Invocation
 
 The user invokes `/bootstrap` with arguments: **$ARGUMENTS**. Direct invocation runs with
@@ -224,7 +226,7 @@ Entered when `$ARGUMENTS` contains `--upgrade <tier>`. No scaffolding questions 
 
 6a. **Ignore runtime artifacts and hook logs (#1489 Pkt 17, #1495, #2246).** Execute the bash block in [`_shared-template.md#store-lock-ignore`](_shared-template.md) regardless of the delta. This adds missing patterns to the existing `.gitignore`, including the three exact hook-log paths, on an existing repo's next upgrade. The block appends only missing lines. Step 8 leaves the append unstaged, and step 9 names it.
 
-7. **Update bootstrap.lock atomically.** Overwrite `.orchestrator/bootstrap.lock` with `tier: <TARGET_TIER>`. Preserve a validated existing `archetype`; when upgrading a null Fast archetype, record the newly confirmed ID and scaffold source. Update `timestamp` to now. Preserve the prior `source` otherwise. Write `plugin-version` from `$PLUGIN_ROOT/package.json` (current plugin version at upgrade time).
+7. **Update bootstrap.lock atomically.** Overwrite `.orchestrator/bootstrap.lock` with `tier: <TARGET_TIER>`. Preserve a validated existing `archetype`; when upgrading a null Fast archetype, record the newly confirmed ID and scaffold source. Update `timestamp` to now. Preserve the prior `source` otherwise. Write `plugin-version` from `${CLAUDE_PLUGIN_ROOT}/package.json` (current plugin version at upgrade time).
 
 8. **Commit.** Stage only the delta files that were just written and commit:
    ```bash
@@ -268,7 +270,7 @@ selection, scaffolding and initial commit. Rule selection may read the lock ID.
 
 **Steps:**
 
-1. **Resolve plugin root.** The plugin's `rules/_index.md` lives next to `SKILL.md`'s plugin directory. Use the plugin root inferred by the harness (`PLUGIN_ROOT`).
+1. **Resolve plugin root.** The plugin's `rules/_index.md` lives next to `SKILL.md`'s plugin directory. Use the absolute path from the Plugin root line above.
 
 2. **Invoke the bootstrap rule action.** It reloads a configured private contract
    and supplies required plugin basenames to `scripts/lib/rules-sync.mjs`.
@@ -278,7 +280,7 @@ selection, scaffolding and initial commit. Rule selection may read the lock ID.
    `RULES_CATEGORIES`; otherwise leave those variables unset. Run from the repo:
 
    ```bash
-   export PLUGIN_ROOT CONFIRMED_ARCHETYPE DRY_RUN RULES_CATEGORIES
+   export PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" CONFIRMED_ARCHETYPE DRY_RUN RULES_CATEGORIES
    node --input-type=module <<'NODE'
    import { pathToFileURL } from 'node:url';
    const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
@@ -361,7 +363,7 @@ Standard and Deep tier templates include Step 5.5 (standard) / D6.6 (deep) which
 **HOW (coordinator steps):**
 
 ```js
-import { runOwnerInterview, getInterviewQuestions, applyInterviewAnswers } from '$PLUGIN_ROOT/scripts/lib/owner-interview.mjs';
+import { runOwnerInterview, getInterviewQuestions, applyInterviewAnswers } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/owner-interview.mjs';
 const probe = runOwnerInterview({ skipIfExists: true });
 if (probe.status === 'pending') {
   // dispatch AskUserQuestion for each of probe.questions, collect answers[]
@@ -401,7 +403,7 @@ import {
   getDispatcherAutonomyQuestion,
   isDispatcherAutonomyBlockPresent,
   writeDispatcherAutonomyBlock,
-} from '$PLUGIN_ROOT/scripts/lib/config/dispatcher-autonomy-capture.mjs';
+} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/config/dispatcher-autonomy-capture.mjs';
 import { readFileSync } from 'node:fs';
 
 const claudeMdPath = `${REPO_ROOT}/CLAUDE.md`;
@@ -460,10 +462,10 @@ Determine `source`:
 - `claude-init` if `claude init` was used successfully on Claude Code
 - `plugin-template` otherwise
 
-Read `plugin-version` from the session-orchestrator plugin's `package.json` (`$PLUGIN_ROOT/package.json`, field `version`). This enables the freshness probe (#290) to detect plugin upgrades that need re-bootstrap. Example:
+Read `plugin-version` from the session-orchestrator plugin's `package.json` (`${CLAUDE_PLUGIN_ROOT}/package.json`, field `version`). This enables the freshness probe (#290) to detect plugin upgrades that need re-bootstrap. Example:
 
 ```bash
-PLUGIN_VERSION="$(node -e "const p=require('$PLUGIN_ROOT/package.json');console.log(p.version);" 2>/dev/null || node --input-type=module -e "import pkg from '$PLUGIN_ROOT/package.json' assert {type:'json'}; console.log(pkg.version);")"
+PLUGIN_VERSION="$(node -e "const p=require('${CLAUDE_PLUGIN_ROOT}/package.json');console.log(p.version);" 2>/dev/null || node --input-type=module -e "import pkg from '${CLAUDE_PLUGIN_ROOT}/package.json' assert {type:'json'}; console.log(pkg.version);")"
 ```
 
 The template's initial git commit includes `bootstrap.lock`. If the template already wrote the lock file (as `fast-template.md` does), skip this step — the lock is already committed.
@@ -478,7 +480,7 @@ Non-blocking, informational — never gates Phase 5. Runs two probes against the
 2. **Raw-file budget lint.** Run the same lint Step 2c of `fast-template.md` already ran once (idempotent to re-run here for tiers that skip Step 2c, e.g. Standard/Deep archetype copies that don't go through the Fast-tier CLAUDE.md path):
 
    ```bash
-   node "$PLUGIN_ROOT/scripts/lib/claude-md-budget-lint.mjs" --repo-root "$REPO_ROOT" --require-provenance --mode warn --json
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/claude-md-budget-lint.mjs" --repo-root "$REPO_ROOT" --require-provenance --mode warn --json
    ```
 
 Fold both results into one line for the Phase 5 report, e.g. `Instruction budget: n/a (no .claude/rules/ yet). Budget lint: ok.` or `Budget lint: 1 violation (max-lines).` Never block or retry — this phase informs only.

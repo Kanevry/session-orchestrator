@@ -43,7 +43,7 @@ Canonical-PM production audit in CI: `npm audit --omit=dev --audit-level=high` /
 ## Supply Chain Security (SEC-020)
 Check canonical PM first: npm reads ignore-scripts but silently ignores pnpm-only block-exotic-subdeps/minimum-release-age/trust-policy/onlyBuiltDependencies. Their omission in npm-canonical repos is correct; this repo uses committed package-lock.json.
 - npm AND pnpm: `.npmrc` ignore-scripts=true globally; no install/postinstall/prepare unless pnpm allowlisted (npm is all-or-nothing).
-- pnpm `onlyBuiltDependencies` allowlist: @your-org/*, esbuild, sharp, @playwright/test, @sentry/cli, prisma, better-sqlite3, @typescript/native-preview. Verify postinstall is genuinely needed BEFORE adding entries.
+- pnpm `onlyBuiltDependencies` allowlist: @your-org/*, esbuild, sharp, @playwright/test, @sentry/cli, prisma, better-sqlite3, @typescript/native-preview. pnpm 12+ reads `allowBuilds` and ignores the old list. Verify postinstall is needed before adding entries.
 - pnpm: block-exotic-subdeps=true, minimum-release-age=1440 (24h), trust-policy=no-downgrade.
 - npm: `npm audit signatures` REQUIRED in every npm-canonical CI pipeline for registry signatures/provenance.
 - Repo .npmrc is CWD-scoped and does not travel: set ignore-scripts host-wide too and verify `cd /tmp && npm config get ignore-scripts`.

@@ -13,7 +13,7 @@
 
 After learnings are written (Phase 3.6) and BEFORE the Skill-Applied Judge (Phase 3.6.6 — Phase 3.6.5 is retired), collect agent-proposed memory entries written during this session and present them to the operator via `AskUserQuestion` multiSelect. Approved entries flow to `learnings.jsonl` with `_provenance: agent-proposed@<wave-id>`. Rejected entries are archived to `.orchestrator/proposals.rejected.log`.
 
-The proposals queue is populated mid-session by wave-executor agents calling `node scripts/memory-propose.mjs --type ... --subject ... --insight ... --evidence ... --confidence ...`. The CLI enforces:
+The proposals queue is populated mid-session by wave-executor agents calling `node "${CLAUDE_PLUGIN_ROOT}/scripts/memory-propose.mjs" --type ... --subject ... --insight ... --evidence ... --confidence ...`. The CLI enforces:
 - Quota per wave (default 5, configurable via `memory.proposals.quota-per-wave`)
 - Confidence floor (default 0.5, configurable via `memory.proposals.confidence-floor`)
 - Wrong-context guard (CLI exits non-zero when STATE.md `status` is not `active`)
@@ -24,7 +24,7 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 
 2. Invoke `collectProposals` from `scripts/lib/memory-proposals/collector.mjs`, passing the collect-emit confidence floor from Session Config:
    ```javascript
-   import { collectProposals } from '${PLUGIN_ROOT}/scripts/lib/memory-proposals/collector.mjs';
+   import { collectProposals } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/memory-proposals/collector.mjs';
    const { queue, stats, perWaveSummaries } = await collectProposals({
      repoRoot: process.cwd(),
      // Issue #566: collect-emit confidence floor. Records with
@@ -46,9 +46,9 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
    Skip when `.orchestrator/metrics/learnings.jsonl` is absent or holds fewer than 2 entries — with no corpus there is no relation to judge. Otherwise:
 
    ```javascript
-   import { buildCandidatePools } from '${PLUGIN_ROOT}/scripts/lib/learnings/candidates.mjs';
+   import { buildCandidatePools } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/learnings/candidates.mjs';
    import { buildJudgmentInput, judgeCandidate, applyVerdict }
-     from '${PLUGIN_ROOT}/scripts/lib/learnings/judgment.mjs';
+     from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/learnings/judgment.mjs';
 
    const { entries: corpus } = await readLearnings('.orchestrator/metrics/learnings.jsonl');
    const { pools } = buildCandidatePools([...queue, ...corpus], { now: new Date() });
@@ -105,7 +105,7 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 
 6. Invoke `promoteAndClear` and `archiveRejected` from `scripts/lib/memory-proposals/sink.mjs`:
    ```javascript
-   import { promoteAndClear, archiveRejected } from '${PLUGIN_ROOT}/scripts/lib/memory-proposals/sink.mjs';
+   import { promoteAndClear, archiveRejected } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/memory-proposals/sink.mjs';
    const writeResult = await promoteAndClear({ approved, sessionId, repoRoot });
    const archiveResult = await archiveRejected({ rejected, repoRoot, reason: 'user-declined' });
    ```
@@ -143,7 +143,7 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 After learnings are written (Phase 3.6) and `planTailPhases()` has produced its `plan` (see § "Phase 3.6.x Tail — Mechanical Skip-Plan" in `references/phase-3-documentation-updates.md`), call `runTailPhases` ONCE and read the `3.6.4` slot of its keyed result:
 
 ```javascript
-import { runTailPhases } from '${PLUGIN_ROOT}/scripts/lib/session-end/tail-runner.mjs';
+import { runTailPhases } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/session-end/tail-runner.mjs';
 
 const tail = await runTailPhases({ repoRoot: process.cwd(), plan });
 const sweep = tail['3.6.4'];
@@ -155,7 +155,7 @@ const sweep = tail['3.6.4'];
 - **Report** `sweep.ran`, `sweep.scanned` and `sweep.archived` in the Phase 6 Final Report, e.g. `expired-sweep: 12 archived of 640 scanned`. When `ran: false`, report the `reason` instead — a skipped sweep is a stated outcome, never silence. `store-role-inbox` means this host only appends to `learnings-inbox.jsonl` (owner.yaml `learnings.store-role: inbox`, #1516); the writer host sweeps.
 - **The proof it ran is the event `orchestrator.learnings.sweep_applied`** in `.orchestrator/metrics/events.jsonl` (payload source `session-end-3.6.4`, which separates it from the standalone CLI). A close claiming a sweep with no such event did not sweep.
 
-The standalone `node scripts/sweep-expired-learnings.mjs --apply --json` CLI remains available for manual/out-of-session use; it is no longer the session-end path.
+The standalone `node "${CLAUDE_PLUGIN_ROOT}/scripts/sweep-expired-learnings.mjs" --apply --json` CLI remains available for manual/out-of-session use; it is no longer the session-end path.
 
 ### 3.6.5 Auto-Dream Dispatch (#502, F2.2) — RETIRED
 
@@ -184,9 +184,9 @@ After learnings are written (Phase 3.6), and when the judge is enabled, run a **
 
    ```javascript
    import { readFileSync } from 'node:fs';
-   import { resolveSessionIds } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
-   import { resolveOwnLockRootFor } from '${PLUGIN_ROOT}/scripts/lib/own-lock-root.mjs';
-   import { readProcessLocalSessionIds } from '${PLUGIN_ROOT}/scripts/lib/session-identity/own-session.mjs';
+   import { resolveSessionIds } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+   import { resolveOwnLockRootFor } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/own-lock-root.mjs';
+   import { readProcessLocalSessionIds } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/session-identity/own-session.mjs';
 
    // Lock id only when provably OWN — never a peer's (#1664), read at the root
    // holding this process's own lock, not at the cwd (#1730 Pkt 8).
@@ -210,10 +210,10 @@ After learnings are written (Phase 3.6), and when the judge is enabled, run a **
 3. **Build the evidence window, then invoke `runSkillJudge`.** This is ONE verifying call, not a prose instruction: before #1399 this step named a free variable `transcriptTail` that nothing in the tree produced, so the judge was dispatched with an EMPTY `<untrusted-data-…>` fence. Measured 2026-09-19 at `8f15f77b`: such a prompt is 1387 characters = 346 estimated tokens, well under the 8000-token budget, so the budget gate never caught it — the judge ruled on a transcript it had never seen.
 
    ```javascript
-   import { buildSkillEvidence } from '${PLUGIN_ROOT}/scripts/lib/skill-evidence-window.mjs';
-   import { runSkillJudge, evidenceBudgetChars } from '${PLUGIN_ROOT}/scripts/lib/skill-judge.mjs';
-   import { appendSkillJudgment } from '${PLUGIN_ROOT}/scripts/lib/skill-judgments-schema.mjs';
-   import { resolveLedgerPath } from '${PLUGIN_ROOT}/scripts/lib/ledger-path.mjs';
+   import { buildSkillEvidence } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/skill-evidence-window.mjs';
+   import { runSkillJudge, evidenceBudgetChars } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/skill-judge.mjs';
+   import { appendSkillJudgment } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/skill-judgments-schema.mjs';
+   import { resolveLedgerPath } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/ledger-path.mjs';
    import path from 'node:path';
 
    const budgetTokens = config['skill-evolution']['judge-budget-tokens'] ?? 8000;
@@ -307,7 +307,7 @@ After the Skill-Applied Judge (Phase 3.6.6 — Phase 3.6.7 is retired), and when
 2. Invoke `runReconcileAtSessionEnd` from `scripts/lib/reconcile/engine.mjs`:
 
    ```javascript
-   import { runReconcileAtSessionEnd } from '${PLUGIN_ROOT}/scripts/lib/reconcile/engine.mjs';
+   import { runReconcileAtSessionEnd } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/reconcile/engine.mjs';
    const { proposals, rejected, summary, error } = await runReconcileAtSessionEnd({
      repoRoot: process.cwd(),
      ruleExpiryDays: config.reconcile['rule-expiry-days'] ?? undefined,
@@ -402,7 +402,7 @@ After the Skill-Applied Judge (Phase 3.6.6 — Phase 3.6.7 is retired), and when
 7. Invoke `writeApprovedRules` from `scripts/lib/reconcile/writer.mjs`:
 
    ```javascript
-   import { writeApprovedRules } from '${PLUGIN_ROOT}/scripts/lib/reconcile/writer.mjs';
+   import { writeApprovedRules } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/reconcile/writer.mjs';
    const writeResult = await writeApprovedRules({
      approved,
      rejected: [...rejected, ...operatorRejected],

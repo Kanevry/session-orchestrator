@@ -81,9 +81,9 @@ const DEAD_FUNCTIONS = [
   'fetch_baseline_files_batch',
   'write_baseline_fetch_lock',
 ];
-// A `-f "$PLUGIN_ROOT/scripts/lib/fetch-baseline.<ext>"` guard reference.
+// A plugin-rooted fetch-baseline guard, including the older PLUGIN_ROOT forms.
 // Capture group = guarded path relative to the plugin root.
-const GUARD_RE = /-f\s+["']?\$(?:\{)?PLUGIN_ROOT(?:\})?\/(scripts\/lib\/fetch-baseline\.[a-z]+)["']?/g;
+const GUARD_RE = /-f\s+["']?\$(?:\{(?:CLAUDE_)?PLUGIN_ROOT\}|PLUGIN_ROOT)\/(scripts\/lib\/fetch-baseline\.[a-z]+)["']?/g;
 
 // Default file extensions searched by detectBridgeBalance scope entries when a
 // scope entry does not carry its own `exts`.
@@ -280,7 +280,7 @@ function detectDanglingRuleReferences(ctx) {
 
 /**
  * Scan the fixed bootstrap file set for the baseline-fetch bridge and FAIL on:
- *   - a `-f "$PLUGIN_ROOT/scripts/lib/fetch-baseline.<ext>"` guard whose target
+ *   - a `-f "${CLAUDE_PLUGIN_ROOT}/scripts/lib/fetch-baseline.<ext>"` guard whose target
  *     does not exist (the #618 always-false dead-bridge),
  *   - any reference to the stale `fetch-baseline.sh` basename,
  *   - any reference to a dead shell-function name,

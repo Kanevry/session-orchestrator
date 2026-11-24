@@ -8,6 +8,8 @@ model: inherit
 
 # Backlog
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 Is each issue written and cut so that an agent can begin without asking back? The checker measures; this skill judges and applies. The contract (checks, thresholds, report schema, CLI, ceilings, rules) is [`docs/backlog-refinement.md`](../../docs/backlog-refinement.md) — read its "Rules for the skill", "The checks", "How epics are represented", "CLI" and "Ceilings" before the first run, and do not restate them here.
 
 The invocation arguments are: **$ARGUMENTS**
@@ -34,7 +36,7 @@ GitHub targets are not supported in v1 (contract § Ceilings). Say so and stop. 
 
 ```bash
 mkdir -p .orchestrator/tmp
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/backlog-refine.mjs" [--repo <path|group/name>] [--host <host>] --json --out .orchestrator/tmp/backlog-refine-report.json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/backlog-refine.mjs" [--repo <path|group/name>] [--host <host>] --json --out .orchestrator/tmp/backlog-refine-report.json
 ```
 
 - Exit 2 means the checker could not read its inputs or write its report, or the fetched count disagrees with `X-Total`. Report the stderr reason and stop.

@@ -41,7 +41,7 @@ if [[ "$DC_ENABLED" == "true" ]]; then
 
   # Invoke checker; capture JSON on stdout and exit code
   DC_EXIT=0
-  DC_JSON=$(VAULT_DIR="$PWD" bash "$PLUGIN_ROOT/skills/claude-md-drift-check/checker.sh" \
+  DC_JSON=$(VAULT_DIR="$PWD" bash "${CLAUDE_PLUGIN_ROOT}/skills/claude-md-drift-check/checker.sh" \
     --mode "$DC_MODE" "${DC_INCLUDE_ARGS[@]}" "${DC_SKIP_ARGS[@]}" 2>/dev/null) || DC_EXIT=$?
 
   DC_STATUS=$(echo "$DC_JSON" | jq -r '.status // "infra-error"')
@@ -51,7 +51,7 @@ if [[ "$DC_ENABLED" == "true" ]]; then
 fi
 ```
 
-`$PLUGIN_ROOT` resolution follows the same fallback chain as `skills/_shared/config-reading.md`.
+Use the absolute path from the Plugin root line of the loading SKILL.md for `${CLAUDE_PLUGIN_ROOT}` in this reference.
 
 **Reporting rules:**
 

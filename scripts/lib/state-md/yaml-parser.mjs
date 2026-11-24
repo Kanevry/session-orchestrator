@@ -220,11 +220,13 @@ function parseBlockValue(lines, start, key, warnings) {
  * that produced the `{ id` key in the first place.
  *
  * @param {string} inner
+ * @param {boolean} mapping
  * @returns {string[]}
  */
-function splitFlowSegments(inner) {
+function splitFlowSegments(inner, mapping = false) {
   const segments = [];
-  let depth = 0;
+  const collections = [{ mapping, keyPending: mapping }];
+  let atScalarStart = true;
   let quote = null;
   let current = '';
   for (let i = 0; i < inner.length; i++) {
@@ -233,18 +235,39 @@ function splitFlowSegments(inner) {
       current += ch;
       if (ch === '\\' && quote === '"') {
         current += inner[++i] ?? '';
+      } else if (ch === "'" && quote === "'" && inner[i + 1] === "'") {
+        current += inner[++i];
       } else if (ch === quote) {
         quote = null;
       }
       continue;
     }
-    if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === '{' || ch === '[') depth++;
-    else if (ch === '}' || ch === ']') depth--;
-    else if (ch === ',' && depth === 0) {
-      segments.push(current);
-      current = '';
-      continue;
+    const collection = collections.at(-1);
+    if ((ch === '"' || ch === "'") && atScalarStart) {
+      quote = ch;
+      atScalarStart = false;
+    } else if (ch === '{' || ch === '[') {
+      const nestedMapping = ch === '{';
+      collections.push({ mapping: nestedMapping, keyPending: nestedMapping });
+      atScalarStart = true;
+    } else if (ch === '}' || ch === ']') {
+      if (collections.length > 1) collections.pop();
+      atScalarStart = false;
+    } else if (ch === ',') {
+      collection.keyPending = collection.mapping;
+      atScalarStart = true;
+      if (collections.length === 1) {
+        segments.push(current);
+        current = '';
+        continue;
+      }
+    } else if (ch === ':' && collection.keyPending) {
+      collection.keyPending = false;
+      atScalarStart = true;
+    } else if (ch === ':' && !collection.mapping && /\s/.test(inner[i + 1] ?? '')) {
+      atScalarStart = true;
+    } else if (!/\s/.test(ch)) {
+      atScalarStart = false;
     }
     current += ch;
   }
@@ -277,7 +300,7 @@ function parseFlowMapping(raw) {
   const inner = trimmed.slice(1, -1).trim();
   const out = {};
   if (inner === '') return out;
-  for (const segment of splitFlowSegments(inner)) {
+  for (const segment of splitFlowSegments(inner, true)) {
     const part = segment.trim();
     if (part === '') return null;
     const colon = part.indexOf(':');

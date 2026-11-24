@@ -13,6 +13,7 @@ import { promisify } from 'node:util';
 import { redactedEnv } from '../redacted-env.mjs';
 import { makeCheckResult, makeFinding } from './contract.mjs';
 import { execFile } from '../native-command.mjs';
+import { performance } from 'node:perf_hooks';
 
 const execFileAsync = promisify(execFile);
 
@@ -295,8 +296,8 @@ function refKey(ref) {
  * @returns {Promise<ReturnType<typeof makeCheckResult>>}
  */
 export async function runFloatingTagCheck({ repoRoot, base, head } = {}) {
-  const started = Date.now();
-  const done = (r) => makeCheckResult({ id: 'floating-tag', ms: Math.max(0, Date.now() - started), ...r });
+  const started = performance.now();
+  const done = (r) => makeCheckResult({ id: 'floating-tag', ms: performance.now() - started, ...r });
   try {
     if (!base) return done({ status: 'skipped', reason: 'no-range' });
     if (!isSafeRef(base) || !isSafeRef(head)) return done({ status: 'degraded', reason: 'invalid-ref', unchecked: 1 });

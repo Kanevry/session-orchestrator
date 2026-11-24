@@ -11,7 +11,7 @@ resolvers, with precedence `SO_BASELINE_PATH` → matching named baseline →
 host-locally and are never written into the contract result.
 
 ```bash
-BOOTSTRAP_CONTRACT=$(node "$PLUGIN_ROOT/scripts/baseline-archetypes.mjs" --repo "$REPO_ROOT") || exit 2
+BOOTSTRAP_CONTRACT=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/baseline-archetypes.mjs" --repo "$REPO_ROOT") || exit 2
 PATH_TYPE=$(printf '%s' "$BOOTSTRAP_CONTRACT" | node --input-type=module -e '
 let input = ""; for await (const chunk of process.stdin) input += chunk;
 process.stdout.write(JSON.parse(input).status);
@@ -55,20 +55,7 @@ file just because it is present.
 
 ### Detect Platform
 
-Read the current platform using the patterns from `skills/_shared/platform-tools.md`:
-
-```bash
-if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
-  PLATFORM="claude"
-elif [[ -n "${CODEX_PLUGIN_ROOT:-}" ]]; then
-  PLATFORM="codex"
-elif [[ -n "${CURSOR_RULES_DIR:-}" ]]; then
-  PLATFORM="cursor"
-else
-  # Fallback: inspect running process name or default to claude
-  PLATFORM="claude"
-fi
-```
+Use the active harness to choose the platform branch below. Use `PLATFORM = codex` on Codex and `PLATFORM = cursor` on Cursor. The default branch is `PLATFORM = claude`.
 
 ---
 
@@ -94,7 +81,7 @@ If `claude init` exits 0 and produces a non-empty `CLAUDE.md`, it is the base. P
 
 ```bash
 if ! grep -qE "^## (Hard Rules|Harte Regeln)" "$REPO_ROOT/CLAUDE.md" 2>/dev/null; then
-  cat "$PLUGIN_ROOT/templates/_shared/harte-regeln.md" >> "$REPO_ROOT/CLAUDE.md"
+  cat "${CLAUDE_PLUGIN_ROOT}/templates/_shared/harte-regeln.md" >> "$REPO_ROOT/CLAUDE.md"
 fi
 ```
 
@@ -202,8 +189,7 @@ Also substitute README and gitignore from `_minimal` templates:
    (issue #108 — CWE-22 symlink traversal):
 
    ```bash
-   PLUGIN_ROOT="$(dirname "$(dirname "$(dirname "$0")")")"  # resolve plugin root
-   TMPL_DIR="$PLUGIN_ROOT/templates/$CONFIRMED_ARCHETYPE"
+   TMPL_DIR="${CLAUDE_PLUGIN_ROOT}/templates/$CONFIRMED_ARCHETYPE"
    # -P: copy symlinks as symlinks (no-dereference) — prevents symlink-traversal outside $REPO_ROOT
    cp -rP "$TMPL_DIR/." "$REPO_ROOT/"
    ```

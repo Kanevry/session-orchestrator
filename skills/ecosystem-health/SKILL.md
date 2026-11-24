@@ -14,6 +14,8 @@ description: >
 
 # Ecosystem Health Check
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Platform-native (CC 2.1.105+)
 
 This skill's watcher is registered as a plugin monitor via `.claude-plugin/plugin.json`'s `experimental.monitors` reference to `monitors/monitors.json`. Each session that loads this plugin auto-starts the watcher in the background (see `scripts/lib/ecosystem-health.mjs`). Each NDJSON stdout line from the watcher becomes a `<task_notification>` event Claude sees mid-session.

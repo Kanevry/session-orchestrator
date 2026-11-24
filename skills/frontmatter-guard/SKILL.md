@@ -17,6 +17,8 @@ model: inherit
 
 > Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). Wherever this skill mentions `CLAUDE.md`, the alias rule applies.
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Purpose
 
 vault-mirror and other vault-write agents frequently produce notes with missing or malformed YAML frontmatter — incorrect `type` enum values, missing `id`, wrong date formats. The resulting notes fail the vault-sync validator at session-end, causing hard-gate failures that interrupt the close flow.

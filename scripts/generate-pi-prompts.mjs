@@ -88,27 +88,31 @@ function userInvocableSkills() {
   });
 }
 
-function renderPrompt(commandFile) {
-  const commandPath = path.join(COMMANDS_DIR, commandFile);
-  const commandName = commandFile.replace(/\.md$/, '');
-  const fields = parseFrontmatter(readFileSync(commandPath, 'utf8'));
+function renderWrapper(name, definitionPath, description, argumentHint) {
   const frontmatter = [
     '---',
-    frontmatterLine('description', yamlQuote(clampDescription(fields.description))),
-    frontmatterLine('argument-hint', yamlQuote(fields['argument-hint'])),
+    frontmatterLine('description', yamlQuote(clampDescription(description))),
+    frontmatterLine('argument-hint', yamlQuote(argumentHint)),
     '---',
   ].filter(Boolean).join('\n');
 
   return `${frontmatter}
 
-# /${commandName}
+# /${name}
 
-Use the Session Orchestrator command definition at \`commands/${commandFile}\`.
+Read \`${definitionPath}\` under the Session Orchestrator package root given in your system prompt and follow it exactly.
 
 Arguments: $@
 
-Read that command file and follow it exactly. When it references \`$ARGUMENTS\`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
+When the file references \`$ARGUMENTS\`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
 `;
+}
+
+function renderPrompt(commandFile) {
+  const commandPath = path.join(COMMANDS_DIR, commandFile);
+  const commandName = commandFile.replace(/\.md$/, '');
+  const fields = parseFrontmatter(readFileSync(commandPath, 'utf8'));
+  return renderWrapper(commandName, `commands/${commandFile}`, fields.description, fields['argument-hint']);
 }
 
 /**
@@ -122,24 +126,8 @@ Read that command file and follow it exactly. When it references \`$ARGUMENTS\`,
 function renderSkillPrompt(skillName) {
   const skillPath = path.join(SKILLS_DIR, skillName, 'SKILL.md');
   const fields = parseFrontmatter(readFileSync(skillPath, 'utf8'));
-  const description = clampDescription(fields.description || `Session Orchestrator skill: ${skillName}`);
-  const frontmatter = [
-    '---',
-    frontmatterLine('description', yamlQuote(description)),
-    frontmatterLine('argument-hint', yamlQuote(fields['argument-hint'])),
-    '---',
-  ].filter(Boolean).join('\n');
-
-  return `${frontmatter}
-
-# /${skillName}
-
-Use the Session Orchestrator skill definition at \`skills/${skillName}/SKILL.md\`.
-
-Arguments: $@
-
-Read that skill file and follow it exactly. When it references \`$ARGUMENTS\`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
-`;
+  const description = fields.description || `Session Orchestrator skill: ${skillName}`;
+  return renderWrapper(skillName, `skills/${skillName}/SKILL.md`, description, fields['argument-hint']);
 }
 
 /**

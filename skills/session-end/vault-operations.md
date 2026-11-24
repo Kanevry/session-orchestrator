@@ -29,7 +29,7 @@ if [[ "$VS_ENABLED" == "true" ]]; then
   # Invoke validator; capture JSON on stdout and exit code
   # stderr carries the infra-error envelope on exit 2 (reason + setup hint)
   VS_ERR_FILE=$(mktemp)
-  VS_JSON=$(VAULT_DIR="$VS_DIR" bash "$PLUGIN_ROOT/skills/vault-sync/validator.sh" \
+  VS_JSON=$(VAULT_DIR="$VS_DIR" bash "${CLAUDE_PLUGIN_ROOT}/skills/vault-sync/validator.sh" \
     --mode "$VS_MODE" "${VS_EXCLUDE_ARGS[@]}" 2>"$VS_ERR_FILE") || VS_EXIT=$?
   VS_EXIT="${VS_EXIT:-0}"
   if [[ "$VS_EXIT" -eq 2 ]]; then

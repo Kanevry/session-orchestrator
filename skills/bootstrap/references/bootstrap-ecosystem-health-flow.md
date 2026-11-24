@@ -14,7 +14,7 @@ Entered when `$ARGUMENTS` contains `--ecosystem-health`. This is a **standalone 
 1. **Run the wizard.**
 
    ```bash
-   node "$PLUGIN_ROOT/scripts/lib/ecosystem-wizard.mjs" --repo-root "$(pwd)"
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/ecosystem-wizard.mjs" --repo-root "$(pwd)"
    ```
 
    The wizard will:

@@ -7,6 +7,8 @@ model: inherit
 ---
 # Portfolio
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Invocation
 
 The user invoked `/portfolio` with arguments: **$ARGUMENTS**. This skill carries the argument validation (`--dry-run`, `--repo <name>`), the config/mode/vault gates, the dispatch into `scripts/lib/gitlab-portfolio/cli.mjs`, and the exit-code table — all below; `skills/gitlab-portfolio/SKILL.md` owns the dashboard schema.
@@ -41,7 +43,7 @@ Then continue with the remaining valid arguments.
 4. **Dispatch** — Invoke `scripts/lib/gitlab-portfolio/cli.mjs` with the resolved arguments:
 
    ```bash
-   node scripts/lib/gitlab-portfolio/cli.mjs \
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/gitlab-portfolio/cli.mjs" \
      --vault-dir <vault-dir> \
      [--dry-run] \
      [--repo <name>]

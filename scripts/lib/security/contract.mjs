@@ -13,12 +13,9 @@
  *                `null` (status reads the working tree; deps/posture judge HEAD).
  *   - `env`      the environment to resolve host-local paths from (never
  *                `process.env` directly, so tests can redirect it).
- *   - `now`      a `Date` — stamps and dates everything a mode REPORTS (ages,
- *                expiry, any time in a Result). One exception: a network
- *                deadline handed to a reused client may use the wall clock when
- *                that client offers no clock parameter (deps: the OSV client
- *                compares `deadlineAt` with `Date.now()`); the mode's own JSDoc
- *                must say so.
+ *   - `now`      a `Date` for reported times (ages, expiry, timestamps in a
+ *                Result). The OSV client's network deadline `deadlineMono`
+ *                uses the monotonic `performance.now()` time base.
  *
  * `run()` must not write a file, emit an event or print anything; it returns a
  * Result built with {@link makeResult} and never throws for a read failure

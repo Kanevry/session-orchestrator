@@ -19,7 +19,7 @@ Do not substitute a public default for missing evidence or an invalid choice.
 Once selected, set `CONFIRMED_ARCHETYPE` and refresh the contract:
 
 ```bash
-BOOTSTRAP_CONTRACT=$(node "$PLUGIN_ROOT/scripts/baseline-archetypes.mjs" \
+BOOTSTRAP_CONTRACT=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/baseline-archetypes.mjs" \
   --repo "$REPO_ROOT" --archetype "$CONFIRMED_ARCHETYPE") || exit 2
 export BOOTSTRAP_CONTRACT
 ```
@@ -40,7 +40,7 @@ staged rules; S99 below and `rules-sync` own rule delivery. It never invokes the
 interactive setup script, package installation, Git, or a remote service.
 
 ```bash
-export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE REPO_NAME
+export PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" REPO_ROOT CONFIRMED_ARCHETYPE REPO_NAME
 SCAFFOLD_RESULT=$(node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
 const { scaffoldBaselineArchetype } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);

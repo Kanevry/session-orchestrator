@@ -7,6 +7,8 @@ model: inherit
 ---
 # Close Session
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Invocation
 
 The user invokes `/close` (arguments: **$ARGUMENTS** — none are interpreted; anything passed is context only) to end the current session. Run the STATE.md pre-check below, then hand off to `skills/session-end/SKILL.md`. Do NOT skip any verification step — evidence before assertions.
@@ -16,7 +18,7 @@ The user wants to end the current session.
 **Pre-check before invoking session-end (#1661).** Run, from the project root:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/close-precheck.mjs" --repo-root "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/close-precheck.mjs" --repo-root "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 ```
 
 It prints one JSON object (exit 0 for every verdict). It reads `<state-dir>/STATE.md` for the current platform (`.claude/`, `.codex/`, `.cursor/`, `.pi/`) and decides **whose** it is before it looks at `status`: STATE.md `session-id` (#1368) against this process's native id (`readProcessLocalSessionIds()`). Never decide ownership from the session lock: it records the pid of the short-lived hook process, and in a shared checkout it can name a peer. After `/clear` the tab runs under a NEW native id, so the STATE.md of the work before `/clear` reads as foreign — measured 2026-10-17 in three sessions. A STATE.md without `session-id` (before #1368) or a process without a native id (`ownership: legacy` / `unprovable`) never reaches session-end on its status alone (#1718): where the status would hand off, the verdict is `ownership-unproven`. An optional `--confirm-own <confirmToken>` (16 lowercase hex, from that verdict) re-runs the pre-check for the unchanged file. Act on `verdict`:

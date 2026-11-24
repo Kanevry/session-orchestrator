@@ -1222,6 +1222,9 @@ async function checkGitlab(repoRoot, now, deps = {}) {
 
     // #1852: a canceled run without a failure has no verdict. Report an
     // in-flight same-SHA sibling with its own ID and ref for the banner.
+    // BV-004 ceiling (#1852): a newer running retry on the same ref as the
+    // canceled pipeline keeps the banner red. Revisit-Trigger: a reported
+    // false alarm where that retry subsequently went green.
     if (canceledWithoutFailure && failingJobName === undefined) {
       const inFlight = foreign.find((p) => p.status === 'running' || p.status === 'pending');
       if (inFlight) {

@@ -11,7 +11,7 @@
 `/plan new` uses `plan-baseline-path` when one is configured, else the plugin's bundled templates. Decide the source with the same offline reader `/bootstrap` uses ([`public-fallback.md`](../bootstrap/public-fallback.md) § Step 1), so both skills reach the same verdict on the same host:
 
 ```bash
-PLAN_SOURCE=$(node "$PLUGIN_ROOT/scripts/baseline-archetypes.mjs" --repo "$REPO_ROOT") || exit 2
+PLAN_SOURCE=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/baseline-archetypes.mjs" --repo "$REPO_ROOT") || exit 2
 PATH_TYPE=$(printf '%s' "$PLAN_SOURCE" | node --input-type=module -e '
 let input = ""; for await (const chunk of process.stdin) input += chunk;
 process.stdout.write(JSON.parse(input).status);
@@ -46,7 +46,7 @@ For each agent, record in the wave recap and in a **Research Budget** subsection
 
 **Resolving a `cross-repos` entry.** An entry that starts with `/` or `~/`, or is an absolute Windows path such as `C:\…`, is a path and is used as written (a leading `~` expands to the home directory). Any other entry is a bare repository name and resolves to `~/Projects/<name>`. A resolved folder that does not exist is a hint, never an error: print `cross-repos: <entry> — no folder at <resolved path>, skipped` and continue with the remaining entries, never abort and never search a parent directory.
 
-Use `resolveCrossRepoEntry()` in `$PLUGIN_ROOT/scripts/lib/config/cross-repo.mjs` for entries from `cross-repos` / `cross-repo.projects`; pass only resolved existing paths to the agents below. Do not discover additional repositories by scanning parent directories.
+Use `resolveCrossRepoEntry()` in `${CLAUDE_PLUGIN_ROOT}/scripts/lib/config/cross-repo.mjs` for entries from `cross-repos` / `cross-repo.projects`; pass only resolved existing paths to the agents below. Do not discover additional repositories by scanning parent directories.
 
 ### Wave 1 — Core Decisions (6 questions)
 
@@ -56,7 +56,7 @@ Use `resolveCrossRepoEntry()` in `$PLUGIN_ROOT/scripts/lib/config/cross-repo.mjs
 Agent({ subagent_type: "Explore", description: "List available project archetypes",
   prompt: "Private path: run ls $BASELINE_PATH/templates/.
   Public path: list the archetype IDs of the Standard Tier table in
-  $PLUGIN_ROOT/skills/bootstrap/public-fallback.md; each lives in $PLUGIN_ROOT/templates/<id>/.
+  ${CLAUDE_PLUGIN_ROOT}/skills/bootstrap/public-fallback.md; each lives in ${CLAUDE_PLUGIN_ROOT}/templates/<id>/.
   For each archetype, read any README or config file to get a one-line description.
   Report as a numbered list: directory name — description." })
 
@@ -100,7 +100,7 @@ public/unknown audience, skip this optional step without a prompt or a lookup.
 ```
 Agent({ subagent_type: "Explore", description: "Read archetype config",
   prompt: "Read $BASELINE_PATH/templates/{archetype}/ (private path) or
-  $PLUGIN_ROOT/templates/{archetype}/ (public path) — list all files, read key configs.
+  ${CLAUDE_PLUGIN_ROOT}/templates/{archetype}/ (public path) — list all files, read key configs.
   Report: default tech stack, available options, required decisions." })
 
 Agent({ subagent_type: "Explore", description: "Research tech stack best practices",
@@ -175,7 +175,7 @@ Agent({ subagent_type: "Explore", description: "Research success benchmarks",
 
 After PRD is approved by user:
 
-**Public path — Steps 1-4 replaced.** Print "No baseline configured — skipping baseline project setup; scaffolding from the bundled `<archetype>` template." Then create the project directory, `git init` it, and scaffold it with the `/bootstrap` public fallback: run [`public-fallback.md`](../bootstrap/public-fallback.md) § Public Path — Standard Tier with `CONFIRMED_ARCHETYPE` = the Wave 1 archetype and `REPO_ROOT` = the new directory. That copies `$PLUGIN_ROOT/templates/<archetype>/` and writes the project-instruction file; nothing reads a path outside the plugin. If Wave 1 Q6 chose a remote, create it with the matching CLI (`glab repo create` / `gh repo create`) at the chosen visibility, then continue with Step 5. With **No remote yet**, skip remote creation, visibility and branch protection with the notice "No remote chosen — remote creation, visibility and branch protection skipped." and continue with Step 5.
+**Public path — Steps 1-4 replaced.** Print "No baseline configured — skipping baseline project setup; scaffolding from the bundled `<archetype>` template." Then create the project directory, `git init` it, and scaffold it with the `/bootstrap` public fallback: run [`public-fallback.md`](../bootstrap/public-fallback.md) § Public Path — Standard Tier with `CONFIRMED_ARCHETYPE` = the Wave 1 archetype and `REPO_ROOT` = the new directory. That copies `${CLAUDE_PLUGIN_ROOT}/templates/<archetype>/` and writes the project-instruction file; nothing reads a path outside the plugin. If Wave 1 Q6 chose a remote, create it with the matching CLI (`glab repo create` / `gh repo create`) at the chosen visibility, then continue with Step 5. With **No remote yet**, skip remote creation, visibility and branch protection with the notice "No remote chosen — remote creation, visibility and branch protection skipped." and continue with Step 5.
 
 ### Step 1: Invoke setup-project.sh (private path)
 

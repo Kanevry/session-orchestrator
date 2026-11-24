@@ -13,12 +13,12 @@ Entered when `$ARGUMENTS` contains `--refresh-lock`. No scaffolding questions ar
 
 1. **Precondition check.** Read `.orchestrator/bootstrap.lock`. If missing, or present but missing a non-empty `version` or `tier` field, abort with: `Error: No valid bootstrap.lock found. Run /bootstrap or /bootstrap --retroactive first.` Do not fabricate a lock — this flow only refreshes an existing one.
 
-2. **Resolve the current plugin version.** Read `plugin-version` from `$PLUGIN_ROOT/package.json` (same source Phase 4 uses).
+2. **Resolve the current plugin version.** Read `plugin-version` from `${CLAUDE_PLUGIN_ROOT}/package.json` (same source Phase 4 uses).
 
 3. **Call the refresh writer.**
 
    ```js
-   import { refreshBootstrapLock } from '$PLUGIN_ROOT/scripts/lib/bootstrap-lock-refresh.mjs';
+   import { refreshBootstrapLock } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/bootstrap-lock-refresh.mjs';
    const result = refreshBootstrapLock({
      repoRoot: REPO_ROOT,
      currentPluginVersion: PLUGIN_VERSION,

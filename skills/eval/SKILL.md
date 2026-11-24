@@ -22,6 +22,8 @@ description: >
 
 # Eval Skill — Session-Process Evaluation (aiat-llm-eval/1.0)
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 On-demand, honest measurement of ONE completed orchestrator session against the
 pre-registered **rubric-v3** check set. The deterministic engine
 (`scripts/eval-session.mjs` → `scripts/lib/eval/engine.mjs`) reads only local
@@ -138,7 +140,7 @@ Run the deterministic engine via its CLI. Default target is the last completed
 session (resolution cascade); `--session` overrides.
 
 ```bash
-node scripts/eval-session.mjs [--session <id>] --json \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/eval-session.mjs" [--session <id>] --json \
   [--model-id <self-reported-id> --model-source self-report] \
   [--no-write]
 ```
@@ -175,9 +177,9 @@ coordinator thread using the read-only agent `session-orchestrator:eval-judge`
 (model = `eval.judge`). Reference the API; do not reimplement scoring here:
 
 ```javascript
-import { runEvalJudge, mergeJudgeDimensions } from '$PLUGIN_ROOT/scripts/lib/eval/judge.mjs';
-import { appendEvalRecord } from '$PLUGIN_ROOT/scripts/lib/eval/sink.mjs';
-import { resolveLedgerPath } from '$PLUGIN_ROOT/scripts/lib/ledger-path.mjs';
+import { runEvalJudge, mergeJudgeDimensions } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/eval/judge.mjs';
+import { appendEvalRecord } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/eval/sink.mjs';
+import { resolveLedgerPath } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/ledger-path.mjs';
 
 // dispatchAgent = the coordinator's Agent-tool dispatch closure targeting
 // subagent_type 'session-orchestrator:eval-judge'.
@@ -219,7 +221,7 @@ appendEvalRecord(merged, { path: resolveLedgerPath('.orchestrator/metrics/eval.j
 Render the derived HTML view from the record:
 
 ```javascript
-import { writeEvalReport } from '$PLUGIN_ROOT/scripts/lib/eval/report.mjs';
+import { writeEvalReport } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/eval/report.mjs';
 
 const res = writeEvalReport(record, { generatedAt: new Date().toISOString() });
 // res.ok === true → res.path === .orchestrator/eval/reports/<run_id>.html
@@ -255,7 +257,7 @@ Judge (advisory, uncalibrated)  [only when eval.judge != off]:
 cannot-determine: <k> of 6 deterministic dimensions (<reasons>)
 Report:  .orchestrator/eval/reports/<run_id>.html
 Journal: .orchestrator/metrics/eval.jsonl  (appended: <yes|--no-write>)
-Re-verify: node scripts/eval-session.mjs --verify <run_id>
+Re-verify: node "${CLAUDE_PLUGIN_ROOT}/scripts/eval-session.mjs" --verify <run_id>
 ```
 
 Always report the `cannot-determine` share explicitly — a high abstention count
@@ -269,7 +271,7 @@ the `--verify` command as the reproducibility handle.
 When Phase 1.2 detected `--verify`, run ONLY:
 
 ```bash
-node scripts/eval-session.mjs --verify <run-id> --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/eval-session.mjs" --verify <run-id> --json
 ```
 
 - Exit `0` + `{ match: true }` → the stored record re-scores identically across

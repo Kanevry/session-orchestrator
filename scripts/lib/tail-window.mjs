@@ -31,9 +31,9 @@ const NO_FOLLOW_READ_FLAGS = fs.constants.O_RDONLY
 /**
  * Read the last `maxBytes` of `file` as UTF-8.
  *
- * `cut` is true when the window did not start at byte 0 — the first line of
- * `text` is then (or may be) a fragment of a record, possibly starting inside
- * a multi-byte UTF-8 sequence, and callers that parse lines should drop it.
+ * `cut` is true when the window did not start at byte 0. `partialFirstLine`
+ * is true when a cut starts inside a record rather than after a newline.
+ * Callers that parse lines should drop that fragment.
  * Loops until the window is filled or the file reports EOF, so a short read
  * never leaves undecoded buffer bytes in `text`.
  *
@@ -50,7 +50,8 @@ const NO_FOLLOW_READ_FLAGS = fs.constants.O_RDONLY
  * @param {string} file
  * @param {number} maxBytes  window size in bytes (> 0)
  * @param {{noFollow?: boolean}} [opts]
- * @returns {{ text: string, cut: boolean, size: number }}  `size` is the file size at open time
+ * @returns {{ text: string, cut: boolean, partialFirstLine: boolean, size: number }}
+ * `size` is the file size at open time.
  */
 export function readTailWindow(file, maxBytes, { noFollow = false } = {}) {
   const fd = fs.openSync(file, noFollow ? NO_FOLLOW_READ_FLAGS : 'r');
@@ -60,7 +61,10 @@ export function readTailWindow(file, maxBytes, { noFollow = false } = {}) {
       throw Object.assign(new Error('not a regular file'), { code: 'ERR_NOT_REGULAR_FILE' });
     }
     const size = stats.size;
-    const want = Math.min(size, maxBytes);
+    const cut = size > maxBytes;
+    // Peek at the preceding byte in the same read, without exposing it in text.
+    const prefixBytes = cut ? 1 : 0;
+    const want = Math.min(size, maxBytes) + prefixBytes;
     const start = size - want;
     const buf = Buffer.allocUnsafe(want);
     let read = 0;
@@ -69,7 +73,8 @@ export function readTailWindow(file, maxBytes, { noFollow = false } = {}) {
       if (n <= 0) break;
       read += n;
     }
-    return { text: buf.subarray(0, read).toString('utf8'), cut: start > 0, size };
+    const partialFirstLine = cut && (read === 0 || buf[0] !== 0x0a);
+    return { text: buf.subarray(prefixBytes, read).toString('utf8'), cut, partialFirstLine, size };
   } finally {
     try {
       fs.closeSync(fd);

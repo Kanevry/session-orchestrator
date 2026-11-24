@@ -9,7 +9,7 @@
 **Step 2.0 — Restore coordinator CWD (#219):** BEFORE reading any agent output or running any quality check, restore the coordinator's working directory. Claude Code's `Agent` tool with `isolation: "worktree"` `chdir()`s into each worktree internally and does NOT restore it on agent return. Subsequent Edit/Write/Bash calls would silently route to whichever worktree's tree CWD last drifted into.
 
 ```js
-import { restoreCoordinatorCwd } from '$PLUGIN_ROOT/scripts/lib/workspace.mjs';
+import { restoreCoordinatorCwd } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/workspace.mjs';
 
 const cwd = await restoreCoordinatorCwd();
 if (cwd.restored) {
@@ -64,7 +64,7 @@ After ALL agents in the wave complete:
 
 **Stagnation event-write** (gated on `persistence: true`): when any stagnation pattern fires for an agent during this step, emit ONE `stagnation_detected` record through the **canonical emitter** — never a hand-rolled `>>` append. Hand-written appenders drift from `emitEvent()` (that drift is what produced the `stop` vs `orchestrator.session.stopped` divergence, #609/#611), and since #1114 this event has a SECOND producer (the transcript tailer, step 2.0-bis above), whose records must be field-for-field comparable with the coordinator's. One write path for both:
 
-    node "$PLUGIN_ROOT/scripts/emit-event.mjs" --type stagnation_detected --payload '<the payload object below>'
+    node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" --type stagnation_detected --payload '<the payload object below>'
 
 From a Node context, call `emitEvent('stagnation_detected', { ...payload, ...sessionAttribution(repoRoot) }, { repoRoot })` from `scripts/lib/events.mjs` instead — pass `repoRoot` **explicitly** so the record lands in THIS working copy's ledger and its attribution is read from the same root the line is pinned to (#941/#1147).
 
@@ -96,7 +96,7 @@ Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` 
 {"event":"freshness_check","timestamp":"<ISO 8601 UTC>","session":"<session_id>","wave":N,"agent":"<description>","suffix":"<worktree suffix>","decision":"pass|warn|block|no-meta","drift_commits":N,"overlap_files":M}
 ```
 
-3c. **File-level grounding** (per wave, informational, gated by `grounding-check: true` — default): compute Planned (union of agent file scopes for this wave from the dispatch metadata) vs Actual (files actually edited by this wave's agents). Report scope creep (Actual ∖ Planned) and incomplete coverage (Planned ∖ Actual). Does NOT block the next wave. Reuses the semantics defined in `skills/session-end/plan-verification.md` § 1.1a — the session-end variant computes against `$SESSION_START_REF`, the per-wave variant computes against the wave's pre-dispatch HEAD snapshot. Not to be confused with pre-dispatch grounding injection (§ Pre-Dispatch Grounding Injection above): that feature is per-agent and runs before dispatch to prevent friction; this check is per-wave and runs after dispatch to detect scope creep. Skip the entire check when `grounding-check: false`. Same pass, new test files: `node scripts/lib/validate/check-test-cousins.mjs --untracked` names each newly added test file whose basename a tracked test already owns (warn-only, exit 0; #1030 2b) — a guessed path from the plan is the usual cause.
+3c. **File-level grounding** (per wave, informational, gated by `grounding-check: true` — default): compute Planned (union of agent file scopes for this wave from the dispatch metadata) vs Actual (files actually edited by this wave's agents). Report scope creep (Actual ∖ Planned) and incomplete coverage (Planned ∖ Actual). Does NOT block the next wave. Reuses the semantics defined in `skills/session-end/plan-verification.md` § 1.1a — the session-end variant computes against `$SESSION_START_REF`, the per-wave variant computes against the wave's pre-dispatch HEAD snapshot. Not to be confused with pre-dispatch grounding injection (§ Pre-Dispatch Grounding Injection above): that feature is per-agent and runs before dispatch to prevent friction; this check is per-wave and runs after dispatch to detect scope creep. Skip the entire check when `grounding-check: false`. Same pass, new test files: `node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/validate/check-test-cousins.mjs" --untracked` names each newly added test file whose basename a tracked test already owns (warn-only, exit 0; #1030 2b) — a guessed path from the plan is the usual cause.
 
 3d. **Edit-Persistence Verify (#724 C5c)** (per agent, blocking on violation): an agent's `STATUS: done` / `STATUS: partial` is a *claim*, not evidence — fleet evidence shows agents reporting a successful Edit whose change never landed on disk (worktree merge-back drop, silent Edit no-op, or a mid-turn abort after the tool-result). Before trusting any agent's output, verify each declared file actually changed on disk.
 
@@ -124,7 +124,7 @@ Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` 
    For each agent that reported, write its final report text to a file and run:
 
    ```bash
-   node scripts/lib/scope-echo.mjs --scope-file "<state-dir>/filescopes/wave-<N>/<agent-id>.json" \
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/scope-echo.mjs" --scope-file "<state-dir>/filescopes/wave-<N>/<agent-id>.json" \
      --report-file "<report.txt>" --wave <N> --agent-id "<agent-id>" --emit
    ```
 
@@ -133,7 +133,7 @@ Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` 
    Then, ONCE for the wave — not once per agent — join the two halves:
 
    ```bash
-   node scripts/lib/scope-echo.mjs --verify --wave <N> --state-dir "<state-dir>" --json --emit
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/scope-echo.mjs" --verify --wave <N> --state-dir "<state-dir>" --json --emit
    ```
 
    It joins the send-side `scope_checked` records, the `<state-dir>/filescopes/wave-<N>/*.json` artefacts and the echoes **on the digest** — never on `agent_id`, because the two halves spell the same agent differently (measured 2026-09-16: 609 send-side vs 51 receive-side records, agent-id overlap ZERO; one session had 23 echoes against 18 injections and nothing could be paired). Log one line in the wave progress update:
@@ -160,7 +160,7 @@ Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` 
    **Shared-lib touch auto-promotion (#555 FL-3)** — before selecting the role-based gate variant below, check whether this wave touched files under `scripts/lib/`, `hooks/`, or `.husky/`. If so, auto-promote the inter-wave gate from Quality-Lite (Incremental) to Full Gate (typecheck + test + lint). Rationale: an Impl wave that touches shared code has a wider blast radius than the agent can predict — deep-1647 inter-wave 3→4 caught 2 such regressions only because the Lite step happened to run the full test suite. Auto-promotion makes that coverage deterministic without imposing per-session cost on waves that don't touch shared code (W1-D5 chose Option B over the always-full Option A on this exact tradeoff).
 
    ```js
-   import { detectSharedLibTouch } from '$PLUGIN_ROOT/scripts/lib/quality-gate.mjs';
+   import { detectSharedLibTouch } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/quality-gate.mjs';
 
    const touchResult = detectSharedLibTouch({
      repoRoot: process.cwd(),
@@ -185,7 +185,7 @@ Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` 
 
    ```js
    // import at the top of the wave-executor runtime
-   import { shouldSkipIncremental } from '$PLUGIN_ROOT/scripts/lib/quality-gates-cache.mjs';
+   import { shouldSkipIncremental } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/quality-gates-cache.mjs';
 
    // waveRole is this wave's role: Discovery | Impl-Core | Impl-Polish | Quality | Finalization.
    // When waveRole === 'Quality', shouldSkipIncremental hard-returns skip=false so the Full Gate
@@ -345,7 +345,7 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
    - **Relationship to session-end Phase 1.8:** Wave-level session-reviewer runs provide incremental feedback during execution. Session-end Phase 1.8 runs a final comprehensive review of ALL changes. Both are complementary — wave reviews catch issues early, session-end review is the final quality gate.
    - **Discovery** and **Finalization** waves: skip session-reviewer dispatch — Discovery is read-only and Finalization is a final git status check only.
    - This is complementary to the incremental verification in step 4 — the session-reviewer provides deeper analysis (security, silent failures, test depth, type design) that automated checks do not cover.
-5b. **Design review on UI touch (#1452)** — after Impl-Core and Impl-Polish; default on, advisory. `$DR` = `node "$PLUGIN_ROOT/scripts/design-review.mjs"`; pass `--since <session-start-ref> --since-time <started_at>` (STATE.md, only when it is this session's, see session-end § 2.7) to every call.
+5b. **Design review on UI touch (#1452)** — after Impl-Core and Impl-Polish; default on, advisory. `$DR` = `node "${CLAUDE_PLUGIN_ROOT}/scripts/design-review.mjs"`; pass `--since <session-start-ref> --since-time <started_at>` (STATE.md, only when it is this session's, see session-end § 2.7) to every call.
    - `$DR detect --files-from <this wave's files_changed> --json`. `touched: false` → skip. `reviewable: false` → `$DR record --status not-reviewable --reason "<reviewable_reason>"`, report it, done.
    - Capture the touched routes with `skills/test-runner/SKILL.md` Phases 1–2 (1440 and 390). Skip surfaces with `rounds[route] == max_rounds`.
    - If the target cannot be resolved or the capture fails for any reason, `$DR record --status not-reviewable --reason "<what failed>"`, report it, and continue the wave: the design review never halts a wave.
@@ -430,7 +430,7 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
 7a. **Scope drift tripwire (S2 — #896, warn-only)**: session-cumulative and filtered through `DRIFT_EXCLUDE_PATTERNS`, so its `filesRatio` is NOT expected to agree with this wave's unfiltered `files_changed` from step 7. Only the committed part of its numerator starts at `session-start-ref`; the uncommitted and untracked parts read the checkout as it is now, so files already dirty at session start and a same-checkout peer's files count too (an over-report, named as a ceiling in `computeDrift()`'s JSDoc). Call `computeDrift()` from the same `scripts/lib/scope-baseline.mjs` module as `wave-loop-dispatch.md` § 0a Scope Baseline Freeze. Never blocks — exit code stays 0 and the next wave is dispatched regardless of the result.
 
    ```js
-   import { computeDrift } from '$PLUGIN_ROOT/scripts/lib/scope-baseline.mjs';
+   import { computeDrift } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/scope-baseline.mjs';
 
    const drift = computeDrift({ repoRoot: process.cwd(), threshold: 2.0 });
    if (drift.skipped === false && drift.breached) {
@@ -484,11 +484,15 @@ After each wave completes and before the progress update, update `<state-dir>/ST
    Use repository-relative paths verified in 3d and any coordinator edits verified against the wave baseline. An empty wave leaves the ledger unchanged.
 
    ```js
-   import { mergeFilesTouched, writeStateMd } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
-   await writeStateMd(repoRoot, (contents) => mergeFilesTouched(updateWaveState(contents), verifiedPaths));
+   import { mergeFilesTouched, updateFrontmatterFields, writeStateMd } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+   await writeStateMd(repoRoot, (contents) => {
+     const updated = updateFrontmatterFields(contents, { 'current-wave': waveNumber, status });
+     // Apply the body updates in steps 2–4 here before returning the contents.
+     return mergeFilesTouched(updated, verifiedPaths);
+   });
    ```
 
-   `updateWaveState` applies the checkpoint changes below to the current contents inside the same lock.
+   Use the completed wave number for `waveNumber` and `active` or `paused` for `status`. The callback receives the current contents under the write lock.
 2. **`## Current Wave`**: replace contents with next wave info — wave number, role, agents to dispatch and count
 3. **`## Wave History`**: append an entry for the completed wave:
    > **Record the SUITE COUNT, not just "gates green" — and name the platform (#944).** The wave line MUST carry the full-suite pass/fail count from the gate that just ran (`<passed>/<failed>`), not merely that typecheck and lint were clean. A deep session on 2026-07-30 logged typecheck/lint/validate-plugin for every wave and no suite count; a test that had been vacuous for its entire life sat red on HEAD through three waves and was found only by the review panel — in a session whose own premise was turning CI from red to green.
@@ -508,7 +512,7 @@ After each wave completes and before the progress update, update `<state-dir>/ST
    When adapting the plan discards a tried approach or rejects a wave, record that decision before continuing into the replacement plan. Use the paths verified for the discarded approach, or an empty list if it changed no files.
 
    ```js
-   import { appendAbandonedBranchOnDisk } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+   import { appendAbandonedBranchOnDisk } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
    await appendAbandonedBranchOnDisk(repoRoot, {
      tried,
      'why-abandoned': whyAbandoned,
@@ -602,11 +606,11 @@ When any gate condition is false, skip this step entirely — proceed to `### 4.
 **Dispatch sequence:**
 
 ```js
-import { loadCatalog } from '$PLUGIN_ROOT/scripts/lib/persona-panel/catalog-loader.mjs';
-import { buildPersonaPrompt, validatePersonaOutput } from '$PLUGIN_ROOT/scripts/lib/persona-panel/persona-runner.mjs';
-import { consolidate } from '$PLUGIN_ROOT/scripts/lib/persona-panel/consolidator.mjs';
-import { writeJsonAtomic } from '$PLUGIN_ROOT/scripts/lib/io.mjs';
-import { appendDeviationOnDisk } from '$PLUGIN_ROOT/scripts/lib/state-md.mjs';
+import { loadCatalog } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/persona-panel/catalog-loader.mjs';
+import { buildPersonaPrompt, validatePersonaOutput } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/persona-panel/persona-runner.mjs';
+import { consolidate } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/persona-panel/consolidator.mjs';
+import { writeJsonAtomic } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/io.mjs';
+import { appendDeviationOnDisk } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 
 const cfg = $CONFIG['persona-gate-wave'];                        // already normalised by parseSessionConfig
 const catalog = await loadCatalog();                              // throws if .claude/personas/ missing or invalid

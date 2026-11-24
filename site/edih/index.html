@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session Orchestrator for EDIH advisers and SMEs</title>
+<meta name="description" content="Try Session Orchestrator with an SME development team in one afternoon. Free, MIT-licensed workflow tooling for AI coding agents.">
+<link rel="canonical" href="https://session-orchestrator.com/edih">
+<link rel="alternate" hreflang="en" href="https://session-orchestrator.com/edih">
+<link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de/edih">
+<link rel="alternate" hreflang="x-default" href="https://session-orchestrator.com/edih">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Session Orchestrator">
+<meta property="og:url" content="https://session-orchestrator.com/edih">
+<meta property="og:title" content="Session Orchestrator for EDIH advisers and SMEs">
+<meta property="og:description" content="Try Session Orchestrator with an SME development team in one afternoon. Free, MIT-licensed workflow tooling for AI coding agents.">
+<meta property="og:image" content="https://session-orchestrator.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Session Orchestrator with the commands /session, /go and /close.">
+<meta property="og:locale" content="en_US">
+<meta property="og:locale:alternate" content="de_DE">
+<meta name="twitter:card" content="summary_large_image">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "@id": "https://session-orchestrator.com/edih",
+  "url": "https://session-orchestrator.com/edih",
+  "name": "Session Orchestrator for EDIH advisers and SMEs",
+  "inLanguage": "en",
+  "about": { "@id": "https://session-orchestrator.com/#software" },
+  "isPartOf": { "@id": "https://session-orchestrator.com/#website" }
+}
+</script>
+
+<link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
+<link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
+<link rel="stylesheet" href="/assets/site.css?v=20261118">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span></a>
+    <nav class="nav" aria-label="Main"><a href="/guide#how-it-works">How it works</a><a href="/commands">Commands</a><a href="/guide">Guide</a><a href="/lead">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
+    <p class="lang"><a href="/edih" aria-current="page" lang="en">EN</a><a href="/de/edih" lang="de">DE</a></p>
+    <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="/guide#how-it-works">How it works</a><a href="/commands">Commands</a><a href="/guide">Guide</a><a href="/lead">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a class="menu-de" href="/de/edih" lang="de" hreflang="de">Deutsch</a></nav></details>
+  </div>
+</header>
+<main id="main">
+  <section class="sec" id="top">
+    <div class="wrap">
+      <p class="eyebrow">European Digital Innovation Hubs · SMEs</p>
+      <h1 class="h-display">Try a checked coding session in one afternoon.</h1>
+      <p class="lede">Session Orchestrator is an open-source tool for software teams using AI coding agents. Agree on a plan, check the work with your project’s own commands, and leave a written handover.</p>
+      <p><strong>EUR 0.</strong> The tool is MIT-licensed. Session Orchestrator runs locally in your Git repository without a Session Orchestrator account or server. The coding agent supplies the model. Its provider may charge separately.</p>
+      <p>By default, the plugin checks the npm registry for updates. Its security check fetches the Node.js release index and the CISA KEV feed. It filters out private packages before sending package names and versions from your lockfile to OSV. For GitHub remotes, it also uses <code>gh</code> to check for private vulnerability reports. Set <code>SO_DISABLE_UPDATE_CHECK=1</code> to turn off the update check and <code>SO_SECURITY_PULSE_REFRESH=off</code> to turn off the security check. Either <code>DO_NOT_TRACK=1</code> or <code>CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1</code> turns off both. Telemetry is off unless you opt in. See <a href="/guide#faq">network connections in the guide</a>.</p>
+      <a class="btn btn-primary" href="#install">Start the trial</a>
+    </div>
+  </section>
+
+  <section class="sec" id="install" aria-labelledby="install-h">
+    <div class="wrap">
+      <h2 id="install-h">From installation to handover</h2>
+      <p>An EDIH adviser and a developer can try this together. Bring Node.js 24 or later, a Git repository with working checks, and a small change the team can review that afternoon.</p>
+      <ol>
+        <li>Install Session Orchestrator inside Claude Code with <code>/plugin marketplace add Kanevry/session-orchestrator</code> and then <code>/plugin install session-orchestrator@kanevry</code>. For Codex CLI, Cursor or Pi, follow the <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/install.md">installation guide</a> for your coding agent.</li>
+        <li>Open the project in the coding agent and run <code>/bootstrap</code> to set up Session Config. Set <code>test-command</code>, <code>typecheck-command</code> and <code>lint-command</code> to the project’s own commands. In an npm project these might be <code>npm test</code>, <code>npm run typecheck</code> and <code>npm run lint</code>.</li>
+        <li>Start with <code>/session feature</code> and review and agree on the plan. Run <code>/go</code> for the first round and review the check results. Run <code>/close</code> and read the handover together. The <a href="/guide">user guide</a> explains how to invoke the workflow in each coding agent.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="sec" id="limits" aria-labelledby="limits-h">
+    <div class="wrap">
+      <h2 id="limits-h">Pi and model hosting</h2>
+      <p>On Pi, tasks run sequentially and hook context intended for the model is unavailable. Live Pi compatibility has not yet been verified in a recorded run. Two end-to-end recordings are planned, one with a European model provider and one with a model on hardware operated by the project. Each setup counts as verified once a recorded run meets the <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/edih-proof-runs.md">published criteria</a>.</p>
+    </div>
+  </section>
+  <section class="sec end" id="support" aria-labelledby="support-h">
+    <div class="wrap end-grid">
+      <div>
+        <h2 id="support-h">Support for EDIH customers</h2>
+        <p>EDIH customers receive a written reply within 3 working days to support requests submitted via GitHub Issues. See the <a href="/terms">terms of use</a>.</p>
+      </div>
+      <a class="btn btn-primary" href="https://github.com/Kanevry/session-orchestrator/issues">Open GitHub Issues</a>
+    </div>
+  </section>
+</main>
+<footer class="foot"><div class="wrap"><div class="footer-main"><a class="brand" href="/">session-orchestrator</a></div><div class="footer-links"><nav aria-label="More links"><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a href="https://www.npmjs.com/package/session-orchestrator">npm</a><a href="/guide">Guide</a><a href="/impressum">Imprint</a><a href="/datenschutz">Privacy</a><a href="/terms">Terms</a></nav></div></div></footer>
+<script src="/_vercel/insights/script.js" defer></script>
+<script src="/assets/ui.js?v=20261118" defer></script>
+</body>
+</html>

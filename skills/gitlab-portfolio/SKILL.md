@@ -16,6 +16,8 @@ model: sonnet
 
 # GitLab Portfolio Skill
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 > Aggregates cross-repo health signals from vault-registered projects into a single `_PORTFOLIO.md` dashboard — idempotent, opt-in, and `_generator`-marked.
 
 ## Soul
@@ -127,7 +129,7 @@ Configure `vault-integration.vault-dir` only with user-controlled paths under `~
 ## CLI
 
 ```bash
-node scripts/lib/gitlab-portfolio/aggregator.mjs \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/gitlab-portfolio/aggregator.mjs" \
   --vault-dir ~/Projects/vault \
   [--dry-run]
 ```

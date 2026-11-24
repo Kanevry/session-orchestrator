@@ -16,8 +16,8 @@ The accessor exports two variables. Consumers that DIFF use `"$SESSION_RANGE"` a
 ```bash
 SESSION_SPEC=$(node --input-type=module -e "
 import {readFileSync} from 'node:fs';
-import {parseStateMd} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
-import {resolveBaselineRange, isQueryFailure} from '${PLUGIN_ROOT}/scripts/lib/vcs-repo-spec.mjs';
+import {parseStateMd} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import {resolveBaselineRange, isQueryFailure} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/vcs-repo-spec.mjs';
 let ref = '';
 try { ref = String(parseStateMd(readFileSync('<state-dir>/STATE.md', 'utf8')).frontmatter['session-start-ref'] ?? '').trim(); } catch {}
 if (/^[0-9a-f]{7,64}$/.test(ref)) process.stdout.write(ref + ' ' + ref + '..HEAD');
@@ -52,7 +52,7 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 Compare the files the plan said would be touched against the files actually changed in the session. Catches both **scope creep** (files changed that were not in any agent's prompt scope) and **incomplete coverage** (files in the plan that were never edited).
 
 1. **Planned files** = union of all file paths from agent prompt scopes across all waves. Source: STATE.md Wave History, falling back to the original session plan's per-agent "Files:" specs. Glob patterns are expanded against the working tree at session-start time.
-2. **Actual files** = `git diff --name-only "$SESSION_RANGE"` (accessor above: the pinned `session-start-ref`, else the resolved baseline range). Empty `$SESSION_RANGE` → skip 1.1a with the accessor's reason. **Multi-tree (#1659):** also run `node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/session-commit-files.mjs"` (session id defaults to `$CLAUDE_CODE_SESSION_ID`; `--json` prints `{ trees, perTree, skipped, union, malformed }`) and add its union — files committed in the session's OTHER worktrees, recorded by `hooks/pre-bash-staging-fence.mjs` as `orchestrator.session.work_tree` events — to Actual. The own-tree `session-start-ref` range stays authoritative for the own tree; the CLI diffs each recorded tree only inside itself, never across trees. Trees it lists as skipped (stderr) were not measured: report them, do not read them as "no changes".
+2. **Actual files** = `git diff --name-only "$SESSION_RANGE"` (accessor above: the pinned `session-start-ref`, else the resolved baseline range). Empty `$SESSION_RANGE` → skip 1.1a with the accessor's reason. **Multi-tree (#1659):** also run `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-commit-files.mjs"` (session id defaults to `$CLAUDE_CODE_SESSION_ID`; `--json` prints `{ trees, perTree, skipped, union, malformed }`) and add its union — files committed in the session's OTHER worktrees, recorded by `hooks/pre-bash-staging-fence.mjs` as `orchestrator.session.work_tree` events — to Actual. The own-tree `session-start-ref` range stays authoritative for the own tree; the CLI diffs each recorded tree only inside itself, never across trees. Trees it lists as skipped (stderr) were not measured: report them, do not read them as "no changes".
 3. **Compute discrepancies:**
    - **Touched** = files in both Planned and Actual
    - **Unplanned (scope creep)** = files in Actual but not in Planned
@@ -174,7 +174,7 @@ Review safety metrics from the session. This is informational — it does NOT bl
    });
    ```
 
-   The deferred Phase-5.3 call imports `createSpiralCarryoverIssue` from `${PLUGIN_ROOT}/scripts/lib/spiral-carryover.mjs`; it is idempotent via its task-hash dedup marker, so re-running the fallback across sessions will not create duplicates.
+   The deferred Phase-5.3 call imports `createSpiralCarryoverIssue` from `${CLAUDE_PLUGIN_ROOT}/scripts/lib/spiral-carryover.mjs`; it is idempotent via its task-hash dedup marker, so re-running the fallback across sessions will not create duplicates.
 
 #### 1.6.6 Record "What Not To Retry" entries (#623)
 
@@ -183,7 +183,7 @@ Review safety metrics from the session. This is informational — it does NOT bl
 For every `SPIRAL` or `FAILED` agent surfaced in the walk above, ALSO append a cross-session "What Not To Retry" entry to STATE.md. This is the durable, human-readable continuity slot that the NEXT session-start surfaces as a forced-read block (session-start Phase 6.5.1) so a future session does not re-attempt the same failed approach. Unlike a carryover issue (which captures unfinished work), this captures the *approach that should not be repeated*.
 
 ```js
-import { appendWhatNotToRetryOnDisk } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import { appendWhatNotToRetryOnDisk } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 
 // `parsed` = parseStateMd(STATE.md); `session:` is an attribution/history label.
 // It records this entry's provenance only and never authorizes lock ownership.
@@ -223,7 +223,7 @@ Fail-open NEVER hangs the close on an unanswerable AUQ and NEVER loses data — 
 **Telemetry on skip (#773):** even when the gate is skipped, emit the `orchestrator.handover.gated` event ONCE with `path: "fail_open"` so this never-interactive path is still measurable (the carryover=0 blind spot #773 closed was invisible precisely because skipped closes emitted nothing). Every candidate carries, so `auto_carry = candidates_total`, `asked = 0`, `dropped = 0`, and the three question counts are `0`:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.handover.gated --payload \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" --type orchestrator.handover.gated --payload \
   "$(node -e "process.stdout.write(JSON.stringify({candidates_total: CT, auto_carry: CT, asked: 0, dropped: 0, questions_asked: 0, questions_answered: 0, questions_deferred: 0, path: 'fail_open'}))")"
 ```
 
@@ -236,7 +236,7 @@ node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-eve
 2. **Classify** via the pure helper:
 
    ```js
-   import { routeCandidates } from '${PLUGIN_ROOT}/scripts/lib/handover-gate.mjs';
+   import { routeCandidates } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/handover-gate.mjs';
    const { autoCarry, ask } = routeCandidates(candidates);
    ```
 
@@ -245,7 +245,7 @@ node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-eve
 3. Read STATE.md contents and extract the open questions via the sibling helper:
 
    ```js
-   import { readOpenQuestions } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+   import { readOpenQuestions } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
    const openQuestions = readOpenQuestions(stateMdContents); // Array<{question, source, priority, answered, answer?}>
    const unanswered = openQuestions.filter((q) => !q.answered);
    ```
@@ -261,7 +261,7 @@ Render ONE `AskUserQuestion`. The question text NAMES the candidate counts by cl
 - **"Weiterarbeiten (Close abbrechen)"** — abort session-end cleanly: NO commit, NO lock-release, NO issue creation; STATE.md stays `status: active`; the session remains open and the coordinator continues working the open points. **Before stopping, emit `orchestrator.handover.gated` ONCE with `path: "weiterarbeiten"` (#773)** — the gate WAS rendered (AUQ Call 1 happened) and the operator chose to keep working, which is a distinct, previously-unmeasured outcome. Nothing is filed, so report `auto_carry = autoCarry.length`, `asked = ask.length`, `dropped = 0`, and all three question counts `0`:
 
   ```bash
-  node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.handover.gated --payload \
+  node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" --type orchestrator.handover.gated --payload \
     "$(node -e "process.stdout.write(JSON.stringify({candidates_total: CT, auto_carry: AC, asked: ASK, dropped: 0, questions_asked: 0, questions_answered: 0, questions_deferred: 0, path: 'weiterarbeiten'}))")"
   ```
 
@@ -310,7 +310,7 @@ After the carry/drop split is settled, emit `orchestrator.handover.gated` **exac
 - `path` = `"triage"` (after "Closen + Triage") or `"fast_path"` (after "Alle carryoven ohne Triage")
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.handover.gated --payload \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" --type orchestrator.handover.gated --payload \
   "$(node -e "process.stdout.write(JSON.stringify({candidates_total: CT, auto_carry: AC, asked: ASK, dropped: DROP, questions_asked: QA, questions_answered: QAN, questions_deferred: QD, path: PATH}))")"
 ```
 
@@ -343,7 +343,7 @@ Dispatch the session-reviewer agent to verify implementation quality before the 
 **Override-ratio telemetry (#730/H5):** whenever one or more MED/LOW review findings are routed to "Unresolved Review Findings" (rather than fixed), additionally emit a single event capturing how many findings were absorbed rather than resolved — feeding the `override_ratio` metric:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.finding.overridden --payload '{"phase":"1.8","kind":"med-low-review-finding","count":N}'
+node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" --type orchestrator.finding.overridden --payload '{"phase":"1.8","kind":"med-low-review-finding","count":N}'
 ```
 
 ### 1.9 Mission-Status Classification (when `mission-status` present in STATE.md)

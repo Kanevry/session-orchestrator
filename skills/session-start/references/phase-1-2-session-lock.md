@@ -139,7 +139,7 @@ When `hostnamesMatch(existingLock.host_id || existingLock.host, os.hostname())` 
 After Phase 1.2 acquires (or confirms) the lock, use `findPeers(repoRoot, { mySessionId: callerSessionHint })` for the STATE.md peer guard. `callerSessionHint` is the original semantic attribution label when one exists, otherwise the raw `sessionId`: `findPeers` may translate the semantic hint for the discovered lock/registry surface only after the exact raw binding check in `parallel-aware-preamble.md`, while keeping the original hint for STATE.md. This catches the rare case where lock-based detection missed an active peer (e.g., the peer's `session.lock` was force-deleted by an out-of-band sweep but STATE.md is still `status: active`, OR the peer's registry write succeeded but the lock-bootstrap hook crashed before the lock landed).
 
 ```javascript
-import { findPeers } from '$PLUGIN_ROOT/scripts/lib/peer-discovery.mjs';
+import { findPeers } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/peer-discovery.mjs';
 // Keep the STATE.md comparison in its original attribution-label space.
 // findPeers performs the guarded semantic→raw translation only for discovered peers.
 const callerSessionHint = semanticSessionId ?? sessionId;

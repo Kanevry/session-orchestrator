@@ -55,6 +55,20 @@
     <priority>0.6</priority>
   </url>
   <url>
+    <loc>https://session-orchestrator.com/edih</loc>
+    <lastmod>2026-11-24</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://session-orchestrator.com/edih"/>
+    <xhtml:link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de/edih"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://session-orchestrator.com/edih"/>
+  </url>
+  <url>
+    <loc>https://session-orchestrator.com/de/edih</loc>
+    <lastmod>2026-11-24</lastmod>
+    <xhtml:link rel="alternate" hreflang="en" href="https://session-orchestrator.com/edih"/>
+    <xhtml:link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de/edih"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://session-orchestrator.com/edih"/>
+  </url>
+  <url>
     <loc>https://session-orchestrator.com/impressum</loc>
     <lastmod>2026-09-07</lastmod>
     <changefreq>yearly</changefreq>
@@ -63,6 +77,12 @@
   <url>
     <loc>https://session-orchestrator.com/datenschutz</loc>
     <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://session-orchestrator.com/terms</loc>
+    <lastmod>2026-11-24</lastmod>
     <changefreq>yearly</changefreq>
     <priority>0.3</priority>
   </url>

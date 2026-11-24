@@ -45,8 +45,8 @@ When detection returns a worktree object AND `isWorktreeClean()` returns `true`,
 
 ```js
 import path from 'node:path';
-import { execFileSync } from '${PLUGIN_ROOT}/scripts/lib/native-command.mjs';
-import { detectAutoPromotedWorktree, isWorktreeClean } from '${PLUGIN_ROOT}/scripts/lib/session-end/worktree-cleanup.mjs';
+import { execFileSync } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/native-command.mjs';
+import { detectAutoPromotedWorktree, isWorktreeClean } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/session-end/worktree-cleanup.mjs';
 
 const promoted = detectAutoPromotedWorktree(process.cwd(), sessionId);
 if (!promoted) {
@@ -60,7 +60,7 @@ if (!promoted) {
   if (isWorktreeClean(promoted.wtPath)) {
     // Desk rule `tidy` (#2176), read fresh right before the effect. It only holds back:
     // inaktiv/do → as today, tell → as today plus a notice line, anything stricter → keep.
-    const { readDeskFiles, tidyDecision, markRead, appendDeskNotice } = await import('${PLUGIN_ROOT}/scripts/lib/desk-rules.mjs');
+    const { readDeskFiles, tidyDecision, markRead, appendDeskNotice } = await import('${CLAUDE_PLUGIN_ROOT}/scripts/lib/desk-rules.mjs');
     const tidy = tidyDecision(readDeskFiles(), new Date());
     markRead('so-session-end', tidy.value);
     if (tidy.action === 'keep') {

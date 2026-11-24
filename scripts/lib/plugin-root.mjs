@@ -21,8 +21,8 @@
  * cursor / pi; anything else keeps the legacy order), env values trimmed, the
  * `CODEX_HOME` trim (see `_pluginCacheBases`), the
  * `package.json{name === "session-orchestrator"}` test in the cache scan (the
- * shell runs the same `JSON.parse` via `node -e`), and the strict
- * newest-wins-by-mtime tiebreak (`[ "$c" -nt "$r" ]`, like the `>` below).
+ * shell runs the same `JSON.parse` via `node -e`), and the cache ordering
+ * (highest numeric release directory first, then directory mtime).
  *
  * Where the shell differs, stated exactly:
  *   - It accepts an env root only when it contains `scripts/mcp-server.sh` and
@@ -223,20 +223,11 @@ function _pluginCacheBases() {
  * installed copy sits at a well-known path under `HOME`.
  * See GH Kanevry/session-orchestrator#64.
  *
- * Ceiling (BV-004): among valid candidates the newest wins by directory
- * **mtime**, not by semver. That reads as "the copy the client installed most
- * recently", which is the intent, and it keeps this resolver free of a semver
- * parser — a lexical sort would already be wrong today (`3.9.0` sorts above
- * `3.10.0`). Revisit if a client starts pre-seeding caches it never launches.
- *
- * Equal-mtime tiebreak: the comparison is STRICTLY greater, so on a tie the
- * FIRST candidate in scan order wins — bases in `_pluginCacheBases()` order
- * (`CODEX_HOME` before `~/.claude`), then `readdirSync` order within each. Two
- * cache copies sharing an mtime to the millisecond means the same content
- * installed twice, so the choice is arbitrary rather than wrong; what matters
- * is that it is DETERMINISTIC and identical to `mcp/servers.json`'s `[ "$c" -nt "$r" ]`,
- * which is also strict. Untested by design — a test would pin an arbitrary
- * choice as a contract.
+ * BV-004 ceiling: only x.y.z release directory names are version-ranked; a SemVer
+ * build suffix (`5.19.0+codex.20261113130433`) is ignored for the rank. Prerelease
+ * and custom names share the mtime fallback. Revisit-Trigger:
+ * a client requires precedence between suffixed versions. Equal ranks and equal
+ * mtimes keep the first candidate in scan order.
  *
  * @param {string[]} tried  Diagnostic accumulator, appended to on failure
  * @returns {string|null} Absolute path to the newest cached plugin copy
@@ -244,7 +235,8 @@ function _pluginCacheBases() {
 function _scanPluginCaches(tried) {
   const bases = _pluginCacheBases();
   let best = null;
-  let bestMtimeMs = -1;
+  let bestVersion = '';
+  let bestMtimeMs = -Infinity;
 
   for (const base of bases) {
     const cacheDir = path.join(base, 'plugins', 'cache');
@@ -267,7 +259,16 @@ function _scanPluginCaches(tried) {
         if (!_isPluginRoot(candidate)) continue;
         let mtimeMs;
         try { mtimeMs = statSync(candidate).mtimeMs; } catch { continue; }
-        if (mtimeMs > bestMtimeMs) { bestMtimeMs = mtimeMs; best = candidate; }
+        // SemVer build metadata (`+codex.<stamp>`, how Codex names its cache copy) does not
+        // change precedence, so it is dropped before ranking.
+        const plain = version.replace(/\+[0-9A-Za-z.-]*$/, '');
+        const release = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(plain) ? plain : '';
+        const order = release.localeCompare(bestVersion, 'en', { numeric: true });
+        if (order > 0 || (order === 0 && mtimeMs > bestMtimeMs)) {
+          best = candidate;
+          bestVersion = release;
+          bestMtimeMs = mtimeMs;
+        }
       }
     }
   }

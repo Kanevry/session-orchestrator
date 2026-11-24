@@ -1035,8 +1035,11 @@ export const SITEMAP_PAGES = Object.freeze([
   { page: 'de/commands/index.html', loc: 'https://session-orchestrator.com/de/commands' },
   { page: 'lead/index.html', loc: 'https://session-orchestrator.com/lead' },
   { page: 'mcp/index.html', loc: 'https://session-orchestrator.com/mcp' },
+  { page: 'edih/index.html', loc: 'https://session-orchestrator.com/edih' },
+  { page: 'de/edih/index.html', loc: 'https://session-orchestrator.com/de/edih' },
   { page: 'impressum/index.html', loc: 'https://session-orchestrator.com/impressum' },
   { page: 'datenschutz/index.html', loc: 'https://session-orchestrator.com/datenschutz' },
+  { page: 'terms/index.html', loc: 'https://session-orchestrator.com/terms' },
 ]);
 
 const URL_BLOCK_RE = /<url>([\s\S]*?)<\/url>/g;

@@ -29,7 +29,7 @@ import {
   getDispatcherAutonomyQuestion,
   isDispatcherAutonomyBlockPresent,
   writeDispatcherAutonomyBlock,
-} from '$PLUGIN_ROOT/scripts/lib/config/dispatcher-autonomy-capture.mjs';
+} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/config/dispatcher-autonomy-capture.mjs';
 import { readFileSync } from 'node:fs';
 
 const claudeMdPath = `${process.cwd()}/CLAUDE.md`;

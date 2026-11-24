@@ -258,8 +258,7 @@ async function readSessionIdsFromEvents(repoRoot) {
   }
 
   const lines = window.text.split(/\r?\n/);
-  // The window started mid-file, so line 0 may be a truncated record.
-  if (window.cut) lines.shift();
+  if (window.partialFirstLine) lines.shift();
 
   const cutoff = Date.now() - EVENTS_MAX_AGE_MS;
   const ids = [];

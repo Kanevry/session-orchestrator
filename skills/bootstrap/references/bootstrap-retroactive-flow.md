@@ -46,10 +46,10 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
    archetype: <INFERRED_ARCHETYPE or null>
    timestamp: <current ISO 8601 UTC>
    source: retroactive
-   plugin-version: <current plugin version from $PLUGIN_ROOT/package.json>
+   plugin-version: <current plugin version from ${CLAUDE_PLUGIN_ROOT}/package.json>
    ```
 
-6. **Patch Session Config (#182, #1567).** Find the mandatory fields the `## Session Config` block does not carry and append them with defaults. The mandatory fields are the keys of the FIRST `## Session Config` block in `$PLUGIN_ROOT/docs/session-config-template.md` (today the 7 validated by `scripts/lib/config-schema.mjs`): `test-command`, `typecheck-command`, `lint-command`, `agents-per-wave`, `waves`, `persistence`, `enforcement`.
+6. **Patch Session Config (#182, #1567).** Find the mandatory fields the `## Session Config` block does not carry and append them with defaults. The mandatory fields are the keys of the FIRST `## Session Config` block in `${CLAUDE_PLUGIN_ROOT}/docs/session-config-template.md` (today the 7 validated by `scripts/lib/config-schema.mjs`): `test-command`, `typecheck-command`, `lint-command`, `agents-per-wave`, `waves`, `persistence`, `enforcement`.
 
    Presence is read from the FILE, not from the validator: `parseSessionConfig()` fills every mandatory field with its default, so `parse-config.mjs` / `validate-config.mjs` never report an ABSENT field (a pnpm repo without `test-command` would silently run `npm test`). `missingStarterKeys()` (`scripts/lib/config/template-keys.mjs`) compares the template's starter keys against `collectTopLevelKeyLines()` — the top-level keys the runtime reads, in every accepted spelling (`key:`, `- key:`, `- **key:**`).
 
@@ -59,10 +59,10 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
 
    MISSING_FIELDS="$(node --input-type=module -e "
      import { readFileSync } from 'node:fs';
-     import { missingStarterKeys } from '$PLUGIN_ROOT/scripts/lib/config/template-keys.mjs';
+     import { missingStarterKeys } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/config/template-keys.mjs';
      const missing = missingStarterKeys(
        readFileSync(process.argv[1], 'utf8'),
-       readFileSync('$PLUGIN_ROOT/docs/session-config-template.md', 'utf8'),
+       readFileSync('${CLAUDE_PLUGIN_ROOT}/docs/session-config-template.md', 'utf8'),
      );
      if (missing === null) { console.error('template has no Session Config block — mandatory-field check did not run'); process.exit(1); }
      console.log(missing.join(' '));
@@ -70,7 +70,7 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
    if [[ -n "$MISSING_FIELDS" ]]; then
      # Detect package manager to pick sensible defaults for commands.
      PM_DEFAULTS="$(node --input-type=module -e "
-       import {detectPackageManager, defaultQualityGateCommands} from '$PLUGIN_ROOT/scripts/lib/package-manager.mjs';
+       import {detectPackageManager, defaultQualityGateCommands} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/package-manager.mjs';
        const pm = detectPackageManager(process.cwd());
        const cmds = defaultQualityGateCommands(pm);
        console.log('test-command: ' + cmds.test.command);

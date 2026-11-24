@@ -6,6 +6,7 @@
  *   off            present and disabled by a config value (the value is named)
  *   not-wired      nothing in this repo calls or configures it (a measured absence)
  *   not-measurable the state could not be read (with the reason)
+ *   skipped        the last pulse had nothing to check (with the reason)
  *
  * Reads only: the working tree, or `git ls-tree` / `git show` at `ref`. The
  * advisory pulse contributes counts only — no package name, no advisory id.
@@ -229,6 +230,12 @@ function pulseCheck(repoRoot, env, now) {
   // The refresh writes the lockfile check's status (CHECK_STATUS) and short machine reason.
   // Only a reason of the machine-token shape is shown; anything else could be cached text.
   const recStatus = entry.value.status;
+  if (recStatus === 'skipped') {
+    // BV-004 ceiling: expose only runLockfileCheck's two skip reasons; cached text may name a package.
+    // Revisit-Trigger: runLockfileCheck emits another skip reason.
+    const reason = ['no-range', 'no-lockfile-change'].includes(entry.value.reason) ? entry.value.reason : 'unknown';
+    return { ...base, state: 'skipped', detail: `pulse cache ${age}`, reason: `last pulse refresh skipped (${reason})` };
+  }
   if (recStatus === 'degraded' || recStatus === 'not-measurable') {
     const rawReason = entry.value.reason;
     const reasonClass = typeof rawReason === 'string' && /^[a-z][a-z0-9-]{0,39}$/.test(rawReason) ? rawReason : 'unknown';

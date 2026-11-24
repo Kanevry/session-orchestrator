@@ -14,6 +14,8 @@ description: >
 
 # Wave Executor Skill
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Execution Model
 
 You are the **coordinator**. You do NOT implement — you orchestrate. Your job:
@@ -89,7 +91,7 @@ Before starting the first wave (Discovery role):
    - `persistence` (default: true), `enforcement` (default: warn), `isolation` (default: auto)
    - `agents-per-wave` (default: 6), `max-turns` (default: auto), `pencil` (default: null)
    
-   **Neither `agents-per-wave` nor `max-turns` carries its own default here.** Ordinarily the per-wave `agentCap` and `maxTurns` come from the RESOLVED SHAPE (`node scripts/session-shape.mjs --repo-root "$PWD" --session-type <session-type> [--profile <session-profile>] [--known-scope true|false]`, module `scripts/lib/session-shape.mjs`). Session Config's `agents-per-wave` (with its per-type override, e.g. `6 (deep: 18)`) CLAMPS the shape's `agentCap`; `max-turns: auto` is expanded per type inside the shape. For the user-authorized housekeeping deviation, use the actual plan's bounded execution fields resolved by the linked planning procedure instead.
+   **Neither `agents-per-wave` nor `max-turns` carries its own default here.** Ordinarily the per-wave `agentCap` and `maxTurns` come from the RESOLVED SHAPE (`node "${CLAUDE_PLUGIN_ROOT}/scripts/session-shape.mjs" --repo-root "$PWD" --session-type <session-type> [--profile <session-profile>] [--known-scope true|false]`, module `scripts/lib/session-shape.mjs`). Session Config's `agents-per-wave` (with its per-type override, e.g. `6 (deep: 18)`) CLAMPS the shape's `agentCap`; `max-turns: auto` is expanded per type inside the shape. For the user-authorized housekeeping deviation, use the actual plan's bounded execution fields resolved by the linked planning procedure instead.
    
    **Execution Config shortcut:** If the session-plan output contains an `### Execution Config` section, its execution-level fields (waves, agents-per-wave, isolation, enforcement, max-turns) take precedence over `$CONFIG`. Session-level fields (persistence, pencil) always come from `$CONFIG`. If the Execution Config section is missing, use `$CONFIG` alone.
 6. **Initialize session metrics** (if `persistence` enabled): Prepare a metrics tracking object for this session:
@@ -119,7 +121,7 @@ Before dispatching Wave 1, capture the current commit of the session's own check
 SESSION_START_REF=$(git -C "<session checkout (repoRoot)>" rev-parse HEAD)
 ```
 
-Store this value for use throughout the session — it is needed by the simplification pass (Quality wave) and session-reviewer dispatch to determine which files changed during this session. Include it in the coordinator's context, NOT in individual agent prompts. This single ref covers the session's own checkout only: commits made in additional worktrees of the session are recorded by the staging fence as `orchestrator.session.work_tree` events and listed by `node scripts/session-commit-files.mjs` (#1659; remaining limits: `references/wave-executor-state-init.md`).
+Store this value for use throughout the session — it is needed by the simplification pass (Quality wave) and session-reviewer dispatch to determine which files changed during this session. Include it in the coordinator's context, NOT in individual agent prompts. This single ref covers the session's own checkout only: commits made in additional worktrees of the session are recorded by the staging fence as `orchestrator.session.work_tree` events and listed by `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-commit-files.mjs"` (#1659; remaining limits: `references/wave-executor-state-init.md`).
 
 ## Pre-Wave 1b: Initialize STATE.md
 
@@ -216,7 +218,7 @@ Wave-executor agents may propose memory entries (learnings) mid-session via the 
 
 During this wave, you may propose a learning to the session's memory via the CLI:
 
-  SO_WAVE_AGENT=1 node scripts/memory-propose.mjs \
+  SO_WAVE_AGENT=1 node "${CLAUDE_PLUGIN_ROOT}/scripts/memory-propose.mjs" \
       --type <one of: workflow-pattern|anti-pattern|recurring-issue|fragile-file|effective-sizing|proven-pattern|mode-selector-accuracy|hardware-pattern|autopilot-effectiveness|domain-regression|convention|architecture-pattern|design-pattern> \
       --subject "one-line title (max 100 chars, no newlines)" \
       --insight "your discovery paragraph (max 2000 chars)" \
@@ -249,7 +251,7 @@ Cross-reference: PRD F2.1 / issue #501 / `docs/memory-proposal-flow.md` (coordin
 
 **Check the user-authorized execution deviation before entering this shortcut.** When active, initialize STATE.md with the actual plan's `total-waves`, record the deviation per [STATE initialization](references/wave-executor-state-init.md), materialize the normal per-agent and aggregate wave scopes (including the coordinator), and run the normal dispatch, inter-wave checks and review process. Keep the maintenance order and its coordinator-owned decisions below; skip the serial-only mechanics list. Do not skip reviews merely because `session-type` remains `housekeeping`.
 
-Ordinary housekeeping is **ONE coordinator-direct wave**: `node scripts/session-shape.mjs --repo-root "$PWD" --session-type housekeeping --no-event` resolves to `totalWaves: 1` with that wave's `coordinatorDirect: true` and `writes: true`. "Coordinator-direct" means **no wave-executor dispatch loop** — it does not mean zero subagents (`/evolve dialectic` dispatches the read-only `dialectic-deriver`).
+Ordinary housekeeping is **ONE coordinator-direct wave**: `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-shape.mjs" --repo-root "$PWD" --session-type housekeeping --no-event` resolves to `totalWaves: 1` with that wave's `coordinatorDirect: true` and `writes: true`. "Coordinator-direct" means **no wave-executor dispatch loop** — it does not mean zero subagents (`/evolve dialectic` dispatches the read-only `dialectic-deriver`).
 
 **Ordered default scope — the maintenance loop.** Run it in this order, before the session's selected issues:
 
@@ -257,12 +259,12 @@ Ordinary housekeeping is **ONE coordinator-direct wave**: `node scripts/session-
 |---|---|---|---|
 | 1 | `claude-md-drift-check` | unconditional | checker JSON (`errors`/`warnings` counts) |
 | 2 | expired-learnings sweep | unconditional | `orchestrator.learnings.sweep_applied` |
-| 3 | expired-generated-**rules** sweep — `node scripts/sweep-expired-rules.mjs --horizon-days 7` (`--dry-run` first, then `--apply`; the horizon covers the gap to the next sweep, since Claude Code ignores `expires-at`, #1779) | AUQ-gated (it rewrites and can DELETE tracked `.claude/rules/*.md` files) | `orchestrator.rules.expiry_sweep_applied` |
+| 3 | expired-generated-**rules** sweep — `node "${CLAUDE_PLUGIN_ROOT}/scripts/sweep-expired-rules.mjs" --horizon-days 7` (`--dry-run` first, then `--apply`; the horizon covers the gap to the next sweep, since Claude Code ignores `expires-at`, #1779) | AUQ-gated (it rewrites and can DELETE tracked `.claude/rules/*.md` files) | `orchestrator.rules.expiry_sweep_applied` |
 | 4 | `/evolve analyze` | AUQ-gated (the operator approves the proposed learnings) | `orchestrator.evolve.completed` |
 | 5 | `/reconcile` | AUQ-gated (rule proposals are never applied unasked) | `orchestrator.reconcile.completed` with `dry_run: false` |
 | 6 | `/evolve dialectic` | AUQ-gated (the derived thesis is presented, not committed) | `orchestrator.dialectic.completed` |
 | 7 | `/memory-cleanup` | AUQ-gated (deletions are operator-approved) | `orchestrator.memory.cleanup_completed` |
-| 8 | `/backlog` (`node scripts/backlog-refine.mjs`) | report unconditional; tracker writes AUQ-gated per `skills/backlog/SKILL.md` | `orchestrator.backlog.refine_completed` |
+| 8 | `/backlog` (`node "${CLAUDE_PLUGIN_ROOT}/scripts/backlog-refine.mjs"`) | report unconditional; tracker writes AUQ-gated per `skills/backlog/SKILL.md` | `orchestrator.backlog.refine_completed` |
 
 Row 3 runs directly after row 2 because its evidence comes from row 2's corpus: an entry's date is recoverable only via its `learning-id` → `learnings.jsonl` `expires_at`, so the rule sweep must see the store the learnings sweep left behind. Show the operator the dry-run plan — it names every rewrite, every delete, every skip (`no-1to1-mapping`, `no-provenance-block`, `unreadable`, `no-counter-sentence`) and every unresolvable pair — before asking. A `no-counter-sentence` skip (GH#70) is the sweep refusing to touch a file whose counter sentence it cannot read, deletion included — report it as a skip, never as a defect. Contract: `docs/rule-authoring.md` § Consolidated rules → "The expiry sweep".
 
@@ -282,7 +284,7 @@ Beyond the loop: git cleanup, SSOT refresh, CI fixes, branch merges, documentati
 End with a single commit summarizing all housekeeping work.
 
 ### Feature Sessions
-- **3 waves** (Impl-Core → Impl-Polish+Quality → Finalization) with **no Discovery wave** — read them from the shape, not from this file: `node scripts/session-shape.mjs --repo-root "$PWD" --session-type feature --no-event`
+- **3 waves** (Impl-Core → Impl-Polish+Quality → Finalization) with **no Discovery wave** — read them from the shape, not from this file: `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-shape.mjs" --repo-root "$PWD" --session-type feature --no-event`
 - Per-wave agent caps come from the shape's `agentCap` (the shape caps a feature wave at 4), clamped by Session Config `agents-per-wave`
 - Balance between implementation speed and quality
 
@@ -296,7 +298,7 @@ End with a single commit summarizing all housekeeping work.
 
 Not a fourth session type — a PROFILE over `session-type: deep`, resolved from the `/session ultradeep` argument alias (`commands/session.md`). Everything below applies only when STATE.md frontmatter carries `session-profile: ultradeep`; every other behaviour in this skill is unchanged, because downstream still reads `deep`. Full spec — wave table, mandatory artefacts, cost model: the internal ultradeep session-profile PRD (2026-09-06, not in the public mirror).
 
-- **The wave count and the wave roles come from the shape**, not from this file: `node scripts/session-shape.mjs --repo-root "$PWD" --session-type deep --profile ultradeep --no-event` returns `totalWaves: 7` (Research+Code-Discovery → Synthesis-Gate → Impl-Core → Impl-Polish → Review-Panel → Quality → Release/Finalization) and reports `wavesConfigHonored: false` with the ignored Session Config `waves` value — the profile OWNS its wave count. Role narrative: `skills/session-plan/SKILL.md` § Role-to-Wave Mapping.
+- **The wave count and the wave roles come from the shape**, not from this file: `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-shape.mjs" --repo-root "$PWD" --session-type deep --profile ultradeep --no-event` returns `totalWaves: 7` (Research+Code-Discovery → Synthesis-Gate → Impl-Core → Impl-Polish → Review-Panel → Quality → Release/Finalization) and reports `wavesConfigHonored: false` with the ignored Session Config `waves` value — the profile OWNS its wave count. Role narrative: `skills/session-plan/SKILL.md` § Role-to-Wave Mapping.
 - **Wave 2 is coordinator-direct and dispatches ZERO agents.** Make NO `Agent()` call in this wave. The coordinator consolidates wave 1 into `docs/audits/<YYYY-MM-DD>-<slug>.md`, updates STATE.md, and asks ONE **blocking** `AskUserQuestion` (confirm scope / narrow / abort) per `.claude/rules/ask-via-tool.md`. Wave 3 does not start until that question is answered — this is the one gate the profile exists for, so a silent "no tasks, skip it" is a defect, not an optimisation (`skills/session-plan/SKILL.md` § Empty roles, coordinator-direct exception).
 - **`max-turns` is per ROLE, and the numbers live in the shape:** take each wave's value from `waves[].maxTurns` in the shape output above (the Research, implementing and Release/Finalization figures are produced there, not restated here). Set it on the dispatch; a wave whose `maxTurns` is `null` is coordinator-direct and dispatches nothing.
 - **Web tools are role-bound.** Research agents in wave 1 receive `WebSearch` and `WebFetch`. **No write-capable agent may receive them** — not in wave 1's Code-Discovery half, and not in any later wave. The grant follows the READ-ONLY property, so the pairing "has Write/Edit" + "has WebSearch/WebFetch" must never occur in a single dispatch. Research findings carry URL + retrieval date, the web analogue of the PSA-006 evidence rule (`.claude/rules/parallel-sessions.md`).

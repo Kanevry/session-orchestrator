@@ -1,0 +1,20 @@
+# Allow-list for the build context of server/mcp/Dockerfile (#2260). The context
+# is the repository root; without this file `COPY . .` in the corpus stage would
+# carry .env files, the git history and private documents into the build cache.
+*
+!server/mcp/
+!scripts/lib/config/template-keys.mjs
+!scripts/lib/config/section-extractor.mjs
+!.orchestrator/policy/public-export.json
+!package.json
+!README.md
+!CHANGELOG.md
+!docs/install.md
+!docs/codex-setup.md
+!docs/session-config-template.md
+!docs/session-config-reference.md
+!docs/components.md
+!docs/telemetry.md
+!skills/*/SKILL.md
+server/mcp/corpus.json
+server/mcp/.env

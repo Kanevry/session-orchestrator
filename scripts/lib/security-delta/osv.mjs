@@ -15,6 +15,7 @@ import { BUDGET, makeCheckResult, makeFinding, normalizeOsvSeverity, severityRan
 import { defaultRunGit, PIP_INDEX_UNVERIFIABLE, readLockfileDelta } from './lockfiles.mjs';
 import { filterPublicPackages, readHostNpmrcPolicy, readNpmrcPolicy } from './npmrc.mjs';
 import { httpRequest } from '../http-request.mjs';
+import { performance } from 'node:perf_hooks';
 
 const OSV_BASE = 'https://api.osv.dev/v1';
 const BATCH_SIZE = 1000;
@@ -179,8 +180,8 @@ function isTimeout(err) {
   return err?.code === 'ETIMEDOUT' || /timed? ?out/i.test(String(err?.message ?? ''));
 }
 
-async function queryBatch(request, queries, deadlineAt) {
-  const timeoutMs = Math.max(1, deadlineAt - Date.now());
+async function queryBatch(request, queries, deadlineMono) {
+  const timeoutMs = Math.max(1, deadlineMono - performance.now());
   const res = await request(`${OSV_BASE}/querybatch`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -198,7 +199,7 @@ async function queryBatch(request, queries, deadlineAt) {
 }
 
 /** Fetch details for `ids`; returns { records: Map<id, record>, missing: Map<id, reason> }. */
-async function fetchDetails(request, ids, { deadlineAt, maxDetails }) {
+async function fetchDetails(request, ids, { deadlineMono, maxDetails }) {
   const records = new Map();
   const missing = new Map();
   const toFetch = ids.slice(0, maxDetails);
@@ -208,14 +209,14 @@ async function fetchDetails(request, ids, { deadlineAt, maxDetails }) {
     while (next < toFetch.length) {
       const id = toFetch[next];
       next += 1;
-      if (Date.now() >= deadlineAt) {
+      if (performance.now() >= deadlineMono) {
         missing.set(id, 'deadline');
         continue;
       }
       try {
         const res = await request(`${OSV_BASE}/vulns/${encodeURIComponent(id)}`, {
           method: 'GET',
-          timeoutMs: Math.max(1, deadlineAt - Date.now()),
+          timeoutMs: Math.max(1, deadlineMono - performance.now()),
           maxBytes: DETAIL_MAX_BYTES,
         });
         if (!res?.ok) throw new Error(`vulns HTTP ${res?.status}`);
@@ -236,7 +237,7 @@ async function fetchDetails(request, ids, { deadlineAt, maxDetails }) {
  * @param {string} opts.repoRoot     repository root
  * @param {string|null} opts.base    base ref (full SHA); empty → skipped `no-range`
  * @param {string} opts.head         head ref (full SHA)
- * @param {number} [opts.deadlineAt] epoch ms; no network request starts after it
+ * @param {number} [opts.deadlineMono] milliseconds on the `performance.now()` time base. No request starts after it.
  * @param {typeof httpRequest} [opts.request]  injectable HTTP transport (tests)
  * @param {(args: string[]) => Promise<string>} [opts.runGit]  injectable git runner (tests)
  * @param {number} [opts.maxDetails] cap on advisory detail requests (default 25)
@@ -249,7 +250,7 @@ export async function runLockfileCheck({
   repoRoot,
   base,
   head,
-  deadlineAt,
+  deadlineMono,
   request = httpRequest,
   runGit = defaultRunGit(repoRoot),
   maxDetails = DEFAULT_MAX_DETAILS,
@@ -257,9 +258,9 @@ export async function runLockfileCheck({
   homeDir,
   readConfigFile,
 } = {}) {
-  const started = Date.now();
-  const deadline = Number.isFinite(deadlineAt) ? deadlineAt : started + BUDGET.networkMs;
-  const ms = () => Math.max(0, Date.now() - started);
+  const started = performance.now();
+  const deadline = Number.isFinite(deadlineMono) ? deadlineMono : started + BUDGET.networkMs;
+  const ms = () => performance.now() - started;
   let pending = 0; // public packages not yet measured, for the internal-error path
 
   try {
@@ -327,7 +328,7 @@ export async function runLockfileCheck({
     for (let i = 0; i < packages.length; i += BATCH_SIZE) {
       const chunk = packages.slice(i, i + BATCH_SIZE);
       const queries = chunk.map((p) => ({ package: { name: p.name, ecosystem: p.ecosystem }, version: p.version }));
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         return makeCheckResult({ id: 'lockfile', status: 'degraded', reason: 'timeout', unchecked: pending, ms: ms() });
       }
       try {
@@ -352,7 +353,7 @@ export async function runLockfileCheck({
     }
 
     const detailIds = [...new Set(hits.flatMap((h) => h.ids.filter((id) => !id.startsWith('MAL-'))))];
-    const { records, missing } = await fetchDetails(request, detailIds, { deadlineAt: deadline, maxDetails });
+    const { records, missing } = await fetchDetails(request, detailIds, { deadlineMono: deadline, maxDetails });
 
     let detailGaps = 0;
     let broken = 0;

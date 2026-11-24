@@ -92,7 +92,7 @@ Cursor / Pi on native Windows. WSL counts as Linux.
 | Dependency | Status / scope | Without it, you cannot... |
 |---|---|---|
 | **Bash** | Feature requirement for the `mcp/servers.json` MCP server used by Codex CLI and Cursor. Claude Code starts its MCP server with Node. | Start the shell MCP server. The [native Node MCP setup](#native-windows-mcp-opt-in) avoids Bash and jq for that server. <!-- sources: mcp/servers.json:4-8; .claude-plugin/plugin.json:15-17; scripts/windows-setup.mjs:7-29 --> |
-| **jq** | Feature requirement for the `mcp/servers.json` shell MCP server (Codex CLI and Cursor); Claude Code's Node MCP does not need it. Also used by plugin validation and the shell grounding helper. | Parse MCP requests with the shell server or run `validate-plugin.mjs`; the grounding helper skips when jq is absent. The native Node MCP server does not need jq. <!-- sources: mcp/servers.json:4-8; .claude-plugin/plugin.json:15-17; scripts/mcp-server.sh:41-55; scripts/validate-plugin.mjs:32-37; scripts/compute-grounding-injection.sh:31-33; scripts/mcp-server.mjs:111-154 --> |
+| **jq** | The Codex CLI and Cursor MCP launcher checks for jq at startup, then runs the shared Node server. Plugin validation and the shell grounding helper also use jq. | Start MCP via `mcp/servers.json`, run `validate-plugin.mjs`, or use the shell grounding helper. <!-- sources: mcp/servers.json:4-8; scripts/mcp-server.sh:4-19; scripts/validate-plugin.mjs:32-37; scripts/compute-grounding-injection.sh:31-33 --> |
 | **GitLab and authenticated glab** | Optional GitLab integration; only needed for repositories using GitLab. | Use GitLab API-backed issue and merge-request operations. GitLab is not needed for a GitHub repository. <!-- sources: scripts/lib/vault-backfill/glab.mjs:29,53; scripts/lib/autopilot/mr-draft.mjs:144 --> |
 | **GitHub and authenticated gh** | Optional GitHub integration; only needed for repositories using GitHub. | Use GitHub API-backed issue, pull-request and protection-audit operations. <!-- sources: scripts/lib/autopilot/mr-draft.mjs:167; scripts/github-protection-audit.mjs:248-279 --> |
 | **A Markdown notes vault (`vault-dir` / `SO_VAULT_DIR`)** | Optional: enable it in Session Config with `vault-integration.enabled: true` and `vault-integration.vault-dir`. `SO_VAULT_DIR`, a `vault-dirs:` entry in your host-local `owner.yaml` that matches the working directory, or `paths.vault-dir` there (in that order) overrides the committed path on one machine. | Run `/portfolio` (with `gitlab-portfolio` enabled it exits with an error), mirror session and learning records into the vault at `/close` and `/evolve`, keep the live-status board `01-projects/_active-sessions.md`, or get the untracked-vault-files note at `/close`. <!-- sources: scripts/lib/config/host-paths.mjs:38; scripts/lib/config.mjs:88-89,114-133; skills/portfolio/SKILL.md:34,39; scripts/lib/gitlab-portfolio/cli.mjs:193-199,211-216; skills/vault-mirror/SKILL.md:26-32,277-279; skills/session-start/SKILL.md:117-119; skills/session-start/references/phase-1-7-vault-status-board.md:7,42; skills/session-end/SKILL.md:321,323; skills/session-end/references/phase-3-documentation-updates.md:208; skills/session-end/references/phase-3-7e-vault-orphans.md:11 --> |
@@ -170,6 +170,11 @@ claude -p "/session-orchestrator:plan feature"
 
 Every other command keeps its bare form (`/go`, `/close`, `/test`, …), and
 interactive sessions are unaffected.
+
+When loading a checkout with `claude -p --plugin-dir <checkout>`, select a
+permission mode with `--permission-mode` for `/session-orchestrator:bootstrap`.
+Without it, bootstrap ended without a result in the measured run (#2246, note
+368397). That run covered only the `--plugin-dir` invocation.
 
 ### Claude Code: check the Node dependencies
 

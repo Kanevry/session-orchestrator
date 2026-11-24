@@ -18,6 +18,8 @@ description: >
 
 > Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). All references to `CLAUDE.md` in this skill resolve via that precedence rule.
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Soul
 
 Before anything else, read and internalize `soul.md` in this skill directory. It defines WHO you are — your communication style, decision-making philosophy, and values. Every interaction in this session should reflect this identity. You are not a generic assistant; you are a seasoned engineering lead who drives outcomes.
@@ -81,9 +83,9 @@ Read and parse Session Config per `skills/_shared/config-reading.md`. Store resu
 try {
   const { pathToFileURL } = await import('node:url');
   const { appendSkillInvocation, DEFAULT_SKILL_INVOCATIONS_PATH } =
-    await import(pathToFileURL('${PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs').href);
+    await import(pathToFileURL('${CLAUDE_PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs').href);
   const { resolveLedgerPath } =
-    await import(pathToFileURL('${PLUGIN_ROOT}/scripts/lib/ledger-path.mjs').href);
+    await import(pathToFileURL('${CLAUDE_PLUGIN_ROOT}/scripts/lib/ledger-path.mjs').href);
   // In a linked worktree the main checkout's ledger when it is gitignored there,
   // so the record survives the worktree (#1722).
   await appendSkillInvocation(resolveLedgerPath(DEFAULT_SKILL_INVOCATIONS_PATH, process.cwd()), {
@@ -324,7 +326,7 @@ Propose the **ordered default scope** below in the Phase 8 Q&A. Every step is AU
 
 1. **Drift-check as a work-list** — `checker.mjs --mode warn` (procedure below); its `errors[]`/`warnings[]` become candidate scope.
 2. **Expired-learnings sweep** — the same sweep session-end 3.6.4 applies mechanically (`runTailPhases` / `runExpiredSweep`), run here when the `sweep` signal is due.
-3. **Expired-generated-rules sweep** — `node scripts/sweep-expired-rules.mjs --horizon-days 7` (`--dry-run` first, then `--apply`). The 7-day horizon also removes content that would expire before the next sweep, because Claude Code's native loader ignores `expires-at` and keeps loading an expired rule until this sweep runs (#1779). AUQ-gated: it rewrites and can DELETE tracked `.claude/rules/*.md` files. Runs directly after step 2 because its evidence comes from step 2's corpus — an entry's date is recoverable only via its `learning-id` → `learnings.jsonl` `expires_at`. <!-- path-check: example -->
+3. **Expired-generated-rules sweep** — `node "${CLAUDE_PLUGIN_ROOT}/scripts/sweep-expired-rules.mjs" --horizon-days 7` (`--dry-run` first, then `--apply`). The 7-day horizon also removes content that would expire before the next sweep, because Claude Code's native loader ignores `expires-at` and keeps loading an expired rule until this sweep runs (#1779). AUQ-gated: it rewrites and can DELETE tracked `.claude/rules/*.md` files. Runs directly after step 2 because its evidence comes from step 2's corpus — an entry's date is recoverable only via its `learning-id` → `learnings.jsonl` `expires_at`. <!-- path-check: example -->
 4. **`/evolve analyze`** — extract this period's session patterns into learnings.
 5. **`/reconcile`** — turn high-confidence learnings into operator-approved `.claude/rules/` proposals.
 6. **`/evolve dialectic`** — dry-run first, review `.orchestrator/dialectic-pending.md`, then apply. This step dispatches the read-only `dialectic-deriver` agent, so **"coordinator-direct" means no wave-executor, not zero subagents**. <!-- path-check: example -->
@@ -335,10 +337,10 @@ Operator-selected issues (from Phase 6) are appended AFTER this loop, not interl
 
 - Focus on git cleanup, documentation currency, CI health
 - Skip deep research — prioritize operational tasks
-- Run token efficiency check: `bash "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/token-audit.sh"` and include findings in Session Overview. Flag any HIGH/WARN items as recommended housekeeping tasks.
+- Run token efficiency check: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/token-audit.sh"` and include findings in Session Overview. Flag any HIGH/WARN items as recommended housekeeping tasks.
 - **Run the drift check as a work-list, not as a gate:**
   ```bash
-  node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/skills/claude-md-drift-check/checker.mjs" --mode warn
+  node "${CLAUDE_PLUGIN_ROOT}/skills/claude-md-drift-check/checker.mjs" --mode warn
   ```
   `--mode warn` always exits 0 and returns findings as JSON — it must never block session-start. Summarise `errors[]` and `warnings[]` by check name in the Session Overview and offer them as candidate scope in the Phase 8 Q&A.
 
@@ -380,7 +382,7 @@ If session-start aborts without work scope (no candidates, nothing to do), send 
 
 `<project-root>` below is the absolute path of the working copy established for this session (its worktree when one is in use), written literally into each command. Never use a shell variable set in an earlier call (it is empty in the next one) or `$(git rev-parse --show-toplevel)` (it resolves against the shell's current directory, which is the plugin directory in the failure #2139 fixes).
 
-Build the check-in JSON (fields per the reference; `session` from `.orchestrator/current-session.json`, `modus` = session type, `kandidaten` = the issue numbers you intend to claim) and pipe it into `node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/fleet-checkin.mjs" --repo-root "<project-root>"` — it validates, stores `checkin/<session_id>.json` (0600) under `~/.config/navigator/` and emits `orchestrator.fleet.checkin`. Its stdout carries `navigator_state` and `navigator_adresse` (the lease's validated `adresse`, else `null`): on `active`, and only when `navigator_adresse` is non-null and reachable via `ListAgents`, send ONE hint to exactly that name, naming the file path — never expect or wait for a reply (CSM-004). Then read the conditions via `node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/fleet-auflagen.mjs" <session_id> --repo-root "<project-root>" --render` (the CLI adds this process's own native UUID itself and takes the newest accepted file; the navigator may key the file by either, #1839; only a file whose `repo` resolves to this repo's git common dir is `accepted`; a `rejected` one counts as absent); if it is still absent at the stdout's `fallback_due_at`, the reference's Standard-Auflagen apply (the CLI computes that deadline: `zeit` plus `CHECKIN_FALLBACK_MIN` while a navigator is active, `zeit` itself — immediately — otherwise). The boundary block (#1809, #1842) — the navigator's `grenze`, or the Standard-Grenzsatz when none was accepted — is binding at once: adopt it verbatim, also into every subagent prompt that searches across repos. Reading work and edits in the own worktree continue meanwhile.
+Build the check-in JSON (fields per the reference; `session` from `.orchestrator/current-session.json`, `modus` = session type, `kandidaten` = the issue numbers you intend to claim) and pipe it into `node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet-checkin.mjs" --repo-root "<project-root>"` — it validates, stores `checkin/<session_id>.json` (0600) under `~/.config/navigator/` and emits `orchestrator.fleet.checkin`. Its stdout carries `navigator_state` and `navigator_adresse` (the lease's validated `adresse`, else `null`): on `active`, and only when `navigator_adresse` is non-null and reachable via `ListAgents`, send ONE hint to exactly that name, naming the file path — never expect or wait for a reply (CSM-004). Then read the conditions via `node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet-auflagen.mjs" <session_id> --repo-root "<project-root>" --render` (the CLI adds this process's own native UUID itself and takes the newest accepted file; the navigator may key the file by either, #1839; only a file whose `repo` resolves to this repo's git common dir is `accepted`; a `rejected` one counts as absent); if it is still absent at the stdout's `fallback_due_at`, the reference's Standard-Auflagen apply (the CLI computes that deadline: `zeit` plus `CHECKIN_FALLBACK_MIN` while a navigator is active, `zeit` itself — immediately — otherwise). The boundary block (#1809, #1842) — the navigator's `grenze`, or the Standard-Grenzsatz when none was accepted — is binding at once: adopt it verbatim, also into every subagent prompt that searches across repos. Reading work and edits in the own worktree continue meanwhile.
 
 ## Phase 8: Structured Presentation & Q&A
 
@@ -394,7 +396,7 @@ Present your findings following that structure. Key rules:
 
 ### Phase 8.5: Express Path Evaluation (#214)
 
-After the user confirms session type and scope, evaluate whether the Express Path applies. **Do not judge the conditions by hand — run `node scripts/express-path.mjs --repo-root "$PWD" --session-type <type> --task-count <N> --parallel-agents <true|false>`.** That CLI is the canonical caller (#1146): it makes the decision AND records it as `orchestrator.express_path.evaluated`, on refusal as well as activation. stdout is one JSON line `{"activated":<bool>,"reasons":[…]}`; exit 0 means the evaluation completed, so branch on `activated`, never on the exit code. Activation requires ALL three: `express-path.enabled: true` in Session Config (default: `true`; an explicit `false` still runs the evaluation and records `disabled-by-config`, then the normal 5-wave session-plan flow proceeds), session type `housekeeping`, and scope ≤ 3 sequential issues. The 13 prior coordinator-direct sessions in `CLAUDE.md` (or `AGENTS.md` on Codex CLI; 2026-04 series) were all running this pattern implicitly — this phase codifies what was already proven to work.
+After the user confirms session type and scope, evaluate whether the Express Path applies. **Do not judge the conditions by hand — run `node "${CLAUDE_PLUGIN_ROOT}/scripts/express-path.mjs" --repo-root "$PWD" --session-type <type> --task-count <N> --parallel-agents <true|false>`.** That CLI is the canonical caller (#1146): it makes the decision AND records it as `orchestrator.express_path.evaluated`, on refusal as well as activation. stdout is one JSON line `{"activated":<bool>,"reasons":[…]}`; exit 0 means the evaluation completed, so branch on `activated`, never on the exit code. Activation requires ALL three: `express-path.enabled: true` in Session Config (default: `true`; an explicit `false` still runs the evaluation and records `disabled-by-config`, then the normal 5-wave session-plan flow proceeds), session type `housekeeping`, and scope ≤ 3 sequential issues. The 13 prior coordinator-direct sessions in `CLAUDE.md` (or `AGENTS.md` on Codex CLI; 2026-04 series) were all running this pattern implicitly — this phase codifies what was already proven to work.
 
 When all conditions are met, the CLI emits the banner on stderr:
 ```
@@ -406,7 +408,7 @@ Carry that banner into Phase 9 and hand off to session-plan as usual — session
 
 ## Phase 9: Handoff to Session Plan
 
-> **Record the wave shape ONCE, here, at plan time.** Run `node scripts/session-shape.mjs --repo-root "$PWD" --session-type <housekeeping|feature|deep> [--profile ultradeep] [--known-scope true|false] --task-count <N>` — the CLI wraps `resolveAndRecordSessionShape` / `resolveSessionShape` from `scripts/lib/session-shape.mjs`, prints ONE JSON line (`totalWaves`, `discovery`, `coordinatorDirect`, `waves[]`, `notes[]`) and records the event `orchestrator.session.shape_resolved`. session-plan CONSUMES that JSON instead of re-deriving the wave count; never hand-write a wave count that the shape already answers. Add `--no-event` only for a planning dry-run.
+> **Record the wave shape ONCE, here, at plan time.** Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-shape.mjs" --repo-root "$PWD" --session-type <housekeeping|feature|deep> [--profile ultradeep] [--known-scope true|false] --task-count <N>` — the CLI wraps `resolveAndRecordSessionShape` / `resolveSessionShape` from `scripts/lib/session-shape.mjs`, prints ONE JSON line (`totalWaves`, `discovery`, `coordinatorDirect`, `waves[]`, `notes[]`) and records the event `orchestrator.session.shape_resolved`. session-plan CONSUMES that JSON instead of re-deriving the wave count; never hand-write a wave count that the shape already answers. Add `--no-event` only for a planning dry-run.
 
 After user alignment:
 1. Invoke the **session-plan** skill with the agreed scope — including the chosen option's outcome `{ statement, observable, source }` when it named one (#1824); session-plan carries it into the plan's `### Execution Config`, and the wave-executor writes it to STATE.md at Pre-Wave 1b with `setOutcome`

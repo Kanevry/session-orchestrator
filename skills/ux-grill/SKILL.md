@@ -9,6 +9,8 @@ color: magenta
 
 # UX-Grill Skill
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 > Two stages, hard boundary. **Stufe 1** measures — a Node pass over routes × viewports that calls `agent-browser` and writes JSON, with no model in the loop. **Stufe 2** grills — the `/grill` loop applied to journeys, where every claim carries a screenshot path. Severity is never a judgment here; it comes out of `schema.mjs`.
 
 ## Invocation
@@ -51,7 +53,7 @@ Read `soul.md` in this skill directory before anything else. It defines WHO you 
 When this machine must not build, serve or drive a browser (a fleet rule, a loaded host, or no `agent-browser`), run Stufe 1 on a remote-offload host instead. App and browser then share the host, so the loopback rule holds for real:
 
 ```bash
-node scripts/ux-grill-offload.mjs --repo <target repo> --app-dir <app dir, e.g. website> --host m5 [--out <dir>]
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ux-grill-offload.mjs" --repo <target repo> --app-dir <app dir, e.g. website> --host m5 [--out <dir>]
 ```
 
 What the one command does:

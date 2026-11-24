@@ -9,7 +9,7 @@
 Render a compact, operator-visible banner summarizing what session-start loaded from persistent memory. The banner anchors operator confidence (cf. doobidoo/mcp-memory-service v8.5.7's SessionStart Hook for the precedent UX) and signals to fresh-cohort operators that the system is learning.
 
 ```javascript
-import { renderMemoryBanner } from '${PLUGIN_ROOT}/scripts/lib/memory-banner.mjs';
+import { renderMemoryBanner } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/memory-banner.mjs';
 
 const bannerText = await renderMemoryBanner({
   repoRoot: process.cwd(),
@@ -45,8 +45,8 @@ Cross-reference: PRD F2.3 acceptance criteria (#505); `scripts/lib/memory-banner
 Anonymous usage telemetry is **strictly opt-in** and, on a host that has never decided, is offered exactly once via a single interactive AskUserQuestion. The consent machine lives in `scripts/lib/telemetry/consent.mjs`; this phase only decides *whether* to prompt and then records the operator's answer. The `resolveConsent()` precedence machine is fail-closed — `prompt` is `true` only for a fresh, interactive, not-yet-decided, not-fleet, not-env-overridden host.
 
 ```javascript
-import { readTelemetryState, resolveConsent, isHeadless, telemetrySendBlockReason, grantConsent, denyConsent } from '${PLUGIN_ROOT}/scripts/lib/telemetry/consent.mjs';
-import { loadOwnerConfig } from '${PLUGIN_ROOT}/scripts/lib/owner-yaml.mjs';
+import { readTelemetryState, resolveConsent, isHeadless, telemetrySendBlockReason, grantConsent, denyConsent } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/telemetry/consent.mjs';
+import { loadOwnerConfig } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/owner-yaml.mjs';
 
 const c = resolveConsent({
   env: process.env,
@@ -70,7 +70,7 @@ AskUserQuestion({
     multiSelect: false,
     options: [
       { label: "Ja, aktivieren", description: "Sendet anonyme Zähl- und Strukturdaten (welche Phase lief, Erfolg oder Abbruch), whitelist-projiziert: keine Pfade, keine Prompts, keine Repo-Namen." },
-      { label: "Nein", description: "Sendet nichts; die Frage kommt hier nicht wieder. Einschalten geht später mit `node scripts/telemetry.mjs` (das ist der Befehl dafür)." },
+      { label: "Nein", description: 'Sendet nichts; die Frage kommt hier nicht wieder. Einschalten geht später mit `node "${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.mjs"` (das ist der Befehl dafür).' },
     ],
   }],
 });
@@ -82,13 +82,13 @@ AskUserQuestion({
   ```
   Anonyme Usage-Telemetrie aktivieren? Strikt opt-in, jederzeit abschaltbar; was genau gesendet wird: docs/telemetry.md
   1. Ja, aktivieren — sendet anonyme Zähl- und Strukturdaten (welche Phase lief, Erfolg oder Abbruch), whitelist-projiziert: keine Pfade, keine Prompts, keine Repo-Namen.
-  2. Nein — sendet nichts; die Frage kommt hier nicht wieder. Einschalten geht später mit `node scripts/telemetry.mjs` (das ist der Befehl dafür).
+  2. Nein — sendet nichts; die Frage kommt hier nicht wieder. Einschalten geht später mit `node "${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.mjs"` (das ist der Befehl dafür).
   Reply with the number of your choice. (No option is pre-recommended — the choice is yours.)
   ```
 
 On the operator's answer:
-- **"Ja, aktivieren"** → call `grantConsent()`. Then add a single confirmation line to the Session Overview: `Telemetry: enabled — ändern via node scripts/telemetry.mjs`.
-- **"Nein"** → call `denyConsent()`. Then add: `Telemetry: disabled — ändern via node scripts/telemetry.mjs`.
+- **"Ja, aktivieren"** → call `grantConsent()`. Then add a single confirmation line to the Session Overview: `Telemetry: enabled — ändern via node "${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.mjs"`.
+- **"Nein"** → call `denyConsent()`. Then add: `Telemetry: disabled — ändern via node "${CLAUDE_PLUGIN_ROOT}/scripts/telemetry.mjs"`.
 
 Both helpers atomically persist the decision (read-modify-write, `anon_id` fields preserved) to `~/.config/session-orchestrator/telemetry.json`.
 

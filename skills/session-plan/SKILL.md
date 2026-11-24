@@ -18,6 +18,8 @@ description: >
 
 > Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). Wherever this skill mentions `CLAUDE.md`, the alias rule applies.
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Phase 0.5: Parallel-Aware Preamble
 
 > Skip silently when `persistence: false` in Session Config.
@@ -77,7 +79,7 @@ When the exception applies:
 
 > Check this **before Step 0**, after the user-authorized deviation check above. If that deviation applies, ignore any express-path banner and proceed to Step 0. Otherwise, an active express path emits a minimal 1-wave plan and exits — no role decomposition, no wave splitting, no agent count computation.
 
-> Phase 8.5 of session-start hands off here NORMALLY when the express path activates — it does not skip session-plan (#1146). The banner below is printed by `node scripts/express-path.mjs`, and the 1-wave plan this section emits is the artifact `/go` detects.
+> Phase 8.5 of session-start hands off here NORMALLY when the express path activates — it does not skip session-plan (#1146). The banner below is printed by `node "${CLAUDE_PLUGIN_ROOT}/scripts/express-path.mjs"`, and the 1-wave plan this section emits is the artifact `/go` detects.
 
 **Detect express-path activation:** Search the conversation context for the banner line:
 
@@ -133,7 +135,7 @@ Extract these fields for planning:
    - Which waves were completed in the prior session
    - Which agents completed, which were partial/failed
    - What deviations were logged
-   - Which approaches were abandoned. Read `readAbandonedBranches(contents)` from `${PLUGIN_ROOT}/scripts/lib/state-md.mjs` and use the guarded history to evaluate alternatives before repeating work.
+   - Which approaches were abandoned. Read `readAbandonedBranches(contents)` from `${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs` and use the guarded history to evaluate alternatives before repeating work.
    - Use this to avoid re-doing completed work and to prioritize carryover tasks
    If no STATE.md or `status: completed`, proceed with fresh planning.
 
@@ -222,7 +224,7 @@ Distribute tasks across the waves the session shape returned; each wave carries 
 The wave list is not derived here. Resolve it ONCE at plan time from the session mode:
 
 ```bash
-node scripts/session-shape.mjs --repo-root "$PWD" --session-type <housekeeping|feature|deep> \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/session-shape.mjs" --repo-root "$PWD" --session-type <housekeeping|feature|deep> \
   [--profile ultradeep] [--known-scope true|false] --task-count <N>
 ```
 
@@ -361,7 +363,7 @@ For each role's wave, distribute its classified tasks across the allocated agent
    On resume or re-plan, compare the proposed paths (`plannedPaths`, the union of scopes for the wave) with the current session's verified paths. Review overlaps against the current diff, drop completed work, and order intentional follow-up edits after their dependencies.
 
    ```js
-   import { readFilesTouched } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+   import { readFilesTouched } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
    const touched = new Set(readFilesTouched(contents));
    const previouslyTouched = plannedPaths.filter((path) => touched.has(path));
    ```

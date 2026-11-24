@@ -8,7 +8,7 @@ Read `.orchestrator/host.json` (written by `hooks/on-session-start.mjs`) and run
 
 ```js
 // Conceptual — the wave-executor and session-plan skills call these directly.
-import { probe, evaluate } from '$PLUGIN_ROOT/scripts/lib/resource-probe.mjs';
+import { probe, evaluate } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/resource-probe.mjs';
 const snapshot = await probe();
 const verdict = evaluate(snapshot, config['resource-thresholds'], {
   heavyRepo: config['heavy-repo'],

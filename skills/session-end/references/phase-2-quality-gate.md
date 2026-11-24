@@ -57,11 +57,11 @@ If `mode === 'off'`, skip Phase 2.3 entirely.
 
 #### Step 2 — Invoke staleness probes
 
-Both probes already ship in the plugin's `skills/discovery/probes/`. Invoke each via Node import (no shell-out). Import from the **plugin** root `${PLUGIN_ROOT}` (resolution chain: `skills/_shared/config-reading.md`), never from the project root — in a consumer repo the project has no `skills/` directory. `projectRoot` stays the project root the probes scan:
+Both probes already ship in the plugin's `skills/discovery/probes/`. Invoke each via Node import (no shell-out). Import from the **plugin** root `${CLAUDE_PLUGIN_ROOT}` (resolution chain: `skills/_shared/config-reading.md`), never from the project root — in a consumer repo the project has no `skills/` directory. `projectRoot` stays the project root the probes scan:
 
 ```js
-import { runProbe as runStaleness } from '${PLUGIN_ROOT}/skills/discovery/probes/vault-staleness.mjs';
-import { runProbe as runNarrative }  from '${PLUGIN_ROOT}/skills/discovery/probes/vault-narrative-staleness.mjs';
+import { runProbe as runStaleness } from '${CLAUDE_PLUGIN_ROOT}/skills/discovery/probes/vault-staleness.mjs';
+import { runProbe as runNarrative }  from '${CLAUDE_PLUGIN_ROOT}/skills/discovery/probes/vault-narrative-staleness.mjs';
 
 const projectStaleness = await runStaleness(projectRoot, config);
 const narrativeStaleness = await runNarrative(projectRoot, config);
@@ -84,7 +84,7 @@ totalFindings = projectStaleness.findings.length + narrativeStaleness.findings.l
          `- [<ISO timestamp>] Phase 2.3: Vault staleness strict-mode findings carried over. Findings: <count> (projects: <N>, narratives: <M>) → issue #<IID>.`
       2. "Override and close" — proceed without a carryover issue, log a Deviation entry in STATE.md `## Deviations`:
          `- [<ISO timestamp>] Phase 2.3: Vault staleness strict-mode findings overridden by user. Findings: <count> (projects: <N>, narratives: <M>).`
-         In addition to the Deviation entry, emit an override-ratio event so the override feeds the `override_ratio` metric (#730/H5): `node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.finding.overridden --payload '{"phase":"2.3","kind":"vault-staleness-strict","count":N}'`.
+         In addition to the Deviation entry, emit an override-ratio event so the override feeds the `override_ratio` metric (#730/H5): `node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" --type orchestrator.finding.overridden --payload '{"phase":"2.3","kind":"vault-staleness-strict","count":N}'`.
     - On Codex CLI / Cursor IDE: same options as numbered Markdown list.
 
 #### Step 4 — Surface to closing report
@@ -104,7 +104,7 @@ Use the canonical accessor in [`plan-verification.md`](../plan-verification.md) 
 #### Step 2 — Run the CLI
 
 ```bash
-SD_JSON=$(node "${PLUGIN_ROOT}/scripts/security-delta.mjs" --range "$SESSION_RANGE" --json)
+SD_JSON=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/security-delta.mjs" --range "$SESSION_RANGE" --json)
 SD_EXIT=$?
 ```
 
@@ -123,7 +123,7 @@ The CLI reads `security-delta.mode` itself. Exit `0` = pass, warn, degraded or s
     2. "Warn + carryover and close" — for when the fix needs work outside this session; costs a `priority::high` issue while the finding ships; files a carryover issue (labels `carryover`, `priority::high`) titled `[Carryover] Security-Delta (strict) — <count> blocking findings` with the fingerprints, logs a Deviation entry in STATE.md `## Deviations`, then continues the close.
     3. "Override and close" — only for a confirmed false positive; costs the protection for this close and is counted as an override; proceeds and logs a Deviation entry in STATE.md `## Deviations`:
        `- [<ISO timestamp>] Phase 2.4: Security-Delta strict block overridden by user. Findings: <count> (<fingerprints>).`
-       In addition to the Deviation entry, emit an override-ratio event so the override feeds the `override_ratio` metric (#730/H5): `node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.finding.overridden --payload '{"phase":"2.4","kind":"security-delta-strict","count":N}'`.
+       In addition to the Deviation entry, emit an override-ratio event so the override feeds the `override_ratio` metric (#730/H5): `node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" --type orchestrator.finding.overridden --payload '{"phase":"2.4","kind":"security-delta-strict","count":N}'`.
     4. "Abort close" — for when the session should not end on this state; costs nothing but leaves the work uncommitted; exits the close without writing anything.
   - On Codex CLI / Cursor IDE: same options as a numbered Markdown list.
   - Headless `claude -p`, embedded/autopilot and Lead-led runs cannot ask (`AskUserQuestion` is unavailable per `.claude/rules/ask-via-tool.md` AUQ-004 — same detection as the Phase 1.65 fail-open skip in `plan-verification.md`). Unlike that gate, a security block does NOT fail open: report the blocking findings and stop the close without writing.
@@ -140,7 +140,7 @@ Pass `(mode, status, verdict, totals, findings)` forward to the Phase 6 Session 
 Pass `--since <session-start-ref> --since-time <started_at>` from STATE.md only when STATE.md is this session's: frontmatter `status: active` and its `session-id` equals this session's id. Otherwise, and for a blank key, omit the flag (the CLI uses the session lock); a value older than this session's lock is ignored with a note.
 
 ```bash
-DR_JSON=$(node "${PLUGIN_ROOT}/scripts/design-review.mjs" check [--since <ref>] [--since-time <iso>] --json)
+DR_JSON=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/design-review.mjs" check [--since <ref>] [--since-time <iso>] --json)
 DR_EXIT=$?
 ```
 

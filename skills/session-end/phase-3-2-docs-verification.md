@@ -13,7 +13,7 @@ Use `scripts/lib/state-md.mjs` to parse the frontmatter safely — do NOT re-imp
 ```bash
 node --input-type=module -e "
 import {readFileSync} from 'node:fs';
-import {parseFrontmatter} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import {parseFrontmatter} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 const raw = readFileSync('<state-dir>/STATE.md', 'utf8');
 const fm = parseFrontmatter(raw);
 const tasks = fm['docs-tasks'];
@@ -36,7 +36,7 @@ process.stdout.write(JSON.stringify(tasks));
 Run the accessor in `plan-verification.md § SESSION_START_REF accessor`; it exports `$SESSION_RANGE`, one complete diff range. Summary:
 - Primary: the pinned `session-start-ref` from STATE.md frontmatter → `<sha>..HEAD`.
 - Field absent: the baseline `resolveBaselineRange()` resolves → `<base>...HEAD` (never a hard-coded `origin/main`).
-- Multi-tree (#1659): also run `node scripts/session-commit-files.mjs` and treat its union as additional changed files (commits in the session's other own worktrees). The own-tree range above stays authoritative; no diff across trees is computed; skipped trees (stderr) are unmeasured, not unchanged.
+- Multi-tree (#1659): also run `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-commit-files.mjs"` and treat its union as additional changed files (commits in the session's other own worktrees). The own-tree range above stays authoritative; no diff across trees is computed; skipped trees (stderr) are unmeasured, not unchanged.
 - Nothing resolves: `$SESSION_RANGE` is empty and the accessor names `no-baseline-ref` or `unresolvable-ref` — log `⚠ Phase 3.2: no session range (<reason>). Docs verification skipped.` and skip Phase 3.2. Never treat the empty range as "no docs changed".
 
 If `git diff` itself fails (network issue, corrupt repo), log:

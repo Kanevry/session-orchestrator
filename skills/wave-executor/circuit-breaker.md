@@ -64,7 +64,7 @@ When a task is escalated (2×SPIRAL or first-time FAILED with no prior carryover
 **Ownership split:** auto-create happens HERE (inline at detection time), not deferred to session-end. Session-end Phase 1.6 only *validates* that each SPIRAL/FAILED entry in Wave History has an `→ issue #NNN` suffix and retroactively files one if missing.
 
 ```js
-import { createSpiralCarryoverIssue } from '$PLUGIN_ROOT/scripts/lib/spiral-carryover.mjs';
+import { createSpiralCarryoverIssue } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/spiral-carryover.mjs';
 
 // On 2×SPIRAL detection for <task>:
 const result = await createSpiralCarryoverIssue({

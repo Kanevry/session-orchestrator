@@ -5,8 +5,8 @@ argument-hint: "[status|deps|posture|agent-setup|review] [--ref <commit>]"
 
 # /security
 
-Use the Session Orchestrator skill definition at `skills/security/SKILL.md`.
+Read `skills/security/SKILL.md` under the Session Orchestrator package root given in your system prompt and follow it exactly.
 
 Arguments: $@
 
-Read that skill file and follow it exactly. When it references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
+When the file references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.

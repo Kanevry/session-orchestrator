@@ -5,8 +5,8 @@ argument-hint: "[--fast|--standard|--deep] [--no-interview] [--upgrade <tier>]"
 
 # /bootstrap
 
-Use the Session Orchestrator skill definition at `skills/bootstrap/SKILL.md`.
+Read `skills/bootstrap/SKILL.md` under the Session Orchestrator package root given in your system prompt and follow it exactly.
 
 Arguments: $@
 
-Read that skill file and follow it exactly. When it references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
+When the file references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.

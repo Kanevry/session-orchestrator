@@ -23,7 +23,7 @@ project, excluding all plugin-owned basenames. The remote step only fires when:
 
 When triggered, the step:
 
-1. Loops over a default rule manifest, invoking `node scripts/lib/fetch-baseline.mjs <project_id> <file_path> <baseline-ref>` once per rule. The CLI prints one file body to stdout (exit 0 success; 1 auth, 2 not-found, 3 network) — bootstrap redirects stdout to the target path and skips failures so a single 404 cannot abort the batch.
+1. Loops over a default rule manifest, invoking `node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/fetch-baseline.mjs" <project_id> <file_path> <baseline-ref>` once per rule. The CLI prints one file body to stdout (exit 0 success; 1 auth, 2 not-found, 3 network) — bootstrap redirects stdout to the target path and skips failures so a single 404 cannot abort the batch.
 2. Fetches each rule listed in the default manifest from the configured `baseline-project-id` (default `52`) at the configured `baseline-ref`
 3. Writes `.claude/.baseline-fetch.lock` (via an inline `node --input-type=module -e`) recording what was fetched
 4. Populates `.claude/.baseline-cache/` for offline fallback on subsequent invocations

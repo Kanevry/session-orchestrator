@@ -16,6 +16,8 @@ model: haiku
 
 # Vault Mirror Skill
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 > Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). When this skill mentions Session Config in `CLAUDE.md`, the alias rule applies.
 
 ## Purpose
@@ -33,7 +35,7 @@ Both call sites are conditional: vault-mirror runs only when `vault-integration.
 
 ## Inputs
 
-`scripts/vault-mirror.mjs` is the implementation (call it by its plugin path, `"$PLUGIN_ROOT/scripts/vault-mirror.mjs"` — never `cd` into the plugin checkout to run it). `--vault-dir`, `--source` and `--kind` are required; `node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" --help` lists every flag.
+`scripts/vault-mirror.mjs` is the implementation (call it by its plugin path, `"${CLAUDE_PLUGIN_ROOT}/scripts/vault-mirror.mjs"` — never `cd` into the plugin checkout to run it). `--vault-dir`, `--source` and `--kind` are required; `node "${CLAUDE_PLUGIN_ROOT}/scripts/vault-mirror.mjs" --help` lists every flag.
 
 | Flag | Type | Required | Description |
 |---|---|---|---|
@@ -116,10 +118,10 @@ The mirror used to write every record and never mark or remove anything; by 2026
 
 ```bash
 # (2) per repo, from its canonical checkout
-node scripts/vault-mirror.mjs --vault-dir <vault> --source <repo>/.orchestrator/metrics/sessions.jsonl --kind session --repo-root <repo> --no-commit
+node "${CLAUDE_PLUGIN_ROOT}/scripts/vault-mirror.mjs" --vault-dir <vault> --source <repo>/.orchestrator/metrics/sessions.jsonl --kind session --repo-root <repo> --no-commit
 # (3) + (4)
-node scripts/vault-mirror-prune.mjs --vault-dir <vault> --manifest /tmp/vault-prune-manifest.json   # plan
-node scripts/vault-mirror-prune.mjs --vault-dir <vault> --apply --manifest /tmp/vault-prune-applied.json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/vault-mirror-prune.mjs" --vault-dir <vault> --manifest /tmp/vault-prune-manifest.json   # plan
+node "${CLAUDE_PLUGIN_ROOT}/scripts/vault-mirror-prune.mjs" --vault-dir <vault> --apply --manifest /tmp/vault-prune-applied.json
 ```
 
 ## Idempotency
@@ -168,7 +170,7 @@ Per `.claude/rules/development.md` Git Safety Protocol — *"Never skip hooks (`
 Mirror the sessions.jsonl for the current project into a vault — run from the project's repo root, call the script by its plugin path:
 
 ```bash
-node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/vault-mirror.mjs" \
   --vault-dir ~/Projects/vault \
   --repo-root "$PWD" \
   --source "$PWD/.orchestrator/metrics/sessions.jsonl" \
@@ -178,7 +180,7 @@ node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" \
 Dry-run a learnings mirror to preview actions without writing:
 
 ```bash
-node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/vault-mirror.mjs" \
   --vault-dir ~/Projects/vault \
   --repo-root "$PWD" \
   --source "$PWD/.orchestrator/metrics/learnings.jsonl" \
@@ -249,17 +251,17 @@ Non-derivable files (`_unsorted`, `redacted-repo`, `unknown-repo`) are moved to 
 
 ```bash
 # Step 1: Preview (dry-run default)
-node scripts/relocate-vault-corpus.mjs --vault-dir ~/Projects/vault
+node "${CLAUDE_PLUGIN_ROOT}/scripts/relocate-vault-corpus.mjs" --vault-dir ~/Projects/vault
 
 # Step 2: Move only confident files (skip _unsorted/redacted-repo)
-node scripts/relocate-vault-corpus.mjs --vault-dir ~/Projects/vault --apply --derivable-only
+node "${CLAUDE_PLUGIN_ROOT}/scripts/relocate-vault-corpus.mjs" --vault-dir ~/Projects/vault --apply --derivable-only
 
 # Step 2b: Lift coverage further by backfilling repo: for repo-less sessions (preview first)
-node scripts/relocate-vault-corpus.mjs --vault-dir ~/Projects/vault --with-backfill --derivable-only          # dry-run
-node scripts/relocate-vault-corpus.mjs --vault-dir ~/Projects/vault --with-backfill --derivable-only --apply  # then apply
+node "${CLAUDE_PLUGIN_ROOT}/scripts/relocate-vault-corpus.mjs" --vault-dir ~/Projects/vault --with-backfill --derivable-only          # dry-run
+node "${CLAUDE_PLUGIN_ROOT}/scripts/relocate-vault-corpus.mjs" --vault-dir ~/Projects/vault --with-backfill --derivable-only --apply  # then apply
 
 # Step 3 (optional): Roll back if something looks wrong
-node scripts/relocate-vault-corpus.mjs --rollback ~/Projects/vault/.orchestrator/relocation-manifest-<ISO>.json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/relocate-vault-corpus.mjs" --rollback ~/Projects/vault/.orchestrator/relocation-manifest-<ISO>.json
 ```
 
 Exit codes: `0` success (including dry-run); `1` input/arg error; `2` IO error. Data goes to stdout; diagnostics and summary go to stderr. Add `--json` for JSONL output (one record per file).

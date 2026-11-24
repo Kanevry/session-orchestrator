@@ -4,8 +4,8 @@ description: Use when the user asks to improve architecture, find refactoring op
 
 # /architecture
 
-Use the Session Orchestrator skill definition at `skills/architecture/SKILL.md`.
+Read `skills/architecture/SKILL.md` under the Session Orchestrator package root given in your system prompt and follow it exactly.
 
 Arguments: $@
 
-Read that skill file and follow it exactly. When it references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
+When the file references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.

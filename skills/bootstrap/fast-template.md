@@ -62,7 +62,7 @@ else
   # Accept both titles: "## Hard Rules" (current) and "## Harte Regeln" (pre-#2246
   # German title, still present in existing consumer repos) — no duplicate on re-bootstrap.
   if ! grep -qE "^## (Hard Rules|Harte Regeln)" CLAUDE.md 2>/dev/null; then
-    cat "$PLUGIN_ROOT/templates/_shared/harte-regeln.md" >> CLAUDE.md
+    cat "${CLAUDE_PLUGIN_ROOT}/templates/_shared/harte-regeln.md" >> CLAUDE.md
   fi
   # Fall back to plugin-template generation: append canonical Session Config block
   # (issue #182: 7 mandatory fields enforced by scripts/lib/config-schema.mjs).
@@ -97,7 +97,7 @@ If `## Session Config` is present, confirm the 7 mandatory fields (per issue #18
 **Step 2c: CLAUDE.md budget lint.** After Step 2b confirms/repairs the Session Config block, run the raw-file-property lint against the freshly written instruction file:
 
 ```bash
-node "$PLUGIN_ROOT/scripts/lib/claude-md-budget-lint.mjs" --repo-root "$REPO_ROOT" --require-provenance --mode warn --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/claude-md-budget-lint.mjs" --repo-root "$REPO_ROOT" --require-provenance --mode warn --json
 ```
 
 `--mode warn` is deliberate at Anlage-time — the lint informs, the operator decides; it never blocks the scaffold. Interpret the JSON `violations[]`:
@@ -204,7 +204,7 @@ Idempotency is handled by the writer itself:
 Shell:
 ```bash
 mkdir -p "$REPO_ROOT/.claude"
-export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
+export PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" REPO_ROOT CONFIRMED_ARCHETYPE
 RULES_RESULT=$(node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
 const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
@@ -218,7 +218,7 @@ printf '%s\n' "$RULES_RESULT"
 while IFS= read -r _file; do BOOTSTRAP_FILES+=("$_file"); done \
   < <(printf '%s\n' "$RULES_RESULT" | jq -r '.created[]')
 if [[ ! -e "$REPO_ROOT/.claude/loop.md" && ! -L "$REPO_ROOT/.claude/loop.md" ]]; then
-  cp "$PLUGIN_ROOT/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"
+  cp "${CLAUDE_PLUGIN_ROOT}/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"
   BOOTSTRAP_FILES+=(.claude/loop.md)
 fi
 ```
@@ -266,7 +266,7 @@ tier: fast
 archetype: null
 timestamp: <current ISO 8601 UTC — e.g., 2026-04-16T09:30:00Z>
 source: <claude-init | plugin-template>
-plugin-version: <session-orchestrator plugin version — read from $PLUGIN_ROOT/package.json .version field>
+plugin-version: <session-orchestrator plugin version — read from ${CLAUDE_PLUGIN_ROOT}/package.json .version field>
 bootstrapped-at: <current ISO 8601 UTC — same value as timestamp; distinct field for age-validation probe>
 LOCK
 mv "$_LOCK_TMP" "$REPO_ROOT/.orchestrator/bootstrap.lock"

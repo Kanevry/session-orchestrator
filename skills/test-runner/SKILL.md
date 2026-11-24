@@ -19,6 +19,8 @@ description: >
 
 > Project-instruction file resolution: `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). Wherever this skill mentions `CLAUDE.md`, the alias rule applies.
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Soul
 
 Before anything else, read and internalize `soul.md` in this skill directory. It defines WHO you are — your role as an orchestrator, your delegation boundaries, and your non-negotiable constraints.
@@ -117,7 +119,7 @@ Dispatch via Bash per `skills/playwright-driver/SKILL.md`. Pass `${RUN_DIR}`, `$
 
 ```bash
 # Example invocation shape (exact flags defined by playwright-driver SKILL.md)
-TEST_CHANGED_FILES="${CHANGED_FILES_JSON}" node scripts/lib/playwright-driver/runner.mjs \
+TEST_CHANGED_FILES="${CHANGED_FILES_JSON}" node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/playwright-driver/runner.mjs" \
   --run-dir "${RUN_DIR}" \
   --profile "${PROFILE}" \
   --target "${TARGET}"

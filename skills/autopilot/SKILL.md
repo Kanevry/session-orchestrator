@@ -16,6 +16,8 @@ model: sonnet
 
 # Autopilot Skill
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Invocation
 
 The user invokes `/autopilot` with arguments: **$ARGUMENTS**. This is autonomous
@@ -240,11 +242,11 @@ session — drives `runLoop` between manual `/session` invocations. The headless
 ### In-Process Driver Skeleton
 
 ```js
-import { runLoop, parseFlags } from '$PLUGIN_ROOT/scripts/lib/autopilot.mjs';
-import { buildLiveSignals } from '$PLUGIN_ROOT/scripts/lib/build-live-signals.mjs';
-import { selectMode } from '$PLUGIN_ROOT/scripts/lib/mode-selector.mjs';
-import { probe, evaluate } from '$PLUGIN_ROOT/scripts/lib/resource-probe.mjs';
-import { detectPeers } from '$PLUGIN_ROOT/scripts/lib/session-registry.mjs';
+import { runLoop, parseFlags } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/autopilot.mjs';
+import { buildLiveSignals } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/build-live-signals.mjs';
+import { selectMode } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/mode-selector.mjs';
+import { probe, evaluate } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/resource-probe.mjs';
+import { detectPeers } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/session-registry.mjs';
 
 const flags = parseFlags(process.argv.slice(2));
 

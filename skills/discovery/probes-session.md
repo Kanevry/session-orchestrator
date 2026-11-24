@@ -239,7 +239,7 @@ Actual: <what was found or NOT found>
 # flags a compliant lean-root file (this plugin's own CLAUDE.md: 209 raw lines,
 # 61 non-exempt — a `wc -l` rule fires, the lint passes).
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-node "${PLUGIN_ROOT}/scripts/lib/claude-md-budget-lint.mjs" \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/claude-md-budget-lint.mjs" \
   --repo-root "$REPO_ROOT" --mode warn --json
 # → {"status":"ok"|"invalid","file":…,"lineCount":…,"exemptLines":…,
 #    "effectiveLineCount":…,"maxLineCharsSeen":…,"hasProvenance":…,
@@ -249,7 +249,7 @@ node "${PLUGIN_ROOT}/scripts/lib/claude-md-budget-lint.mjs" \
 
 # Ceiling value, when a finding needs to quote it (e.g. a 2x high tier):
 node --input-type=module -e "
-import { DEFAULT_MAX_LINES } from '${PLUGIN_ROOT}/scripts/lib/claude-md-budget-lint.mjs';
+import { DEFAULT_MAX_LINES } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/claude-md-budget-lint.mjs';
 process.stdout.write(String(DEFAULT_MAX_LINES));
 "
 
@@ -258,7 +258,7 @@ process.stdout.write(String(DEFAULT_MAX_LINES));
 # Check for inline code blocks > 10 lines (should be in separate files)
 ```
 
-**Dependencies (probe 5):** requires `${PLUGIN_ROOT}/scripts/lib/claude-md-budget-lint.mjs` (#722 Epic A). Degrades gracefully when the helper is absent (pre-#722 plugin install) — skip the size finding with a note, do not fall back to a hand-rolled `wc -l` threshold, which is the drift this delegation removes.
+**Dependencies (probe 5):** requires `${CLAUDE_PLUGIN_ROOT}/scripts/lib/claude-md-budget-lint.mjs` (#722 Epic A). Degrades gracefully when the helper is absent (pre-#722 plugin install) — skip the size finding with a note, do not fall back to a hand-rolled `wc -l` threshold, which is the drift this delegation removes.
 
 6. Token efficiency — .claudeignore coverage:
 ```bash
@@ -374,7 +374,7 @@ STATE_FILE="$(git rev-parse --show-toplevel)/.claude/STATE.md"
 # Prefer the frontmatter `updated:` field; fall back to file mtime.
 UPDATED="$(node --input-type=module -e "
 import {readFileSync} from 'node:fs';
-import {parseStateMd} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import {parseStateMd} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 try {
   const p = parseStateMd(readFileSync('$STATE_FILE', 'utf8'));
   if (p && p.frontmatter.updated) process.stdout.write(p.frontmatter.updated);
@@ -423,9 +423,9 @@ Recommendation: Run /session to refresh state, or delete the file if work has be
 ```bash
 LOCK_FILE="$(git rev-parse --show-toplevel)/.orchestrator/bootstrap.lock"
 [[ -f "$LOCK_FILE" ]] || exit 0
-CURRENT_VERSION="$(node -e "process.stdout.write(require('${PLUGIN_ROOT}/package.json').version)")"
+CURRENT_VERSION="$(node -e "process.stdout.write(require('${CLAUDE_PLUGIN_ROOT}/package.json').version)")"
 node --input-type=module -e "
-import { checkBootstrapLockFreshness } from '${PLUGIN_ROOT}/scripts/lib/bootstrap-lock-freshness.mjs';
+import { checkBootstrapLockFreshness } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/bootstrap-lock-freshness.mjs';
 const result = checkBootstrapLockFreshness({
   repoRoot: '$(git rev-parse --show-toplevel)',
   currentPluginVersion: '${CURRENT_VERSION}',
@@ -461,7 +461,7 @@ Remediation: reason-aware (#57) — see below.
 - `version-mismatch-major` or `version-mismatch-unparseable` → check for a plugin update first (git pull / marketplace update), then `/bootstrap --refresh-lock` to acknowledge the current version.
 - `missing` → `/bootstrap --retroactive` (or `/bootstrap` for a fresh scaffold) — this is the one case where no lock exists to refresh.
 
-**Dependencies:** Requires `${PLUGIN_ROOT}/scripts/lib/bootstrap-lock-freshness.mjs` (issue #186). Degrades gracefully when the helper is absent (pre-#186 plugin install) — skip with a note, do not fabricate findings.
+**Dependencies:** Requires `${CLAUDE_PLUGIN_ROOT}/scripts/lib/bootstrap-lock-freshness.mjs` (issue #186). Degrades gracefully when the helper is absent (pre-#186 plugin install) — skip with a note, do not fabricate findings.
 
 ---
 
@@ -477,7 +477,7 @@ Remediation: reason-aware (#57) — see below.
 AGENTS_DIR="$(git rev-parse --show-toplevel)/.claude/agents"
 [[ -d "$AGENTS_DIR" ]] || exit 0
 node --input-type=module -e "
-import { validateAgentFile } from '${PLUGIN_ROOT}/scripts/lib/agent-frontmatter.mjs';
+import { validateAgentFile } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/agent-frontmatter.mjs';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 const dir = '${AGENTS_DIR}';
@@ -509,11 +509,11 @@ Violations:
   - tools (no-json-array): tools must be a comma-separated string, not a JSON array
   - description (no-block-scalar): description must be inline, not a block scalar
   - color (enum): color must be one of "blue"|"cyan"|"green"|"yellow"|"magenta"|"red"
-Recommendation: Run node scripts/validate-plugin.mjs to surface every violation, or manually fix per CLAUDE.md Agent Authoring Rules.
+Recommendation: Correct the reported fields in .claude/agents/<filename>.md using the plugin's docs/agent-authoring.md, then rerun this probe.
 ```
 
 **Default Severity:** High — broken agents fail at runtime silently.
 
-**Remediation:** Run `node scripts/validate-plugin.mjs` (the agent-frontmatter validator lists every violation; `/bootstrap --retroactive` only writes a missing lock, it does not validate) or manually fix per CLAUDE.md Agent Authoring Rules.
+**Remediation:** Use the field names and rule messages above to correct each affected agent file. Consult [the plugin's agent authoring guide](../../docs/agent-authoring.md), then rerun this probe from the target repository.
 
-**Dependencies:** Requires `${PLUGIN_ROOT}/scripts/lib/agent-frontmatter.mjs` (issue #189). Degrades gracefully when the helper is absent — skip with a note, do not fabricate findings.
+**Dependencies:** Requires `${CLAUDE_PLUGIN_ROOT}/scripts/lib/agent-frontmatter.mjs` (issue #189). Degrades gracefully when the helper is absent — skip with a note, do not fabricate findings.

@@ -199,9 +199,9 @@ export function readAuditRecords(repoRoot, limit = REAPER_DEFAULTS.falseAlarmWin
   try {
     let windowBytes = AUDIT_TAIL_START_BYTES;
     for (;;) {
-      const { text, cut } = readTailWindow(target, windowBytes, { noFollow: true });
+      const { text, cut, partialFirstLine } = readTailWindow(target, windowBytes, { noFollow: true });
       const all = text.split('\n');
-      if (cut) all.shift();
+      if (partialFirstLine) all.shift();
       span = newestSpan(all.filter((l) => l.trim().length > 0), want);
       if (!cut || span.complete || windowBytes >= REAPER_AUDIT_MAX_BYTES) break;
       windowBytes = Math.min(windowBytes * 4, REAPER_AUDIT_MAX_BYTES);
@@ -274,11 +274,11 @@ export function pruneReaperAudit(repoRoot, {
   try {
     // `noFollow`: `statSync` above follows a link, so without it the prune read
     // a linked target's tail before `replaceRegularFile` refused the write.
-    const { text, cut } = readTailWindow(target, Math.min(keepBytes, maxBytes), { noFollow: true });
-    // A cut window starts mid-record; with no newline at all it is ONE record
+    const { text, partialFirstLine } = readTailWindow(target, Math.min(keepBytes, maxBytes), { noFollow: true });
+    // With a partial first line and no newline at all, the window is ONE record
     // larger than the window, and keeping any part of it would keep a fragment.
     const newline = text.indexOf('\n');
-    const kept = !cut ? text : (newline === -1 ? '' : text.slice(newline + 1));
+    const kept = !partialFirstLine ? text : (newline === -1 ? '' : text.slice(newline + 1));
     replaceRegularFile(target, kept);
     return size - Buffer.byteLength(kept, 'utf8');
   } catch (err) {

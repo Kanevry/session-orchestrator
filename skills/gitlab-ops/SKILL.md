@@ -19,6 +19,8 @@ description: >
 
 # VCS Operations Reference
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## VCS Auto-Detection
 
 Detect which VCS platform the current repo uses and select the right CLI:
@@ -130,7 +132,7 @@ done
 - `status:review` — MR/PR created, awaiting review
 - `status:blocked` — waiting on external dependency
 
-**A closed issue carries no `status:*` label.** Closing via `node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --close` strips them, but an issue closed by `Closes #N` on an MR or train merge bypasses that path and keeps its label (309 closed issues still carried one on 2026-10-28, #1876). So the post-merge check of every merge that closes issues runs `node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --strip-closed --apply`. Without `--apply` it is a dry run that lists the closed issues per `status:*` label. With `--apply` it removes only `status:*` labels, then re-reads the listing and exits 1 unless every label count is 0. In apply mode the JSON report carries `skipped: ['#<iid>: state <x>']` for issues that were no longer closed (or whose state was unknown) at strip time; they are not stripped and not counted in `stripped`. Count by status only with a state filter (`--opened`), never across all states.
+**A closed issue carries no `status:*` label.** Closing via `node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/issue-close-strip-labels.mjs" --close` strips them, but an issue closed by `Closes #N` on an MR or train merge bypasses that path and keeps its label (309 closed issues still carried one on 2026-10-28, #1876). So the post-merge check of every merge that closes issues runs `node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/issue-close-strip-labels.mjs" --strip-closed --apply`. Without `--apply` it is a dry run that lists the closed issues per `status:*` label. With `--apply` it removes only `status:*` labels, then re-reads the listing and exits 1 unless every label count is 0. In apply mode the JSON report carries `skipped: ['#<iid>: state <x>']` for issues that were no longer closed (or whose state was unknown) at strip time; they are not stripped and not counted in `stripped`. Count by status only with a state filter (`--opened`), never across all states.
 
 ### Area Labels
 - `area:frontend` | `area:backend` | `area:database`

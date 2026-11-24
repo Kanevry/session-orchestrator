@@ -71,23 +71,29 @@ const EXEC_TIMEOUT_MS = 120_000;
 
 // Re-read the document so a transition started by a finishing animation is
 // included too. Decorative loops and paused animations need no settling time.
-// NAMED CEILING (BV-004, #2190 item 9): a long but FINITE animation still running
-// at the 2-s cap fails this precheck, and the caller then skips the WHOLE axe run
-// (`measure-failed` on `a11y`), though only `color-contrast` reads mixed colours.
-// Narrowing needs `agent-browser a11y` to disable or select single rules (it takes
-// `--tags`/`--selector` only, measured 2026-11-23 via `a11y --help`), or a post-hoc
-// filter that adds a second skip kind to the run record. REVISIT TRIGGER: a route
-// whose animation outlasts the cap loses every non-contrast axe finding in a report,
-// or `a11y` gains rule selection.
+// BV-004 ceiling (#2190 item 9): a finite animation still running after 10 s
+// skips the whole axe run (measure-failed), though only contrast reads mixed colours.
+// Revisit-Trigger: a route loses non-contrast findings at the cap or a11y gains rule selection.
+const AXE_SETTLE_CEILING_MS = 10_000;
 const AXE_SETTLED_EVAL = `(async () => {
-  const deadline = performance.now() + 2000;
-  while (document.getAnimations().some(animation =>
-    animation.playState === 'running' && Number.isFinite(animation.effect?.getComputedTiming().endTime)
-  )) {
-    if (performance.now() >= deadline) throw new Error('Timed out waiting for animations before axe');
-    await new Promise(resolve => setTimeout(resolve, 32));
+  const deadline = performance.now() + ${AXE_SETTLE_CEILING_MS};
+  while (true) {
+    let latestRemaining = -1;
+    for (const animation of document.getAnimations()) {
+      if (animation.playState !== 'running') continue;
+      const endTime = animation.effect?.getComputedTiming().endTime;
+      if (!Number.isFinite(endTime)) continue;
+      const current = animation.currentTime ?? 0;
+      const rate = animation.playbackRate ?? 1;
+      const distance = rate < 0 ? current : endTime - current;
+      const remaining = rate === 0 ? Infinity : Math.max(0, distance) / Math.abs(rate);
+      latestRemaining = Math.max(latestRemaining, remaining);
+    }
+    if (latestRemaining < 0) return null;
+    const budget = deadline - performance.now();
+    if (budget <= 0) throw new Error('Timed out waiting for animations before axe');
+    await new Promise(resolve => setTimeout(resolve, Math.min(latestRemaining || 32, budget)));
   }
-  return null;
 })()`;
 
 /**

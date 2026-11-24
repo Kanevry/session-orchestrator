@@ -24,8 +24,8 @@ Before reading STATE.md contents, validate the branch field:
 On resume, include the current session's cumulative paths in the guarded resume banner. Use the same `contents` already read for the branch and status checks.
 
 ```js
-import { readFilesTouched } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
-import { wrapHistorical } from '${PLUGIN_ROOT}/scripts/lib/historical-guard.mjs';
+import { readFilesTouched } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import { wrapHistorical } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/historical-guard.mjs';
 const filesTouched = readFilesTouched(contents);
 if (filesTouched.length > 0) console.log(wrapHistorical('Files touched: ' + JSON.stringify(filesTouched)));
 ```
@@ -51,9 +51,9 @@ Read the 5 optional v1.1 Recommendation fields from STATE.md frontmatter via `pa
 ```bash
 node --input-type=module -e "
 import {readFileSync} from 'node:fs';
-import {parseStateMd, parseRecommendations} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
-import {isValidMode} from '${PLUGIN_ROOT}/scripts/lib/recommendations-v0.mjs';
-import {HISTORICAL_GUARD_BANNER} from '${PLUGIN_ROOT}/scripts/lib/historical-guard.mjs';
+import {parseStateMd, parseRecommendations} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import {isValidMode} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/recommendations-v0.mjs';
+import {HISTORICAL_GUARD_BANNER} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/historical-guard.mjs';
 import {appendFileSync, mkdirSync} from 'node:fs';
 
 const SWEEP_LOG = '.orchestrator/metrics/sweep.log';
@@ -110,7 +110,7 @@ Reset rules — applies ONLY on the `completed` branch. Do NOT perform this rese
 Run it as code, after the Recommendations Banner — never rewrite STATE.md by hand (#1560):
 
 ```bash
-node "${PLUGIN_ROOT}/scripts/state-md-idle-reset.mjs" --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/state-md-idle-reset.mjs" --json
 ```
 
 It prints `{"changed": <bool>, "reason": <string|null>, "path": "<STATE.md>"}` and writes under the STATE.md lock (`resetStateMdToIdle` in `scripts/lib/state-md/idle-reset.mjs`). A no-op exits 0 with `changed: false` and one of `reason: "status-not-completed"` (any status other than `completed`), `"unparseable"` (no frontmatter) `"missing"` (no or empty STATE.md) or `"foreign-state-md"` (the only STATE.md belongs to another platform's foreign session and is left untouched, #1618 — treat like `missing`). Exit 2 means `--repo-root` is not a directory, the write failed, or a STATE.md guard refused it (`reason` names the guard) — report it as a Deviation and continue. Without a new `## Wave History` (a coordinator-direct session) the earlier `## Previous Session` body is kept below the new recommendations copy. The rules below are the contract that code implements:
@@ -151,7 +151,7 @@ Rationale: `/close` intentionally keeps STATE.md as a record so the next session
 Applies ONLY after the user chose to **resume** from the `active`/`paused` branch above. Skip entirely on the `completed` branch (snapshots for completed sessions are GC'd by session-end, not offered for recovery) and on the "start fresh" path of an `active`/`paused` prompt (starting fresh implies abandoning any snapshot).
 
 ```js
-import { listSnapshots, deleteSnapshot } from '$PLUGIN_ROOT/scripts/lib/coordinator-snapshot.mjs';
+import { listSnapshots, deleteSnapshot } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/coordinator-snapshot.mjs';
 
 const snaps = await listSnapshots({ sessionId: '<sessionId from STATE.md>' });
 ```
@@ -165,7 +165,7 @@ If `snaps.length >= 1` → present the following choice:
 Before asking, read what "Recover" would actually put back — the operator decides on that diff, not on the word:
 
 ```js
-import { execFileSync } from '$PLUGIN_ROOT/scripts/lib/native-command.mjs';
+import { execFileSync } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/native-command.mjs';
 
 // Read-only: `git stash show` prints a diffstat and never touches the working tree.
 // Capped at 12 lines so the preview box stays shorter than the option list beside it.
@@ -244,7 +244,7 @@ After the continuity checks above, render a one-line banner showing the current 
 ```bash
 node --input-type=module -e "
 import {readFileSync} from 'node:fs';
-import {readCurrentTask} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import {readCurrentTask} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 try {
   const t = readCurrentTask(readFileSync('<state-dir>/STATE.md', 'utf8'));
   if (t) console.log('Current task: ' + t.description);
@@ -263,13 +263,13 @@ Also read `<state-dir>/STATUS.md` if it exists for additional project-level cont
 When the `/session` argument was the `ultradeep` ALIAS, persist the profile alongside the type:
 
 ```js
-import { setSessionProfile } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import { setSessionProfile } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 // `session-type` stays `deep` and must NEVER become `ultradeep` — an unknown type
 // degrades SILENTLY in two places: `scripts/lib/telemetry/schema.mjs:83` maps it to
 // `other`, `scripts/lib/session-close-backfill.mjs:71` labels it `housekeeping`.
 contents = setSessionProfile(contents, 'ultradeep');
 ```
 
-**The profile owns its wave count; the STATE.md write does not compute one.** `total-waves` comes from the resolved shape — `node scripts/session-shape.mjs --repo-root "$PWD" --session-type deep --profile ultradeep …` (`resolveSessionShape` / `resolveAndRecordSessionShape` in `scripts/lib/session-shape.mjs`), whose `totalWaves` field is authoritative and is recorded once as `orchestrator.session.shape_resolved`. The former AC-9 rule (the profile must honour the Session Config `waves:` value) is DROPPED as of 2026-09-09: a profile that cannot set its own wave count is not a wave-shape variant. Write `total-waves` from `shape.totalWaves`, never from a hand-derived number, and never from `waves:` when a profile is present — the shape's `wavesConfigHonored` flag and `notes[]` already say which of the two won.
+**The profile owns its wave count; the STATE.md write does not compute one.** `total-waves` comes from the resolved shape — `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-shape.mjs" --repo-root "$PWD" --session-type deep --profile ultradeep …` (`resolveSessionShape` / `resolveAndRecordSessionShape` in `scripts/lib/session-shape.mjs`), whose `totalWaves` field is authoritative and is recorded once as `orchestrator.session.shape_resolved`. The former AC-9 rule (the profile must honour the Session Config `waves:` value) is DROPPED as of 2026-09-09: a profile that cannot set its own wave count is not a wave-shape variant. Write `total-waves` from `shape.totalWaves`, never from a hand-derived number, and never from `waves:` when a profile is present — the shape's `wavesConfigHonored` flag and `notes[]` already say which of the two won.
 
 For every other argument, write **nothing** — absence is the contract, never `''`, `none` or `null` as a value. `setSessionProfile(contents, null)` deletes a stale key inherited from a previous session's record; it throws on an empty-string profile, so never pass one.

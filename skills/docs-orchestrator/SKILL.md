@@ -17,6 +17,8 @@ description: >
 
 > Project-instruction file resolution: CLAUDE.md and AGENTS.md (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md).
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 docs-orchestrator coordinates the full documentation lifecycle inside a session: it
 detects which audiences (User, Dev, Vault) are touched by the agreed scope, generates
 audience-specific task definitions, threads them into the session-plan pipeline, and

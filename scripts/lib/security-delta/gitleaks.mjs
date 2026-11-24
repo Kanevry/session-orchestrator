@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { commandOnPath, spawn } from '../native-command.mjs';
 import { BUDGET, makeCheckResult, makeFinding } from './contract.mjs';
 import { isSafeRef } from './floating-tags.mjs';
+import { performance } from 'node:perf_hooks';
 
 /** First version with the `git` subcommand. */
 const GIT_SUBCOMMAND_SINCE = [8, 19, 0];
@@ -139,8 +140,8 @@ export async function runGitleaksCheck({
   onPath = commandOnPath,
   timeoutMs = BUDGET.totalMs,
 } = {}) {
-  const started = Date.now();
-  const done = (r) => makeCheckResult({ id: 'gitleaks', ms: Math.max(0, Date.now() - started), ...r });
+  const started = performance.now();
+  const done = (r) => makeCheckResult({ id: 'gitleaks', ms: performance.now() - started, ...r });
   let dir = null;
   try {
     if (!base) return done({ status: 'skipped', reason: 'no-range' });
@@ -159,7 +160,7 @@ export async function runGitleaksCheck({
       reportPath,
       configPath: existsSync(configFile) ? configFile : null,
     });
-    const remaining = Math.max(1, timeoutMs - (Date.now() - started));
+    const remaining = Math.max(1, timeoutMs - (performance.now() - started));
     const run = await runCommand(spawnImpl, 'gitleaks', args, { cwd: repoRoot, timeoutMs: remaining });
     if (run.timedOut) return done({ status: 'degraded', reason: 'timeout', unchecked: 1 });
     if (run.error || run.code !== 0) return done({ status: 'degraded', reason: 'gitleaks-error', unchecked: 1 });

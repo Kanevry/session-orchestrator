@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session Orchestrator für EDIH-Beratung und KMU</title>
+<meta name="description" content="Session Orchestrator in einem Nachmittag mit einem KMU-Entwicklungsteam ausprobieren. Freies Werkzeug für KI-Coding-Agenten unter MIT-Lizenz.">
+<link rel="canonical" href="https://session-orchestrator.com/de/edih">
+<link rel="alternate" hreflang="en" href="https://session-orchestrator.com/edih">
+<link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de/edih">
+<link rel="alternate" hreflang="x-default" href="https://session-orchestrator.com/edih">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Session Orchestrator">
+<meta property="og:url" content="https://session-orchestrator.com/de/edih">
+<meta property="og:title" content="Session Orchestrator für EDIH-Beratung und KMU">
+<meta property="og:description" content="Session Orchestrator in einem Nachmittag mit einem KMU-Entwicklungsteam ausprobieren. Freies Werkzeug für KI-Coding-Agenten unter MIT-Lizenz.">
+<meta property="og:image" content="https://session-orchestrator.com/de/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Session Orchestrator mit den Befehlen /session, /go und /close.">
+<meta property="og:locale" content="de_DE">
+<meta property="og:locale:alternate" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "@id": "https://session-orchestrator.com/de/edih",
+  "url": "https://session-orchestrator.com/de/edih",
+  "name": "Session Orchestrator für EDIH-Beratung und KMU",
+  "inLanguage": "de",
+  "about": { "@id": "https://session-orchestrator.com/#software" },
+  "isPartOf": { "@id": "https://session-orchestrator.com/#website" }
+}
+</script>
+
+<link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
+<link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
+<link rel="stylesheet" href="/assets/site.css?v=20261118">
+</head>
+<body>
+<a class="skip" href="#main">Zum Inhalt</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span></a>
+    <nav class="nav" aria-label="Hauptnavigation"><a href="/guide#how-it-works" hreflang="en">Ablauf</a><a href="/de/commands">Befehle</a><a href="/guide" hreflang="en">Anleitung (Englisch)</a><a href="/lead" hreflang="en">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
+    <p class="lang"><a href="/edih" lang="en">EN</a><a href="/de/edih" aria-current="page" lang="de">DE</a></p>
+    <details class="nav-menu"><summary>Menü</summary><nav class="nav" aria-label="Mobile Navigation"><a href="/guide#how-it-works" hreflang="en">Ablauf</a><a href="/de/commands">Befehle</a><a href="/guide" hreflang="en">Anleitung (Englisch)</a><a href="/lead" hreflang="en">Lead</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a class="menu-de" href="/edih" lang="en" hreflang="en">English</a></nav></details>
+  </div>
+</header>
+<main id="main">
+  <section class="sec" id="top">
+    <div class="wrap">
+      <p class="eyebrow">European Digital Innovation Hubs · KMU</p>
+      <h1 class="h-display">Eine erste Coding-Sitzung mit Prüfungen an einem Nachmittag.</h1>
+      <p class="lede">Session Orchestrator ist ein freies Werkzeug für Softwareteams, die mit KI-Coding-Agenten arbeiten. Sie stimmen einen Plan ab, prüfen die Änderungen mit den eigenen Projektbefehlen und halten die Übergabe schriftlich fest.</p>
+      <p><strong>0 EUR.</strong> Das Werkzeug steht unter MIT-Lizenz. Session Orchestrator läuft lokal in Ihrem Git-Repository ohne eigenes Konto oder eigenen Server. Das Modell kommt vom Coding-Agenten. Dessen Anbieter kann eigene Kosten verrechnen.</p>
+      <p>Standardmäßig fragt das Plugin bei der npm-Registry nach Updates. Die Sicherheitsprüfung ruft die Versionsliste von Node.js und den CISA-KEV-Feed ab. Sie filtert private Pakete heraus, bevor sie Paketnamen und Versionen aus Ihrer Lockdatei an OSV sendet. Bei GitHub-Remotes fragt sie außerdem über <code>gh</code> private Schwachstellenmeldungen ab. Mit <code>SO_DISABLE_UPDATE_CHECK=1</code> schalten Sie die Update-Prüfung ab, mit <code>SO_SECURITY_PULSE_REFRESH=off</code> die Sicherheitsprüfung. <code>DO_NOT_TRACK=1</code> oder <code>CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1</code> schalten beide Prüfungen ab. Telemetrie ist nur mit Zustimmung aktiv. Siehe <a href="/guide#faq" hreflang="en">Netzwerkverbindungen in der Anleitung (Englisch)</a>.</p>
+      <a class="btn btn-primary" href="#install">Jetzt ausprobieren</a>
+    </div>
+  </section>
+
+  <section class="sec" id="install" aria-labelledby="install-h">
+    <div class="wrap">
+      <h2 id="install-h">Von der Installation bis zur Übergabe</h2>
+      <p>EDIH-Beratung und Entwicklung probieren den Ablauf gemeinsam aus. Sie brauchen Node.js 24 oder neuer, ein Git-Repository mit funktionierenden Prüfungen und eine kleine Änderung, die sich am selben Nachmittag begutachten lässt.</p>
+      <ol>
+        <li>Installieren Sie Session Orchestrator in Claude Code zuerst mit <code>/plugin marketplace add Kanevry/session-orchestrator</code> und dann mit <code>/plugin install session-orchestrator@kanevry</code>. Für Codex CLI, Cursor oder Pi folgen Sie der <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/install.md" hreflang="en">Installationsanleitung (Englisch)</a> für Ihren Coding-Agenten.</li>
+        <li>Öffnen Sie das Projekt im Coding-Agenten und richten Sie die Session Config mit <code>/bootstrap</code> ein. Tragen Sie unter <code>test-command</code>, <code>typecheck-command</code> und <code>lint-command</code> Ihre eigenen Prüfbefehle ein. In einem npm-Projekt können das <code>npm test</code>, <code>npm run typecheck</code> und <code>npm run lint</code> sein.</li>
+        <li>Starten Sie mit <code>/session feature</code> und stimmen Sie den Plan ab. Starten Sie die erste Runde mit <code>/go</code> und prüfen Sie die Ergebnisse. Schließen Sie mit <code>/close</code> ab und lesen Sie gemeinsam die Übergabe. Die <a href="/guide" hreflang="en">Anleitung (Englisch)</a> zeigt die Aufrufe für die einzelnen Coding-Agenten.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="sec" id="limits" aria-labelledby="limits-h">
+    <div class="wrap">
+      <h2 id="limits-h">Pi und Modellbetrieb</h2>
+      <p>In Pi laufen Aufgaben nacheinander und der für das Modell bestimmte Hook-Kontext kommt nicht an. Ob Pi live mit dem Plugin funktioniert, ist noch in keinem aufgezeichneten Lauf belegt. Geplant ist je ein aufgezeichneter Durchlauf mit einem europäischen Modellanbieter und mit einem Modell auf eigener Hardware. Eine Variante gilt erst als geprüft, wenn ein aufgezeichneter Lauf die <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/edih-proof-runs.md" hreflang="en">veröffentlichten Kriterien (Englisch)</a> erfüllt.</p>
+    </div>
+  </section>
+  <section class="sec end" id="support" aria-labelledby="support-h">
+    <div class="wrap end-grid">
+      <div>
+        <h2 id="support-h">Support für EDIH-Kunden</h2>
+        <p>EDIH-Kunden erhalten auf Supportanfragen über GitHub Issues innerhalb von 3 Werktagen eine schriftliche Antwort. Siehe die <a href="/terms" hreflang="en">Nutzungsbedingungen (Englisch)</a>.</p>
+      </div>
+      <a class="btn btn-primary" href="https://github.com/Kanevry/session-orchestrator/issues">GitHub Issues öffnen</a>
+    </div>
+  </section>
+</main>
+<footer class="foot"><div class="wrap"><div class="footer-main"><a class="brand" href="/de">session-orchestrator</a></div><div class="footer-links"><nav aria-label="Weitere Links"><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a href="https://www.npmjs.com/package/session-orchestrator">npm</a><a href="/guide" hreflang="en">Anleitung (Englisch)</a><a href="/impressum">Impressum</a><a href="/datenschutz">Datenschutz</a><a href="/terms" hreflang="en">Nutzungsbedingungen (Englisch)</a></nav></div></div></footer>
+<script src="/_vercel/insights/script.js" defer></script>
+<script src="/assets/ui.js?v=20261118" defer></script>
+</body>
+</html>

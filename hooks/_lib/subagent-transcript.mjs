@@ -635,11 +635,11 @@ const LEADING_MARKER_RE = /^(?:\s*(?:[-*+•]|\d{1,3}[.)]|#{1,6}|>)\s+)+/;
 function readTailRecords(transcriptPath) {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return [];
   let raw;
-  let cut;
+  let partialFirstLine;
   try {
     // Bounded read (#1388 P4): the whole transcript used to be decoded and
     // JSON-parsed line by line only to keep the last 8 assistant records.
-    ({ text: raw, cut } = readTailWindow(transcriptPath, TAIL_WINDOW_BYTES));
+    ({ text: raw, partialFirstLine } = readTailWindow(transcriptPath, TAIL_WINDOW_BYTES));
   } catch {
     // Every fs error (ENOENT, /dev/null EACCES, …) maps to empty —
     // readTailWindow THROWS where the former fs.readFile catch swallowed, and
@@ -649,10 +649,8 @@ function readTailRecords(transcriptPath) {
   if (!raw.trim()) return [];
 
   const lines = raw.split(/\r?\n/);
-  // `cut` means the window did not start at byte 0, so line 0 is (or may be) a
-  // record fragment, possibly severed mid-UTF-8. Drop it explicitly rather than
-  // leaning on the JSON.parse catch below: a truncated record can still parse.
-  if (cut) lines.shift();
+  // A truncated record can still parse as JSON, so discard it explicitly.
+  if (partialFirstLine) lines.shift();
 
   const records = [];
   for (const line of lines) {

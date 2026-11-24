@@ -10,7 +10,7 @@
 
    ```bash
    mkdir -p .orchestrator/tmp
-   node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --close --vcs <gitlab|github> <iid> [<iid> ...] \
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/issue-close-strip-labels.mjs" --close --vcs <gitlab|github> <iid> [<iid> ...] \
      > .orchestrator/tmp/<sid>-close.jsonl; close_rc=$?
    cat .orchestrator/tmp/<sid>-close.jsonl; echo "close exit=$close_rc"
    ```
@@ -31,7 +31,7 @@
    - **Mark answered open questions `[x]` durably — atomic with the filing above (#769):** now, on the completed side of the Quality Gate, persist each answered open question captured in-memory at Phase 1.65 Step 4 to STATE.md via the lock-guarded sibling helper (PSA-005). Co-locating this write with the carryover-issue filing is the load-bearing correctness invariant: an earlier Quality-Gate abort leaves every question `- [ ]` on disk, so it correctly re-surfaces via `readOpenQuestions().filter(!answered)` on re-close — the `[x]` mark now reflects a COMPLETED handover, never a mid-close state a later abort would invalidate. Any implied-work candidate an answered question enqueued in Phase 1.65 is filed by the carry-list step above, so the mark and its issue land together:
 
      ```js
-     import { markOpenQuestionAnsweredOnDisk } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+     import { markOpenQuestionAnsweredOnDisk } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
      // answeredQuestions captured in Phase 1.65 Step 4 (in-memory, un-persisted until now)
      for (const { question, answer } of answeredQuestions) {
        await markOpenQuestionAnsweredOnDisk(repoRoot, question, answer); // "- [ ] Q" → "- [x] Q → Antwort: <answer>"
@@ -50,7 +50,7 @@
       readBudgetState,
       budgetStatePath,
       resolveIssueBudgetSessionId,
-    } from '${PLUGIN_ROOT}/scripts/lib/issue-budget.mjs';
+    } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/issue-budget.mjs';
 
     // `sessionId` is the physical raw lock/registry identity from session-start.
     const rawSessionId = sessionId;
@@ -74,7 +74,7 @@
     - **LOW findings share this collector (#1947, default).** Every review (Phase 1.8 / W4 panel) or discovery (Phase 1.5) finding at `priority::low` that this close would FILE — a `follow-up` disposition under RCR-007, or an operator choice — becomes one checklist line in this same collector instead of its own issue. MEDIUM and above stay single issues (still gated by step 4 and the Phase 1.8 table; #617 is unchanged: unfiled MED/LOW findings stay in the Final Report under "Unresolved Review Findings"). The RCR-007 class `follow-up` is kept; only the filing shape changes. Plan the split and the body with the pure function, then file `plan.single` one by one and `plan.collector` once:
 
       ```js
-      import { planBacklogCollector } from '${PLUGIN_ROOT}/scripts/lib/issue-balance.mjs';
+      import { planBacklogCollector } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/issue-balance.mjs';
       const plan = planBacklogCollector({
         sessionId: accountingSessionId,
         findings: toFile,            // [{ title, priority|severity, source: 'review'|'discovery', file?, line? }]
@@ -106,7 +106,7 @@
         reconcileIssueBudget,
         emitIssueBudgetReconciled,
         formatIssueBudgetReconcileWarn,
-      } from '${PLUGIN_ROOT}/scripts/lib/issue-budget-reconcile.mjs';
+      } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/issue-budget-reconcile.mjs';
 
       const reconcile = reconcileIssueBudget({
         repoRoot,
@@ -128,7 +128,7 @@
     - **Then reap stale counter files (#1151):** the per-session split (#1141) writes one file per accounting session and nothing ever deleted them, so `.orchestrator/runtime/issue-budget/` grew without bound in every working copy. After the drain, sweep files older than 14 days; THIS session's file is exempt regardless of age, and the call is best-effort (it never throws, so it can never abort the close).
 
       ```js
-      import { reapStaleBudgetFiles } from '${PLUGIN_ROOT}/scripts/lib/issue-budget.mjs';
+      import { reapStaleBudgetFiles } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/issue-budget.mjs';
 
       const { removed } = reapStaleBudgetFiles({ repoRoot, sessionId: accountingSessionId });
       if (removed.length) console.log(`issue-budget: reaped ${removed.length} stale counter file(s) (> 14 d)`);
@@ -137,7 +137,7 @@
     - **3b.3 — Issue balance of this session (#1947):** after the reconcile, measure what this session added to and removed from the backlog. Write the in-memory session record to `.orchestrator/tmp/`, then run the command below. Add `--close-results .orchestrator/tmp/<sid>-close.jsonl` only if the step-1 close CLI ran during THIS `/close` invocation. File existence alone is not evidence of a current result: a repeated close with the same `<sid>` can leave an old file. Without the option, the script falls back to `issues_closed` of the session record.
 
       ```bash
-      node "$PLUGIN_ROOT/scripts/issue-balance.mjs" --record .orchestrator/tmp/<sid>-record.json \
+      node "${CLAUDE_PLUGIN_ROOT}/scripts/issue-balance.mjs" --record .orchestrator/tmp/<sid>-record.json \
         --session-id <accountingSessionId> \
         --raw-session-id <rawSessionId> --vcs <gitlab|github>
       ```

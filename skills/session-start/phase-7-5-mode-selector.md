@@ -18,7 +18,7 @@ Both banners may render in the same session-start run. That is intentional: the 
 Invoke `buildLiveSignals` from `scripts/lib/build-live-signals.mjs` to assemble the `signals` object. The helper composes all six source modules (state-md, sessions.jsonl, bootstrap.lock, scanBacklog, learnings, vaultStaleness reserved) with graceful-null on every failure. Pure async, never throws.
 
 ```js
-import { buildLiveSignals } from '$PLUGIN_ROOT/scripts/lib/build-live-signals.mjs';
+import { buildLiveSignals } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/build-live-signals.mjs';
 
 // Pass the surfaced top-N learnings (already computed in Phase 6.6) to avoid
 // re-reading learnings.jsonl. Other paths default to canonical locations
@@ -202,7 +202,7 @@ Runs **after Phase 8 collects the user's mode choice** (or skip on Codex/Cursor 
 **Write contract (delegated to `recordAccuracy` in `mode-selector-accuracy.mjs`):**
 
 ```js
-import { recordAccuracy } from '$PLUGIN_ROOT/scripts/lib/mode-selector-accuracy.mjs';
+import { recordAccuracy } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/mode-selector-accuracy.mjs';
 
 // After Phase 8 AUQ resolves with the user's choice:
 const result = await recordAccuracy({

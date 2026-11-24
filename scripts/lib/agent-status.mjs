@@ -582,12 +582,10 @@ export function rebuildCurrentFromLedger(opts = {}) {
   if (tail.size === 0) reasons.push('ledger-empty');
 
   const lines = tail.text.split('\n');
-  if (tail.cut) {
-    // The window started mid-file: the FIRST line is (or may be) a fragment.
-    // Discard it and count it — never guess the state it would have carried.
+  if (tail.cut) reasons.push('tail-truncated');
+  if (tail.partialFirstLine) {
     lines.shift();
     partialLines += 1;
-    reasons.push('tail-truncated');
   }
   // A trailing newline yields one empty final element; a MISSING trailing
   // newline means the last line is an in-flight partial write.

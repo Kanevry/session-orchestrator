@@ -11,9 +11,9 @@ Compute the v0 recommendation from in-memory session metrics and additively writ
 ```bash
 node --input-type=module -e "
 import {appendFileSync, mkdirSync} from 'node:fs';
-import {execSync} from '${PLUGIN_ROOT}/scripts/lib/native-command.mjs';
-import {updateFrontmatterFieldsOnDisk} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
-import {computeV0Recommendation} from '${PLUGIN_ROOT}/scripts/lib/recommendations-v0.mjs';
+import {execSync} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/native-command.mjs';
+import {updateFrontmatterFieldsOnDisk} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import {computeV0Recommendation} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/recommendations-v0.mjs';
 
 const SWEEP_LOG = '.orchestrator/metrics/sweep.log';
 
@@ -90,7 +90,7 @@ try {
 Wrap the (already-completed) telemetry writes with `withDurableCommit` so the two session-end-owned files survive ephemeral-clone reclamation when `/close` runs inside a cloud Routines execution context. Local execution: `enabled: false` makes this a no-op (returns `{ok: true, skipped: true}` without touching git). The flag flips to `true` only in cloud Routines execution.
 
 ```javascript
-import { withDurableCommit } from '${PLUGIN_ROOT}/scripts/lib/autopilot/durable-telemetry.mjs';
+import { withDurableCommit } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/autopilot/durable-telemetry.mjs';
 
 await withDurableCommit(
   () => {}, // writes already done by Phase 3.7 (sessions.jsonl) + Phase 3.7a (STATE.md)

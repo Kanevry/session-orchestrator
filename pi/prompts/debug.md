@@ -5,8 +5,8 @@ argument-hint: "[bug-description-or-issue-ref]"
 
 # /debug
 
-Use the Session Orchestrator skill definition at `skills/debug/SKILL.md`.
+Read `skills/debug/SKILL.md` under the Session Orchestrator package root given in your system prompt and follow it exactly.
 
 Arguments: $@
 
-Read that skill file and follow it exactly. When it references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
+When the file references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.

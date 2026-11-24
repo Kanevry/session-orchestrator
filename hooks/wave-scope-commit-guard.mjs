@@ -250,7 +250,7 @@ function ownGenesisMs(lockRoot, ownIds) {
     return null;
   }
   const lines = window.text.split('\n');
-  if (window.cut) lines.shift(); // the window began mid-record
+  if (window.partialFirstLine) lines.shift();
   let genesis = null;
   for (const line of lines) {
     if (!line.includes(LOCK_ACQUIRED_EVENT)) continue;

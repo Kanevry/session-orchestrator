@@ -218,7 +218,7 @@ export function makeCheckResult(r) {
   }
   const ms = r.ms ?? 0;
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) throw new ContractError('ms must be a non-negative number');
-  return { id, status, reason: stringOrNull(r.reason, 'reason'), checked, unchecked, findings: [...findings], ms };
+  return { id, status, reason: stringOrNull(r.reason, 'reason'), checked, unchecked, findings: [...findings], ms: Math.round(ms) };
 }
 
 /**

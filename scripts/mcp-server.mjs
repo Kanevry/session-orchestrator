@@ -9,8 +9,7 @@ import { canonicalizeSessions, isMeasuredSession } from './lib/sessions-canonica
 import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 import { execFileSync } from './lib/native-command.mjs';
 
-// The version is READ from package.json, never written here: a hand-kept
-// literal sat at "2.0.0" through v3, v4 and v5 (same fix in mcp-server.sh).
+// Report the installed package version on both transports.
 function packageVersion() {
   try {
     return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || 'unknown';
@@ -32,6 +31,9 @@ const TOOLS = [
   },
 ];
 const textContent = (text) => ({ content: [{ type: 'text', text }] });
+// MCP 2024-11-05 server/tools: a tool that cannot do its job answers inside the
+// result with isError: true, not as a JSON-RPC protocol error (#2272).
+const toolError = (text) => ({ ...textContent(text), isError: true });
 const errorResponse = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
 
 /** Resolve the caller's repository without passing native paths through a shell. */
@@ -125,7 +127,7 @@ export function handleLine(line, { cwd = process.cwd(), resolveRoot = resolvePro
     return errorResponse(null, -32600, 'Invalid Request');
   }
   const hasId = Object.hasOwn(request, 'id');
-  const validId = request.id === null || typeof request.id === 'string' || typeof request.id === 'number';
+  const validId = typeof request.id === 'string' || typeof request.id === 'number';
   const id = hasId && validId ? request.id : null;
   if (request.jsonrpc !== '2.0' || typeof request.method !== 'string' || (hasId && !validId)) {
     return errorResponse(id, -32600, 'Invalid Request');
@@ -136,6 +138,10 @@ export function handleLine(line, { cwd = process.cwd(), resolveRoot = resolvePro
     case 'initialize':
       result = { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: SERVER_INFO };
       break;
+    case 'ping':
+      // basic/utilities/ping: the receiver MUST answer with an empty result (#2272).
+      result = {};
+      break;
     case 'tools/list':
       result = { tools: TOOLS };
       break;
@@ -145,11 +151,11 @@ export function handleLine(line, { cwd = process.cwd(), resolveRoot = resolvePro
       if (!TOOLS.some((tool) => tool.name === name)) return errorResponse(id, -32602, `Unknown tool: ${name}`);
       try {
         const root = resolveRoot(cwd);
-        result = textContent(root
-          ? (name === 'session_config' ? readSessionConfig(root) : readSessionMetrics(root))
-          : 'Error: not inside a git repository');
+        result = root
+          ? textContent(name === 'session_config' ? readSessionConfig(root) : readSessionMetrics(root))
+          : toolError('Error: not inside a git repository');
       } catch {
-        return errorResponse(id, -32603, 'Unable to read session data');
+        result = toolError('Unable to read session data');
       }
       break;
     }

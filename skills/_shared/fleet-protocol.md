@@ -1,5 +1,7 @@
 # Fleet Protocol v1 — Dateien statt Nachrichten (#1462)
 
+Plugin root: see the Plugin root line of the SKILL.md that loaded this file.
+
 Generic contract note for every session-orchestrator session (Claude Code, Codex, headless) that
 may run beside a fleet coordinator ("navigator"). It is a reference, **not a rule**: nothing under
 `.claude/rules/**` loads it; session-start Phase 7.6 and the operations-contract peer preflight
@@ -66,7 +68,7 @@ als Ausnahme im Check-in genannt (`vorab_geschrieben`). (`CLAUDE.md` heißt auf 
 `skills/_shared/instruction-file-resolution.md`.)
 
 Der Check-in liegt **vor der ersten schreibenden Aktion** (Phase 7.6, oder der Peer-Preflight der
-Operations-Route). `node scripts/fleet-checkin.mjs --repo-root "<project-root>"` liest das JSON von stdin, setzt
+Operations-Route). `node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet-checkin.mjs" --repo-root "<project-root>"` liest das JSON von stdin, setzt
 `zeit` (überschreibt immer), validiert (`validateCheckin()`), schreibt atomar mit Modus 0600 und
 emittiert `orchestrator.fleet.checkin` (Payload `session`, `repo`, `modus`, `kandidaten`,
 `navigator_state` — keine Pfade, keine Quota, kein `auftrag_ref`). `<project-root>` ist der absolute
@@ -146,7 +148,7 @@ ScheduleWakeup holt der nächste Anstoß die Meldung nach. Flotte und Lease lese
 (derselbe Helfer `readNavigatorLease()`, aus dem die Check-in-CLI `navigator_adresse` gewinnt):
 
 ```bash
-node --input-type=module -e "const { pathToFileURL } = await import('node:url'); const m = await import(pathToFileURL(process.argv[1]).href); const r = await m.readNavigatorLease(); console.log(JSON.stringify({flotte: m.fleetIntegrationEnabled(), state: r.state, adresse: r.lease?.adresse ?? null}))" "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/lib/fleet-protocol.mjs"
+node --input-type=module -e "const { pathToFileURL } = await import('node:url'); const m = await import(pathToFileURL(process.argv[1]).href); const r = await m.readNavigatorLease(); console.log(JSON.stringify({flotte: m.fleetIntegrationEnabled(), state: r.state, adresse: r.lease?.adresse ?? null}))" "${CLAUDE_PLUGIN_ROOT}/scripts/lib/fleet-protocol.mjs"
 ```
 
 `flotte: false` (§ Verhalten ohne Flotte): keine Meldung, keine Datei; hier endet der Abschnitt.
@@ -232,7 +234,7 @@ und hat keine andere Arbeit:
    `ids`). Danach prüft sie die geschriebene Datei mechanisch:
 
    ```bash
-   node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/handover-queue-check.mjs" --file <cwd>/.orchestrator/runtime/fleet/<datei> --name <name> --since <startedAt> --apply --repo <repo> --navigator-cli <koordinator-cli>
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/handover-queue-check.mjs" --file <cwd>/.orchestrator/runtime/fleet/<datei> --name <name> --since <startedAt> --apply --repo <repo> --navigator-cli <koordinator-cli>
    ```
 
    `<koordinator-cli>` ist der Aufrufpfad der Koordinator-CLI aus der Steuerungsregel (eine `.js`-Datei
@@ -308,7 +310,7 @@ Navigator gewählt hat (#1839); die semantische ID kollidiert über Repos hinweg
 Schlüssel weder Auflagen noch Check-in, nimmt der Hook die Schlüssel aus den Check-ins, deren
 `session_uuid` genau zur nativen ID passt (`findCheckinSessionKeys()`, nur die jüngsten 256 Dateien, #1979).
 
-`node scripts/fleet-auflagen.mjs <session_id> [<session_id>...] --repo-root "<project-root>" --render`
+`node "${CLAUDE_PLUGIN_ROOT}/scripts/fleet-auflagen.mjs" <session_id> [<session_id>...] --repo-root "<project-root>" --render`
 liest die Auflagen mit `readAuflagen()`. Ohne `--repo-root` verwendet der Leser `CLAUDE_PROJECT_DIR`,
 falls gesetzt und nicht leer, sonst das aktuelle Arbeitsverzeichnis. Der Leser probiert zuerst
 die prozesslokale native ID (wie beim Check-in, nur wenn

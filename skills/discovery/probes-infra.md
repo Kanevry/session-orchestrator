@@ -147,14 +147,14 @@ Healthy: true | false
 
 ```bash
 # Step 1: Verify the probe exists; skip if missing
-# Probes live in the PLUGIN, not the project: ${PLUGIN_ROOT} is resolved per
+# Probes live in the PLUGIN, not the project: ${CLAUDE_PLUGIN_ROOT} is resolved per
 # skills/_shared/config-reading.md. The probe still scans process.cwd() (project root).
-test -f "${PLUGIN_ROOT}/skills/discovery/probes/insecure-infra-defaults.mjs" || { echo "SKIPPED: insecure-infra-defaults -- ${PLUGIN_ROOT}/skills/discovery/probes/insecure-infra-defaults.mjs not found (PLUGIN_ROOT='${PLUGIN_ROOT}'; empty = unresolved, see skills/_shared/config-reading.md)"; exit 0; }
+test -f "${CLAUDE_PLUGIN_ROOT}/skills/discovery/probes/insecure-infra-defaults.mjs" || { echo "SKIPPED: insecure-infra-defaults -- ${CLAUDE_PLUGIN_ROOT}/skills/discovery/probes/insecure-infra-defaults.mjs not found (see the Plugin root line of discovery/SKILL.md)"; exit 0; }
 
 # Step 2: Run the probe. It resolves the baseline, runs the SSOT script with a
 # 20 s timeout and maps its exit code (0 clean, 1 findings, 2 skipped).
 node --input-type=module -e "
-import {runProbe} from '${PLUGIN_ROOT}/skills/discovery/probes/insecure-infra-defaults.mjs';
+import {runProbe} from '${CLAUDE_PLUGIN_ROOT}/skills/discovery/probes/insecure-infra-defaults.mjs';
 const cfg = JSON.parse(process.env.SO_CONFIG || '{}');
 const r = await runProbe(process.cwd(), cfg);
 for (const f of r.findings) {

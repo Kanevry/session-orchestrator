@@ -25,7 +25,7 @@ Idempotency is handled by the writer itself:
 Shell:
 ```bash
 mkdir -p "$REPO_ROOT/.claude"
-export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
+export PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" REPO_ROOT CONFIRMED_ARCHETYPE
 RULES_RESULT=$(node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
 const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
@@ -38,7 +38,7 @@ printf '%s\n' "$RULES_RESULT"
 while IFS= read -r _file; do BOOTSTRAP_FILES+=("$_file"); done \
   < <(printf '%s\n' "$RULES_RESULT" | jq -r '.created[]')
 if [[ ! -e "$REPO_ROOT/.claude/loop.md" && ! -L "$REPO_ROOT/.claude/loop.md" ]]; then
-  cp "$PLUGIN_ROOT/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"
+  cp "${CLAUDE_PLUGIN_ROOT}/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"
   BOOTSTRAP_FILES+=(.claude/loop.md)
 fi
 ```
@@ -67,7 +67,7 @@ Copy the opinionated agent templates into the consumer repo:
 
 ```bash
 mkdir -p "$REPO_ROOT/.claude/agents"
-for _source in "$PLUGIN_ROOT/skills/bootstrap/templates/agents/"*.md; do
+for _source in "${CLAUDE_PLUGIN_ROOT}/skills/bootstrap/templates/agents/"*.md; do
   _target=".claude/agents/$(basename "$_source")"
   if [[ ! -e "$REPO_ROOT/$_target" && ! -L "$REPO_ROOT/$_target" ]]; then
     cp "$_source" "$REPO_ROOT/$_target"
@@ -90,7 +90,7 @@ If this repo shows product-repo signals (framework dep + personas/content dir + 
 
 ```bash
 node --input-type=module -e "
-import { detectProductRepo, hasVaultConfig } from '${PLUGIN_ROOT}/scripts/lib/product-repo-detect.mjs';
+import { detectProductRepo, hasVaultConfig } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/product-repo-detect.mjs';
 const result = detectProductRepo({ repoRoot: process.cwd() });
 const already = hasVaultConfig('$REPO_ROOT/CLAUDE.md') || hasVaultConfig('$REPO_ROOT/AGENTS.md');
 if (!result.isProductRepo || already) process.exit(0);
@@ -150,7 +150,7 @@ Without this step, rules arrive in the repo via Clank's weekly baseline sync MRs
 
 ```bash
 if [[ "${PATH_TYPE:-public}" = "private" ]]; then
-  export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
+  export PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" REPO_ROOT CONFIRMED_ARCHETYPE
   BASELINE_RULES_RESULT=$(node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
 const { applyBaselineRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
@@ -177,7 +177,7 @@ if [[ -z "${GITLAB_HOST:-}" && -n "$GITLAB_HOST_CFG" ]]; then
   echo "Note: the committed gitlab-host is not used for the token request; set GITLAB_HOST in the environment to fetch from it"
 fi
 
-if [[ -n "$BASELINE_REF" && -n "${GITLAB_TOKEN:-}" && -n "${GITLAB_HOST:-}" && -f "$PLUGIN_ROOT/scripts/lib/fetch-baseline.mjs" ]]; then
+if [[ -n "$BASELINE_REF" && -n "${GITLAB_TOKEN:-}" && -n "${GITLAB_HOST:-}" && -f "${CLAUDE_PLUGIN_ROOT}/scripts/lib/fetch-baseline.mjs" ]]; then
   # Default rule manifest — superset will harmlessly 404 individual files
   # if the baseline ever drops one (cache will keep last-known-good).
   RULES_MANIFEST=$(mktemp)
@@ -200,7 +200,7 @@ if [[ -n "$BASELINE_REF" && -n "${GITLAB_TOKEN:-}" && -n "${GITLAB_HOST:-}" && -
 MANIFEST
   # Every plugin-owned basename is excluded, including currently unmatched scoped
   # rules. rules-sync is their sole writer; ownership does not depend on scope.
-  export PLUGIN_ROOT RULES_MANIFEST
+  export PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" RULES_MANIFEST
   node --input-type=module <<'NODE'
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -248,7 +248,7 @@ NODE
     # Fetch into a temp file beside the target; only a complete, non-empty body
     # replaces the rule, so a failed fetch keeps the previous copy.
     _RULE_TMP=$(mktemp "$_RULE_DIR/.baseline-fetch.XXXXXX") || continue
-    if node "$PLUGIN_ROOT/scripts/lib/fetch-baseline.mjs" \
+    if node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/fetch-baseline.mjs" \
          "$BASELINE_PROJECT_ID" "$rule_path" "$BASELINE_REF" > "$_RULE_TMP" \
        && [[ -s "$_RULE_TMP" && ! -L "$_RULE_TARGET" && ! -d "$_RULE_TARGET" ]] \
        && chmod "$(printf '%04o' $(( 0666 & ~0$(umask) )))" "$_RULE_TMP" \
@@ -331,7 +331,7 @@ reason for absent IDs. Public bootstrap retains package-manager defaults.
 ```bash
 POLICY_FILE="$REPO_ROOT/.orchestrator/policy/quality-gates.json"
 if [[ "${PATH_TYPE:-public}" = private ]]; then
-  export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
+  export PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" REPO_ROOT CONFIRMED_ARCHETYPE
   POLICY_RESULT=$(node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
 const { writeBaselineQualityPolicy } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
@@ -347,7 +347,7 @@ elif [[ ! -e "$POLICY_FILE" && ! -L "$POLICY_FILE" ]]; then
   mkdir -p "$REPO_ROOT/.orchestrator/policy"
   # Detect package manager via scripts/lib/package-manager.mjs (falls back to npm defaults)
   PM_JSON="$(node --input-type=module -e "
-    import { detectPackageManager, defaultQualityGateCommands } from '$PLUGIN_ROOT/scripts/lib/package-manager.mjs';
+    import { detectPackageManager, defaultQualityGateCommands } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/package-manager.mjs';
     const pm = detectPackageManager('$REPO_ROOT');
     process.stdout.write(JSON.stringify(defaultQualityGateCommands(pm)));
   " 2>/dev/null)"
@@ -381,7 +381,7 @@ STATE_FILE="$REPO_ROOT/.claude/STATE.md"
 if [[ ! -e "$STATE_FILE" && ! -L "$STATE_FILE" ]]; then
   mkdir -p "$REPO_ROOT/.claude"
   ISO_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  sed "s|<ISO>|$ISO_NOW|g" "$PLUGIN_ROOT/skills/bootstrap/STATE.md.template" > "$STATE_FILE"
+  sed "s|<ISO>|$ISO_NOW|g" "${CLAUDE_PLUGIN_ROOT}/skills/bootstrap/STATE.md.template" > "$STATE_FILE"
   BOOTSTRAP_FILES+=(.claude/STATE.md)
   echo "Wrote $STATE_FILE"
 fi

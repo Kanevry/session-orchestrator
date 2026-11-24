@@ -8,6 +8,8 @@ model: inherit
 
 # Security
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 One entry for the security work that recurs: what is switched on, which advisories need a fix, which install settings are missing, and what in the agent setup looks dangerous. The CLI `scripts/security.mjs` measures and only reads; this skill runs it, records one event, and presents the result. Background and scope: Epic #2200.
 
 The invocation arguments are: **$ARGUMENTS**
@@ -28,8 +30,8 @@ The invocation arguments are: **$ARGUMENTS**
 For `status`, `deps`, `posture` and `agent-setup`, run from the project root:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/security.mjs" --mode <mode> [--ref <commit>] --json --repo-root "<project root>" \
-  | node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/security-emit.mjs" --repo-root "<project root>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/security.mjs" --mode <mode> [--ref <commit>] --json --repo-root "<project root>" \
+  | node "${CLAUDE_PLUGIN_ROOT}/scripts/security-emit.mjs" --repo-root "<project root>"
 ```
 
 The second command passes the JSON through unchanged and records one event `orchestrator.security.command` (mode, status, counts only) in that repo.
@@ -83,7 +85,9 @@ Answers: are the install and publish settings safe for this repo's package manag
 
 States: `pass`, `fail`, `skipped` (with the reason), `not-measurable`. Mirror protection runs only with a GitHub remote and an authenticated `gh`, otherwise it is `skipped`; the output shows the audit's finding ids, never token scopes. The baseline comparison is `skipped` without a configured baseline, or when the repo has no cooldown at all.
 
-Fix forms printed: `set ignore-scripts=true in .npmrc` (or add `onlyBuiltDependencies`), `set <key> (<unit>)` or `raise <key> to at least <n>`, `pin a concrete tag or a sha256 digest`, `bump to <version>`, `add a Renovate or Dependabot config`, `see docs/github-mirror-protection.md`. The cooldown key differs: npm `min-release-age` is in days; pnpm `minimum-release-age` or `minimumReleaseAge` is in minutes.
+For pnpm, an `allowBuilds` object in `pnpm-workspace.yaml` or under `pnpm` in `package.json` passes the script-execution check. An `onlyBuiltDependencies` array in either location counts as an allowlist when `packageManager` pins pnpm below 12 or the version is unknown. With pnpm 12+ the check passes with a migration hint. pnpm 12.21.0 ignored the legacy list and blocked unapproved builds.
+
+Fix forms printed: `set ignore-scripts=true in .npmrc` (or add a pnpm build allowlist), `set <key> (<unit>)` or `raise <key> to at least <n>`, `pin a concrete tag or a sha256 digest`, `bump to <version>`, `add a Renovate or Dependabot config`, `see docs/github-mirror-protection.md`. The cooldown key differs: npm `min-release-age` is in days; pnpm `minimum-release-age` or `minimumReleaseAge` is in minutes.
 
 Next step: for each `fail`, show its `fix` line. Mirror protection is read live from GitHub, not at the judged commit; say so when it fails.
 
@@ -118,7 +122,7 @@ A router only. It adds no review logic of its own.
    ```
 
 3. **Codex CLI:** the plugin ships no `security-reviewer` agent for Codex (`.codex-plugin/agents/` holds `explorer`, `session-reviewer`, `wave-worker`). Say the agent is unavailable and print the harness's own command: `codex review --uncommitted` (measured 2026-11-21 on `codex-cli 0.169.0`).
-4. **Cursor IDE and Pi:** no review command was measured for either. Say the `security-reviewer` agent is unavailable on this harness and that a review must go through the harness's own reviewer, if it has one.
+4. **Cursor IDE and Pi:** no native review command is known for either harness. Show the diff summary and untracked paths collected in step 1, and ask the operator to review the changes manually.
 
 `review` runs no CLI mode and records no event.
 

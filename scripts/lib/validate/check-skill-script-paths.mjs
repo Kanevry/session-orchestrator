@@ -479,6 +479,58 @@ export function extractCitations(lines) {
   return { citations, annotations, unbalancedFence: { line: unbalancedFenceLine } };
 }
 
+// These literal lines document hook environment lookup. Skill commands in
+// the same reference still follow the normal substitution rule (#2258).
+const HOOK_ENV_EXAMPLES = new Set([
+  'if [[ -z "${PLUGIN_ROOT:-}" ]]; then',
+  'claude) PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}" ;;',
+  'codex)  PLUGIN_ROOT="${CODEX_PLUGIN_ROOT:-}" ;;',
+  'PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CURSOR_RULES_DIR:-${PI_PLUGIN_ROOT:-}}}}"',
+]);
+
+// These commands operate on the plugin checkout itself. Match the document
+// AND script so a consumer-facing command in the same skill is still checked.
+const CHECKOUT_SCRIPTS = new Map([
+  ['skills/release/SKILL.md', ['scripts/release.mjs', 'scripts/snapshot-probe.mjs', 'scripts/directory-preflight.mjs']],
+  ['skills/npm-publish/SKILL.md', ['scripts/release.mjs']], // Publish this package.
+  ['skills/sunset-review/SKILL.md', ['scripts/lib/sunset/walker.mjs']], // Inventory this plugin's own surface.
+  ['skills/vault-sync/SKILL.md', ['scripts/sync-vault-schema.mjs']], // Regenerate the vendored validator.
+  ['skills/discovery/probes-arch.md', ['scripts/generate-hook-import-set.mjs']], // Regenerate the committed hook allowlist.
+]);
+
+const SHELL_DEFAULT = /\$\{(?:(?:CLAUDE|CODEX)_)?PLUGIN_ROOT:?[=?+-]/;
+const UNSUBSTITUTED_PATH = /\$(?:(?:CLAUDE_)?PLUGIN_ROOT|\{PLUGIN_ROOT\})\/(?:scripts|hooks|skills|templates|docs)\//;
+const RELATIVE_SCRIPT = /(?<![/"$}A-Za-z_])node (scripts\/[a-z0-9_./-]+\.mjs)\b/g;
+
+/** Check runnable Markdown, including commands inside fences. */
+function pluginRootFindings(pluginRoot, file, lines) {
+  if (!/^(?:skills|commands|agents)\/.*\.md$/.test(file)) return [];
+
+  const findings = [];
+  for (const [index, line] of lines.entries()) {
+    if (file === 'skills/_shared/config-reading.md' && HOOK_ENV_EXAMPLES.has(line.trim())) continue;
+    const location = { file, line: index + 1, path: '-', annotation: null, severity: 'fail' };
+    const hasDefault = SHELL_DEFAULT.test(line);
+    if (hasDefault || UNSUBSTITUTED_PATH.test(line)) {
+      findings.push({
+        ...location, kind: hasDefault ? 'plugin-root-fallback' : 'unsubstituted-plugin-root',
+        message: 'Claude Code replaces only the plain form ${CLAUDE_PLUGIN_ROOT}; see #2258',
+      });
+    }
+    for (const [, script] of line.matchAll(RELATIVE_SCRIPT)) {
+      if (CHECKOUT_SCRIPTS.get(file)?.includes(script)) continue;
+      if (!path.posix.normalize(script).startsWith('scripts/')) continue;
+      if (existsSync(path.join(pluginRoot, script))) {
+        findings.push({
+          ...location, kind: 'relative-plugin-script', path: script,
+          message: 'Use node "${CLAUDE_PLUGIN_ROOT}/' + script + '" in consumer repositories; see #2258',
+        });
+      }
+    }
+  }
+  return findings;
+}
+
 /**
  * Census the documentation corpus for dead `scripts/**.mjs`/`.sh` and
  * `hooks/**.sh` citations, plus repo-rooted `.md` inline-code paths.
@@ -539,6 +591,10 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
     return { ok: false, summary, findings, toolError: true };
   }
 
+  // BV-004: infer ownership only within skills/<name>/. Shared references
+  // can be loaded indirectly; tracing the skills/_shared/ read graph is manual.
+  const missingHeaders = new Set();
+  const rootUses = new Map();
   for (const absolute of files) {
     const relative = path.relative(pluginRoot, absolute).split(path.sep).join('/');
     if (relative.startsWith(HISTORY_PREFIX)) continue;
@@ -560,7 +616,24 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
     }
     summary.filesScanned += 1;
 
-    const { citations, annotations, unbalancedFence } = extractCitations(body.split('\n'));
+    const lines = body.split('\n');
+    findings.push(...pluginRootFindings(pluginRoot, relative, lines));
+    const skill = relative.match(/^(skills\/(?!_shared\/)[^/]+\/).*\.md$/)?.[1];
+    if (skill) {
+      const entry = skill + 'SKILL.md';
+      const isEntry = relative === entry;
+      if (isEntry && !lines.some(line => /^(?:> )?\*\*Plugin root:\*\* `\$\{CLAUDE_PLUGIN_ROOT\}`/.test(line))) {
+        missingHeaders.add(entry);
+      }
+      // This lesson writes hooks.json examples for the reader's own hooks.
+      // Its manifest token is resolved by the hook runner.
+      const use = relative === 'skills/hook-development/SKILL.md'
+        ? -1 : lines.findIndex(line => line.includes('${CLAUDE_PLUGIN_ROOT}'));
+      if (use >= 0 && (isEntry || !rootUses.has(entry))) {
+        rootUses.set(entry, { file: relative, line: use + 1 });
+      }
+    }
+    const { citations, annotations, unbalancedFence } = extractCitations(lines);
     if (unbalancedFence) {
       findings.push({
         kind: 'unbalanced-fence',
@@ -629,6 +702,15 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
       // `git check-ignore` for the whole corpus, not one per citation.
       pending.push({ file: relative, citation });
     }
+  }
+
+  for (const file of missingHeaders) {
+    const use = rootUses.get(file);
+    if (use) findings.push({
+      kind: 'missing-plugin-root-header', file, line: use.file === file ? use.line : 1, path: '-', annotation: null,
+      message: `Add the **Plugin root:** line to this SKILL.md (used in ${use.file}:${use.line}); see #2258`,
+      severity: 'fail',
+    });
   }
 
   // BOTH halves, never one: under a harness state root AND untracked by git.

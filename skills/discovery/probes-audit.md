@@ -10,11 +10,11 @@
 
 ```bash
 # Step 1: Verify the script exists; skip if missing
-test -f scripts/harness-audit.mjs || { echo "SKIPPED: harness-audit -- scripts/harness-audit.mjs not found"; exit 0; }
+test -f "${CLAUDE_PLUGIN_ROOT}/scripts/harness-audit.mjs" || { echo "SKIPPED: harness-audit -- ${CLAUDE_PLUGIN_ROOT}/scripts/harness-audit.mjs not found (see the Plugin root line of discovery/SKILL.md)"; exit 0; }
 
 # Step 2: Run the audit. Capture stdout (JSON) and stderr (human summary) separately;
 # the script writes the human summary to stderr and the JSON record to stdout.
-AUDIT_OUTPUT="$(node scripts/harness-audit.mjs 2>/tmp/audit_summary_stderr)"
+AUDIT_OUTPUT="$(node "${CLAUDE_PLUGIN_ROOT}/scripts/harness-audit.mjs" 2>/tmp/audit_summary_stderr)"
 EXIT_CODE=$?
 
 # Step 3: Validate the output is parseable JSON
@@ -82,7 +82,7 @@ Category: <name>
 
 **Skip Conditions:**
 
-- If `scripts/harness-audit.mjs` is missing → `SKIPPED: harness-audit -- scripts/harness-audit.mjs not found`
+- If `${CLAUDE_PLUGIN_ROOT}/scripts/harness-audit.mjs` is missing → `SKIPPED: harness-audit -- <plugin root>/scripts/harness-audit.mjs not found (see the Plugin root line of discovery/SKILL.md)`; a path that starts with `/scripts/` means the plugin root was not written in, not that the script is missing
 - If the script exits with a non-zero code → `FAILED: harness-audit -- script exited <code>: <stderr excerpt>`
 - If stdout is not valid JSON → `FAILED: harness-audit -- invalid JSON in script output: <parse error>`
 

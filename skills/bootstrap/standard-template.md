@@ -817,7 +817,7 @@ tier: standard
 archetype: <CONFIRMED_ARCHETYPE>
 timestamp: <current ISO 8601 UTC — e.g., 2026-04-16T09:30:00Z>
 source: <claude-init | plugin-template | projects-baseline>
-plugin-version: <session-orchestrator plugin version — read from $PLUGIN_ROOT/package.json .version field>
+plugin-version: <session-orchestrator plugin version — read from ${CLAUDE_PLUGIN_ROOT}/package.json .version field>
 bootstrapped-at: <current ISO 8601 UTC — same value as timestamp; distinct field for age-validation probe>
 LOCK
 mv "$_LOCK_TMP" "$REPO_ROOT/.orchestrator/bootstrap.lock"

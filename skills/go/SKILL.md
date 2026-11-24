@@ -8,6 +8,8 @@ model: inherit
 ---
 # Execute Session Plan
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 The user has approved the session plan. Begin execution immediately.
 
 ## No plan to execute
@@ -29,7 +31,7 @@ Invoked as `/go [optional instructions]` with arguments: **$ARGUMENTS**. The use
 
 ## Express Path Detection
 
-Before invoking the wave-executor, check the conversation context for the Express Path activation banner — printed by `node scripts/express-path.mjs` in session-start Phase 8.5, and carried through session-plan's Short-Circuit (#1146):
+Before invoking the wave-executor, check the conversation context for the Express Path activation banner — printed by `node "${CLAUDE_PLUGIN_ROOT}/scripts/express-path.mjs"` in session-start Phase 8.5, and carried through session-plan's Short-Circuit (#1146):
 
 ```
 Express path activated — <N> tasks, coordinator-direct, no inter-wave checks.
@@ -37,14 +39,14 @@ Express path activated — <N> tasks, coordinator-direct, no inter-wave checks.
 
 If the banner is present (and the session-plan output emitted a 1-wave Express Path plan per `skills/session-plan/SKILL.md` § "Express Path Short-Circuit"):
 
-**The express 1-wave plan IS the housekeeping shape.** `node scripts/session-shape.mjs --repo-root "$PWD" --session-type housekeeping --no-event` resolves to a single wave with `coordinatorDirect: true` — the express path is not a bespoke shortcut but that shape executed. Consequently, when the session type is `housekeeping`, the coordinator-direct execution runs the **maintenance loop first** (drift-check, expired sweep, `/evolve analyze`, `/reconcile`, `/evolve dialectic`, `/memory-cleanup`, `/backlog` — ordered scope, gates and proving artefacts in `skills/wave-executor/SKILL.md` § Housekeeping Sessions — the Maintenance Loop), and **then** the selected issues in dependency order.
+**The express 1-wave plan IS the housekeeping shape.** `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-shape.mjs" --repo-root "$PWD" --session-type housekeeping --no-event` resolves to a single wave with `coordinatorDirect: true` — the express path is not a bespoke shortcut but that shape executed. Consequently, when the session type is `housekeeping`, the coordinator-direct execution runs the **maintenance loop first** (drift-check, expired sweep, `/evolve analyze`, `/reconcile`, `/evolve dialectic`, `/memory-cleanup`, `/backlog` — ordered scope, gates and proving artefacts in `skills/wave-executor/SKILL.md` § Housekeeping Sessions — the Maintenance Loop), and **then** the selected issues in dependency order.
 
 1. **Execute the agreed tasks directly** as coordinator actions, in dependency order. Do NOT dispatch subagents. Do NOT invoke the wave-executor skill.
 2. **Append the Express Path deviation to STATE.md** before invoking session-end. Use `appendDeviationOnDisk()` from `scripts/lib/state-md.mjs` — the on-disk wrapper takes the STATE.md lock automatically, serialising any concurrent writers. This step ensures the audit trail exists BEFORE session-end finalizes the file. Equivalent one-liner via Bash:
    ```bash
    node --input-type=module -e "
-   import {execSync} from '${PLUGIN_ROOT}/scripts/lib/native-command.mjs';
-   import {appendDeviationOnDisk} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+   import {execSync} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/native-command.mjs';
+   import {appendDeviationOnDisk} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
    const repoRoot = execSync('git rev-parse --show-toplevel', {encoding: 'utf8'}).trim();
    await appendDeviationOnDisk(repoRoot, new Date().toISOString(), 'Express path: <N> tasks executed coord-direct (express-path.enabled: true, session-type: housekeeping, scope: <N> issues)');
    "

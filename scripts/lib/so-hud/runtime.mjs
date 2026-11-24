@@ -18,7 +18,9 @@ export const MAX_EVENT_BYTES = 512 * 1024;
 export function readEventTail(repoRoot) {
   try {
     const tail = readTailWindow(path.join(resolveEventsLedgerRoot(repoRoot), '.orchestrator/metrics/events.jsonl'), MAX_EVENT_BYTES);
-    return { text: tail.cut ? tail.text.slice(tail.text.indexOf('\n') + 1) : tail.text, degraded: tail.cut ? ['events:tail-only'] : [] };
+    const newline = tail.text.indexOf('\n');
+    const text = tail.partialFirstLine ? tail.text.slice(newline === -1 ? tail.text.length : newline + 1) : tail.text;
+    return { text, degraded: tail.cut ? ['events:tail-only'] : [] };
   } catch (e) { return { text: '', degraded: [e.code === 'ENOENT' ? 'events:absent' : 'events:unreadable'] }; }
 }
 

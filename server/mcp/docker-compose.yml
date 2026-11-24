@@ -1,0 +1,54 @@
+# Public read-only MCP server (#2260). Build context is the repository root, cut
+# down to an allow-list by server/mcp/Dockerfile.dockerignore; deploy from a
+# `git archive` export (docs/distribution/openai-remote-mcp.md § Deploy).
+#
+# BIND_ADDR must be the private address of the service host: the container is
+# reachable only through the TLS edge, never on a public interface.
+services:
+  so-mcp:
+    build:
+      context: ../..
+      dockerfile: server/mcp/Dockerfile
+    image: so-mcp:${SO_MCP_TAG:-dev}
+    container_name: so-mcp
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDR:?set BIND_ADDR to the private address}:${PORT:-3301}:8788"
+    environment:
+      NODE_ENV: production
+      # Address of the TLS edge as this container sees it. Only requests from it may
+      # name their client in X-Forwarded-For; everyone else counts as themselves.
+      SO_MCP_TRUSTED_PROXY: ${SO_MCP_TRUSTED_PROXY:?set SO_MCP_TRUSTED_PROXY to the address of the TLS edge}
+      # Domain-verification token from the OpenAI plugin portal; not a secret, but host-local.
+      SO_MCP_OPENAI_CHALLENGE: ${SO_MCP_OPENAI_CHALLENGE:-}
+      # Who runs this instance: shown on /privacy and /terms. Without them the pages answer 404.
+      SO_MCP_OPERATOR_NAME: ${SO_MCP_OPERATOR_NAME:-}
+      SO_MCP_OPERATOR_ADDRESS: ${SO_MCP_OPERATOR_ADDRESS:-}
+      SO_MCP_OPERATOR_EMAIL: ${SO_MCP_OPERATOR_EMAIL:-}
+      SO_MCP_OPERATOR_IMPRINT_URL: ${SO_MCP_OPERATOR_IMPRINT_URL:-}
+      SO_MCP_HOSTING_PROCESSOR: ${SO_MCP_HOSTING_PROCESSOR:-}
+      SO_MCP_HOSTING_REGION: ${SO_MCP_HOSTING_REGION:-}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    # One core at most: a busy server must not starve its neighbours on the host.
+    cpus: "1.0"
+    pids_limit: 64
+    networks:
+      - mcp
+
+# Own network with a FIXED subnet and bridge name: host firewall rules that keep
+# this container from opening connections of its own (it needs none) must be
+# able to name both, and a subnet Docker picks changes on every rebuild.
+# Not `internal: true`: that would break the published port.
+networks:
+  mcp:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: ${SO_MCP_BRIDGE:-so-mcp0}
+    ipam:
+      config:
+        - subnet: ${SO_MCP_SUBNET:?set SO_MCP_SUBNET to a free private /24 on this host}

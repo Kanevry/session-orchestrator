@@ -5,8 +5,8 @@ argument-hint: "[--manifest <file>] [--json] [--out <file>] [--max-requests-per-
 
 # /public-audit
 
-Use the Session Orchestrator skill definition at `skills/public-audit/SKILL.md`.
+Read `skills/public-audit/SKILL.md` under the Session Orchestrator package root given in your system prompt and follow it exactly.
 
 Arguments: $@
 
-Read that skill file and follow it exactly. When it references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
+When the file references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.

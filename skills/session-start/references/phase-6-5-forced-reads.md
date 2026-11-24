@@ -15,8 +15,8 @@ Surface the `## What Not To Retry` section of STATE.md — failed/abandoned appr
 ```bash
 node --input-type=module -e "
 import {readFileSync} from 'node:fs';
-import {readWhatNotToRetry} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
-import {wrapHistorical} from '${PLUGIN_ROOT}/scripts/lib/historical-guard.mjs';
+import {readWhatNotToRetry} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import {wrapHistorical} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/historical-guard.mjs';
 
 let contents;
 try { contents = readFileSync('<state-dir>/STATE.md', 'utf8'); } catch { process.exit(0); }
@@ -54,8 +54,8 @@ Surface the `## Open Questions` section of STATE.md — unresolved questions a w
 ```bash
 node --input-type=module -e "
 import {readFileSync} from 'node:fs';
-import {readOpenQuestions} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
-import {wrapHistorical} from '${PLUGIN_ROOT}/scripts/lib/historical-guard.mjs';
+import {readOpenQuestions} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import {wrapHistorical} from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/historical-guard.mjs';
 
 let contents;
 try { contents = readFileSync('<state-dir>/STATE.md', 'utf8'); } catch { process.exit(0); }

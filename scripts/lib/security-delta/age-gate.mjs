@@ -20,6 +20,7 @@ import { basename, dirname, posix } from 'node:path';
 
 import { makeCheckResult, makeFinding } from './contract.mjs';
 import { changedFiles, isGitExecError, isSafeRef, pathExistsAt, showFile } from './floating-tags.mjs';
+import { performance } from 'node:perf_hooks';
 
 /**
  * Lockfile kind for a path, or null when the path is not a lockfile.
@@ -185,8 +186,8 @@ async function gateFor(repoRoot, head, lockfile, kind) {
  * @returns {Promise<ReturnType<typeof makeCheckResult>>}
  */
 export async function runAgeGateCheck({ repoRoot, base, head } = {}) {
-  const started = Date.now();
-  const done = (r) => makeCheckResult({ id: 'age-gate', ms: Math.max(0, Date.now() - started), ...r });
+  const started = performance.now();
+  const done = (r) => makeCheckResult({ id: 'age-gate', ms: performance.now() - started, ...r });
   try {
     if (!base) return done({ status: 'skipped', reason: 'no-range' });
     if (!isSafeRef(base) || !isSafeRef(head)) return done({ status: 'degraded', reason: 'invalid-ref', unchecked: 1 });

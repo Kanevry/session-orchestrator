@@ -5,8 +5,8 @@ argument-hint: "[housekeeping|feature|deep|ultradeep] [task context]"
 
 # /session
 
-Use the Session Orchestrator command definition at `commands/session.md`.
+Read `commands/session.md` under the Session Orchestrator package root given in your system prompt and follow it exactly.
 
 Arguments: $@
 
-Read that command file and follow it exactly. When it references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
+When the file references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.

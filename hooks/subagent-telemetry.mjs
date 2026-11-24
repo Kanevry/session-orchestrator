@@ -683,10 +683,7 @@ function findStartRecord(filePath, agentId) {
     if (window.size === 0) return none;
 
     const lines = window.text.split('\n');
-    // When the window does not cover the whole file, the first element is a
-    // record sliced mid-line (possibly mid-UTF-8-sequence). Drop it rather than
-    // feed a corrupt fragment to JSON.parse.
-    if (window.cut) lines.shift();
+    if (window.partialFirstLine) lines.shift();
 
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim();

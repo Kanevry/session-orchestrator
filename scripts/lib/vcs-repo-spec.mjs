@@ -814,7 +814,10 @@ export function resolvePreferredRemote({ repoRoot, vcs, gitRun = defaultGitRun }
   const listed = listRemotes({ repoRoot, gitRun });
   if (!listed.ok) return { ok: false, reason: listed.reason, stderr: listed.stderr };
 
-  const { remotes } = listed;
+  return selectPreferredRemote(listed.remotes, vcs);
+}
+
+function selectPreferredRemote(remotes, vcs) {
   if (remotes.length === 0) return { ok: false, reason: 'no-remotes', remotes };
 
   const vcsPinned = vcs === 'github' || vcs === 'gitlab' ? vcs : null;
@@ -862,6 +865,21 @@ function classifyRemoteFamily(remote) {
   if (remote.name === 'github') return { family: 'github', via: 'remote-name' };
   if (remote.name === 'gitlab') return { family: 'gitlab', via: 'remote-name' };
   return null;
+}
+
+/** Resolve a mirror audit target only among remotes whose host identifies GitHub. */
+export function resolveGithubMirrorTarget({ repoRoot, gitRun = defaultGitRun } = {}) {
+  const listed = listRemotes({ repoRoot, gitRun });
+  if (!listed.ok) return null;
+  const candidates = listed.remotes.filter((remote) => {
+    const verdict = classifyRemoteFamily(remote);
+    return verdict?.family === 'github' && verdict.via === 'host-match';
+  });
+  const remote = selectPreferredRemote(candidates, 'github');
+  if (!remote.ok) return null;
+  const host = extractHost(remote.url);
+  const spec = normalizeGithubSpec(remote.url);
+  return host && !isUnsafeForArgv(host) && !isUnsafeForArgv(spec) ? { host, spec } : null;
 }
 
 /**

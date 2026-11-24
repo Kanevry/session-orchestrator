@@ -32,8 +32,9 @@ After each wave, provide a brief status:
 - Adaptations for Wave [N+1] ([NextRole]): [none / list changes]
 ```
 
+Use the absolute path from the Plugin root line of the loading SKILL.md for `${CLAUDE_PLUGIN_ROOT}`.
+
 **Shell variables used in this section:**
-- `$PLUGIN_ROOT` — harness-supplied; `$CLAUDE_PLUGIN_ROOT`, `$CODEX_PLUGIN_ROOT`, or `$CURSOR_RULES_DIR` per platform — see `skills/_shared/config-reading.md`.
 - `$WAVE` — the current wave number (the `<N>` in `<state-dir>/filescopes/wave-<N>/`).
 - `$ROLE` — the wave's assigned role, resolved from the session plan's role-to-wave mapping (§ 0 above).
 - `$STATE_DIR` — same value as the `<state-dir>` placeholder used elsewhere in this doc: `.claude` / `.codex` / `.cursor` per platform.

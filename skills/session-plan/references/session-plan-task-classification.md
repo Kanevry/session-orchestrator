@@ -46,11 +46,11 @@ When `docs-orchestrator.enabled: true`, session-start Phase 2.5 emits a delimite
 
 **If the block is absent:** Do not fabricate Docs tasks. The Docs role remains empty; apply the empty-role rule from Step 2.
 
-- Ordinary housekeeping sessions **without the user-authorized execution deviation**: skip Steps 1.8, 2, and 3 — housekeeping is the **maintenance loop**, one coordinator-direct wave. `total-waves: 1` and the wave's `coordinatorDirect: true` come from the shape (`node scripts/session-shape.mjs --session-type housekeeping`), not from this prose.
+- Ordinary housekeeping sessions **without the user-authorized execution deviation**: skip Steps 1.8, 2, and 3 — housekeeping is the **maintenance loop**, one coordinator-direct wave. `total-waves: 1` and the wave's `coordinatorDirect: true` come from the shape (`node "${CLAUDE_PLUGIN_ROOT}/scripts/session-shape.mjs" --session-type housekeeping`), not from this prose.
   - No role classification — no wave-executor dispatch, no per-role agent sizing.
   - **Default scope, in this order:**
     1. drift-check — `node skills/claude-md-drift-check/checker.mjs --mode warn`
-    2. expired-learnings sweep — `node scripts/sweep-expired-learnings.mjs --json`, then `--apply --json` when the dry run reports `archived > 0`
+    2. expired-learnings sweep — `node "${CLAUDE_PLUGIN_ROOT}/scripts/sweep-expired-learnings.mjs" --json`, then `--apply --json` when the dry run reports `archived > 0`
     3. `/evolve analyze`
     4. `/reconcile`
     5. `/evolve dialectic` — dry-run first, then `--apply`

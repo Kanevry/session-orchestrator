@@ -13,6 +13,7 @@
  *
  * Package names stay in the host-local cache; callers print counts only.
  */
+import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 
 import { hookProgram } from '../program-lookup.mjs';
@@ -212,7 +213,7 @@ async function refreshPvr(previous, git, gh, nowIso, deadlineMs) {
  * @param {object} opts
  * @param {string} opts.repoRoot           absolute repo root
  * @param {NodeJS.ProcessEnv} [opts.env]    environment (cache dir via SO_CONFIG_HOME)
- * @param {() => number} [opts.now]         clock (tests)
+ * @param {() => number} [opts.now]         wall clock for cache timestamps and TTLs (injectable for tests)
  * @param {boolean} [opts.force]            ignore every TTL
  * @param {typeof httpRequest} [opts.request]  HTTP transport (tests)
  * @param {(args: string[]) => Promise<string>} [opts.runGit]  git runner (tests)
@@ -285,7 +286,7 @@ export async function refreshSecurityPulse({
         repoRoot,
         base: EMPTY_TREE,
         head,
-        deadlineAt: Date.now() + REPO_DEADLINE_MS,
+        deadlineMono: performance.now() + REPO_DEADLINE_MS,
         maxDetails: REPO_MAX_DETAILS,
         request,
         ...(runGit ? { runGit } : {}),

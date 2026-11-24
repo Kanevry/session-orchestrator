@@ -149,7 +149,10 @@ async function main() {
   try {
     // Lazy import: events.mjs pulls in platform resolution at module load.
     const { emitEvent } = await import('./lib/events.mjs');
-    await emitEvent(SECURITY_COMMAND_EVENT, buildCommandPayload(result), { repoRoot });
+    const { dotGitAncestor } = await import('./lib/platform.mjs');
+    // BV-004 ceiling: discover the checkout by its .git entry; emitEvent maps linked worktrees.
+    // Revisit-Trigger: a checkout with no discoverable .git entry needs a shared ledger.
+    await emitEvent(SECURITY_COMMAND_EVENT, buildCommandPayload(result), { repoRoot: dotGitAncestor(repoRoot) || repoRoot });
   } catch (err) {
     diag(`event write failed (output unaffected): ${err?.message ?? err}`);
   }

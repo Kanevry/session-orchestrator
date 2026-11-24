@@ -23,6 +23,7 @@
  * Reads only (git at the judged commit); never throws. Contract: ./contract.mjs.
  */
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 import { severityRank } from '../security-delta/contract.mjs';
 import { defaultRunGit, PIP_INDEX_UNVERIFIABLE, readLockfileDelta } from '../security-delta/lockfiles.mjs';
@@ -358,9 +359,8 @@ function judgedBasis(repoRoot, ref, sha) {
  * @param {string} args.repoRoot
  * @param {string|null} args.ref
  * @param {NodeJS.ProcessEnv} args.env
- * @param {Date} args.now  part of the mode contract; deps reports no time of its own. The 30 s network
- *   deadline uses the wall clock (Date.now()) because the reused OSV client compares `deadlineAt`
- *   with Date.now() and accepts no clock, so a fixed `now` cannot shift or exhaust it.
+ * @param {Date} args.now  report time from the mode contract. The 30 s network deadline
+ *   uses `performance.now()`, the time base of the reused OSV client's `deadlineMono`.
  * @param {typeof import('../http-request.mjs').httpRequest} [args.request] test seam: replaces
  *   the OSV client's network call (same signature as httpRequest), never the address; absent →
  *   the client's default transport. The CLI does not pass it.
@@ -389,8 +389,7 @@ export async function run({ repoRoot, ref, env, request }) {
       base: EMPTY_TREE,
       head: sha,
       runGit: git,
-      // Wall clock on purpose: the reused client compares deadlineAt with Date.now() and takes no clock.
-      deadlineAt: Date.now() + NETWORK_DEADLINE_MS,
+      deadlineMono: performance.now() + NETWORK_DEADLINE_MS,
       maxDetails: MAX_DETAILS,
       env,
       ...(request ? { request } : {}),

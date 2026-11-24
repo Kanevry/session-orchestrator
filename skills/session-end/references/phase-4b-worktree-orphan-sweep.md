@@ -41,7 +41,7 @@ The return field is named `candidates`, not `orphans` or `removals`, and the nam
 - **Manuell** — operator handles it outside the session; no further prompting this session.
 
 ```js
-import { checkWorktreeOrphans } from '${PLUGIN_ROOT}/scripts/lib/session-end/worktree-orphan-sweep.mjs';
+import { checkWorktreeOrphans } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/session-end/worktree-orphan-sweep.mjs';
 
 const sweep = checkWorktreeOrphans({
   repoRoot: process.cwd(),

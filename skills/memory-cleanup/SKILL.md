@@ -21,6 +21,8 @@ description: >
 
 # Memory Cleanup — Manual Dream Process
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Invocation
 
 The user invoked `/memory-cleanup` with arguments: **$ARGUMENTS**. Parse them before anything else — two optional, mutually-exclusive flags are recognised (`--dry-run`, `--apply-pending`, see PRD #502); passing both is an error, and the absence of both selects the legacy interactive 4-phase mode. The per-flag behaviour, the exact status lines and the exit codes are in § Argument Handling (Phase 0) below; the interactive default runs Phases 1-4 (Orient → Gather Signal → Consolidate → Prune & Index) against `~/.claude/projects/<encoded-cwd>/memory/` and reports per § Output.
@@ -181,7 +183,7 @@ Keep `MEMORY.md` clean and under the 200-line limit.
    ```bash
    wc -l <memory-dir>/MEMORY.md  # must be < 200
    # dead index links (the session-start definition) — must print nothing; throws without MEMORY.md
-   node --input-type=module -e "const { listDeadIndexLinks } = await import('$PLUGIN_ROOT/scripts/lib/auto-dream.mjs'); const d = listDeadIndexLinks(process.argv[1]); if (!d) throw new Error('no MEMORY.md'); for (const t of d) console.log('BROKEN: ' + t);" <memory-dir>
+   node --input-type=module -e "const { listDeadIndexLinks } = await import('${CLAUDE_PLUGIN_ROOT}/scripts/lib/auto-dream.mjs'); const d = listDeadIndexLinks(process.argv[1]); if (!d) throw new Error('no MEMORY.md'); for (const t of d) console.log('BROKEN: ' + t);" <memory-dir>
    ```
 
 ## Phase 4.5: Worktree-Stale-Sweep (#575 P3.2)
@@ -211,9 +213,9 @@ A worktree is stale iff `mtime(worktree-dir) < now - stale-branch-days × 86400 
 After Phase 4 (Prune & Index) compiles its list of items to offer for removal, ALSO include any stale auto-promoted worktrees. The user sees them in the same AUQ ("batch-decide" per PRD §3 P3 Gherkin row 4):
 
 ```js
-import { execFileSync } from '$PLUGIN_ROOT/scripts/lib/native-command.mjs';
-import { listAutoPromotedWorktrees, isWorktreeStale } from '$PLUGIN_ROOT/scripts/lib/memory-cleanup/worktree-sweep.mjs';
-import { discoverActiveSessions } from '$PLUGIN_ROOT/scripts/lib/session-discovery.mjs';
+import { execFileSync } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/native-command.mjs';
+import { listAutoPromotedWorktrees, isWorktreeStale } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/memory-cleanup/worktree-sweep.mjs';
+import { discoverActiveSessions } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/session-discovery.mjs';
 
 const staleBranchDays = $CONFIG['stale-branch-days'] ?? 7;
 const candidates = listAutoPromotedWorktrees(process.cwd(), mainCheckoutRoot);
@@ -311,7 +313,7 @@ This advances the auto-dream cadence marker (`readDreamSignals` → `lastCleanup
 As the LAST step of every completed run — dry-run, apply-pending, or healthy no-op alike — emit the completion event. This is mandatory and it is the whole mechanism; there is no second, prose-only path that also works:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" \
   --type orchestrator.memory.cleanup_completed \
   --payload "{\"semantic_session_id\":\"<the session: value from STATE.md frontmatter>\",\"mode\":\"<dry-run|apply-pending|no-op>\"}"
 ```

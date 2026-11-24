@@ -4,12 +4,12 @@
 
 After the user confirms the session type and scope via the Q&A above, evaluate whether the **Express Path** applies before handing off to session-plan. The express path collapses the full 5-wave plan into a single coordinator-direct phase for lightweight sessions.
 
-> **The 1-wave plan is not a special artifact — it EQUALS the housekeeping shape.** `resolveSessionShape` in `scripts/lib/session-shape.mjs` (CLI: `node scripts/session-shape.mjs --repo-root "$PWD" --session-type housekeeping --task-count <N>`) already resolves `housekeeping` to `totalWaves: 1`, `coordinatorDirect: true`, one `Housekeeping` wave with `agentCap: 0` and `verification: 'full'`. Express path and ordinary housekeeping therefore emit the SAME shape and differ only in scope size; the shape is recorded once at Phase 9 as `orchestrator.session.shape_resolved`.
+> **The 1-wave plan is not a special artifact — it EQUALS the housekeeping shape.** `resolveSessionShape` in `scripts/lib/session-shape.mjs` (CLI: `node "${CLAUDE_PLUGIN_ROOT}/scripts/session-shape.mjs" --repo-root "$PWD" --session-type housekeeping --task-count <N>`) already resolves `housekeeping` to `totalWaves: 1`, `coordinatorDirect: true`, one `Housekeeping` wave with `agentCap: 0` and `verification: 'full'`. Express path and ordinary housekeeping therefore emit the SAME shape and differ only in scope size; the shape is recorded once at Phase 9 as `orchestrator.session.shape_resolved`.
 
 **Do not evaluate these conditions by hand — run the CLI (#1119, #1146).**
 
 ```bash
-node scripts/express-path.mjs \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/express-path.mjs" \
   --repo-root "$PWD" \
   --session-type <housekeeping|feature|deep> \
   --task-count <N> \

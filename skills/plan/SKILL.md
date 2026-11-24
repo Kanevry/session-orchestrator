@@ -21,6 +21,8 @@ description: >
 
 > Project-instruction file resolution: CLAUDE.md and AGENTS.md (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). All references below to `CLAUDE.md` resolve via that precedence rule.
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Invocation
 
 You are beginning a structured planning session. The user invoked `/plan` with mode: **$ARGUMENTS** (if empty, Phase 2's Mode Router asks which mode they want: `new`, `feature`, or `retro`).

@@ -18,6 +18,8 @@ description: >
 
 > **Project-instruction file:** `CLAUDE.md` and `AGENTS.md` (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). All references to `CLAUDE.md` in this skill resolve via that precedence rule.
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Phase 0: Bootstrap Gate
 
 Read `skills/_shared/bootstrap-gate.md` and execute the gate check. If the gate is CLOSED, invoke `skills/bootstrap/SKILL.md` and wait for completion before proceeding. If the gate is OPEN, continue to Phase 1.
@@ -50,9 +52,9 @@ For session-end specifically: the preamble is DETECTION-ONLY. The lock-release p
 try {
   const { pathToFileURL } = await import('node:url');
   const { appendSkillInvocation, DEFAULT_SKILL_INVOCATIONS_PATH } =
-    await import(pathToFileURL('${PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs').href);
+    await import(pathToFileURL('${CLAUDE_PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs').href);
   const { resolveLedgerPath } =
-    await import(pathToFileURL('${PLUGIN_ROOT}/scripts/lib/ledger-path.mjs').href);
+    await import(pathToFileURL('${CLAUDE_PLUGIN_ROOT}/scripts/lib/ledger-path.mjs').href);
   // In a linked worktree the main checkout's ledger when it is gitignored there,
   // so the record survives the worktree (#1722).
   await appendSkillInvocation(resolveLedgerPath(DEFAULT_SKILL_INVOCATIONS_PATH, process.cwd()), {
@@ -98,7 +100,7 @@ For each kept phase:
 
 - `mode === 'off'` ⇒ skip silently (do not run the command).
 - Otherwise run `command` via Bash with two environment variables prefixed to the invocation, single-quoted and never interpolated into `command` (#2121): `SO_SESSION_START_REF='<STATE.md session-start-ref>'` — only when it is a full 40- or 64-hex SHA, else empty — and `SO_SESSION_ID='<STATE.md session label>'` (the semantic label, not the raw ledger id). `command` itself cannot reference them (`$` is rejected at parse time); the repo's script reads them. Phase 2.5 runs BEFORE the Phase-4 commit, so a script that needs "what did this session change" compares the ref against the WORKING TREE plus untracked files (`git diff --name-only "$SO_SESSION_START_REF"` and `git ls-files --others --exclude-standard`), and treats an empty ref as "not measurable", never as "nothing changed". Capture the **exit code** and the **last ~10 lines of stdout** (these become the report summary — do NOT inline the full output).
-- After each run (not for `mode: off`) record it: `node "$PLUGIN_ROOT/scripts/emit-event.mjs" --type orchestrator.custom_phase.completed --payload '{"name":"<name>","mode":"<mode>","exit_code":<code>}'`.
+- After each run (not for `mode: off`) record it: `node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" --type orchestrator.custom_phase.completed --payload '{"name":"<name>","mode":"<mode>","exit_code":<code>}'`.
 - If `review` is set, read that file after the command as the review step and note its path in the report.
 
 #### Step 3 — Route by `mode`
@@ -112,7 +114,7 @@ For each kept phase:
       2. "Warn + carryover and close" — file a carryover issue (labels `carryover`, `priority::high`) titled `[Carryover] custom-phase '<name>' (mode=hard) exited <code>` capturing the phase name + captured summary for a follow-up session, log the Deviation entry, then continue the close.
       3. "Override and close" — proceed, log a Deviation entry in STATE.md `## Deviations`:
          `- [<ISO timestamp>] Phase 2.5: custom-phase '<name>' (mode=hard) exited <code>, overridden by user.`
-         In addition to the Deviation entry, emit an override-ratio event so the override feeds the `override_ratio` metric (#730/H5): `node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.finding.overridden --payload '{"phase":"2.5","kind":"custom-phase-hard","count":N}'`.
+         In addition to the Deviation entry, emit an override-ratio event so the override feeds the `override_ratio` metric (#730/H5): `node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" --type orchestrator.finding.overridden --payload '{"phase":"2.5","kind":"custom-phase-hard","count":N}'`.
       4. "Abort close" — exit close without writing.
     - On Codex CLI / Cursor IDE: same options as a numbered Markdown list.
 
@@ -145,7 +147,7 @@ duplicates issues.
 Emit ONE event per filed issue (note: event-name segments use underscores, never hyphens):
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/emit-event.mjs" --type orchestrator.broken_window.filed --payload \
+node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-event.mjs" --type orchestrator.broken_window.filed --payload \
   "$(node -e "process.stdout.write(JSON.stringify({source:'<2.0a|2.3|2.5|1.8|wave-override>', issue:<IID>, due:'<YYYY-MM-DD>'}))")"
 ```
 
@@ -167,7 +169,7 @@ discipline as `createSpiralCarryoverIssue`).
 After STATE.md is finalized with `status: completed` (Phase 3.4) and Recommendations are written (Phase 3.7a), release the distributed session-lock with ONE verifying command:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/release-session-lock.mjs" --session-id "<raw session_id>" --json
+node "${CLAUDE_PLUGIN_ROOT}/scripts/release-session-lock.mjs" --session-id "<raw session_id>" --json
 ```
 
 `--session-id` is the PHYSICAL raw value established by session-start Phase 1.2 and stored in `.orchestrator/session.lock` `session_id` — never STATE.md `session:` and never `semantic_session_id`, both of which are attribution labels.
@@ -268,9 +270,8 @@ between the markers and executes it, so no second copy of this command may exist
 #                          sha — the same anchor a lease would enforce, without a
 #                          force flag (blocked by the destructive-command guard).
 #   any other value / config unreadable → loud WARN, no push, exit 1
-# The plugin root is resolved, not assumed: a fresh /close shell often lacks
-# PLUGIN_ROOT. Order per skills/_shared/config-reading.md (native PLUGIN_ROOT,
-# then Claude, then Codex), else the repo toplevel when it IS the plugin repo.
+# Use the plugin checkout's own export code so it matches the policy being exported.
+# In a consumer repo, use the loaded plugin.
 # Unresolvable → its own WARN + exit 1 (never "Session Config unreadable").
 # State 0: not a git repository at all → loud WARN, exit 1. This state was MISSED
 #          in the first version and is the reason it is listed first now: outside
@@ -292,16 +293,16 @@ elif ! mirror_url=$(git remote get-url github 2>&1); then
   exit 0
 fi
 # An allow-list policy (version 2, #1594) needs export code at or after commit 482cd32a.
-# An older plugin root refuses it ("curated export REFUSED", fail-closed, nothing published):
-# then run /close with PLUGIN_ROOT=<a checkout at or after that commit>, or update the plugin.
-so_root="${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-}}}"
-if [ -z "$so_root" ]; then
-  so_root=$(git rev-parse --show-toplevel 2>/dev/null)
-  [ -f "${so_root}/scripts/parse-config.mjs" ] || so_root=""
+# If an older exporter refuses it, update the checkout for a plugin repo or the loaded
+# plugin for a consumer repo.
+so_root=$(git rev-parse --show-toplevel 2>/dev/null) || so_root=""
+if [ -z "$so_root" ] || [ ! -f "$so_root/scripts/github-export.mjs" ] || [ ! -f "$so_root/scripts/parse-config.mjs" ] ||
+   ! node -e 'const pkg = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); process.exit(pkg.name === "session-orchestrator" ? 0 : 1)' "$so_root/package.json" 2>/dev/null; then
+  so_root="${CLAUDE_PLUGIN_ROOT}"
 fi
 if [ -z "$so_root" ] || [ ! -f "${so_root}/scripts/parse-config.mjs" ]; then
-  echo "WARN GitHub mirror: plugin root not resolvable — set PLUGIN_ROOT; mirror push skipped." >&2
-  echo "  tried: PLUGIN_ROOT, CLAUDE_PLUGIN_ROOT, CODEX_PLUGIN_ROOT, then the repo toplevel" >&2
+  echo "WARN GitHub mirror: plugin root not resolvable — check the absolute plugin path; mirror push skipped." >&2
+  echo "  plugin path: $so_root" >&2
   exit 1
 elif ! cfg_json=$(node "$so_root/scripts/parse-config.mjs"); then
   echo "WARN GitHub mirror: Session Config unreadable — 'mirror' not evaluated, nothing pushed." >&2
@@ -374,7 +375,7 @@ swallow it with `|| true`.
 
 Do not wait for a pipeline or release train inside session-end. If the session has no other work left, apply `skills/_shared/fleet-protocol.md` § Rücklauf an den Navigator (Pflicht) with the wait case `zug-<name>`: exactly one report in this `/close` turn, only with fleet integration (`flotte: true`). That the waiting answer before `/close` already reported the train is intended — every waiting turn triggered by an input (`/close` is one) reports once (#1611); turns woken by `/loop`, a Monitor event, an own background agent or shell, or ScheduleWakeup do not. Write NO handover or train manifest here — a coordinator only acts on one written with the waiting answer before `/close` (same section, Übergabe und Zug-Manifest) — and never invoke `/close` or another close yourself. Then continue with Phase 4a; never gate the close on a reply (CSM-004).
 
-**Queue marks on the own handover (#1639).** With fleet integration — whether or not a train is left — re-check the newest own handover or train manifest in the fleet folder (fleet-protocol § Flotten-Ordner und Session-Name gives `<name>`, `<cwd>` and `<startedAt>`): `node "$PLUGIN_ROOT/scripts/handover-queue-check.mjs" --name <name> --fleet-dir <cwd>/.orchestrator/runtime/fleet --since <startedAt> --apply --repo <repo> [--navigator-cli <koordinator-cli>]`, same `<repo>` and CLI as fleet-protocol Schritt 1a. It files every open point that still lacks a `queue:#`/`issue:#` mark and writes the id into the file; this edits the existing file and is not the forbidden new handover. `--since` keeps a predecessor's file of the same session name out (names repeat across days). Exit 3 mit `Pflichtabschnitt fehlt`: fehlende Abschnitte ergänzen (`keine` ist erlaubt), Prüfung erneut ausführen. Only for remaining unmarked points (e.g. the CLI is unreachable), name `Übergabe ohne Queue-IDs: <n> Punkte` with the listed points in the session summary. It never blocks the close; without fleet integration or without an own file it is a silent no-op (exit 0).
+**Queue marks on the own handover (#1639).** With fleet integration — whether or not a train is left — re-check the newest own handover or train manifest in the fleet folder (fleet-protocol § Flotten-Ordner und Session-Name gives `<name>`, `<cwd>` and `<startedAt>`): `node "${CLAUDE_PLUGIN_ROOT}/scripts/handover-queue-check.mjs" --name <name> --fleet-dir <cwd>/.orchestrator/runtime/fleet --since <startedAt> --apply --repo <repo> [--navigator-cli <koordinator-cli>]`, same `<repo>` and CLI as fleet-protocol Schritt 1a. It files every open point that still lacks a `queue:#`/`issue:#` mark and writes the id into the file; this edits the existing file and is not the forbidden new handover. `--since` keeps a predecessor's file of the same session name out (names repeat across days). Exit 3 mit `Pflichtabschnitt fehlt`: fehlende Abschnitte ergänzen (`keine` ist erlaubt), Prüfung erneut ausführen. Only for remaining unmarked points (e.g. the CLI is unreachable), name `Übergabe ohne Queue-IDs: <n> Punkte` with the listed points in the session summary. It never blocks the close; without fleet integration or without an own file it is a silent no-op (exit 0).
 
 ## Phase 4a: Auto-Promoted Worktree Cleanup (#575 P3.2)
 
@@ -386,7 +387,7 @@ Do not wait for a pipeline or release train inside session-end. If the session h
 
 ## Phase 5: Issue Cleanup
 
-> Always runs. Closes resolved issues via the single `node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --close [--vcs gitlab|github] [-R <spec>] <id>...` CLI call (strips `status:*` labels, closes, then re-reads each id; a `closed: false` in its per-id JSON output is a finding, not done — #308), updates partially-done issues, and in Step 3 FILES the Phase 1.65 gate's carry-list — the deferred `createSpiralCarryoverIssue` call for SPIRAL/FAILED items and the `markOpenQuestionAnsweredOnDisk` write live here, not in Phase 1.65 (atomicity). Step 3b folds non-exempt over-cap creations AND filed `priority::low` findings (#1947) into one `[Backlog-Sammel]` collector (`planBacklogCollector`), Step 3b.3 prints the session's issue balance (`scripts/issue-balance.mjs`); discovery findings from Phase 1.5 are filed at the end. Full procedure: [`references/phase-5-issue-cleanup.md`](references/phase-5-issue-cleanup.md).
+> Always runs. Closes resolved issues via the single `node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/issue-close-strip-labels.mjs" --close [--vcs gitlab|github] [-R <spec>] <id>...` CLI call (strips `status:*` labels, closes, then re-reads each id; a `closed: false` in its per-id JSON output is a finding, not done — #308), updates partially-done issues, and in Step 3 FILES the Phase 1.65 gate's carry-list — the deferred `createSpiralCarryoverIssue` call for SPIRAL/FAILED items and the `markOpenQuestionAnsweredOnDisk` write live here, not in Phase 1.65 (atomicity). Step 3b folds non-exempt over-cap creations AND filed `priority::low` findings (#1947) into one `[Backlog-Sammel]` collector (`planBacklogCollector`), Step 3b.3 prints the session's issue balance (`scripts/issue-balance.mjs`); discovery findings from Phase 1.5 are filed at the end. Full procedure: [`references/phase-5-issue-cleanup.md`](references/phase-5-issue-cleanup.md).
 
 ## Phase 6: Final Report
 
@@ -415,13 +416,13 @@ Present to the user the **Session Summary**: Completed / Abnahme offen (open `[A
 | `phase-3-7a-recommendations.md` | Phase 3.7a full procedural body — computeV0Recommendation call, STATE.md field write, data source guarantee, error mode |
 | `phase-3-7a-recommendations.md` § 3.7b | Phase 3.7b full procedural body — `withDurableCommit` invocation for `sessions.jsonl` + `STATE.md` (#490 AC2), `enabled:false` local no-op, autopilot.jsonl exclusion note |
 | `references/phase-3-documentation-updates.md` § 3.7c | Vault Board → Closed (#674) — `mirrorBoard({ explicitStatus: 'closed' })` transitions this repo's board row to `closed`; gated on `vault-integration.enabled`, generator-marked + idempotent, non-blocking, ordered after 3.7b and before 3.7d/3.4/3.8 |
-| `references/phase-3-documentation-updates.md` § 3.7d | Session-Eval (opt-in — #803) — `node scripts/eval-session.mjs --json` scores the just-closed session; gated on `eval.enabled` + `eval.mode != off` (parsed by `scripts/lib/config/eval.mjs`), optional `eval-judge` dispatch + `writeEvalReport`, advisory/never-blocks-close, ordered after 3.7 (record must exist) and before 3.4/Phase 4 (record committed with the session). Full flow in `skills/eval/SKILL.md` |
-| `references/phase-3-7e-vault-orphans.md` | Phase 3.7e Vault Orphans (#1563) — `node scripts/vault-orphans.mjs --since <started_at> --json` (`findVaultOrphans` in `scripts/lib/session-end/vault-orphans.mjs`, read-only `git ls-files --others`) names untracked vault files modified since the session start, minus `_generator: session-orchestrator-` files; candidates only (mtime is no proof), one Open Question via `appendOpenQuestionOnDisk`, never commits/moves/deletes in the vault; `unavailable` = "could not measure", never "no orphans"; gated on `vault-integration.enabled`, ordered after 3.7d and before 3.4 |
+| `references/phase-3-documentation-updates.md` § 3.7d | Session-Eval (opt-in — #803) — `node "${CLAUDE_PLUGIN_ROOT}/scripts/eval-session.mjs" --json` scores the just-closed session; gated on `eval.enabled` + `eval.mode != off` (parsed by `scripts/lib/config/eval.mjs`), optional `eval-judge` dispatch + `writeEvalReport`, advisory/never-blocks-close, ordered after 3.7 (record must exist) and before 3.4/Phase 4 (record committed with the session). Full flow in `skills/eval/SKILL.md` |
+| `references/phase-3-7e-vault-orphans.md` | Phase 3.7e Vault Orphans (#1563) — `node "${CLAUDE_PLUGIN_ROOT}/scripts/vault-orphans.mjs" --since <started_at> --json` (`findVaultOrphans` in `scripts/lib/session-end/vault-orphans.mjs`, read-only `git ls-files --others`) names untracked vault files modified since the session start, minus `_generator: session-orchestrator-` files; candidates only (mtime is no proof), one Open Question via `appendOpenQuestionOnDisk`, never commits/moves/deletes in the vault; `unavailable` = "could not measure", never "no orphans"; gated on `vault-integration.enabled`, ordered after 3.7d and before 3.4 |
 | (inline) Phase 3.8 | Session Lock Release — `release()` uses the physical raw `session_id`; raw mismatch/absent is non-fatal but never repaired with semantic labels or proof (live ambiguity remains for TTL/Reaper); fs-errors are non-fatal; runs after STATE.md writes and before Phase 4 commit staging |
 | (inline) Phase 4 | Commit & Push — stage individually (PSA-004), commit, push to origin, then the `github-mirror-push` block (4 states: not-a-repo / no `github` remote / pushed / push failed), then 4.5 (only a pipeline or train left → one fleet Rücklauf `zug-<name>` in this turn, fleet integration only; no manifest, no self-close) |
 | `references/phase-4a-worktree-cleanup.md` | Phase 4a full procedural body — auto-promoted-worktree detection (`detectAutoPromotedWorktree`, marker-keyed since #1069), clean-check, clean auto-remove path, dirty 3-option AUQ (`Behalten`/`Löschen`/`Manuell`), PSA-003 + #490 ordering rationale |
 | `references/phase-4b-worktree-orphan-sweep.md` | Phase 4b full procedural body — `checkWorktreeOrphans()` read-only proposal set, the coordinator-rendered AUQ, opt-in `worktree-orphans.enabled` gate |
-| `references/phase-5-issue-cleanup.md` | Phase 5 full procedural body — close resolved issues via `node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --close` (strip `status:*` → close → re-read; `closed: false` is a finding, not done, #308), Step 3 filing of the Phase 1.65 carry-list incl. the deferred `createSpiralCarryoverIssue` and `markOpenQuestionAnsweredOnDisk`, Step 3b `[Backlog-Sammel]` overflow, discovery-issue creation |
+| `references/phase-5-issue-cleanup.md` | Phase 5 full procedural body — close resolved issues via `node "${CLAUDE_PLUGIN_ROOT}/scripts/lib/issue-close-strip-labels.mjs" --close` (strip `status:*` → close → re-read; `closed: false` is a finding, not done, #308), Step 3 filing of the Phase 1.65 carry-list incl. the deferred `createSpiralCarryoverIssue` and `markOpenQuestionAnsweredOnDisk`, Step 3b `[Backlog-Sammel]` overflow, discovery-issue creation |
 | `references/phase-5-issue-cleanup.md` § Step 3b.2 (issue-budget reconcile) | Phase 5 issue-budget cross-check — `reconcileIssueBudget({ repoRoot, record, sessionId, rawSessionId, config })` from `scripts/lib/issue-budget-reconcile.mjs` runs on the in-memory session record BEFORE it is appended to `sessions.jsonl`, `emitIssueBudgetReconciled` records `orchestrator.issue_budget.reconciled`, and `formatIssueBudgetReconcileWarn(result)` prints the verdict (`match` / `no-ledger` / `escaped` / `stale-record`) in the Final Report. Ordered AFTER the overflow drain (which resets `overflow[]`) and BEFORE `reapStaleBudgetFiles` (which must not remove the file being read) |
 | `references/session-summary-template.md` | Phase 6 Final Report — the full Session Summary template (Completed / Carried Over / Dropped at Handover Gate / New Issues / Unresolved Review Findings / Metrics incl. Docs Health + Custom Phases / Next Session Recommendations) plus the Test-delta and Documentation-Coverage anchors |
 

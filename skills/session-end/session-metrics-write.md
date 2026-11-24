@@ -9,11 +9,11 @@
 >
 > This step writes the session JSONL entry, verifies it, then optionally mirrors the session summary to the configured Obsidian vault via `scripts/vault-mirror.mjs`.
 
-> **MANDATORY WRITE PATH (#400):** ALL session closes — including coord-direct sessions, housekeeping, express-path, and autopilot runs — MUST write the JSONL metrics entry exclusively via `node scripts/emit-session.mjs`. **Hand-composing JSON and appending it directly to `sessions.jsonl` is forbidden.** `emit-session.mjs` calls `validateSession` from `scripts/lib/session-schema.mjs` (the schema authority) before appending and stamps `schema_version: 1`. Entries that bypass this path skip validation and produce malformed records with missing required fields (`waves[]`, `agent_summary`) or unresolved legacy field names (`waves_completed`, `files_changed`, `planned_issues` at top-level instead of under `effectiveness`).
+> **MANDATORY WRITE PATH (#400):** ALL session closes — including coord-direct sessions, housekeeping, express-path, and autopilot runs — MUST write the JSONL metrics entry exclusively via `node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-session.mjs"`. **Hand-composing JSON and appending it directly to `sessions.jsonl` is forbidden.** `emit-session.mjs` calls `validateSession` from `scripts/lib/session-schema.mjs` (the schema authority) before appending and stamps `schema_version: 1`. Entries that bypass this path skip validation and produce malformed records with missing required fields (`waves[]`, `agent_summary`) or unresolved legacy field names (`waves_completed`, `files_changed`, `planned_issues` at top-level instead of under `effectiveness`).
 >
 > Minimal invocation:
 > ```bash
-> printf '%s' "$METRICS_ENTRY" | node "$PLUGIN_ROOT/scripts/emit-session.mjs"
+> printf '%s' "$METRICS_ENTRY" | node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-session.mjs"
 > ```
 > See step 2 below for the full invocation including exit-code handling.
 > Pass no `--file`: the default is the main checkout's `sessions.jsonl` (#1584). A relative `--file` is taken verbatim and, run from a linked worktree, writes the worktree's own copy, which is gitignored here and lost with the worktree (#1722).
@@ -40,7 +40,7 @@
 
 2. Append the prepared JSONL entry (from Phase 1.7; the writer itself adds the token fields — step 1a) via the validating writer `scripts/emit-session.mjs` (issue #249):
    ```bash
-   printf '%s' "$METRICS_ENTRY" | node "$PLUGIN_ROOT/scripts/emit-session.mjs"
+   printf '%s' "$METRICS_ENTRY" | node "${CLAUDE_PLUGIN_ROOT}/scripts/emit-session.mjs"
    EMIT_EXIT=$?
    if [[ $EMIT_EXIT -eq 1 ]]; then
      echo "ERROR: session-end validation failed — entry rejected by scripts/emit-session.mjs. See stderr above. Session metrics NOT written." >&2
@@ -80,10 +80,10 @@
 4a. **Verify the record SCHEMA, not just its JSON syntax (#1408)** — step 4 only proves the line parses. The #1408 record parsed fine and was still invalid (`ended_at` instead of `completed_at`, four required fields missing, wave objects keyed `n` instead of `wave`); `vault-mirror` dropped it as `skipped-invalid`, so that session got no vault note and nobody was told until the NEXT session-start banner. Run the same check `/close`'s successor would run, now:
 
    ```bash
-   node "$PLUGIN_ROOT/scripts/check-sessions-integrity.mjs" --session-id "$SESSION_ID" || exit 1
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/check-sessions-integrity.mjs" --session-id "$SESSION_ID" || exit 1
    ```
 
-   **Exit contract:** 0 = this session's record validates and mirrors. 1 = THIS session's record is broken, or is not in the ledger at all — block the close and re-emit via `scripts/emit-session.mjs`. 2 = tool error (bad flag, unreadable repo root). Pre-existing invalid records from earlier sessions are printed (the banner text on stderr) but never block: they are not this close's to fix, and failing on them would make every close red until someone ran `node scripts/repair-invalid-sessions.mjs --apply`. Identity (`--session-id`), not tail POSITION, is the filter — a parallel session may append between step 2 and here. A named id with NO record fails on purpose: "sound" and "never written" are indistinguishable to the checker, and passing on that reading is the fail-open half.
+   **Exit contract:** 0 = this session's record validates and mirrors. 1 = THIS session's record is broken, or is not in the ledger at all — block the close and re-emit via `scripts/emit-session.mjs`. 2 = tool error (bad flag, unreadable repo root). Pre-existing invalid records from earlier sessions are printed (the banner text on stderr) but never block: they are not this close's to fix, and failing on them would make every close red until someone ran `node "${CLAUDE_PLUGIN_ROOT}/scripts/repair-invalid-sessions.mjs" --apply`. Identity (`--session-id`), not tail POSITION, is the filter — a parallel session may append between step 2 and here. A named id with NO record fails on purpose: "sound" and "never written" are indistinguishable to the checker, and passing on that reading is the fail-open half.
 
    Add `--repo-root <path>` when the cwd is not the repo (the default is cwd), and `--json` for a machine-readable result (`{ok, exitCode, sessionId, matched, findings[]}`).
 5. **Vault Mirror** — mirror the session entry to the Obsidian vault (if configured):
@@ -117,7 +117,7 @@
      # starts with `-` (vault-dir comes from the committed CLAUDE.md / AGENTS.md) is parsed as
      # a node option, and `--import=data:…` would execute code at /close.
      so_tilde() {
-       node --input-type=module -e "import { redactHomeDir } from '$PLUGIN_ROOT/scripts/lib/common.mjs'; process.stdout.write(redactHomeDir(process.argv[1]))" -- "$1" 2>/dev/null \
+       node --input-type=module -e "import { redactHomeDir } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/common.mjs'; process.stdout.write(redactHomeDir(process.argv[1]))" -- "$1" 2>/dev/null \
          || printf '…/%s' "${1##*/}"
      }
      echo "vault-dir=$(so_tilde "$VM_DIR") (Quelle: $VM_DIR_SOURCE)"
@@ -134,7 +134,7 @@
      # namespace is that repo's identity, never the cwd's; a --source that lies in
      # a different repo than --repo-root is refused (exit 2, source-repo-mismatch)
      # instead of being written over another project's notes.
-     VM_OUTPUT=$(node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" \
+     VM_OUTPUT=$(node "${CLAUDE_PLUGIN_ROOT}/scripts/vault-mirror.mjs" \
        --vault-dir "$VM_DIR" \
        --repo-root "$PWD" \
        --source "$PWD/.orchestrator/metrics/sessions.jsonl" \
@@ -209,7 +209,7 @@
      # using the same strict/warn degradation idiom as the vault-mirror step above.
      NM_OUTPUT=$(node -e "
        import('node:url').then(({ pathToFileURL }) =>
-         import(pathToFileURL('$PLUGIN_ROOT/scripts/lib/vault-status/narrative-mirror.mjs').href)
+         import(pathToFileURL('${CLAUDE_PLUGIN_ROOT}/scripts/lib/vault-status/narrative-mirror.mjs').href)
        ).then(async (m) => {
          const r = await m.mirrorNarrative({ repoRoot: process.cwd() });
          process.stdout.write(JSON.stringify(r));

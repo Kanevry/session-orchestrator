@@ -21,7 +21,7 @@ Runs AFTER Phase 3.7d (Session-Eval) and BEFORE Phase 3.4 (`status: completed`),
 2. Run the read-only probe from the repo root, so the host-local vault-dir resolution (`SO_VAULT_DIR` > owner.yaml > committed `vault-integration.vault-dir`) sees this repo's Session Config:
 
    ```bash
-   node "$PLUGIN_ROOT/scripts/vault-orphans.mjs" --since "<STATE.md started_at>" --json
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/vault-orphans.mjs" --since "<STATE.md started_at>" --json
    ```
 
    Exit `0` = measured (the JSON may hold zero candidates), `1` = bad arguments (fix the call), `2` = could not measure. The JSON is the result of `findVaultOrphans()` in `scripts/lib/session-end/vault-orphans.mjs`:
@@ -36,7 +36,7 @@ Runs AFTER Phase 3.7d (Session-Eval) and BEFORE Phase 3.4 (`status: completed`),
    - **`total > 0`** - NAME the candidates in the Final Report (see `session-summary-template.md`, line `Vault orphans`), then record ONE Open Question in STATE.md, listing up to 10 paths and the count:
 
      ```javascript
-     import { appendOpenQuestionOnDisk } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+     import { appendOpenQuestionOnDisk } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 
      const shown = result.candidates.slice(0, 10).map((c) => c.path);
      const more = result.total - shown.length;

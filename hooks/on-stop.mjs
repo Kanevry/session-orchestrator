@@ -896,9 +896,8 @@ function firstNonEmptyString(input, keys) {
 function readStatusFromTranscriptTail(transcriptPath) {
   try {
     const window = readTailWindow(transcriptPath, STATUS_TAIL_BYTES);
-    let lines = window.text.split('\n');
-    // Drop the leading partial line when the window did not start at byte 0.
-    if (window.cut) lines = lines.slice(1);
+    const lines = window.text.split('\n');
+    if (window.partialFirstLine) lines.shift();
 
     for (let i = lines.length - 1; i >= 0; i -= 1) {
       const line = lines[i].trim();

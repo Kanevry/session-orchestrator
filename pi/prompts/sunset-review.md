@@ -5,8 +5,8 @@ argument-hint: "[--kind skill|agent|command] [--window-days N]"
 
 # /sunset-review
 
-Use the Session Orchestrator skill definition at `skills/sunset-review/SKILL.md`.
+Read `skills/sunset-review/SKILL.md` under the Session Orchestrator package root given in your system prompt and follow it exactly.
 
 Arguments: $@
 
-Read that skill file and follow it exactly. When it references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
+When the file references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.

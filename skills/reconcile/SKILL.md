@@ -20,6 +20,8 @@ description: >
 
 # Reconcile Skill
 
+> **Plugin root:** `${CLAUDE_PLUGIN_ROOT}`. Claude Code replaces this with the plugin's absolute path when it loads this file. Where it appears unreplaced — in a file this skill reads with the Read tool, or on Codex, Cursor or Pi — the plugin root is the directory that contains this skill's `skills/` folder (two levels above the folder of this SKILL.md). Write that absolute path literally into every command that starts a plugin script: the Bash tool has no plugin variable, and shell variables do not survive between tool calls.
+
 ## Invocation
 
 The user invoked `/reconcile` with arguments: **$ARGUMENTS** — parsed in Phase 1.3 below.
@@ -148,8 +150,7 @@ fi
 
 ### 2.1 Resolve Plugin Root
 
-Resolve `$PLUGIN_ROOT` per `skills/_shared/config-reading.md` (the standard resolution chain:
-`$CLAUDE_PLUGIN_ROOT` → `$CODEX_PLUGIN_ROOT` → `$CURSOR_RULES_DIR` → common install locations).
+Use the absolute path from the Plugin root line above wherever a snippet names `${CLAUDE_PLUGIN_ROOT}`.
 
 ### 2.2 Resolve the Effective Write-Targets
 
@@ -158,7 +159,7 @@ the approval AUQ — the operator must never be asked to approve a write to a
 destination that cannot exist:
 
 ```javascript
-import { resolveEffectiveTargets } from '$PLUGIN_ROOT/scripts/lib/reconcile/engine.mjs';
+import { resolveEffectiveTargets } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/reconcile/engine.mjs';
 
 const { targets, baselineRoot, dropped, reason } = resolveEffectiveTargets({
   targets: CONFIG.reconcile?.targets,        // ['repo-local'] | ['baseline'] | both
@@ -185,7 +186,7 @@ himself.
 ### 2.3 Invoke `runReconcile`
 
 ```javascript
-import { runReconcileFromSkill } from '$PLUGIN_ROOT/scripts/lib/reconcile/engine.mjs';
+import { runReconcileFromSkill } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/reconcile/engine.mjs';
 
 const { proposals, rejected, summary, error } = await runReconcileFromSkill({
   repoRoot,             // absolute path from git rev-parse --show-toplevel
@@ -339,7 +340,7 @@ Collect responses across all batches:
 ### 6.1 Invoke `writeApprovedRules`
 
 ```javascript
-import { writeApprovedRules } from '$PLUGIN_ROOT/scripts/lib/reconcile/writer.mjs';
+import { writeApprovedRules } from '${CLAUDE_PLUGIN_ROOT}/scripts/lib/reconcile/writer.mjs';
 
 const { written, archived, errors } = await writeApprovedRules({
   approved: approved,             // proposals the operator approved
